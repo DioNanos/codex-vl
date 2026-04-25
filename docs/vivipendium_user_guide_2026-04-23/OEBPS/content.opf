@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Vivipendium User Guide</dc:title>
+    <dc:creator>Codex</dc:creator>
+    <dc:language>en</dc:language>
+    <dc:identifier id="BookId">urn:uuid:vivipendium-user-guide-2026-04-23</dc:identifier>
+    <dc:description>User guide for codex-vl with operational Vivling rules and the full final sprite appendix.</dc:description>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="styles.css" media-type="text/css"/>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="overview" href="overview.xhtml" media-type="application/xhtml+xml"/>
+    <item id="menu" href="menu.xhtml" media-type="application/xhtml+xml"/>
+    <item id="choosing" href="choosing.xhtml" media-type="application/xhtml+xml"/>
+    <item id="families" href="families_roles.xhtml" media-type="application/xhtml+xml"/>
+    <item id="rules" href="rules.xhtml" media-type="application/xhtml+xml"/>
+    <item id="species" href="species.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="cover"/>
+    <itemref idref="overview"/>
+    <itemref idref="menu"/>
+    <itemref idref="choosing"/>
+    <itemref idref="families"/>
+    <itemref idref="rules"/>
+    <itemref idref="species"/>
+  </spine>
+</package>

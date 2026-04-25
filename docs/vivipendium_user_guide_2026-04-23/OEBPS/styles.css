@@ -1,0 +1,105 @@
+
+body {
+  font-family: serif;
+  margin: 0;
+  padding: 0;
+  line-height: 1.45;
+  color: #111;
+  background: #f7f3eb;
+}
+
+.page {
+  padding: 1.2em 1.2em 1.8em;
+}
+
+h1, h2, h3, h4 {
+  page-break-after: avoid;
+}
+
+a {
+  color: #111;
+  text-decoration: underline;
+}
+
+.cover {
+  text-align: center;
+  padding-top: 18%;
+}
+
+.label {
+  font-size: 0.9em;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.zed {
+  font-size: 4em;
+  font-weight: bold;
+  letter-spacing: 0.1em;
+  margin: 0.5em 0;
+}
+
+.menu-box,
+.card,
+.species-card {
+  border: 2px solid #222;
+  background: #fffdf8;
+  border-radius: 0.4em;
+  padding: 1em;
+  margin: 0 0 1em;
+}
+
+.chips span,
+.chip {
+  display: inline-block;
+  border: 1px solid #333;
+  padding: 0.12em 0.5em;
+  margin-right: 0.35em;
+  margin-bottom: 0.25em;
+  font-size: 0.85em;
+}
+
+.species-topline,
+.card-topline,
+.sprite-label {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.family-block,
+.family-menu,
+.stage-group,
+.rule-block {
+  border-top: 1px solid #444;
+  margin-top: 1em;
+  padding-top: 0.7em;
+}
+
+.species-card {
+  page-break-inside: avoid;
+}
+
+.family-section {
+  page-break-before: always;
+}
+
+.family-species-index {
+  margin: 0.6em 0 1em;
+}
+
+pre {
+  white-space: pre-wrap;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 0.72em;
+  line-height: 1.22;
+  background: #f2ede2;
+  border: 1px solid #b7aa8c;
+  padding: 0.8em;
+  overflow-wrap: anywhere;
+}
+
+.legend-list li,
+ul li {
+  margin-bottom: 0.3em;
+}

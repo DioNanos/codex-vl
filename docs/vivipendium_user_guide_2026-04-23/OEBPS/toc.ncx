@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="urn:uuid:vivipendium-user-guide-2026-04-23"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>Vivipendium User Guide</text></docTitle>
+  <navMap>
+    <navPoint id="u1" playOrder="1"><navLabel><text>Cover</text></navLabel><content src="cover.xhtml"/></navPoint>
+    <navPoint id="u2" playOrder="2"><navLabel><text>Overview</text></navLabel><content src="overview.xhtml"/></navPoint>
+    <navPoint id="u3" playOrder="3"><navLabel><text>Menu</text></navLabel><content src="menu.xhtml"/></navPoint>
+    <navPoint id="u4" playOrder="4"><navLabel><text>Choosing a Vivling</text></navLabel><content src="choosing.xhtml"/></navPoint>
+    <navPoint id="u5" playOrder="5"><navLabel><text>Families and roles</text></navLabel><content src="families_roles.xhtml"/></navPoint>
+    <navPoint id="u6" playOrder="6"><navLabel><text>Rules</text></navLabel><content src="rules.xhtml"/></navPoint>
+    <navPoint id="u7" playOrder="7"><navLabel><text>All Vivling Sprites</text></navLabel><content src="species.xhtml"/></navPoint>
+  </navMap>
+</ncx>

@@ -1,0 +1,8 @@
+[versions."146.4.0"]
+source_tag = "v146.4.0"
+
+[versions."146.4.0".targets."aarch64-linux-android"]
+repository = "DioNanos/codex-termux"
+release_tag = "rusty-v8-v146.4.0"
+archive_sha256 = "a58874b88f5f1f5146c6d4821cad96c381db1934133ebc53170b17933c2abb5d"
+binding_sha256 = "09f8900ced8297c229246c7a50b2e0ec23c54d0a554f369619cc29863f38dd1a"

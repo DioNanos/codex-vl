@@ -1,0 +1,46 @@
+[package]
+name = "codex-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+codex-app-server-protocol = { workspace = true }
+codex-execpolicy = { workspace = true }
+codex-features = { workspace = true }
+codex-model-provider-info = { workspace = true }
+codex-network-proxy = { workspace = true }
+codex-protocol = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
+codex-utils-path = { workspace = true }
+futures = { workspace = true, features = ["alloc", "std"] }
+gethostname = { workspace = true }
+multimap = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_path_to_error = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+tracing = { workspace = true }
+wildmatch = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+dns-lookup = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi-util = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
