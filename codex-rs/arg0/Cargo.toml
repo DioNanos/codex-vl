@@ -21,5 +21,6 @@ codex-shell-escalation = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 dotenvy = { workspace = true }
+libc = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
