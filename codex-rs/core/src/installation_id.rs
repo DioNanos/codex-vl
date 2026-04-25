@@ -16,57 +16,79 @@ use uuid::Uuid;
 
 pub(crate) const INSTALLATION_ID_FILENAME: &str = "installation_id";
 
+fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP)
+    )
+}
+
+fn resolve_installation_id_sync(
+    path: &std::path::Path,
+    mut lock_file: impl FnMut(&std::fs::File) -> std::io::Result<()>,
+) -> Result<String> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+
+    #[cfg(unix)]
+    {
+        options.mode(0o644);
+    }
+
+    let mut file = options.open(path)?;
+    if let Err(err) = lock_file(&file) {
+        if !is_unsupported_file_lock_error(&err) {
+            return Err(err);
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        let current_mode = metadata.permissions().mode() & 0o777;
+        if current_mode != 0o644 {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o644);
+            file.set_permissions(permissions)?;
+        }
+    }
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let trimmed = contents.trim();
+    if !trimmed.is_empty()
+        && let Ok(existing) = Uuid::parse_str(trimmed)
+    {
+        return Ok(existing.to_string());
+    }
+
+    let installation_id = Uuid::new_v4().to_string();
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(installation_id.as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
+
+    Ok(installation_id)
+}
+
 pub(crate) async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<String> {
     let path = codex_home.join(INSTALLATION_ID_FILENAME);
     fs::create_dir_all(codex_home).await?;
-    tokio::task::spawn_blocking(move || {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true);
-
-        #[cfg(unix)]
-        {
-            options.mode(0o644);
-        }
-
-        let mut file = options.open(&path)?;
-        file.lock()?;
-
-        #[cfg(unix)]
-        {
-            let metadata = file.metadata()?;
-            let current_mode = metadata.permissions().mode() & 0o777;
-            if current_mode != 0o644 {
-                let mut permissions = metadata.permissions();
-                permissions.set_mode(0o644);
-                file.set_permissions(permissions)?;
-            }
-        }
-
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        let trimmed = contents.trim();
-        if !trimmed.is_empty()
-            && let Ok(existing) = Uuid::parse_str(trimmed)
-        {
-            return Ok(existing.to_string());
-        }
-
-        let installation_id = Uuid::new_v4().to_string();
-        file.set_len(0)?;
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(installation_id.as_bytes())?;
-        file.flush()?;
-        file.sync_all()?;
-
-        Ok(installation_id)
-    })
-    .await?
+    tokio::task::spawn_blocking(move || resolve_installation_id_sync(&path, |file| file.lock()))
+        .await?
 }
 
 #[cfg(test)]
 mod tests {
     use super::INSTALLATION_ID_FILENAME;
+    use super::is_unsupported_file_lock_error;
     use super::resolve_installation_id;
+    use super::resolve_installation_id_sync;
     use core_test_support::PathExt;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -145,5 +167,31 @@ mod tests {
                 .expect("read rewritten installation id"),
             resolved
         );
+    }
+
+    #[test]
+    fn resolve_installation_id_tolerates_unsupported_file_lock() {
+        let codex_home = TempDir::new().expect("create temp dir");
+        let persisted_path = codex_home.path().join(INSTALLATION_ID_FILENAME);
+
+        let installation_id = resolve_installation_id_sync(&persisted_path, |_file| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "try_lock() not supported",
+            ))
+        })
+        .expect("resolve installation id with unsupported lock");
+
+        assert_eq!(
+            std::fs::read_to_string(&persisted_path).expect("read persisted installation id"),
+            installation_id
+        );
+        assert!(Uuid::parse_str(&installation_id).is_ok());
+    }
+
+    #[test]
+    fn unsupported_lock_classifier_accepts_unsupported_kind() {
+        let err = std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported");
+        assert!(is_unsupported_file_lock_error(&err));
     }
 }

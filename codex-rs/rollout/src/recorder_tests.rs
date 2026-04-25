@@ -30,6 +30,12 @@ fn test_config(codex_home: &Path) -> RolloutConfig {
     }
 }
 
+#[test]
+fn rollout_timestamp_now_returns_a_timestamp() {
+    let timestamp = rollout_timestamp_now();
+    assert!(timestamp.unix_timestamp() > 0);
+}
+
 fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<PathBuf> {
     let day_dir = root.join("sessions/2025/01/03");
     fs::create_dir_all(&day_dir)?;
