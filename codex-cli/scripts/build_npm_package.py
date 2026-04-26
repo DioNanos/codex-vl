@@ -160,6 +160,7 @@ def main() -> int:
                 native_components,
                 target_filter={target_filter} if target_filter else None,
             )
+            validate_native_payload(staging_dir, package)
 
         if release_version:
             staging_dir_str = str(staging_dir)
@@ -223,6 +224,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
+        shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
         rg_manifest = CODEX_CLI_ROOT / "bin" / "rg"
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
@@ -395,6 +397,25 @@ def copy_native_binaries(
         if missing_targets:
             missing_list = ", ".join(missing_targets)
             raise RuntimeError(f"Missing target directories in vendor source: {missing_list}")
+
+
+def validate_native_payload(staging_dir: Path, package: str) -> None:
+    platform_config = CODEX_PLATFORM_PACKAGES.get(package)
+    if platform_config is None:
+        return
+
+    target = platform_config["target_triple"]
+    codex_dir = staging_dir / "vendor" / target / "codex"
+    missing = [
+        binary_name
+        for binary_name in ("codex", "codex-exec")
+        if not (codex_dir / binary_name).is_file()
+    ]
+    if missing:
+        missing_list = ", ".join(missing)
+        raise RuntimeError(
+            f"Native payload for {package} is missing required binaries: {missing_list}"
+        )
 
 
 def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:

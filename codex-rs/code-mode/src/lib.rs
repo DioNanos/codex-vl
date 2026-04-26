@@ -25,6 +25,8 @@ pub use response::DEFAULT_IMAGE_DETAIL;
 pub use response::FunctionCallOutputContentItem;
 pub use response::ImageDetail;
 #[cfg(not(target_os = "android"))]
+pub use runtime::CodeModeNestedToolCall;
+#[cfg(not(target_os = "android"))]
 pub use runtime::DEFAULT_EXEC_YIELD_TIME_MS;
 #[cfg(not(target_os = "android"))]
 pub use runtime::DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL;
@@ -35,7 +37,11 @@ pub use runtime::ExecuteRequest;
 #[cfg(not(target_os = "android"))]
 pub use runtime::RuntimeResponse;
 #[cfg(not(target_os = "android"))]
+pub use runtime::WaitOutcome;
+#[cfg(not(target_os = "android"))]
 pub use runtime::WaitRequest;
+#[cfg(target_os = "android")]
+pub use runtime_stub::CodeModeNestedToolCall;
 #[cfg(target_os = "android")]
 pub use runtime_stub::DEFAULT_EXEC_YIELD_TIME_MS;
 #[cfg(target_os = "android")]
@@ -46,6 +52,8 @@ pub use runtime_stub::DEFAULT_WAIT_YIELD_TIME_MS;
 pub use runtime_stub::ExecuteRequest;
 #[cfg(target_os = "android")]
 pub use runtime_stub::RuntimeResponse;
+#[cfg(target_os = "android")]
+pub use runtime_stub::WaitOutcome;
 #[cfg(target_os = "android")]
 pub use runtime_stub::WaitRequest;
 #[cfg(not(target_os = "android"))]

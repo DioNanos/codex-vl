@@ -1,0 +1,283 @@
+name: Study Fork Release Candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version override (defaults to codex-cli/package.json)"
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      release_version: ${{ steps.resolve.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          input_version="${{ inputs.release_version }}"
+          if [[ -n "${input_version}" ]]; then
+            version="${input_version}"
+          else
+            version="$(node -p "require('./codex-cli/package.json').version")"
+          fi
+          echo "release_version=${version}" >> "$GITHUB_OUTPUT"
+
+  vivling-functional:
+    name: Vivling functional tests
+    runs-on: ubuntu-24.04
+    needs: resolve-version
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Run Vivling functional tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-tui vivling --no-fail-fast
+          cargo test -p codex-tui slash_vivling --no-fail-fast
+
+  package-linux-x64:
+    name: Package Linux x64
+    runs-on: ubuntu-24.04
+    needs:
+      - resolve-version
+      - vivling-functional
+    timeout-minutes: 90
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      RELEASE_VERSION: ${{ needs.resolve-version.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev libubsan1
+      - name: Use hermetic Cargo home
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.0
+      - name: Install musl build tools
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - name: Configure rustc UBSan wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          ubsan=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
+          fi
+          wrapper_root="${RUNNER_TEMP:-/tmp}"
+          wrapper="${wrapper_root}/rustc-ubsan-wrapper"
+          cat > "${wrapper}" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ -n "${ubsan}" ]]; then
+            export LD_PRELOAD="${ubsan}\${LD_PRELOAD:+:\${LD_PRELOAD}}"
+          fi
+          exec "\$1" "\${@:2}"
+          EOF
+          chmod +x "${wrapper}"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
+      - name: Clear sanitizer flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_X86_64_UNKNOWN_LINUX_MUSL=1" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "RUSTDOCFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_BUILD_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS=" >> "$GITHUB_ENV"
+          echo "CFLAGS=" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=" >> "$GITHUB_ENV"
+      - name: Configure musl rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8-musl
+        with:
+          target: x86_64-unknown-linux-musl
+      - name: Build codex binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path codex-rs/Cargo.toml --target "${TARGET}" --release --bin codex
+      - name: Prepare vendor payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          vendor_root="${RUNNER_TEMP}/vendor-root"
+          python3 codex-cli/scripts/prepare_local_vendor.py \
+            --vendor-root "${vendor_root}" \
+            --target "${TARGET}" \
+            --codex-binary "codex-rs/target/${TARGET}/release/codex" \
+            --include-rg
+          echo "VENDOR_ROOT=${vendor_root}" >> "$GITHUB_ENV"
+      - name: Stage npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="${RUNNER_TEMP}/staging-codex-linux-x64"
+          pack_output="${RUNNER_TEMP}/codex-linux-x64-${RELEASE_VERSION}.tgz"
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-linux-x64 \
+            --release-version "${RELEASE_VERSION}" \
+            --staging-dir "${stage_dir}" \
+            --pack-output "${pack_output}" \
+            --vendor-src "${VENDOR_ROOT}"
+          echo "PACK_OUTPUT=${pack_output}" >> "$GITHUB_ENV"
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-linux-x64-${{ env.RELEASE_VERSION }}
+          path: |
+            ${{ env.PACK_OUTPUT }}
+            codex-rs/target/${{ env.TARGET }}/release/codex
+
+  package-android-arm64:
+    name: Package Android arm64
+    runs-on: ubuntu-24.04
+    needs:
+      - resolve-version
+      - vivling-functional
+    timeout-minutes: 120
+    env:
+      TARGET: aarch64-linux-android
+      RELEASE_VERSION: ${{ needs.resolve-version.outputs.release_version }}
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+        with:
+          targets: aarch64-linux-android
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Verify Android patch baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash qa/verify_android_patch.sh
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Configure Android NDK toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "ndk;27.2.12479018"
+          ndk_root="${ANDROID_SDK_ROOT}/ndk/27.2.12479018"
+          toolchain="${ndk_root}/toolchains/llvm/prebuilt/linux-x86_64"
+          api=24
+          shim_dir="${RUNNER_TEMP}/android-toolchain-shims"
+          mkdir -p "${shim_dir}"
+          ln -sf "${toolchain}/bin/llvm-ranlib" "${shim_dir}/aarch64-linux-android-ranlib"
+          echo "ANDROID_NDK_HOME=${ndk_root}" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android${api}-clang" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_linux_android=${toolchain}/bin/aarch64-linux-android${api}-clang++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=${toolchain}/bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=${toolchain}/bin/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${toolchain}/bin/aarch64-linux-android${api}-clang" >> "$GITHUB_ENV"
+          echo "${toolchain}/bin" >> "$GITHUB_PATH"
+          echo "${shim_dir}" >> "$GITHUB_PATH"
+      - name: Fetch Android rusty_v8 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fetch_rusty_v8_android.py --output-dir "${RUNNER_TEMP}/rusty_v8" > "${RUNNER_TEMP}/rusty_v8_env.txt"
+          grep '^export ' "${RUNNER_TEMP}/rusty_v8_env.txt" | sed 's/^export //' >> "$GITHUB_ENV"
+      - name: Build codex and codex-exec
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path codex-rs/Cargo.toml --target "${TARGET}" --release -p codex-cli -p codex-exec
+      - name: Prepare vendor payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          vendor_root="${RUNNER_TEMP}/vendor-root"
+          python3 codex-cli/scripts/prepare_local_vendor.py \
+            --vendor-root "${vendor_root}" \
+            --target "${TARGET}" \
+            --codex-binary "codex-rs/target/${TARGET}/release/codex"
+          cp "codex-rs/target/${TARGET}/release/codex-exec" "${vendor_root}/${TARGET}/codex/codex-exec"
+          cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "${vendor_root}/${TARGET}/codex/libc++_shared.so"
+          chmod 755 \
+            "${vendor_root}/${TARGET}/codex/codex" \
+            "${vendor_root}/${TARGET}/codex/codex-exec" \
+            "${vendor_root}/${TARGET}/codex/libc++_shared.so"
+          echo "VENDOR_ROOT=${vendor_root}" >> "$GITHUB_ENV"
+      - name: Stage npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="${RUNNER_TEMP}/staging-codex-android-arm64"
+          pack_output="${RUNNER_TEMP}/codex-android-arm64-${RELEASE_VERSION}.tgz"
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-android-arm64 \
+            --release-version "${RELEASE_VERSION}" \
+            --staging-dir "${stage_dir}" \
+            --pack-output "${pack_output}" \
+            --vendor-src "${VENDOR_ROOT}"
+          echo "PACK_OUTPUT=${pack_output}" >> "$GITHUB_ENV"
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-android-arm64-${{ env.RELEASE_VERSION }}
+          path: |
+            ${{ env.PACK_OUTPUT }}
+            codex-rs/target/${{ env.TARGET }}/release/codex
+            codex-rs/target/${{ env.TARGET }}/release/codex-exec

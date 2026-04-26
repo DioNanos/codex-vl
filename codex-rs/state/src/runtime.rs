@@ -55,6 +55,9 @@ use tracing::warn;
 
 mod agent_jobs;
 mod backfill;
+mod device_key;
+#[cfg(test)]
+mod device_key_tests;
 mod logs;
 mod memories;
 mod remote_control;
@@ -63,6 +66,7 @@ mod test_support;
 mod thread_loop_jobs;
 mod threads;
 
+pub use device_key::DeviceKeyBindingRecord;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 
@@ -369,7 +373,9 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
+    use std::borrow::Cow;
     use std::path::Path;
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
@@ -429,6 +435,61 @@ mod tests {
         )
         .await
         .expect("runtime migrator should tolerate newer applied migrations");
+        tolerant_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn open_state_sqlite_migrates_existing_vl_db_after_device_key_renumber() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+
+        let legacy_migrator = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.description != "device_key_bindings")
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+        };
+        legacy_migrator
+            .run(&pool)
+            .await
+            .expect("apply pre-renumber codex-vl schema");
+        pool.close().await;
+
+        let tolerant_migrator = runtime_state_migrator();
+        let tolerant_pool = open_state_sqlite(
+            state_path.as_path(),
+            &tolerant_migrator,
+            SqliteRuntimeMode::default(),
+        )
+        .await
+        .expect("runtime migrator should add the renumbered device key schema");
+
+        let device_key_table: (String,) = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'device_key_bindings'",
+        )
+        .fetch_one(&tolerant_pool)
+        .await
+        .expect("device_key_bindings table exists");
+        assert_eq!(device_key_table.0, "device_key_bindings");
         tolerant_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;

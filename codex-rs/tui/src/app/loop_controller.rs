@@ -10,6 +10,10 @@ use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCa
 const MANAGE_LOOPS_TOOL_NAMESPACE: &str = "codex_app";
 const MANAGE_LOOPS_TOOL_NAME: &str = "manage_loops";
 
+fn is_manage_loops_dynamic_tool(namespace: Option<&str>, tool: &str) -> bool {
+    matches!(namespace, None | Some(MANAGE_LOOPS_TOOL_NAMESPACE)) && tool == MANAGE_LOOPS_TOOL_NAME
+}
+
 const LOOP_STATUS_SUBMITTED: &str = "submitted";
 const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
 const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
@@ -1356,9 +1360,7 @@ impl App {
         params: codex_app_server_protocol::DynamicToolCallParams,
     ) -> color_eyre::Result<()> {
         let thread_id = ThreadId::from_string(&params.thread_id)?;
-        let outcome = if params.namespace.as_deref() == Some(MANAGE_LOOPS_TOOL_NAMESPACE)
-            && params.tool == MANAGE_LOOPS_TOOL_NAME
-        {
+        let outcome = if is_manage_loops_dynamic_tool(params.namespace.as_deref(), &params.tool) {
             self.execute_manage_loops_dynamic_tool(thread_id, params.arguments)
                 .await
         } else {
@@ -1432,6 +1434,20 @@ mod tests {
                 auto_remove_on_completion: None,
             }
         );
+    }
+
+    #[test]
+    fn manage_loops_dynamic_tool_accepts_flat_and_namespaced_aliases() {
+        assert!(is_manage_loops_dynamic_tool(None, "manage_loops"));
+        assert!(is_manage_loops_dynamic_tool(
+            Some("codex_app"),
+            "manage_loops"
+        ));
+        assert!(!is_manage_loops_dynamic_tool(
+            Some("other_namespace"),
+            "manage_loops"
+        ));
+        assert!(!is_manage_loops_dynamic_tool(None, "other_tool"));
     }
 
     #[test]

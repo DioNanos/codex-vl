@@ -11,8 +11,8 @@ use crate::vivling::VivlingLoopTickResult;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
+use codex_core::build_models_manager;
 use codex_core::content_items_to_text;
-use codex_models_manager::manager::ModelsManager;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -451,10 +451,9 @@ async fn run_vivling_assist_request(
         profile_config.cli_auth_credentials_store_mode,
         Some(profile_config.chatgpt_base_url.clone()),
     ));
-    let models_manager = ModelsManager::new(
-        profile_config.codex_home.to_path_buf(),
+    let models_manager = build_models_manager(
+        &profile_config,
         Arc::clone(&auth_manager),
-        profile_config.model_catalog.clone(),
         codex_models_manager::collaboration_mode_presets::CollaborationModesConfig {
             default_mode_request_user_input: profile_config
                 .features
@@ -575,10 +574,9 @@ async fn run_vivling_loop_tick_request(
         profile_config.cli_auth_credentials_store_mode,
         Some(profile_config.chatgpt_base_url.clone()),
     ));
-    let models_manager = ModelsManager::new(
-        profile_config.codex_home.to_path_buf(),
+    let models_manager = build_models_manager(
+        &profile_config,
         Arc::clone(&auth_manager),
-        profile_config.model_catalog.clone(),
         codex_models_manager::collaboration_mode_presets::CollaborationModesConfig {
             default_mode_request_user_input: profile_config
                 .features

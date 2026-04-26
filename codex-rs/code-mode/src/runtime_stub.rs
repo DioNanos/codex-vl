@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use codex_protocol::ToolName;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 use crate::FunctionCallOutputContentItem;
@@ -11,6 +13,7 @@ pub const DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct ExecuteRequest {
+    pub cell_id: String,
     pub tool_call_id: String,
     pub enabled_tools: Vec<ToolDefinition>,
     pub source: String,
@@ -27,6 +30,20 @@ pub struct WaitRequest {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum WaitOutcome {
+    LiveCell(RuntimeResponse),
+    MissingCell(RuntimeResponse),
+}
+
+impl From<WaitOutcome> for RuntimeResponse {
+    fn from(outcome: WaitOutcome) -> Self {
+        match outcome {
+            WaitOutcome::LiveCell(response) | WaitOutcome::MissingCell(response) => response,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize)]
 pub enum RuntimeResponse {
     Yielded {
         cell_id: String,
@@ -42,4 +59,12 @@ pub enum RuntimeResponse {
         stored_values: HashMap<String, JsonValue>,
         error_text: Option<String>,
     },
+}
+
+#[derive(Debug)]
+pub struct CodeModeNestedToolCall {
+    pub cell_id: String,
+    pub runtime_tool_call_id: String,
+    pub tool_name: ToolName,
+    pub input: Option<JsonValue>,
 }

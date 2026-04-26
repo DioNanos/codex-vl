@@ -1575,7 +1575,7 @@ impl Vivling {
 
     fn current_sprite(&self, state: &VivlingState, now: Instant) -> String {
         let species = species_for_id(&state.species);
-        if !self.animations_enabled || !self.is_active_at(now) {
+        if !self.animations_enabled {
             *self.next_scheduled_frame_at.borrow_mut() = None;
             return match state.stage() {
                 Stage::Baby => species.ascii_baby.clone(),
@@ -1585,7 +1585,10 @@ impl Vivling {
         }
 
         let frames = active_footer_sprites_for_species(species, state.stage());
-        let started = self.active_started_at.get().unwrap_or(now);
+        let started = self.active_started_at.get().unwrap_or_else(|| {
+            self.active_started_at.set(Some(now));
+            now
+        });
         let elapsed = now.saturating_duration_since(started);
         let frame_idx =
             (((elapsed.as_millis() / ACTIVE_FOOTER_FRAME_INTERVAL.as_millis()) as usize) + 1)
@@ -1780,6 +1783,19 @@ mod tests {
         let state = vivling.visible_state().expect("hatched state");
         let sprite = vivling.current_sprite(state, Instant::now());
         assert_ne!(sprite, species_for_id(&state.species).ascii_baby);
+    }
+
+    #[test]
+    fn footer_pose_animates_while_visible_and_idle() {
+        let mut vivling = Vivling::unavailable();
+        vivling.state = Some(seeded_state());
+        vivling.configure_runtime(FrameRequester::test_dummy(), true);
+
+        let state = vivling.visible_state().expect("hatched state");
+        let start = Instant::now();
+        let first = vivling.current_sprite(state, start);
+        let second = vivling.current_sprite(state, start + ACTIVE_FOOTER_FRAME_INTERVAL);
+        assert_ne!(first, second);
     }
 
     #[test]

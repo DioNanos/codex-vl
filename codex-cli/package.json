@@ -1,9 +1,10 @@
 {
   "name": "@mmmbuto/codex-vl",
-  "version": "0.124.0",
+  "version": "0.125.1",
   "license": "Apache-2.0",
   "bin": {
-    "codex-vl": "bin/codex.js"
+    "codex-vl": "bin/codex.js",
+    "codex-vl-exec": "bin/codex-exec.js"
   },
   "type": "module",
   "engines": {

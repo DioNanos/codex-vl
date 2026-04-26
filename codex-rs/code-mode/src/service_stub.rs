@@ -5,8 +5,10 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use tokio_util::sync::CancellationToken;
 
+use crate::CodeModeNestedToolCall;
 use crate::ExecuteRequest;
 use crate::RuntimeResponse;
+use crate::WaitOutcome;
 use crate::WaitRequest;
 
 const ANDROID_CODE_MODE_UNSUPPORTED: &str = "exec is not supported in the Android Termux build";
@@ -15,8 +17,7 @@ const ANDROID_CODE_MODE_UNSUPPORTED: &str = "exec is not supported in the Androi
 pub trait CodeModeTurnHost: Send + Sync {
     async fn invoke_tool(
         &self,
-        tool_name: String,
-        input: Option<JsonValue>,
+        invocation: CodeModeNestedToolCall,
         cancellation_token: CancellationToken,
     ) -> Result<JsonValue, String>;
 
@@ -36,22 +37,26 @@ impl CodeModeService {
 
     pub async fn replace_stored_values(&self, _values: HashMap<String, JsonValue>) {}
 
+    pub fn allocate_cell_id(&self) -> String {
+        "android-termux".to_string()
+    }
+
     pub async fn execute(&self, request: ExecuteRequest) -> Result<RuntimeResponse, String> {
         Ok(RuntimeResponse::Result {
-            cell_id: "android-termux".to_string(),
+            cell_id: request.cell_id,
             content_items: Vec::new(),
             stored_values: request.stored_values,
             error_text: Some(ANDROID_CODE_MODE_UNSUPPORTED.to_string()),
         })
     }
 
-    pub async fn wait(&self, request: WaitRequest) -> Result<RuntimeResponse, String> {
-        Ok(RuntimeResponse::Result {
+    pub async fn wait(&self, request: WaitRequest) -> Result<WaitOutcome, String> {
+        Ok(WaitOutcome::MissingCell(RuntimeResponse::Result {
             cell_id: request.cell_id,
             content_items: Vec::new(),
             stored_values: HashMap::new(),
             error_text: Some(ANDROID_CODE_MODE_UNSUPPORTED.to_string()),
-        })
+        }))
     }
 
     pub fn start_turn_worker(&self, _host: Arc<dyn CodeModeTurnHost>) -> CodeModeTurnWorker {

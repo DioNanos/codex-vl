@@ -58,7 +58,10 @@ fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
         return true;
     }
 
-    matches!(err.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP))
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP)
+    )
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

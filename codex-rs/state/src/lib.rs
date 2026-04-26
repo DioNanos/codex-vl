@@ -53,6 +53,7 @@ pub use model::ThreadLoopOwner;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadsPage;
+pub use runtime::DeviceKeyBindingRecord;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::logs_db_filename;
