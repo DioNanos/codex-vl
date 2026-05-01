@@ -302,6 +302,15 @@ fn spawn_requires_level_30_and_persists_new_roster_member() {
     assert_eq!(spawned.primary_vivling_id, state.primary_vivling_id);
     assert!(!spawned.is_primary);
     assert_eq!(spawned.lineage_role_label(), "spawned");
+    assert_eq!(spawned.level, 1);
+    assert_eq!(spawned.work_xp, 0);
+    assert_eq!(spawned.active_work_days, 0);
+    assert!(!spawned.brain_enabled);
+    assert!(spawned.brain_profile.is_none());
+    assert!(spawned.work_memory.is_empty());
+    assert!(spawned.distilled_summaries.is_empty());
+    assert_eq!(spawned.loop_exposure, 0);
+    assert_eq!(spawned.turns_observed, 0);
 }
 
 #[test]
@@ -918,6 +927,14 @@ fn spawn_slot_progression_enforces_level_30_60_90_thresholds() {
             .filter(|entry| !entry.is_primary && !entry.is_imported)
             .count();
         assert_eq!(spawned_count, expected_capacity);
+        for spawned in lineage_states
+            .iter()
+            .filter(|entry| !entry.is_primary && !entry.is_imported)
+        {
+            assert_eq!(spawned.level, 1);
+            assert!(!spawned.adult_bootstrap);
+            assert!(spawned.brain_profile.is_none());
+        }
     }
 }
 

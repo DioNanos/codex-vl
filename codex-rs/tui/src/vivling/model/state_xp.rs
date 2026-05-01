@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use chrono::Utc;
 
+use super::text_utils::fnv1a64;
 use super::*;
 
 impl VivlingState {
@@ -34,9 +35,15 @@ impl VivlingState {
 
     pub(crate) fn create_spawned_clone(&self, vivling_id: String, instance_label: String) -> Self {
         let now = Utc::now();
+        let hash = fnv1a64(format!("{}:{vivling_id}", self.primary_vivling_id).as_bytes());
         let mut spawned = self.clone();
         spawned.version = VERSION;
+        spawned.hatched = true;
+        spawned.visible = true;
+        spawned.seed_hash = format!("{hash:016x}");
         spawned.vivling_id = vivling_id;
+        spawned.install_id = None;
+        spawned.origin_install_id = self.origin_install_id.clone();
         spawned.primary_vivling_id = self.primary_vivling_id.clone();
         spawned.parent_vivling_id = Some(self.vivling_id.clone());
         spawned.spawn_generation = self.spawn_generation.saturating_add(1);
@@ -49,6 +56,49 @@ impl VivlingState {
         spawned.created_at = Some(now);
         spawned.last_seen_at = Some(now);
         spawned.last_fed_at = Some(now);
+        spawned.xp = 0;
+        spawned.level = 1;
+        spawned.hunger = 82;
+        spawned.energy = 76;
+        spawned.happiness = 70;
+        spawned.social = 62;
+        spawned.meals = 0;
+        spawned.pets = 0;
+        spawned.plays = 0;
+        spawned.sleeps = 0;
+        spawned.observations = 0;
+        spawned.ai_mode = VivlingAiMode::Off;
+        spawned.brain_enabled = false;
+        spawned.brain_profile = None;
+        spawned.brain_last_error = None;
+        spawned.brain_last_used_at = None;
+        spawned.seed_origin = None;
+        spawned.adult_bootstrap = false;
+        spawned.work_xp = 0;
+        spawned.loop_exposure = 0;
+        spawned.loop_runtime_submissions = 0;
+        spawned.loop_runtime_blocks = 0;
+        spawned.loop_admin_churn = 0;
+        spawned.loop_blocked_review = 0;
+        spawned.loop_blocked_side = 0;
+        spawned.loop_blocked_busy = 0;
+        spawned.turns_observed = 0;
+        spawned.suggestions_made = 0;
+        spawned.active_work_days = 0;
+        spawned.last_active_work_day = None;
+        spawned.last_work_xp_day = None;
+        spawned.daily_work_xp = 0;
+        spawned.chat_unlocked_at = None;
+        spawned.active_mode_unlocked_at = None;
+        spawned.last_work_summary = None;
+        spawned.last_live_context_summary = None;
+        spawned.work_affinities = WorkAffinitySet::default();
+        spawned.work_memory = Vec::new();
+        spawned.distilled_summaries = Vec::new();
+        spawned.mental_paths = Vec::new();
+        spawned.identity_profile = VivlingIdentityProfile::default();
+        spawned.loop_profile = VivlingLoopProfile::default();
+        spawned.capsules_since_distill = 0;
         spawned.last_message = Some("joined the roster from a local spawn".to_string());
         spawned.pending_upgrade = None;
         spawned.last_seen_upgrade = None;
