@@ -56,7 +56,7 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
     "codex-linux-x64": ["codex", "rg"],
     "codex-android-arm64": ["codex"],
-    "codex-darwin-arm64": ["codex", "rg"],
+    "codex-darwin-arm64": [],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }
@@ -189,6 +189,12 @@ def main() -> int:
                     "Verify the responses API proxy:\n"
                     f"    node {staging_dir_str}/bin/codex-responses-api-proxy.js --help\n\n"
                 )
+            elif package == "codex-darwin-arm64":
+                print(
+                    f"Staged version {version} for release in {staging_dir_str}\n\n"
+                    "Verify macOS source-build payload contents:\n"
+                    f"    ls {staging_dir_str}/codex-rs {staging_dir_str}/scripts\n\n"
+                )
             elif package in CODEX_PLATFORM_PACKAGES:
                 print(
                     f"Staged version {version} for release in {staging_dir_str}\n\n"
@@ -274,6 +280,11 @@ def stage_sources(
             "repository": codex_package_json.get("repository"),
         }
 
+        if package == "codex-darwin-arm64":
+            stage_darwin_source_build_payload(staging_dir)
+            package_json["files"] = ["codex-rs", "scripts", "vendor"]
+            package_json["scripts"] = {"postinstall": "node scripts/postinstall_darwin_build.js"}
+
         engines = codex_package_json.get("engines")
         if isinstance(engines, dict):
             package_json["engines"] = engines
@@ -330,6 +341,44 @@ def stage_sources(
         json.dump(package_json, out, indent=2)
         out.write("\n")
 
+
+
+def ignore_source_build_entry(_src: str, names: list[str]) -> set[str]:
+    ignored = {
+        ".git",
+        "target",
+        "dist",
+        "node_modules",
+        ".cache",
+        ".DS_Store",
+    }
+    return {name for name in names if name in ignored}
+
+
+def stage_darwin_source_build_payload(staging_dir: Path) -> None:
+    codex_rs_dest = staging_dir / "codex-rs"
+    scripts_dest = staging_dir / "scripts"
+    vendor_dest = staging_dir / "vendor" / "aarch64-apple-darwin" / "codex"
+
+    if codex_rs_dest.exists():
+        shutil.rmtree(codex_rs_dest)
+    shutil.copytree(
+        REPO_ROOT / "codex-rs",
+        codex_rs_dest,
+        ignore=ignore_source_build_entry,
+    )
+
+    scripts_dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        CODEX_CLI_ROOT / "scripts" / "postinstall_darwin_build.js",
+        scripts_dest / "postinstall_darwin_build.js",
+    )
+
+    # Keep the vendor path in the package so the launcher can resolve the
+    # optional dependency before postinstall populates the native binaries.
+    vendor_dest.mkdir(parents=True, exist_ok=True)
+    keep = vendor_dest / ".gitkeep"
+    keep.write_text("", encoding="utf-8")
 
 def compute_platform_package_version(version: str, platform_tag: str) -> str:
     # npm forbids republishing the same package name/version, so each

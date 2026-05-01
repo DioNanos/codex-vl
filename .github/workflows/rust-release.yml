@@ -629,7 +629,6 @@ jobs:
           patterns=(
             "codex-npm-${version}.tgz"
             "codex-npm-linux-*-${version}.tgz"
-            "codex-npm-darwin-*-${version}.tgz"
             "codex-npm-win32-*-${version}.tgz"
             "codex-responses-api-proxy-npm-${version}.tgz"
             "codex-sdk-npm-${version}.tgz"
@@ -662,8 +661,6 @@ jobs:
           platform_tarballs=(
             "dist/npm/codex-npm-linux-x64-${VERSION}.tgz"
             "dist/npm/codex-npm-linux-arm64-${VERSION}.tgz"
-            "dist/npm/codex-npm-darwin-x64-${VERSION}.tgz"
-            "dist/npm/codex-npm-darwin-arm64-${VERSION}.tgz"
             "dist/npm/codex-npm-win32-x64-${VERSION}.tgz"
             "dist/npm/codex-npm-win32-arm64-${VERSION}.tgz"
           )
@@ -713,7 +710,7 @@ jobs:
             tag=""
 
             case "${filename}" in
-              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
+              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
                 platform="${filename#codex-npm-}"
                 platform="${platform%-${VERSION}.tgz}"
                 tag="${prefix}${platform}"

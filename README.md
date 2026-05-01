@@ -25,6 +25,8 @@ codex-vl --version
 codex-vl login
 ```
 
+On macOS, npm install builds the local native binaries with Cargo.
+
 Codex VL uses the normal Codex configuration and runtime state in `~/.codex/`.
 Installing it does not replace the official `codex` binary.
 
@@ -38,7 +40,7 @@ npm install -g @mmmbuto/codex-vl
 
 ## Current Release Focus
 
-The `0.128.0` line focuses on keeping the fork close to upstream while
+The `0.128.1` line focuses on keeping the fork close to upstream while
 stabilizing the first useful Codex VL layers:
 
 - loop management as a conservative, user-controlled local feature
