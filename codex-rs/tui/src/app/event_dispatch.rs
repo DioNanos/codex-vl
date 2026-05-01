@@ -115,6 +115,9 @@ impl App {
                     }
                 }
             }
+            AppEvent::Vl(vl_event) => {
+                self.handle_vl_event(vl_event).await?;
+            }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
                     "codex.thread.fork",

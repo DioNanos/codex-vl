@@ -36,6 +36,9 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
+use crate::vl::VlEvent;
+// Re-export so existing `crate::app_event::LoopCommandRequest` imports keep working.
+pub(crate) use crate::vl::LoopCommandRequest;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
@@ -236,6 +239,11 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
+
+    /// codex-vl: all custom events (loop jobs, Vivling brain assist, etc.)
+    /// live inside a single variant to keep the upstream enum minimally
+    /// patched.
+    Vl(VlEvent),
 
     /// Send a user-confirmed request to notify the workspace owner.
     SendAddCreditsNudgeEmail {

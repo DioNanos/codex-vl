@@ -1112,6 +1112,8 @@ impl App {
         self.chat_widget
             .set_initial_user_message_submit_suppressed(/*suppressed*/ false);
         self.chat_widget.submit_initial_user_message_if_pending();
+        self.app_event_tx
+            .send_vl(crate::vl::VlEvent::ReloadLoopJobs { thread_id });
         Ok(())
     }
 

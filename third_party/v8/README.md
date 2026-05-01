@@ -11,6 +11,13 @@ Cargo builds still use prebuilt `rusty_v8` archives by default. Only Bazel
 overrides `RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` in `MODULE.bazel` to
 select source-built local archives for its consumer builds.
 
+Android/Termux Cargo builds are intentionally custom. They resolve
+`RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` through
+`scripts/fetch_rusty_v8_android.py`, using the checksum-pinned mirror list in
+`third_party/v8/android-artifacts.toml`. The canonical artifact lineage for
+Android stays in `codex-termux`; `codex-vl` consumes that mirror for Termux
+builds.
+
 Current pinned versions:
 
 - Rust crate: `v8 = =146.4.0`
@@ -57,3 +64,11 @@ published under `rusty-v8-v<crate_version>`.
 
 Do not mix artifacts across crate versions. The archive and binding must match
 the exact resolved `v8` crate version in `codex-rs/Cargo.lock`.
+
+For Android targets the manifest supports either:
+
+- `base_urls = ["https://host/owner/repo/releases/download/<tag>", ...]`
+- legacy `repository = "owner/repo"` plus `release_tag = "<tag>"`
+
+`base_urls` is preferred because it can point at one or more release mirrors
+with an explicit priority order.

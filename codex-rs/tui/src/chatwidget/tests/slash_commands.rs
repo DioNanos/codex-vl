@@ -43,6 +43,328 @@ fn next_add_to_history_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) 
     }
 }
 
+fn drain_vivling_feedback(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> (Option<String>, Option<String>) {
+    let mut sidebar_text = None;
+    let mut history_text = None;
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            AppEvent::Vl(crate::vl::VlEvent::SidebarPushMessage { text, .. }) => {
+                sidebar_text = Some(text);
+            }
+            AppEvent::InsertHistoryCell(cell) => {
+                let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 120));
+                if rendered.contains("Vivling:") {
+                    history_text = Some(rendered);
+                }
+            }
+            _ => {}
+        }
+    }
+    (sidebar_text, history_text)
+}
+
+#[tokio::test]
+async fn slash_loop_dispatches_loop_command_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    submit_composer_text(&mut chat, "/loop add ci 5m check forge");
+
+    match rx.try_recv() {
+        Ok(AppEvent::Vl(crate::vl::VlEvent::LoopCommand {
+            thread_id: actual_thread_id,
+            request:
+                LoopCommandRequest::Add {
+                    label,
+                    interval_seconds: 300,
+                    prompt_text,
+                    goal_text: None,
+                    auto_remove_on_completion: None,
+                },
+        })) => {
+            assert_eq!(actual_thread_id, thread_id);
+            assert_eq!(label, "ci");
+            assert_eq!(prompt_text, "check forge");
+        }
+        other => panic!("expected loop command event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn slash_vivling_card_opens_modal_view() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+
+    chat.dispatch_vivling_command_for_test("card");
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id_for_test(),
+        Some("vivling-card")
+    );
+}
+
+#[tokio::test]
+async fn slash_vivling_upgrade_opens_modal_view() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+
+    chat.dispatch_vivling_command_for_test("upgrade");
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id_for_test(),
+        Some("vivling-upgrade")
+    );
+}
+
+#[tokio::test]
+async fn slash_vivling_without_args_surfaces_dashboard_in_history_and_sidebar() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+
+    submit_composer_text(&mut chat, "/vivling");
+
+    let (sidebar_text, history_text) = drain_vivling_feedback(&mut rx);
+    let sidebar_text = sidebar_text.expect("expected SidebarPushMessage for /vivling");
+    let history_text = history_text.expect("expected visible history for /vivling");
+    assert!(sidebar_text.contains("Vivling control"));
+    assert!(sidebar_text.contains("Ctrl+J"));
+    assert!(sidebar_text.contains("/vivling roster"));
+    assert!(sidebar_text.contains("/vivling focus"));
+    assert!(history_text.contains("Vivling: Vivling control"));
+    assert!(history_text.contains("Ctrl+J"));
+}
+
+#[tokio::test]
+async fn slash_vl_alias_falls_back_to_direct_vivling_chat_without_brain() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+
+    submit_composer_text(&mut chat, "/vl ciao bello lavoriamo su un progetto");
+
+    let (sidebar_text, history_text) = drain_vivling_feedback(&mut rx);
+    let sidebar_text = sidebar_text.expect("expected SidebarPushMessage for /vl alias");
+    let history_text = history_text.expect("expected visible history for /vl alias");
+    assert!(
+        sidebar_text.contains("I'm ") || sidebar_text.contains("As "),
+        "expected direct Vivling reply via /vl alias, got {sidebar_text:?}"
+    );
+    assert!(history_text.contains("Vivling:"));
+    assert!(
+        !sidebar_text.contains("Unrecognized command"),
+        "expected /vl to parse as Vivling alias, got {sidebar_text:?}"
+    );
+}
+
+#[tokio::test]
+async fn slash_vl_status_uses_vivling_status_not_chat() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+
+    submit_composer_text(&mut chat, "/vl status");
+
+    let (sidebar_text, history_text) = drain_vivling_feedback(&mut rx);
+    let sidebar_text = sidebar_text.expect("expected SidebarPushMessage for /vl status");
+    let history_text = history_text.expect("expected visible history for /vl status");
+    assert!(
+        sidebar_text.contains("loop owner") && sidebar_text.contains("slots"),
+        "expected status output from /vl status, got {sidebar_text:?}"
+    );
+    assert!(history_text.contains("Vivling:"));
+}
+
+#[tokio::test]
+async fn slash_vl_alias_dispatches_brain_chat_when_adult_profile_is_ready() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::Hatch)
+        .expect("vivling should hatch");
+    let _ = chat
+        .bottom_pane
+        .run_vivling_command(&chat.config, crate::vivling::VivlingAction::PromoteAdult)
+        .expect("vivling should promote adult");
+    chat.assign_vivling_brain_profile("vivling-deepseek4flash-max".to_string())
+        .expect("brain profile should assign");
+
+    submit_composer_text(&mut chat, "/vl ciao bello lavoriamo su un progetto");
+
+    let request = match rx.try_recv() {
+        Ok(AppEvent::Vl(crate::vl::VlEvent::RunVivlingAssist { request })) => request,
+        other => panic!("expected /vl to dispatch Vivling brain chat, got {other:?}"),
+    };
+    assert_eq!(request.brain_profile, "vivling-deepseek4flash-max");
+    assert_eq!(request.kind, crate::vivling::VivlingBrainRequestKind::Chat);
+    assert_eq!(request.task, "ciao bello lavoriamo su un progetto");
+    assert!(
+        request
+            .prompt_context
+            .contains("User message:\nciao bello lavoriamo su un progetto"),
+        "chat prompt should include the direct user message: {:?}",
+        request.prompt_context
+    );
+
+    // "Vivling brain is thinking..." is now pushed to the sidebar.
+    let mut sidebar_text = None;
+    while let Ok(ev) = rx.try_recv() {
+        if let AppEvent::Vl(crate::vl::VlEvent::SidebarPushMessage { text, .. }) = ev {
+            sidebar_text = Some(text);
+            break;
+        }
+    }
+    let sidebar_text = sidebar_text.expect("expected SidebarPushMessage for thinking status");
+    assert!(
+        sidebar_text.contains("Vivling brain is thinking"),
+        "expected thinking status after dispatch, got {sidebar_text:?}"
+    );
+}
+
+#[tokio::test]
+async fn submit_loop_prompt_adds_context_and_auto_remove_instruction() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let owner = codex_state::ThreadLoopOwner {
+        thread_id,
+        owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
+        owner_vivling_id: None,
+        updated_at_ms: 0,
+    };
+
+    let submitted = chat.submit_loop_prompt(
+        &codex_state::ThreadLoopJob {
+            id: "job-1".to_string(),
+            thread_id,
+            label: "ci".to_string(),
+            prompt_text: "check forge".to_string(),
+            goal_text: Some("monitor package smoke".to_string()),
+            interval_seconds: 300,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: true,
+            created_by: "agent".to_string(),
+            next_run_ms: None,
+            last_run_ms: None,
+            last_status: None,
+            last_error: None,
+            pending_tick: false,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        },
+        &owner,
+    );
+
+    assert_eq!(submitted, LoopPromptSubmissionOutcome::Submitted);
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => assert_eq!(
+            items,
+            vec![UserInput::Text {
+                text: "check forge\n\n[LOOP_CONTEXT]\nlabel: ci\ngoal: monitor package smoke\nauto_remove_on_completion: true\nrun_policy: queue_one\ncreated_by: agent\nowner: main\ncompletion_action: manage_via_manage_loops\nThis message was triggered by a local recurring loop.\nIf the goal is complete after this turn, call the dynamic tool `manage_loops` with action `remove` for this label.".to_string(),
+                text_elements: Vec::new(),
+            }]
+        ),
+        other => panic!("expected loop prompt submission, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn submit_loop_prompt_reports_review_block() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.is_review_mode = true;
+    let owner = codex_state::ThreadLoopOwner {
+        thread_id,
+        owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
+        owner_vivling_id: None,
+        updated_at_ms: 0,
+    };
+
+    let outcome = chat.submit_loop_prompt(
+        &codex_state::ThreadLoopJob {
+            id: "job-1".to_string(),
+            thread_id,
+            label: "ci".to_string(),
+            prompt_text: "check forge".to_string(),
+            goal_text: None,
+            interval_seconds: 300,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: true,
+            created_by: "agent".to_string(),
+            next_run_ms: None,
+            last_run_ms: None,
+            last_status: None,
+            last_error: None,
+            pending_tick: false,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        },
+        &owner,
+    );
+
+    assert_eq!(outcome, LoopPromptSubmissionOutcome::BlockedReviewMode);
+}
+
+#[tokio::test]
+async fn submit_loop_prompt_reports_side_block() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.active_side_conversation = true;
+    let owner = codex_state::ThreadLoopOwner {
+        thread_id,
+        owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
+        owner_vivling_id: None,
+        updated_at_ms: 0,
+    };
+
+    let outcome = chat.submit_loop_prompt(
+        &codex_state::ThreadLoopJob {
+            id: "job-1".to_string(),
+            thread_id,
+            label: "ci".to_string(),
+            prompt_text: "check forge".to_string(),
+            goal_text: None,
+            interval_seconds: 300,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: true,
+            created_by: "agent".to_string(),
+            next_run_ms: None,
+            last_run_ms: None,
+            last_status: None,
+            last_error: None,
+            pending_tick: false,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        },
+        &owner,
+    );
+
+    assert_eq!(
+        outcome,
+        LoopPromptSubmissionOutcome::BlockedSideConversation
+    );
+}
+
 #[tokio::test]
 async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;

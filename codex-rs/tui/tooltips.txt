@@ -26,3 +26,5 @@ See the Codex keymap documentation for supported actions and examples.
 Paste an image with Ctrl+V to attach it to your next message.
 You can resume a previous conversation by running `codex resume`
 Use /copy or press Ctrl+O to copy the latest agent response as Markdown.
+Try /vivling hatch to wake a tiny local companion for this terminal.
+Your terminal can hatch a small companion with /vivling hatch.

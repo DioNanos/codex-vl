@@ -1360,13 +1360,22 @@ struct LogFileInfo {
     timestamp: OffsetDateTime,
 }
 
+fn rollout_timestamp_now() -> OffsetDateTime {
+    match OffsetDateTime::now_local() {
+        Ok(timestamp) => timestamp,
+        Err(err) => {
+            warn!("failed to get local time for rollout filename; falling back to UTC: {err}");
+            OffsetDateTime::now_utc()
+        }
+    }
+}
+
 fn precompute_log_file_info(
     config: &impl RolloutConfigView,
     conversation_id: ThreadId,
 ) -> std::io::Result<LogFileInfo> {
     // Resolve ~/.codex/sessions/YYYY/MM/DD path.
-    let timestamp = OffsetDateTime::now_local()
-        .map_err(|e| IoError::other(format!("failed to get local time: {e}")))?;
+    let timestamp = rollout_timestamp_now();
     let mut dir = config.codex_home().to_path_buf();
     dir.push(SESSIONS_SUBDIR);
     dir.push(timestamp.year().to_string());

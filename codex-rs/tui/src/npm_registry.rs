@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[cfg(not(debug_assertions))]
-pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@openai%2fcodex";
+#[cfg_attr(debug_assertions, allow(dead_code))]
+pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@mmmbuto%2fcodex-vl";
 
 #[derive(Deserialize, Debug, Clone)]
 pub(crate) struct NpmPackageInfo {
@@ -22,6 +22,7 @@ struct NpmPackageDist {
     integrity: Option<String>,
 }
 
+#[cfg(test)]
 pub(crate) fn ensure_version_ready(
     package_info: &NpmPackageInfo,
     version: &str,
@@ -38,6 +39,16 @@ pub(crate) fn ensure_version_ready(
 
     version_info_with_dist(package_info, version)?;
     Ok(())
+}
+
+pub(crate) fn latest_version_ready(package_info: &NpmPackageInfo) -> anyhow::Result<String> {
+    let latest = package_info
+        .dist_tags
+        .get("latest")
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("npm package is missing latest dist-tag"))?;
+    version_info_with_dist(package_info, latest)?;
+    Ok(latest.to_string())
 }
 
 fn version_info_with_dist<'a>(
@@ -76,7 +87,7 @@ mod tests {
         serde_json::json!({
             "dist": {
                 "integrity": format!("sha512-{version}"),
-                "tarball": format!("https://registry.npmjs.org/@openai/codex/-/codex-{version}.tgz"),
+                "tarball": format!("https://registry.npmjs.org/@mmmbuto/codex-vl/-/codex-vl-{version}.tgz"),
             }
         })
     }
@@ -98,6 +109,17 @@ mod tests {
         let package_info = package_info(latest, latest);
 
         ensure_version_ready(&package_info, latest).expect("npm package is ready");
+    }
+
+    #[test]
+    fn latest_version_ready_uses_npm_latest_dist_tag() {
+        let latest = "1.2.3";
+        let package_info = package_info(latest, latest);
+
+        assert_eq!(
+            latest_version_ready(&package_info).expect("npm latest is ready"),
+            latest
+        );
     }
 
     #[test]

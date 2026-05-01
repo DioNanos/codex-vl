@@ -89,9 +89,9 @@ mod app_event_sender;
 mod app_server_approval_conversions;
 mod app_server_session;
 mod ascii_animation;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
 mod audio_device;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[allow(dead_code)]
 mod audio_device {
     use crate::app_event::RealtimeAudioDeviceKind;
@@ -181,10 +181,12 @@ mod update_prompt;
 mod update_versions;
 mod updates;
 mod version;
-#[cfg(not(target_os = "linux"))]
+mod vivling;
+mod vl;
+#[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
 mod voice;
 mod width;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 #[allow(dead_code)]
 mod voice {
     use crate::app_event_sender::AppEventSender;

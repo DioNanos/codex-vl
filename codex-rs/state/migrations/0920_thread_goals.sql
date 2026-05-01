@@ -1,4 +1,4 @@
-CREATE TABLE thread_goals (
+CREATE TABLE IF NOT EXISTS thread_goals (
     thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
     goal_id TEXT NOT NULL,
     objective TEXT NOT NULL,

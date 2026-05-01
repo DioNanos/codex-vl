@@ -216,6 +216,7 @@ pub(super) async fn make_chatwidget_manual(
         latest_proposed_plan_markdown: None,
         saw_copy_source_this_turn: false,
         running_commands: HashMap::new(),
+        loop_jobs: BTreeMap::new(),
         collab_agent_metadata: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),

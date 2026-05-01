@@ -1603,6 +1603,75 @@ fn search_tool_registers_for_deferred_dynamic_tools() {
 }
 
 #[test]
+fn dynamic_tools_register_flat_and_namespaced_manage_loops_aliases() {
+    let model_info = search_capable_model_info();
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        permission_profile: &PermissionProfile::Disabled,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "action": { "type": "string" },
+        },
+        "required": ["action"],
+        "additionalProperties": false,
+    });
+    let dynamic_tools = vec![
+        DynamicToolSpec {
+            namespace: None,
+            name: "manage_loops".to_string(),
+            description: "Manage local recurring loop jobs.".to_string(),
+            input_schema: input_schema.clone(),
+            defer_loading: false,
+        },
+        DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
+            name: "manage_loops".to_string(),
+            description: "Manage local recurring loop jobs.".to_string(),
+            input_schema,
+            defer_loading: false,
+        },
+    ];
+
+    let (tools, handlers) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &dynamic_tools,
+    );
+
+    let flat_tool = find_tool(&tools, "manage_loops");
+    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &flat_tool.spec else {
+        panic!("expected flat manage_loops function tool");
+    };
+    assert_eq!(
+        parameters.required.as_ref(),
+        Some(&vec!["action".to_string()])
+    );
+    assert_eq!(
+        namespace_function_names(&tools, "codex_app"),
+        vec!["manage_loops".to_string()]
+    );
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::plain("manage_loops"),
+        kind: ToolHandlerKind::DynamicTool,
+    }));
+    assert!(handlers.contains(&ToolHandlerSpec {
+        name: ToolName::namespaced("codex_app", "manage_loops"),
+        kind: ToolHandlerKind::DynamicTool,
+    }));
+}
+
+#[test]
 fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disabled() {
     let model_info = search_capable_model_info();
     let mut features = Features::with_defaults();

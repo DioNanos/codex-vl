@@ -347,6 +347,7 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
+            dynamic_tools: Vec::new(),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),

@@ -70,11 +70,25 @@ pub enum SlashCommand {
     MemoryDrop,
     #[strum(serialize = "debug-m-update")]
     MemoryUpdate,
+    // codex-vl extensions live at the tail to keep upstream merges simpler.
+    Loop,
+    Vivling,
+    #[strum(serialize = "vl")]
+    VivlingAlias,
 }
 
 impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
+        match self {
+            SlashCommand::Loop => return "manage local recurring prompts for this thread",
+            SlashCommand::Vivling => return "hatch and care for a local terminal companion",
+            SlashCommand::VivlingAlias => {
+                return "chat with the active Vivling (AI if adult, otherwise local reply)";
+            }
+            _ => {}
+        }
+
         match self {
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
@@ -128,6 +142,9 @@ impl SlashCommand {
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
+            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => {
+                unreachable!("codex-vl extensions handled above")
+            }
         }
     }
 
@@ -139,6 +156,13 @@ impl SlashCommand {
 
     /// Whether this command supports inline args (for example `/review ...`).
     pub fn supports_inline_args(self) -> bool {
+        if matches!(
+            self,
+            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias
+        ) {
+            return true;
+        }
+
         matches!(
             self,
             SlashCommand::Review
@@ -155,6 +179,10 @@ impl SlashCommand {
 
     /// Whether this command remains available inside an active side conversation.
     pub fn available_in_side_conversation(self) -> bool {
+        if matches!(self, SlashCommand::Vivling | SlashCommand::VivlingAlias) {
+            return true;
+        }
+
         matches!(
             self,
             SlashCommand::Copy | SlashCommand::Diff | SlashCommand::Mention | SlashCommand::Status
@@ -163,6 +191,13 @@ impl SlashCommand {
 
     /// Whether this command can be run while a task is in progress.
     pub fn available_during_task(self) -> bool {
+        if matches!(
+            self,
+            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias
+        ) {
+            return true;
+        }
+
         match self {
             SlashCommand::New
             | SlashCommand::Resume
@@ -212,6 +247,7 @@ impl SlashCommand {
             SlashCommand::Settings => true,
             SlashCommand::Collab => true,
             SlashCommand::Agent | SlashCommand::MultiAgents => true,
+            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => true,
             SlashCommand::Theme => false,
         }
     }
@@ -221,6 +257,7 @@ impl SlashCommand {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
+            SlashCommand::VivlingAlias => false,
             _ => true,
         }
     }

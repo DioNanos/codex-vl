@@ -2,8 +2,16 @@
 // Unified entry point for the Codex CLI.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -11,14 +19,15 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
+const scriptRealPath = safeRealpath(__filename) ?? __filename;
+const BOOTSTRAP_STATE_SCHEMA_VERSION = 1;
+const bootstrapModeOverride = (process.env.CODEX_VL_BOOTSTRAP || "").toLowerCase();
+const skipNativeExec = process.env.CODEX_VL_SKIP_EXEC === "1";
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
-  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
-  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
-  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-unknown-linux-musl": "@mmmbuto/codex-vl-linux-x64",
+  "aarch64-linux-android": "@mmmbuto/codex-vl-android-arm64",
+  "aarch64-apple-darwin": "@mmmbuto/codex-vl-darwin-arm64",
 };
 
 const { platform, arch } = process;
@@ -26,13 +35,18 @@ const { platform, arch } = process;
 let targetTriple = null;
 switch (platform) {
   case "linux":
-  case "android":
     switch (arch) {
       case "x64":
         targetTriple = "x86_64-unknown-linux-musl";
         break;
+      default:
+        break;
+    }
+    break;
+  case "android":
+    switch (arch) {
       case "arm64":
-        targetTriple = "aarch64-unknown-linux-musl";
+        targetTriple = "aarch64-linux-android";
         break;
       default:
         break;
@@ -40,23 +54,8 @@ switch (platform) {
     break;
   case "darwin":
     switch (arch) {
-      case "x64":
-        targetTriple = "x86_64-apple-darwin";
-        break;
       case "arm64":
         targetTriple = "aarch64-apple-darwin";
-        break;
-      default:
-        break;
-    }
-    break;
-  case "win32":
-    switch (arch) {
-      case "x64":
-        targetTriple = "x86_64-pc-windows-msvc";
-        break;
-      case "arm64":
-        targetTriple = "aarch64-pc-windows-msvc";
         break;
       default:
         break;
@@ -95,10 +94,10 @@ try {
     const packageManager = detectPackageManager();
     const updateCommand =
       packageManager === "bun"
-        ? "bun install -g @openai/codex@latest"
-        : "npm install -g @openai/codex@latest";
+        ? "bun install -g @mmmbuto/codex-vl@latest"
+        : "npm install -g @mmmbuto/codex-vl@latest";
     throw new Error(
-      `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+      `Missing optional dependency ${platformPackage}. Reinstall Codex VL: ${updateCommand}`,
     );
   }
 }
@@ -107,10 +106,10 @@ if (!vendorRoot) {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
-      ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      ? "bun install -g @mmmbuto/codex-vl@latest"
+      : "npm install -g @mmmbuto/codex-vl@latest";
   throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+    `Missing optional dependency ${platformPackage}. Reinstall Codex VL: ${updateCommand}`,
   );
 }
 
@@ -131,6 +130,22 @@ function getUpdatedPath(newDirs) {
     ...existingPath.split(pathSep).filter(Boolean),
   ].join(pathSep);
   return updatedPath;
+}
+
+function sanitizeAndroidLdLibraryPath(binDir) {
+  const termuxPrefix = process.env.PREFIX || "/data/data/com.termux/files/usr";
+  const blocked = new Set([
+    `${termuxPrefix}/lib`,
+    `${termuxPrefix}/libexec`,
+    "/data/data/com.termux/files/usr/lib",
+    "/data/data/com.termux/files/usr/libexec",
+  ]);
+
+  const extraPaths = (process.env.LD_LIBRARY_PATH || "")
+    .split(":")
+    .filter((entry) => entry && !blocked.has(entry));
+
+  return [binDir, ...extraPaths].join(":");
 }
 
 /**
@@ -158,6 +173,134 @@ function detectPackageManager() {
   return userAgent ? "npm" : null;
 }
 
+function safeRealpath(targetPath) {
+  try {
+    return realpathSync(targetPath);
+  } catch {
+    return null;
+  }
+}
+
+function resolveCodexHome() {
+  const codexHome = process.env.CODEX_HOME;
+  if (codexHome && codexHome.trim().length > 0) {
+    return path.resolve(codexHome);
+  }
+
+  return path.join(os.homedir(), ".codex");
+}
+
+function installModeStatePath() {
+  return path.join(resolveCodexHome(), "codex-vl", "install-mode.json");
+}
+
+function readInstallModeState() {
+  const statePath = installModeStatePath();
+  if (!existsSync(statePath)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (parsed?.schemaVersion !== BOOTSTRAP_STATE_SCHEMA_VERSION) {
+      return null;
+    }
+    if (parsed?.mode !== "side_by_side" && parsed?.mode !== "main") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeInstallModeState(state) {
+  const statePath = installModeStatePath();
+  mkdirSync(path.dirname(statePath), { recursive: true });
+  writeFileSync(
+    statePath,
+    JSON.stringify(
+      {
+        schemaVersion: BOOTSTRAP_STATE_SCHEMA_VERSION,
+        configured: true,
+        mode: state.mode,
+        aliasPath: state.aliasPath ?? null,
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+}
+
+function pathEntries() {
+  return (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter(Boolean);
+}
+
+function isPathEntryAccessible(dirPath) {
+  try {
+    return lstatSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function findCommandOnPath(commandName) {
+  const entries = pathEntries();
+  for (let index = 0; index < entries.length; index += 1) {
+    const dirPath = entries[index];
+    if (!isPathEntryAccessible(dirPath)) {
+      continue;
+    }
+
+    const candidate = path.join(dirPath, commandName);
+    if (existsSync(candidate)) {
+      return { path: candidate, dir: dirPath, index };
+    }
+  }
+
+  return null;
+}
+
+function findMatchingCommandOnPath(commandName) {
+  const candidate = findCommandOnPath(commandName);
+  if (!candidate) {
+    return null;
+  }
+
+  return safeRealpath(candidate.path) === scriptRealPath ? candidate : null;
+}
+
+async function maybeBootstrapInstallMode() {
+  if (bootstrapModeOverride === "skip") {
+    return;
+  }
+
+  const savedState = readInstallModeState();
+  const existingCodex = findCommandOnPath("codex");
+  const existingCodexMatchesThisInstall =
+    existingCodex && safeRealpath(existingCodex.path) === scriptRealPath;
+
+  if (existingCodexMatchesThisInstall && bootstrapModeOverride !== "force") {
+    writeInstallModeState({
+      mode: "main",
+      aliasPath: existingCodex.path,
+    });
+    return;
+  }
+
+  if (savedState && bootstrapModeOverride !== "force") {
+    return;
+  }
+
+  writeInstallModeState({
+    mode: "side_by_side",
+    aliasPath: null,
+  });
+}
+
 const additionalDirs = [];
 const pathDir = path.join(archRoot, "path");
 if (existsSync(pathDir)) {
@@ -165,7 +308,17 @@ if (existsSync(pathDir)) {
 }
 const updatedPath = getUpdatedPath(additionalDirs);
 
+await maybeBootstrapInstallMode();
+
+if (skipNativeExec) {
+  process.exit(0);
+}
+
 const env = { ...process.env, PATH: updatedPath };
+if (platform === "android") {
+  env.CODEX_SELF_EXE = binaryPath;
+  env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
+}
 const packageManagerEnvVar =
   detectPackageManager() === "bun"
     ? "CODEX_MANAGED_BY_BUN"

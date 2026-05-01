@@ -29,6 +29,7 @@ use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
+use crate::vivling::Vivling;
 pub(crate) use bottom_pane_view::BottomPaneView;
 use bottom_pane_view::ViewCompletion;
 use codex_core_skills::model::SkillMetadata;
@@ -135,8 +136,12 @@ mod selection_popup_common;
 mod selection_tabs;
 mod textarea;
 mod unified_exec_footer;
+mod vivling_view;
+mod vl_ext;
 pub(crate) use feedback_view::FeedbackNoteView;
 pub(crate) use selection_tabs::SelectionTab;
+pub(crate) use vivling_view::VivlingCardView;
+pub(crate) use vivling_view::VivlingUpgradeView;
 
 /// How long the "press again to quit" hint stays visible.
 ///
@@ -219,6 +224,12 @@ pub(crate) struct BottomPane {
     unified_exec_footer: UnifiedExecFooter,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
+    /// Local terminal companion.
+    vivling: Vivling,
+    /// Dedicated sidebar for Vivling chat/assist messages.
+    vl_sidebar: crate::vl::VivlingSidebar,
+    /// Lifecycle state for Vivling activity (sleeping, eating, etc.).
+    vl_lifecycle: Option<crate::vl::LifecycleState>,
     /// Inactive threads with pending approval requests.
     pending_thread_approvals: PendingThreadApprovals,
     context_window_percent: Option<i64>,
@@ -260,6 +271,8 @@ impl BottomPane {
         let keymap = RuntimeKeymap::defaults();
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
+        let mut vivling = Vivling::unavailable();
+        vivling.configure_runtime(frame_requester.clone(), animations_enabled);
         Self {
             composer,
             view_stack: Vec::new(),
@@ -274,6 +287,9 @@ impl BottomPane {
             status: None,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
+            vivling,
+            vl_sidebar: crate::vl::VivlingSidebar::new(),
+            vl_lifecycle: None,
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
             animations_enabled,
@@ -286,6 +302,13 @@ impl BottomPane {
     pub fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.composer.set_skill_mentions(skills);
         self.request_redraw();
+    }
+
+    // codex-vl: Vivling-related methods live in `bottom_pane/vl_ext.rs`.
+
+    #[cfg(test)]
+    pub(crate) fn active_view_id_for_test(&self) -> Option<&'static str> {
+        self.view_stack.last().and_then(|view| view.view_id())
     }
 
     /// Update image-paste behavior for the active composer and repaint immediately.
@@ -573,6 +596,31 @@ impl BottomPane {
             self.request_redraw();
             InputResult::None
         } else {
+            // codex-vl: Ctrl+J toggles the Vivling sidebar.
+            if key_event.kind == KeyEventKind::Press
+                && key_event.code == KeyCode::Char('j')
+                && key_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL)
+            {
+                self.toggle_vl_sidebar();
+                return InputResult::None;
+            }
+            // codex-vl: PgUp/PgDn scroll the Vivling sidebar when expanded.
+            if self.vl_sidebar.is_expanded() && key_event.kind == KeyEventKind::Press {
+                match key_event.code {
+                    KeyCode::PageUp => {
+                        self.scroll_vl_sidebar(-5);
+                        return InputResult::None;
+                    }
+                    KeyCode::PageDown => {
+                        self.scroll_vl_sidebar(5);
+                        return InputResult::None;
+                    }
+                    _ => {}
+                }
+            }
+
             let is_agent_command = self
                 .composer_text()
                 .lines()
@@ -913,6 +961,7 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
+        self.vivling.set_task_running(running);
 
         if running {
             if !was_running {
@@ -1487,6 +1536,15 @@ impl BottomPane {
                 /*flex*/ 1,
                 RenderableItem::Borrowed(&self.pending_input_preview),
             );
+            if self.vivling.should_render() {
+                if has_inline_previews || has_status_or_footer {
+                    flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
+                }
+                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+            }
+            if self.vl_sidebar.should_render() {
+                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+            }
             if !has_inline_previews && has_status_or_footer {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
             }
@@ -1519,8 +1577,18 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn active_agent_label(&self) -> Option<&str> {
+        self.composer.active_agent_label()
+    }
+
     pub(crate) fn set_side_conversation_context_label(&mut self, label: Option<String>) {
         if self.composer.set_side_conversation_context_label(label) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) {
+        if self.composer.set_loop_context_label(label) {
             self.request_redraw();
         }
     }

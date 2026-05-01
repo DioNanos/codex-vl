@@ -202,6 +202,12 @@ impl App {
                 self.fetch_plugins_list(app_server_client, cwd);
                 return;
             }
+            ServerNotification::TurnCompleted(notification) => {
+                if let Ok(thread_id) = ThreadId::from_string(&notification.thread_id) {
+                    self.app_event_tx
+                        .send_vl(crate::vl::VlEvent::ReloadLoopJobs { thread_id });
+                }
+            }
             _ => {}
         }
 
@@ -240,6 +246,16 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        if let ServerRequest::DynamicToolCall { request_id, params } = request {
+            if let Err(err) = self
+                .resolve_manage_loops_app_server_request(app_server_client, request_id, params)
+                .await
+            {
+                tracing::warn!("failed to resolve dynamic tool request in TUI: {err}");
+            }
+            return;
+        }
+
         if let Some(unsupported) = self
             .pending_app_server_requests
             .note_server_request(&request)

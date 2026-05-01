@@ -131,6 +131,7 @@ impl SessionConfiguration {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.service_tier,
+            dynamic_tools: self.dynamic_tools.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
             permission_profile: self.permission_profile(),

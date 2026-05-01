@@ -191,6 +191,7 @@ mod event_dispatch;
 mod history_ui;
 mod input;
 mod loaded_threads;
+mod loop_controller;
 mod pending_interactive_replay;
 mod platform_actions;
 mod replay_filter;
@@ -202,6 +203,7 @@ mod thread_events;
 mod thread_goal_actions;
 mod thread_routing;
 mod thread_session_state;
+mod vl_handler;
 
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;

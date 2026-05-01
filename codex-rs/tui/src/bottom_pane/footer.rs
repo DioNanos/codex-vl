@@ -78,6 +78,7 @@ pub(crate) struct FooterProps {
     pub(crate) context_window_used_tokens: Option<i64>,
     pub(crate) status_line_value: Option<Line<'static>>,
     pub(crate) status_line_enabled: bool,
+    pub(crate) loop_context_label: Option<String>,
     pub(crate) key_hints: FooterKeyHints,
     /// Active thread label shown when the footer is rendering contextual information instead of an
     /// instructional hint.
@@ -755,12 +756,17 @@ pub(crate) fn passive_footer_status_line(props: &FooterProps) -> Option<Line<'st
         None
     };
 
-    if let Some(active_agent_label) = props.active_agent_label.as_ref() {
-        if let Some(existing) = line.as_mut() {
-            existing.spans.push(" · ".into());
-            existing.spans.push(active_agent_label.clone().into());
-        } else {
-            line = Some(Line::from(active_agent_label.clone()));
+    for label in [
+        props.loop_context_label.as_ref(),
+        props.active_agent_label.as_ref(),
+    ] {
+        if let Some(label) = label {
+            if let Some(existing) = line.as_mut() {
+                existing.spans.push(" · ".into());
+                existing.spans.push(label.clone().into());
+            } else {
+                line = Some(Line::from(label.clone()));
+            }
         }
     }
 
@@ -1451,6 +1457,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1470,6 +1477,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints {
                     insert_newline: Some(key_hint::shift(KeyCode::Enter)),
                     ..FooterKeyHints::default_bindings()
@@ -1492,6 +1500,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1511,6 +1520,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1530,6 +1540,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1549,6 +1560,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1568,6 +1580,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1587,6 +1600,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1606,6 +1620,7 @@ mod tests {
                 context_window_used_tokens: Some(123_456),
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1625,6 +1640,7 @@ mod tests {
                 context_window_used_tokens: None,
                 status_line_value: None,
                 status_line_enabled: false,
+                loop_context_label: None,
                 key_hints: FooterKeyHints::default_bindings(),
                 active_agent_label: None,
             },
@@ -1642,6 +1658,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1672,6 +1689,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1695,6 +1713,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1713,6 +1732,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1731,6 +1751,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1749,6 +1770,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None, // command timed out / empty
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1772,6 +1794,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1795,6 +1818,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1821,6 +1845,7 @@ mod tests {
                 "Status line content that should truncate before the mode indicator".to_string(),
             )),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };
@@ -1844,6 +1869,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: None,
             status_line_enabled: false,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: Some("Robie [explorer]".to_string()),
         };
@@ -1862,6 +1888,7 @@ mod tests {
             context_window_used_tokens: None,
             status_line_value: Some(Line::from("Status line content".to_string())),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: Some("Robie [explorer]".to_string()),
         };
@@ -1886,6 +1913,7 @@ mod tests {
                     .to_string(),
             )),
             status_line_enabled: true,
+            loop_context_label: None,
             key_hints: FooterKeyHints::default_bindings(),
             active_agent_label: None,
         };

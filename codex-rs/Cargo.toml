@@ -322,7 +322,10 @@ ratatui = "0.29.0"
 ratatui-macros = "0.6.0"
 regex = "1.12.3"
 regex-lite = "0.1.8"
-reqwest = { version = "0.12", features = ["cookies"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "cookies",
+    "rustls-tls-native-roots",
+] }
 rmcp = { version = "0.15.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustls = { version = "0.23", default-features = false, features = [
@@ -334,7 +337,15 @@ rustls-pki-types = "1.14.0"
 schemars = "0.8.22"
 seccompiler = "0.5.0"
 semver = "1.0"
-sentry = "0.46.0"
+sentry = { version = "0.46.0", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "debug-images",
+    "panic",
+    "release-health",
+    "reqwest",
+    "rustls",
+] }
 serde = "1"
 serde_json = "1"
 serde_path_to_error = "0.1.20"
@@ -474,11 +485,15 @@ debug = 0
 strip = true
 
 [profile.release]
+opt-level = 3
 lto = "fat"
 split-debuginfo = "off"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
+# Release artifacts are distributed as standalone CLIs, so smaller binaries and
+# a simpler panic path matter more than unwind support.
+panic = "abort"
 
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1

@@ -12,6 +12,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::CallToolResult;
@@ -46,6 +47,7 @@ pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
     pub service_tier: Option<ServiceTier>,
+    pub dynamic_tools: Vec<DynamicToolSpec>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub permission_profile: PermissionProfile,

@@ -41,10 +41,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use self::realtime::PendingSteerCompareKey;
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
+use crate::app_event::AppEvent;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_approval_conversions::file_update_changes_to_core;
 use crate::app_server_approval_conversions::network_approval_context_to_core;
@@ -228,6 +231,7 @@ use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
+use codex_state::ThreadLoopJob;
 use codex_terminal_detection::Multiplexer;
 use codex_terminal_detection::TerminalInfo;
 use codex_terminal_detection::TerminalName;
@@ -249,6 +253,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 use tracing::debug;
 use tracing::warn;
 
@@ -260,6 +265,13 @@ const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next s
 const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION_WARNING: &str = "Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber";
 const MEMORIES_DOC_URL: &str = "https://developers.openai.com/codex/memories";
 const MEMORIES_ENABLE_TITLE: &str = "Enable memories?";
+
+fn epoch_millis_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 const MEMORIES_ENABLE_YES: &str = "Yes, enable";
 const MEMORIES_ENABLE_NO: &str = "Not now";
 const MEMORIES_ENABLE_NOTICE: &str = "Memories will be enabled in the next session.";
@@ -315,7 +327,6 @@ fn queued_message_edit_hint_binding(
         .or_else(|| bindings.first().copied())
 }
 
-use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event::ExitMode;
 use crate::app_event::RateLimitRefreshOrigin;
@@ -391,8 +402,10 @@ use self::interrupts::InterruptManager;
 mod keymap_picker;
 mod session_header;
 use self::session_header::SessionHeader;
+mod loop_jobs;
 mod skills;
 mod slash_dispatch;
+mod vl_ext;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
@@ -929,6 +942,7 @@ pub(crate) struct ChatWidget {
     pending_status_indicator_restore: bool,
     suppress_queue_autosend: bool,
     thread_id: Option<ThreadId>,
+    loop_jobs: BTreeMap<String, LoopJobRuntime>,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it
@@ -1193,6 +1207,21 @@ struct ThreadComposerState {
     text_elements: Vec<TextElement>,
     mention_bindings: Vec<MentionBinding>,
     pending_pastes: Vec<(String, String)>,
+}
+
+#[derive(Debug)]
+struct LoopJobRuntime {
+    job: ThreadLoopJob,
+    task: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopPromptSubmissionOutcome {
+    Submitted,
+    BlockedMissingThread,
+    BlockedSideConversation,
+    BlockedReviewMode,
+    BlockedUserTurn,
 }
 
 impl ThreadComposerState {
@@ -2172,6 +2201,7 @@ impl ChatWidget {
     /// user actually looking at?" and the footer stack remains a pure renderer of that decision.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
         self.bottom_pane.set_active_agent_label(active_agent_label);
+        self.sync_vivling_live_context();
     }
 
     /// Recomputes footer status-line content from config and current runtime state.
@@ -2871,6 +2901,10 @@ impl ChatWidget {
         if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
+        if !from_replay {
+            self.record_vivling_turn_completed(last_agent_message.as_deref());
+            self.vl_lifecycle_observe_worker_turn();
+        }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
         // still show the prompt once after thread switch replay.
         if !from_replay {
@@ -2878,6 +2912,15 @@ impl ChatWidget {
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         let follow_up_started = self.maybe_send_next_queued_input();
+        // codex-vl: reload loop jobs after turn completes
+        if !from_replay
+            && !self.is_user_turn_pending_or_running()
+            && let Some(thread_id) = self.thread_id
+            && !self.active_side_conversation
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::ReloadLoopJobs { thread_id });
+        }
         let active_goal_continuing = self
             .current_goal_status
             .as_ref()
@@ -4701,6 +4744,11 @@ impl ChatWidget {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
+        self.vl_lifecycle_tick(
+            self.is_vivling_baby_or_juvenile(),
+            !self.is_vl_sidebar_expanded(),
+            false,
+        );
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
         if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
@@ -5372,6 +5420,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
             thread_id: None,
+            loop_jobs: BTreeMap::new(),
             dismissed_plan_mode_nudge_scopes: HashSet::new(),
             last_turn_id: None,
             budget_limited_turn_ids: HashSet::new(),
@@ -5470,6 +5519,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
+        widget.bottom_pane.configure_vivling(&widget.config);
         widget.refresh_status_surfaces();
 
         widget
@@ -8615,7 +8665,7 @@ impl ChatWidget {
         });
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     pub(crate) fn open_realtime_audio_device_selection(&mut self, kind: RealtimeAudioDeviceKind) {
         match list_realtime_audio_device_names(kind) {
             Ok(device_names) => {
@@ -8630,12 +8680,12 @@ impl ChatWidget {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) fn open_realtime_audio_device_selection(&mut self, kind: RealtimeAudioDeviceKind) {
         let _ = kind;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     fn open_realtime_audio_device_selection_with_names(
         &mut self,
         kind: RealtimeAudioDeviceKind,
@@ -10942,6 +10992,29 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn add_vivling_message(&mut self, text: String, kind: crate::vl::VivlingLogKind) {
+        let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
+        self.app_event_tx
+            .send_vl(crate::vl::VlEvent::SidebarPushMessage {
+                kind,
+                text: text.clone(),
+                vivling_id,
+            });
+        let mut lines = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if index == 0 {
+                lines.push(vec!["Vivling: ".dim(), line.to_string().into()].into());
+            } else {
+                lines.push(vec!["          ".dim(), line.to_string().into()].into());
+            }
+        }
+        if lines.is_empty() {
+            lines.push("Vivling".dim().into());
+        }
+        self.add_plain_history_lines(lines);
+        self.request_redraw();
+    }
+
     pub(crate) fn add_memories_enable_notice(&mut self) {
         self.add_to_history(history_cell::new_warning_event(
             MEMORIES_ENABLE_NOTICE.to_string(),
@@ -11926,6 +11999,8 @@ impl ChatWidget {
         &self.config
     }
 
+    // codex-vl: Vivling pass-through methods live in `chatwidget/vl_ext.rs`.
+
     #[cfg(test)]
     pub(crate) fn status_line_text(&self) -> Option<String> {
         self.bottom_pane.status_line_text()
@@ -11991,6 +12066,7 @@ fn has_websocket_timing_metrics(summary: RuntimeMetricsSummary) -> bool {
 
 impl Drop for ChatWidget {
     fn drop(&mut self) {
+        self.abort_all_loop_job_tasks();
         self.reset_realtime_conversation_state();
         self.stop_rate_limit_poller();
     }

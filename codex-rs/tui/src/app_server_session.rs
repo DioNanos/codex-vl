@@ -15,6 +15,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::ExternalAgentConfigDetectParams;
 use codex_app_server_protocol::ExternalAgentConfigDetectResponse;
 use codex_app_server_protocol::ExternalAgentConfigImportParams;
@@ -158,6 +159,7 @@ pub(crate) struct ThreadSessionState {
     pub(crate) model: String,
     pub(crate) model_provider_id: String,
     pub(crate) service_tier: Option<codex_protocol::config_types::ServiceTier>,
+    pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     /// Canonical active permissions for this session.
@@ -1363,6 +1365,7 @@ async fn thread_session_state_from_thread_start_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier,
+        response.dynamic_tools.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1395,6 +1398,7 @@ async fn thread_session_state_from_thread_resume_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier,
+        response.dynamic_tools.clone(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1427,6 +1431,7 @@ async fn thread_session_state_from_thread_fork_response(
         response.model.clone(),
         response.model_provider.clone(),
         response.service_tier,
+        Vec::new(),
         response.approval_policy.to_core(),
         response.approvals_reviewer.to_core(),
         permission_profile,
@@ -1488,6 +1493,7 @@ async fn thread_session_state_from_thread_response(
     model: String,
     model_provider_id: String,
     service_tier: Option<codex_protocol::config_types::ServiceTier>,
+    dynamic_tools: Vec<DynamicToolSpec>,
     approval_policy: AskForApproval,
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
@@ -1514,6 +1520,7 @@ async fn thread_session_state_from_thread_response(
         model,
         model_provider_id,
         service_tier,
+        dynamic_tools,
         approval_policy,
         approvals_reviewer,
         permission_profile,
@@ -1929,6 +1936,13 @@ mod tests {
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
+            dynamic_tools: vec![DynamicToolSpec {
+                namespace: Some("codex_app".to_string()),
+                name: "manage_loops".to_string(),
+                description: "Manage local recurring loop jobs.".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                defer_loading: false,
+            }],
             cwd: test_path_buf("/tmp/project").abs(),
             instruction_sources: vec![test_path_buf("/tmp/project/AGENTS.md").abs()],
             approval_policy: codex_protocol::protocol::AskForApproval::Never.into(),
@@ -1954,6 +1968,7 @@ mod tests {
             started.session.instruction_source_paths,
             response.instruction_sources
         );
+        assert_eq!(started.session.dynamic_tools, response.dynamic_tools);
         assert_eq!(started.session.permission_profile, read_only_profile);
         assert_eq!(started.turns.len(), 1);
         assert_eq!(started.turns[0], response.thread.turns[0]);
@@ -2044,6 +2059,7 @@ mod tests {
             "gpt-5.4".to_string(),
             "openai".to_string(),
             /*service_tier*/ None,
+            Vec::new(),
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),
@@ -2075,6 +2091,7 @@ mod tests {
             "gpt-5.4".to_string(),
             "openai".to_string(),
             /*service_tier*/ None,
+            Vec::new(),
             AskForApproval::Never,
             codex_protocol::config_types::ApprovalsReviewer::User,
             PermissionProfile::read_only(),

@@ -46,7 +46,9 @@ fn try_build_vendored_bwrap() -> Result<(), String> {
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|err| err.to_string())?);
     let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|err| err.to_string())?);
     let src_dir = resolve_bwrap_source_dir(&manifest_dir)?;
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let libcap = pkg_config::Config::new()
+        .cargo_metadata(false)
         .probe("libcap")
         .map_err(|err| format!("libcap not available via pkg-config: {err}"))?;
 
@@ -76,9 +78,31 @@ fn try_build_vendored_bwrap() -> Result<(), String> {
         build.flag(format!("-idirafter{}", include_path.display()));
     }
 
+    for link_path in libcap.link_paths {
+        if target_env == "musl" && is_host_glibc_lib_dir(&link_path) {
+            continue;
+        }
+        println!("cargo:rustc-link-search=native={}", link_path.display());
+    }
+
+    for lib in libcap.libs {
+        if target_env == "musl" {
+            println!("cargo:rustc-link-lib=static={lib}");
+        } else {
+            println!("cargo:rustc-link-lib={lib}");
+        }
+    }
+
     build.compile("build_time_bwrap");
     println!("cargo:rustc-cfg=vendored_bwrap_available");
     Ok(())
+}
+
+fn is_host_glibc_lib_dir(path: &Path) -> bool {
+    matches!(
+        path.to_str(),
+        Some("/usr/lib/x86_64-linux-gnu" | "/lib/x86_64-linux-gnu")
+    )
 }
 
 /// Resolve the bubblewrap source directory used for build-time compilation.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @openai/codex npm module."""
+"""Stage and optionally package the @mmmbuto/codex-vl npm module."""
 
 import argparse
 import json
@@ -14,67 +14,49 @@ CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
-CODEX_NPM_NAME = "@openai/codex"
+CODEX_NPM_NAME = "@mmmbuto/codex-vl"
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
-# The underlying package published to npm is always `@openai/codex`.
+# The underlying package published to npm is always `@mmmbuto/codex-vl`.
 CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
-        "npm_name": "@openai/codex-linux-x64",
+        "npm_name": "@mmmbuto/codex-vl-linux-x64",
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-musl",
         "os": "linux",
         "cpu": "x64",
     },
-    "codex-linux-arm64": {
-        "npm_name": "@openai/codex-linux-arm64",
-        "npm_tag": "linux-arm64",
-        "target_triple": "aarch64-unknown-linux-musl",
-        "os": "linux",
+    "codex-android-arm64": {
+        "npm_name": "@mmmbuto/codex-vl-android-arm64",
+        "npm_tag": "android-arm64",
+        "target_triple": "aarch64-linux-android",
+        "os": "android",
         "cpu": "arm64",
     },
-    "codex-darwin-x64": {
-        "npm_name": "@openai/codex-darwin-x64",
-        "npm_tag": "darwin-x64",
-        "target_triple": "x86_64-apple-darwin",
-        "os": "darwin",
-        "cpu": "x64",
-    },
     "codex-darwin-arm64": {
-        "npm_name": "@openai/codex-darwin-arm64",
+        "npm_name": "@mmmbuto/codex-vl-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
-    "codex-win32-x64": {
-        "npm_name": "@openai/codex-win32-x64",
-        "npm_tag": "win32-x64",
-        "target_triple": "x86_64-pc-windows-msvc",
-        "os": "win32",
-        "cpu": "x64",
-    },
-    "codex-win32-arm64": {
-        "npm_name": "@openai/codex-win32-arm64",
-        "npm_tag": "win32-arm64",
-        "target_triple": "aarch64-pc-windows-msvc",
-        "os": "win32",
-        "cpu": "arm64",
-    },
 }
 
+OFFICIAL_CODEX_PLATFORM_PACKAGES = (
+    "codex-darwin-arm64",
+    "codex-linux-x64",
+    "codex-android-arm64",
+)
+
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
-    "codex": ["codex", *CODEX_PLATFORM_PACKAGES],
+    "codex": ["codex", *OFFICIAL_CODEX_PLATFORM_PACKAGES],
 }
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
     "codex-linux-x64": ["codex", "rg"],
-    "codex-linux-arm64": ["codex", "rg"],
-    "codex-darwin-x64": ["codex", "rg"],
+    "codex-android-arm64": ["codex"],
     "codex-darwin-arm64": ["codex", "rg"],
-    "codex-win32-x64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
-    "codex-win32-arm64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }
@@ -137,6 +119,13 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory containing pre-installed native binaries to bundle (vendor root).",
     )
+    parser.add_argument(
+        "--exclude-platform-package",
+        choices=tuple(CODEX_PLATFORM_PACKAGES),
+        action="append",
+        default=[],
+        help="Platform package to omit from the main package optionalDependencies.",
+    )
     return parser.parse_args()
 
 
@@ -157,7 +146,12 @@ def main() -> int:
     staging_dir, created_temp = prepare_staging_dir(args.staging_dir)
 
     try:
-        stage_sources(staging_dir, version, package)
+        stage_sources(
+            staging_dir,
+            version,
+            package,
+            exclude_platform_packages=set(args.exclude_platform_package),
+        )
 
         vendor_src = args.vendor_src.resolve() if args.vendor_src else None
         native_components = PACKAGE_NATIVE_COMPONENTS.get(package, [])
@@ -178,6 +172,7 @@ def main() -> int:
                 native_components,
                 target_filter={target_filter} if target_filter else None,
             )
+            validate_native_payload(staging_dir, package)
 
         if release_version:
             staging_dir_str = str(staging_dir)
@@ -233,7 +228,13 @@ def prepare_staging_dir(staging_dir: Path | None) -> tuple[Path, bool]:
     return temp_dir, True
 
 
-def stage_sources(staging_dir: Path, version: str, package: str) -> None:
+def stage_sources(
+    staging_dir: Path,
+    version: str,
+    package: str,
+    exclude_platform_packages: set[str] | None = None,
+) -> None:
+    exclude_platform_packages = exclude_platform_packages or set()
     package_json: dict
     package_json_path: Path | None = None
 
@@ -241,6 +242,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
+        shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
         rg_manifest = CODEX_CLI_ROOT / "bin" / "rg"
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
@@ -310,6 +312,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             )
             for platform_package in PACKAGE_EXPANSIONS["codex"]
             if platform_package != "codex"
+            if platform_package not in exclude_platform_packages
         }
 
     elif package == "codex-sdk":
@@ -413,6 +416,25 @@ def copy_native_binaries(
         if missing_targets:
             missing_list = ", ".join(missing_targets)
             raise RuntimeError(f"Missing target directories in vendor source: {missing_list}")
+
+
+def validate_native_payload(staging_dir: Path, package: str) -> None:
+    platform_config = CODEX_PLATFORM_PACKAGES.get(package)
+    if platform_config is None:
+        return
+
+    target = platform_config["target_triple"]
+    codex_dir = staging_dir / "vendor" / target / "codex"
+    missing = [
+        binary_name
+        for binary_name in ("codex", "codex-exec")
+        if not (codex_dir / binary_name).is_file()
+    ]
+    if missing:
+        missing_list = ", ".join(missing)
+        raise RuntimeError(
+            f"Native payload for {package} is missing required binaries: {missing_list}"
+        )
 
 
 def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:

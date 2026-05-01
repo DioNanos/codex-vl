@@ -397,6 +397,7 @@ pub(crate) struct ChatComposer {
     status_line_value: Option<Line<'static>>,
     status_line_enabled: bool,
     side_conversation_context_label: Option<String>,
+    loop_context_label: Option<String>,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
     history_search: Option<HistorySearchSession>,
@@ -587,6 +588,7 @@ impl ChatComposer {
             status_line_value: None,
             status_line_enabled: false,
             side_conversation_context_label: None,
+            loop_context_label: None,
             active_agent_label: None,
             history_search: None,
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
@@ -3343,6 +3345,7 @@ impl ChatComposer {
             context_window_used_tokens: self.context_window_used_tokens,
             status_line_value: self.status_line_value.clone(),
             status_line_enabled: self.status_line_enabled,
+            loop_context_label: self.loop_context_label.clone(),
             key_hints: FooterKeyHints {
                 toggle_shortcuts: self.footer_toggle_shortcuts_key,
                 queue: self.footer_queue_key,
@@ -3901,6 +3904,14 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) -> bool {
+        if self.loop_context_label == label {
+            return false;
+        }
+        self.loop_context_label = label;
+        true
+    }
+
     /// Replaces the contextual footer label for the currently viewed agent.
     ///
     /// Returning `false` means the value was unchanged, so callers can skip redraw work. This
@@ -3912,6 +3923,10 @@ impl ChatComposer {
         }
         self.active_agent_label = active_agent_label;
         true
+    }
+
+    pub(crate) fn active_agent_label(&self) -> Option<&str> {
+        self.active_agent_label.as_deref()
     }
 }
 

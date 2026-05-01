@@ -1,9 +1,10 @@
 {
-  "name": "@openai/codex",
-  "version": "0.0.0-dev",
+  "name": "@mmmbuto/codex-vl",
+  "version": "0.128.0",
   "license": "Apache-2.0",
   "bin": {
-    "codex": "bin/codex.js"
+    "codex-vl": "bin/codex.js",
+    "codex-vl-exec": "bin/codex-exec.js"
   },
   "type": "module",
   "engines": {
@@ -15,8 +16,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
-    "directory": "codex-cli"
+    "url": "git+https://github.com/DioNanos/codex-vl.git"
   },
+  "description": "Optimized version of OpenAI Codex for side-by-side installs, loop-driven workflows, and Vivling companions",
   "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

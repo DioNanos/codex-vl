@@ -65,6 +65,7 @@ mod memories;
 mod remote_control;
 #[cfg(test)]
 mod test_support;
+mod thread_loop_jobs;
 mod threads;
 
 pub use device_key::DeviceKeyBindingRecord;
@@ -90,6 +91,28 @@ pub struct StateRuntime {
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
     thread_updated_at_millis: Arc<AtomicI64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SqliteRuntimeMode {
+    journal_mode: SqliteJournalMode,
+    max_connections: u32,
+}
+
+impl SqliteRuntimeMode {
+    fn default() -> Self {
+        Self {
+            journal_mode: SqliteJournalMode::Wal,
+            max_connections: 5,
+        }
+    }
+
+    fn android_compat() -> Self {
+        Self {
+            journal_mode: SqliteJournalMode::Delete,
+            max_connections: 1,
+        }
+    }
 }
 
 impl StateRuntime {
@@ -120,11 +143,40 @@ impl StateRuntime {
         .await;
         let state_path = state_db_path(codex_home.as_path());
         let logs_path = logs_db_path(codex_home.as_path());
-        let pool = match open_state_sqlite(&state_path, &state_migrator).await {
+        let pool = match open_state_sqlite(
+            &state_path,
+            &state_migrator,
+            SqliteRuntimeMode::default(),
+        )
+        .await
+        {
             Ok(db) => Arc::new(db),
             Err(err) => {
-                warn!("failed to open state db at {}: {err}", state_path.display());
-                return Err(err);
+                if cfg!(target_os = "android") {
+                    warn!(
+                        "failed to open state db at {} with default SQLite mode; retrying in Android compatibility mode: {err}",
+                        state_path.display()
+                    );
+                    match open_state_sqlite(
+                        &state_path,
+                        &state_migrator,
+                        SqliteRuntimeMode::android_compat(),
+                    )
+                    .await
+                    {
+                        Ok(db) => Arc::new(db),
+                        Err(retry_err) => {
+                            warn!(
+                                "failed to open state db at {} in Android compatibility mode: {retry_err}",
+                                state_path.display()
+                            );
+                            return Err(retry_err);
+                        }
+                    }
+                } else {
+                    warn!("failed to open state db at {}: {err}", state_path.display());
+                    return Err(err);
+                }
             }
         };
         let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator).await {
@@ -161,20 +213,24 @@ impl StateRuntime {
     }
 }
 
-fn base_sqlite_options(path: &Path) -> SqliteConnectOptions {
+fn base_sqlite_options(path: &Path, mode: SqliteRuntimeMode) -> SqliteConnectOptions {
     SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
+        .journal_mode(mode.journal_mode)
         .synchronous(SqliteSynchronous::Normal)
         .busy_timeout(Duration::from_secs(5))
         .log_statements(LevelFilter::Off)
 }
 
-async fn open_state_sqlite(path: &Path, migrator: &Migrator) -> anyhow::Result<SqlitePool> {
-    let options = base_sqlite_options(path).auto_vacuum(SqliteAutoVacuum::Incremental);
+async fn open_state_sqlite(
+    path: &Path,
+    migrator: &Migrator,
+    mode: SqliteRuntimeMode,
+) -> anyhow::Result<SqlitePool> {
+    let options = base_sqlite_options(path, mode).auto_vacuum(SqliteAutoVacuum::Incremental);
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(mode.max_connections)
         .connect_with(options)
         .await?;
     migrator.run(&pool).await?;
@@ -198,7 +254,8 @@ async fn open_state_sqlite(path: &Path, migrator: &Migrator) -> anyhow::Result<S
 }
 
 async fn open_logs_sqlite(path: &Path, migrator: &Migrator) -> anyhow::Result<SqlitePool> {
-    let options = base_sqlite_options(path).auto_vacuum(SqliteAutoVacuum::Incremental);
+    let options = base_sqlite_options(path, SqliteRuntimeMode::default())
+        .auto_vacuum(SqliteAutoVacuum::Incremental);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
@@ -312,6 +369,8 @@ fn should_remove_db_file(file_name: &str, current_name: &str, base_name: &str) -
 
 #[cfg(test)]
 mod tests {
+    use super::SqliteJournalMode;
+    use super::SqliteRuntimeMode;
     use super::open_state_sqlite;
     use super::runtime_state_migrator;
     use super::state_db_path;
@@ -319,7 +378,9 @@ mod tests {
     use crate::migrations::STATE_MIGRATOR;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
+    use std::borrow::Cow;
     use std::path::Path;
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
@@ -372,11 +433,77 @@ mod tests {
         strict_pool.close().await;
 
         let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = open_state_sqlite(state_path.as_path(), &tolerant_migrator)
-            .await
-            .expect("runtime migrator should tolerate newer applied migrations");
+        let tolerant_pool = open_state_sqlite(
+            state_path.as_path(),
+            &tolerant_migrator,
+            SqliteRuntimeMode::default(),
+        )
+        .await
+        .expect("runtime migrator should tolerate newer applied migrations");
         tolerant_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn open_state_sqlite_migrates_existing_vl_db_after_device_key_renumber() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let state_path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&state_path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open state db");
+
+        let legacy_migrator = Migrator {
+            migrations: Cow::Owned(
+                STATE_MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.description != "device_key_bindings")
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: STATE_MIGRATOR.locking,
+            no_tx: STATE_MIGRATOR.no_tx,
+        };
+        legacy_migrator
+            .run(&pool)
+            .await
+            .expect("apply pre-renumber codex-vl schema");
+        pool.close().await;
+
+        let tolerant_migrator = runtime_state_migrator();
+        let tolerant_pool = open_state_sqlite(
+            state_path.as_path(),
+            &tolerant_migrator,
+            SqliteRuntimeMode::default(),
+        )
+        .await
+        .expect("runtime migrator should add the renumbered device key schema");
+
+        let device_key_table: (String,) = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'device_key_bindings'",
+        )
+        .fetch_one(&tolerant_pool)
+        .await
+        .expect("device_key_bindings table exists");
+        assert_eq!(device_key_table.0, "device_key_bindings");
+        tolerant_pool.close().await;
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[test]
+    fn sqlite_runtime_mode_android_compat_uses_delete_and_single_connection() {
+        let mode = SqliteRuntimeMode::android_compat();
+        assert_eq!(mode.journal_mode, SqliteJournalMode::Delete);
+        assert_eq!(mode.max_connections, 1);
     }
 }

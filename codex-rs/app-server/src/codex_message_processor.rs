@@ -446,6 +446,7 @@ struct ThreadListFilters {
 
 // Duration before a browser ChatGPT login attempt is abandoned.
 const LOGIN_CHATGPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+#[cfg(debug_assertions)]
 const LOGIN_ISSUER_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_ISSUER";
 const APP_LIST_LOAD_TIMEOUT: Duration = Duration::from_secs(90);
 const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
@@ -2742,6 +2743,7 @@ impl CodexMessageProcessor {
                     .default_environment_selections(&config.cwd)
             });
             let dynamic_tools = dynamic_tools.unwrap_or_default();
+            let response_dynamic_tools = dynamic_tools.clone();
             let core_dynamic_tools = if dynamic_tools.is_empty() {
                 Vec::new()
             } else {
@@ -2870,6 +2872,7 @@ impl CodexMessageProcessor {
                 thread: thread.clone(),
                 model: config_snapshot.model,
                 model_provider: config_snapshot.model_provider_id,
+                dynamic_tools: response_dynamic_tools,
                 service_tier: config_snapshot.service_tier,
                 cwd: config_snapshot.cwd,
                 instruction_sources,
@@ -4405,6 +4408,19 @@ impl CodexMessageProcessor {
                     &config_snapshot.permission_profile,
                     config_snapshot.cwd.as_path(),
                 );
+                let dynamic_tools = match ThreadId::from_string(&thread.id) {
+                    Ok(thread_id) => codex_rollout::state_db::get_dynamic_tools(
+                        codex_thread.state_db().as_ref().map(|state_db| &**state_db),
+                        thread_id,
+                        "running_thread_resume",
+                    )
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                    Err(_) => Vec::new(),
+                };
                 let active_permission_profile = thread_response_active_permission_profile(
                     config_snapshot.active_permission_profile,
                 );
@@ -4413,6 +4429,7 @@ impl CodexMessageProcessor {
                     thread,
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
+                    dynamic_tools,
                     service_tier: session_configured.service_tier,
                     cwd: session_configured.cwd,
                     instruction_sources,
@@ -4597,6 +4614,7 @@ impl CodexMessageProcessor {
                     config_snapshot,
                     instruction_sources,
                     thread_summary,
+                    state_db: existing_thread.state_db(),
                     emit_thread_goal_update,
                     thread_goal_state_db,
                     include_turns: !params.exclude_turns,
@@ -8369,6 +8387,19 @@ async fn handle_pending_thread_resume_request(
     } = pending.config_snapshot;
     let instruction_sources = pending.instruction_sources;
     let sandbox = thread_response_sandbox_policy(&permission_profile, cwd.as_path());
+    let dynamic_tools = match ThreadId::from_string(&thread.id) {
+        Ok(thread_id) => codex_rollout::state_db::get_dynamic_tools(
+            pending.state_db.as_ref().map(|state_db| &**state_db),
+            thread_id,
+            "pending_thread_resume",
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        Err(_) => Vec::new(),
+    };
     let active_permission_profile =
         thread_response_active_permission_profile(active_permission_profile);
 
@@ -8376,6 +8407,7 @@ async fn handle_pending_thread_resume_request(
         thread,
         model,
         model_provider: model_provider_id,
+        dynamic_tools,
         service_tier,
         cwd,
         instruction_sources,

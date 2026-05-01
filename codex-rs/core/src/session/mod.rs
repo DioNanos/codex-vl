@@ -148,6 +148,7 @@ use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
 use serde_json::Value;
+use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
@@ -193,6 +194,7 @@ mod rollout_reconstruction;
 pub(crate) mod session;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
+mod vl_loop_awareness;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
@@ -212,6 +214,120 @@ use self::turn_context::TurnContext;
 use self::turn_context::TurnSkillsContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
+
+const MANAGE_LOOPS_TOOL_NAMESPACE: &str = "codex_app";
+const MANAGE_LOOPS_TOOL_NAME: &str = "manage_loops";
+
+fn builtin_manage_loops_tool(namespace: Option<&str>) -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: namespace.map(str::to_string),
+        name: MANAGE_LOOPS_TOOL_NAME.to_string(),
+        description:
+            "Manage local per-thread loop jobs that supervise recurring work while the TUI session stays attached. Use this for polling, retries, recurring status checks, long-running build monitoring, and other monitor-until-done workflows."
+                .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "One of: add, update, list, show, enable, disable, remove, trigger."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Loop label. Required for add, update, show, enable, disable, remove, trigger."
+                },
+                "interval": {
+                    "type": "string",
+                    "description": "Interval like 30s, 5m, or 1h. Required for add, optional for update."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Prompt text to auto-submit on each loop tick. Required for add, optional for update."
+                },
+                "goal": {
+                    "description": "Optional short statement of what the loop is trying to monitor or complete. Use null in update to clear it."
+                },
+                "auto_remove_on_completion": {
+                    "type": "boolean",
+                    "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Optional enabled state for update."
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+        defer_loading: false,
+    }
+}
+
+fn ensure_builtin_dynamic_tools(mut dynamic_tools: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
+    for namespace in [None, Some(MANAGE_LOOPS_TOOL_NAMESPACE)] {
+        let builtin = builtin_manage_loops_tool(namespace);
+        let exists = dynamic_tools
+            .iter()
+            .any(|tool| tool.namespace == builtin.namespace && tool.name == builtin.name);
+        if !exists {
+            dynamic_tools.push(builtin);
+        }
+    }
+    dynamic_tools
+}
+
+#[cfg(test)]
+mod builtin_dynamic_tool_tests {
+    use super::*;
+
+    #[test]
+    fn ensure_builtin_dynamic_tools_injects_manage_loops_aliases_once() {
+        let tools = ensure_builtin_dynamic_tools(Vec::new());
+        let flat_matching = tools
+            .iter()
+            .filter(|tool| tool.namespace.is_none() && tool.name == MANAGE_LOOPS_TOOL_NAME)
+            .count();
+        let namespaced_matching = tools
+            .iter()
+            .filter(|tool| {
+                tool.namespace.as_deref() == Some(MANAGE_LOOPS_TOOL_NAMESPACE)
+                    && tool.name == MANAGE_LOOPS_TOOL_NAME
+            })
+            .count();
+        assert_eq!(flat_matching, 1);
+        assert_eq!(namespaced_matching, 1);
+
+        let deduped = ensure_builtin_dynamic_tools(tools);
+        let flat_matching = deduped
+            .iter()
+            .filter(|tool| tool.namespace.is_none() && tool.name == MANAGE_LOOPS_TOOL_NAME)
+            .count();
+        let namespaced_matching = deduped
+            .iter()
+            .filter(|tool| {
+                tool.namespace.as_deref() == Some(MANAGE_LOOPS_TOOL_NAMESPACE)
+                    && tool.name == MANAGE_LOOPS_TOOL_NAME
+            })
+            .count();
+        assert_eq!(flat_matching, 1);
+        assert_eq!(namespaced_matching, 1);
+    }
+
+    #[test]
+    fn builtin_manage_loops_aliases_share_schema() {
+        let flat = builtin_manage_loops_tool(None);
+        let namespaced = builtin_manage_loops_tool(Some(MANAGE_LOOPS_TOOL_NAMESPACE));
+        assert_eq!(flat.name, MANAGE_LOOPS_TOOL_NAME);
+        assert_eq!(flat.namespace, None);
+        assert_eq!(
+            namespaced.namespace.as_deref(),
+            Some(MANAGE_LOOPS_TOOL_NAMESPACE)
+        );
+        assert_eq!(flat.description, namespaced.description);
+        assert_eq!(flat.input_schema, namespaced.input_schema);
+        assert_eq!(flat.defer_loading, namespaced.defer_loading);
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub enum SteerInputError {
@@ -572,6 +688,8 @@ impl Codex {
         } else {
             dynamic_tools
         };
+        let dynamic_tools = ensure_builtin_dynamic_tools(dynamic_tools);
+
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {

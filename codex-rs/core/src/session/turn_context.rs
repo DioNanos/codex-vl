@@ -381,6 +381,8 @@ fn local_time_context() -> (String, String) {
     }
 }
 
+// codex-vl: loop-awareness helper lives in `session/vl_loop_awareness.rs`.
+
 impl Session {
     /// Don't expand the number of mutated arguments on config. We are in the process of getting rid of it.
     pub(crate) fn build_per_turn_config(
@@ -739,6 +741,16 @@ impl Session {
             goal_tools_supported,
         );
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
+        if let Some(loop_awareness) = self.build_vl_loop_awareness_developer_instructions().await {
+            turn_context.developer_instructions = Some(
+                turn_context
+                    .developer_instructions
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|existing| format!("{existing}\n\n{loop_awareness}"))
+                    .unwrap_or(loop_awareness),
+            );
+        }
 
         if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;

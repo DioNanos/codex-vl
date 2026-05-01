@@ -1,0 +1,23 @@
+pub(crate) mod assets;
+pub(crate) mod director;
+pub(crate) mod effects;
+pub(crate) mod expressions;
+pub(crate) mod frame;
+pub(crate) mod glyphs;
+pub(crate) mod layers;
+pub(crate) mod object_catalog;
+pub(crate) mod objects;
+pub(crate) mod palette;
+pub(crate) mod scene;
+pub(crate) mod scenes;
+pub(crate) mod scripts;
+pub(crate) mod speech;
+pub(crate) mod sprites;
+pub(crate) mod surface;
+pub(crate) mod tape;
+pub(crate) mod tier;
+
+pub(crate) use scene::CrtScene;
+pub(crate) use scene::render_crt_scene;
+pub(crate) use surface::CrtSurface;
+pub(crate) use tier::CrtTier;

@@ -47,6 +47,15 @@ pub use model::ThreadGoalStatus;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
 pub use model::ThreadsPage;
+
+// codex-vl: ThreadLoopJob and ThreadLoopOwner for Vivling loop autonomy
+pub use model::THREAD_LOOP_OWNER_KIND_MAIN;
+pub use model::THREAD_LOOP_OWNER_KIND_VIVLING;
+pub use model::ThreadLoopJob;
+pub use model::ThreadLoopJobCreateParams;
+pub use model::ThreadLoopJobRuntimeUpdate;
+pub use model::ThreadLoopOwner;
+
 pub use runtime::DeviceKeyBindingRecord;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::ThreadFilterOptions;

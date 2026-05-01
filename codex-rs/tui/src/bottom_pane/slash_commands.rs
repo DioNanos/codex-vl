@@ -49,6 +49,9 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
 /// Side-conversation gating is intentionally enforced by dispatch rather than exact lookup so a
 /// typed command can produce a side-specific unavailable message while the popup still hides it.
 pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Option<SlashCommand> {
+    if name == "vl" {
+        return Some(SlashCommand::VivlingAlias);
+    }
     let cmd = SlashCommand::from_str(name).ok()?;
     builtins_for_input(BuiltinCommandFlags {
         side_conversation_active: false,
@@ -169,6 +172,7 @@ mod tests {
                 SlashCommand::Diff,
                 SlashCommand::Mention,
                 SlashCommand::Status,
+                SlashCommand::Vivling,
             ]
         );
     }
@@ -184,6 +188,14 @@ mod tests {
                 },
             ),
             Some(SlashCommand::Review)
+        );
+    }
+
+    #[test]
+    fn hidden_vivling_alias_resolves_for_dispatch() {
+        assert_eq!(
+            find_builtin_command("vl", all_enabled_flags()),
+            Some(SlashCommand::VivlingAlias)
         );
     }
 }

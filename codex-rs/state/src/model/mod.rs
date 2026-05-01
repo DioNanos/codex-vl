@@ -44,3 +44,15 @@ pub(crate) use thread_metadata::anchor_from_item;
 pub(crate) use thread_metadata::datetime_to_epoch_millis;
 pub(crate) use thread_metadata::datetime_to_epoch_seconds;
 pub(crate) use thread_metadata::epoch_millis_to_datetime;
+
+// codex-vl: ThreadLoopJob and ThreadLoopOwner for Vivling loop autonomy
+mod thread_loop_job;
+mod thread_loop_owner;
+pub use thread_loop_job::ThreadLoopJob;
+pub use thread_loop_job::ThreadLoopJobCreateParams;
+pub(crate) use thread_loop_job::ThreadLoopJobRow;
+pub use thread_loop_job::ThreadLoopJobRuntimeUpdate;
+pub use thread_loop_owner::THREAD_LOOP_OWNER_KIND_MAIN;
+pub use thread_loop_owner::THREAD_LOOP_OWNER_KIND_VIVLING;
+pub use thread_loop_owner::ThreadLoopOwner;
+pub(crate) use thread_loop_owner::ThreadLoopOwnerRow;

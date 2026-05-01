@@ -37,6 +37,11 @@ impl AppEventSender {
         }
     }
 
+    /// codex-vl: wrap a `VlEvent` in `AppEvent::Vl` and send.
+    pub(crate) fn send_vl(&self, event: crate::vl::VlEvent) {
+        self.send(AppEvent::Vl(event));
+    }
+
     pub(crate) fn interrupt(&self) {
         self.send(AppEvent::CodexOp(AppCommand::interrupt()));
     }

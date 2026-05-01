@@ -16,8 +16,10 @@ if [[ -n "${APT_INSTALL_ARGS:-}" ]]; then
   apt_install_args=(${APT_INSTALL_ARGS})
 fi
 
-sudo apt-get update "${apt_update_args[@]}"
-sudo apt-get install -y "${apt_install_args[@]}" ca-certificates curl musl-tools pkg-config libcap-dev g++ clang libc++-dev libc++abi-dev lld xz-utils
+if [[ "${SKIP_APT:-0}" != "1" ]]; then
+  sudo apt-get update "${apt_update_args[@]}"
+  sudo apt-get install -y "${apt_install_args[@]}" ca-certificates curl musl-tools pkg-config libcap-dev g++ clang libc++-dev libc++abi-dev lld xz-utils
+fi
 
 case "${TARGET}" in
   x86_64-unknown-linux-musl)
@@ -233,6 +235,27 @@ fi
 
 cflags="-pthread"
 cxxflags="-pthread"
+
+# Vendored bubblewrap needs Linux UAPI headers such as linux/sched.h and
+# linux/loop.h. musl toolchains do not search the host UAPI include roots by
+# default, so add them after the target sysroot headers.
+uapi_include_flags=()
+if [[ -d /usr/include ]]; then
+  uapi_include_flags+=("-idirafter" "/usr/include")
+fi
+host_multiarch=""
+if command -v gcc >/dev/null 2>&1; then
+  host_multiarch="$(gcc -print-multiarch 2>/dev/null || true)"
+fi
+if [[ -n "${host_multiarch}" && -d "/usr/include/${host_multiarch}" ]]; then
+  uapi_include_flags+=("-idirafter" "/usr/include/${host_multiarch}")
+fi
+if [[ "${#uapi_include_flags[@]}" -gt 0 ]]; then
+  printf -v uapi_flags_joined ' %q' "${uapi_include_flags[@]}"
+  cflags="${cflags}${uapi_flags_joined}"
+  cxxflags="${cxxflags}${uapi_flags_joined}"
+fi
+
 if [[ "${TARGET}" == "aarch64-unknown-linux-musl" ]]; then
   # BoringSSL enables -Wframe-larger-than=25344 under clang and treats warnings as errors.
   cflags="${cflags} -Wno-error=frame-larger-than"
@@ -260,16 +283,16 @@ echo "CMAKE_C_COMPILER=${cc}" >> "$GITHUB_ENV"
 echo "CMAKE_CXX_COMPILER=${cxx}" >> "$GITHUB_ENV"
 echo "CMAKE_ARGS=-DCMAKE_HAVE_THREADS_LIBRARY=1 -DCMAKE_USE_PTHREADS_INIT=1 -DCMAKE_THREAD_LIBS_INIT=-pthread -DTHREADS_PREFER_PTHREAD_FLAG=ON" >> "$GITHUB_ENV"
 
-# Allow pkg-config resolution during cross-compilation.
+# Allow pkg-config resolution during cross-compilation, but keep musl targets
+# isolated from host glibc pkg-config metadata.
 echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-pkg_config_path="${libcap_pkgconfig_dir}"
-if [[ -n "${PKG_CONFIG_PATH:-}" ]]; then
-  pkg_config_path="${pkg_config_path}:${PKG_CONFIG_PATH}"
-fi
-echo "PKG_CONFIG_PATH=${pkg_config_path}" >> "$GITHUB_ENV"
+echo "PKG_CONFIG_PATH=${libcap_pkgconfig_dir}" >> "$GITHUB_ENV"
 pkg_config_path_var="PKG_CONFIG_PATH_${TARGET}"
 pkg_config_path_var="${pkg_config_path_var//-/_}"
 echo "${pkg_config_path_var}=${libcap_pkgconfig_dir}" >> "$GITHUB_ENV"
+pkg_config_libdir_var="PKG_CONFIG_LIBDIR_${TARGET}"
+pkg_config_libdir_var="${pkg_config_libdir_var//-/_}"
+echo "${pkg_config_libdir_var}=${libcap_pkgconfig_dir}" >> "$GITHUB_ENV"
 
 if [[ -n "${sysroot}" && "${sysroot}" != "/" ]]; then
   echo "PKG_CONFIG_SYSROOT_DIR=${sysroot}" >> "$GITHUB_ENV"

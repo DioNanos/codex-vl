@@ -16,6 +16,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -83,7 +84,24 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
     )
     .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    let ThreadStartResponse {
+        thread,
+        dynamic_tools,
+        ..
+    } = to_response::<ThreadStartResponse>(thread_resp)?;
+    assert!(
+        dynamic_tools
+            .iter()
+            .any(|tool| tool.name == dynamic_tool.name && tool.namespace == dynamic_tool.namespace),
+        "thread/start response should include caller-supplied dynamic tool"
+    );
+    assert!(
+        dynamic_tools
+            .iter()
+            .any(|tool| tool.name == "manage_loops"
+                && tool.namespace.as_deref() == Some("codex_app")),
+        "thread/start response should include builtin manage_loops tool"
+    );
 
     // Start a turn so a model request is issued.
     let turn_req = mcp
@@ -116,12 +134,89 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         .context("expected at least one responses request")?;
     let tool = find_tool(body, &dynamic_tool.name)
         .context("expected dynamic tool to be injected into request")?;
+    let builtin_tool = find_namespace_tool(body, "codex_app", "manage_loops")
+        .context("expected builtin manage_loops tool to be injected into request")?;
 
     assert_eq!(
         tool.get("description"),
         Some(&Value::String(dynamic_tool.description.clone()))
     );
     assert_eq!(tool.get("parameters"), Some(&input_schema));
+    assert_eq!(
+        builtin_tool.get("description"),
+        Some(&Value::String(
+            "Manage local per-thread loop jobs that supervise recurring work while the TUI session stays attached. Use this for polling, retries, recurring status checks, long-running build monitoring, and other monitor-until-done workflows.".to_string()
+        ))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_returns_builtin_dynamic_tools() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams::default())
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let resume_req = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_req)),
+    )
+    .await??;
+    let codex_app_server_protocol::ThreadResumeResponse { dynamic_tools, .. } =
+        to_response::<codex_app_server_protocol::ThreadResumeResponse>(resume_resp)?;
+
+    assert!(
+        dynamic_tools
+            .iter()
+            .any(|tool| tool.name == "manage_loops"
+                && tool.namespace.as_deref() == Some("codex_app")),
+        "thread/resume response should include builtin manage_loops tool"
+    );
 
     Ok(())
 }
@@ -637,6 +732,23 @@ async fn responses_bodies(server: &MockServer) -> Result<Vec<Value>> {
 
 fn find_tool<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
     body.get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        })
+}
+
+fn find_namespace_tool<'a>(body: &'a Value, namespace: &str, name: &str) -> Option<&'a Value> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(namespace))
+        })
+        .and_then(|namespace_tool| namespace_tool.get("tools"))
         .and_then(Value::as_array)
         .and_then(|tools| {
             tools

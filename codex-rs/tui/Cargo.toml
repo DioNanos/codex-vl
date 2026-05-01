@@ -34,6 +34,7 @@ codex-chatgpt = { workspace = true }
 codex-cloud-requirements = { workspace = true }
 codex-config = { workspace = true }
 codex-connectors = { workspace = true }
+codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
 codex-core-skills = { workspace = true }
 codex-exec-server = { workspace = true }
@@ -49,6 +50,7 @@ codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
 codex-realtime-webrtc = { workspace = true }
 codex-rollout = { workspace = true }
+codex-rollout-trace = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
@@ -105,6 +107,7 @@ tokio = { workspace = true, features = [
 ] }
 tokio-stream = { workspace = true, features = ["sync"] }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -116,12 +119,13 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }
 uuid = { workspace = true }
+zip = { workspace = true }
 
 codex-windows-sandbox = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-cpal = "0.15"
+[target.'cfg(all(not(target_os = "linux"), not(target_os = "android")))'.dependencies]
+cpal = { version = "0.15" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

@@ -1,60 +1,104 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Codex VL
 
----
+> A side-by-side Codex CLI variant with local loop orchestration and an early
+> Vivling companion layer for terminal workflows.
 
-## Quickstart
+[![npm package](https://img.shields.io/npm/v/@mmmbuto/codex-vl?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/codex-vl)
+[![license](https://img.shields.io/badge/license-Apache%202.0-4b5563?style=flat-square)](./LICENSE)
 
-### Installing and running Codex CLI
+Codex VL is a fork of [OpenAI Codex](https://github.com/openai/codex) that
+installs as `codex-vl`, so it can live next to the official `codex` command.
 
-Install globally with your preferred package manager:
+The fork keeps the upstream Codex runtime model and adds a small set of
+experimental workflow features:
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+- `/loop` for session-scoped recurring checks and follow-up tasks
+- `/vivling` for a persistent local companion and orchestration foundation
+- `/vl` for direct Vivling chat when a brain profile is configured
+- side-by-side npm packaging under `@mmmbuto/codex-vl`
+
+## Install
+
+```bash
+npm install -g @mmmbuto/codex-vl
+codex-vl --version
+codex-vl login
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+Codex VL uses the normal Codex configuration and runtime state in `~/.codex/`.
+Installing it does not replace the official `codex` binary.
+
+For a local npm prefix:
+
+```bash
+npm config set prefix ~/.local
+npm install -g @mmmbuto/codex-vl
+~/.local/bin/codex-vl --version
 ```
 
-Then simply run `codex` to get started.
+## Current Release Focus
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+The `0.128.0` line focuses on keeping the fork close to upstream while
+stabilizing the first useful Codex VL layers:
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+- loop management as a conservative, user-controlled local feature
+- Vivling identity, persistence, lifecycle state, and model profile routing
+- an early terminal CRT strip that can show compact Vivling state and speech
+- maintainable integration points so upstream merges stay practical
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+Vivling behavior is still experimental. It is intended to become a workflow
+assistant over time, but the current public surface is deliberately small.
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+## Commands
 
-</details>
+### `/loop`
 
-### Using Codex with your ChatGPT plan
+Creates and manages recurring local jobs attached to the current TUI session.
+Loops are useful for periodic status checks, long-running work supervision, and
+agent-managed follow-up tasks.
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+### `/vivling`
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+Manages the active Vivling. Current features include local state, growth,
+lifecycle status, species data, and optional brain profile configuration.
 
-## Docs
+### `/vl`
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+Sends a direct message to the active Vivling. If the Vivling brain is ready, the
+message routes through its configured Codex profile. Otherwise Codex VL uses the
+local fallback reply path.
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+## Configuration
+
+Vivling brain models use standard Codex profiles and providers. No shell wrapper
+is required.
+
+Start with:
+
+- [Vivling brain model configuration](docs/vivling_model_catalog.md)
+- [Codex configuration reference](docs/config.md)
+
+Minimal flow:
+
+```text
+/vivling model <profile>
+/vivling brain on
+/vl hello
+```
+
+## Build From Source
+
+```bash
+cd codex-rs
+cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
+```
+
+## Status
+
+Codex VL is active development software. Use the official OpenAI Codex release
+when you want the upstream baseline without Codex VL additions.
+
+## License
+
+Apache 2.0. Upstream Codex remains under Apache 2.0, and the Codex VL additions
+are distributed under the same license.

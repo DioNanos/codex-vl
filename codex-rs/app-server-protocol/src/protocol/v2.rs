@@ -715,6 +715,18 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
     }
 }
 
+impl From<codex_protocol::dynamic_tools::DynamicToolSpec> for DynamicToolSpec {
+    fn from(value: codex_protocol::dynamic_tools::DynamicToolSpec) -> Self {
+        Self {
+            namespace: value.namespace,
+            name: value.name,
+            description: value.description,
+            input_schema: value.input_schema,
+            defer_loading: value.defer_loading,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
@@ -3642,6 +3654,9 @@ pub struct ThreadStartResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
+    #[experimental("thread/start.dynamicTools")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_tools: Vec<DynamicToolSpec>,
     pub cwd: AbsolutePathBuf,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
@@ -3755,6 +3770,9 @@ pub struct ThreadResumeResponse {
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
+    #[experimental("thread/resume.dynamicTools")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_tools: Vec<DynamicToolSpec>,
     pub cwd: AbsolutePathBuf,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
@@ -10902,6 +10920,7 @@ mod tests {
             "model": "gpt-5",
             "modelProvider": "openai",
             "serviceTier": null,
+            "dynamicTools": [],
             "cwd": absolute_path_string("tmp"),
             "approvalPolicy": "on-failure",
             "approvalsReviewer": "user",

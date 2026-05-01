@@ -559,7 +559,7 @@ impl ChatWidget {
     #[cfg(target_os = "linux")]
     fn start_realtime_local_audio(&mut self) {}
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     pub(crate) fn restart_realtime_audio_device(&mut self, kind: RealtimeAudioDeviceKind) {
         if !self.realtime_conversation.is_active() {
             return;
@@ -587,21 +587,21 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) fn restart_realtime_audio_device(&mut self, kind: RealtimeAudioDeviceKind) {
         let _ = kind;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     fn stop_realtime_local_audio(&mut self) {
         self.stop_realtime_microphone();
         self.stop_realtime_speaker();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn stop_realtime_local_audio(&mut self) {}
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     fn stop_realtime_microphone(&mut self) {
         if let Some(flag) = self.realtime_conversation.capture_stop_flag.take() {
             flag.store(true, Ordering::Relaxed);

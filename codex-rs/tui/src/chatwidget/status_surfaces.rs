@@ -5,6 +5,8 @@
 
 use super::*;
 use crate::status::format_tokens_compact;
+use crate::vivling::VivlingLiveContext;
+use crate::vivling::VivlingLiveStatusItem;
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: activity indicator + project name.
@@ -244,6 +246,7 @@ impl ChatWidget {
         self.sync_status_surface_shared_state(&selections);
         self.refresh_status_line_from_selections(&selections);
         self.refresh_terminal_title_from_selections(&selections);
+        self.sync_vivling_live_context_from_status_items(&selections.status_line_items);
     }
 
     /// Recomputes and emits the terminal title from config and runtime state.
@@ -571,6 +574,49 @@ impl ChatWidget {
                 (!trimmed.is_empty()).then(|| trimmed.to_string())
             }),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
+        }
+    }
+
+    pub(super) fn sync_vivling_live_context(&mut self) {
+        let (status_line_items, _) = self.status_line_items_with_invalids();
+        self.sync_vivling_live_context_from_status_items(&status_line_items);
+    }
+
+    fn sync_vivling_live_context_from_status_items(&mut self, items: &[StatusLineItem]) {
+        let context = self.vivling_live_context_for_items(items);
+        self.bottom_pane.set_vivling_live_context(Some(context));
+    }
+
+    fn vivling_live_context_for_items(&mut self, items: &[StatusLineItem]) -> VivlingLiveContext {
+        let active_agent_label = self.bottom_pane.active_agent_label().map(str::to_string);
+        let run_state = Some(self.run_state_status_text());
+        let model = Some(self.model_with_reasoning_display_name());
+        let cwd = self.status_line_value_for_item(&StatusLineItem::CurrentDir);
+        let thread_title = self.status_line_value_for_item(&StatusLineItem::ThreadTitle);
+        let task_progress = self.status_line_value_for_item(&StatusLineItem::TaskProgress);
+        let session_id = self.status_line_value_for_item(&StatusLineItem::SessionId);
+        let git_branch = self.status_line_value_for_item(&StatusLineItem::GitBranch);
+        let status_items = items
+            .iter()
+            .filter_map(|item| {
+                self.status_line_value_for_item(item)
+                    .map(|value| VivlingLiveStatusItem {
+                        id: item.to_string(),
+                        value,
+                    })
+            })
+            .collect();
+
+        VivlingLiveContext {
+            status_items,
+            run_state,
+            active_agent_label,
+            model,
+            cwd,
+            thread_title,
+            task_progress,
+            session_id,
+            git_branch,
         }
     }
 
