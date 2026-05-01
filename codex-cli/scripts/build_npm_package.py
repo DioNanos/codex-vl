@@ -342,7 +342,6 @@ def stage_sources(
         out.write("\n")
 
 
-
 def ignore_source_build_entry(_src: str, names: list[str]) -> set[str]:
     ignored = {
         ".git",
@@ -374,11 +373,10 @@ def stage_darwin_source_build_payload(staging_dir: Path) -> None:
         scripts_dest / "postinstall_darwin_build.js",
     )
 
-    # Keep the vendor path in the package so the launcher can resolve the
-    # optional dependency before postinstall populates the native binaries.
     vendor_dest.mkdir(parents=True, exist_ok=True)
     keep = vendor_dest / ".gitkeep"
     keep.write_text("", encoding="utf-8")
+
 
 def compute_platform_package_version(version: str, platform_tag: str) -> str:
     # npm forbids republishing the same package name/version, so each
