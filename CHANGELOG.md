@@ -4,6 +4,11 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.128.1 - macOS npm packaging cleanup
+
+- Changed the macOS npm package to build native binaries locally with Cargo.
+- Removed unsigned macOS binary payloads from the candidate packaging flow.
+
 ## 0.128.0-vl.0 - Upstream Sync
 
 Based on the OpenAI Codex `rust-v0.128.0` release line.
