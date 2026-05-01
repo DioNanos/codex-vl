@@ -1,0 +1,124 @@
+name: Package macOS Candidate
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/package-macos-candidate.yml"
+      - "codex-cli/**"
+      - "codex-rs/**"
+      - "scripts/**"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version override (defaults to codex-cli/package.json)"
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package-darwin-arm64:
+    name: Package macOS arm64
+    runs-on: macos-13
+    timeout-minutes: 180
+    env:
+      TARGET: aarch64-apple-darwin
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@a0b273b48ed29de4470960879e8381ff45632f26 # 1.93.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          input_version="${{ inputs.release_version }}"
+          if [[ -n "${input_version}" ]]; then
+            version="${input_version}"
+          else
+            version="$(node -p "require('./codex-cli/package.json').version")"
+          fi
+          echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Build codex and codex-exec
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            while sleep 300; do
+              echo "cargo build still running at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            done
+          ) &
+          heartbeat_pid="$!"
+          trap 'kill "${heartbeat_pid}" 2>/dev/null || true' EXIT
+          cargo build \
+            --manifest-path codex-rs/Cargo.toml \
+            --target "${TARGET}" \
+            --release \
+            -p codex-cli \
+            -p codex-exec
+          kill "${heartbeat_pid}" 2>/dev/null || true
+
+      - name: Prepare vendor payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          vendor_root="${RUNNER_TEMP}/vendor-root"
+          python3 codex-cli/scripts/prepare_local_vendor.py \
+            --vendor-root "${vendor_root}" \
+            --target "${TARGET}" \
+            --codex-binary "codex-rs/target/${TARGET}/release/codex" \
+            --include-rg
+          cp "codex-rs/target/${TARGET}/release/codex-exec" \
+            "${vendor_root}/${TARGET}/codex/codex-exec"
+          chmod 755 \
+            "${vendor_root}/${TARGET}/codex/codex" \
+            "${vendor_root}/${TARGET}/codex/codex-exec"
+          echo "VENDOR_ROOT=${vendor_root}" >> "$GITHUB_ENV"
+
+      - name: Stage npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage_dir="${RUNNER_TEMP}/staging-codex-darwin-arm64"
+          pack_output="${RUNNER_TEMP}/codex-darwin-arm64-${RELEASE_VERSION}.tgz"
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-darwin-arm64 \
+            --release-version "${RELEASE_VERSION}" \
+            --staging-dir "${stage_dir}" \
+            --pack-output "${pack_output}" \
+            --vendor-src "${VENDOR_ROOT}"
+          echo "PACK_OUTPUT=${pack_output}" >> "$GITHUB_ENV"
+
+      - name: Verify package payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -tzf "${PACK_OUTPUT}" | sort | tee "${RUNNER_TEMP}/package-files.txt"
+          grep -qx "package/vendor/${TARGET}/codex/codex" "${RUNNER_TEMP}/package-files.txt"
+          grep -qx "package/vendor/${TARGET}/codex/codex-exec" "${RUNNER_TEMP}/package-files.txt"
+          grep -qx "package/vendor/${TARGET}/path/rg" "${RUNNER_TEMP}/package-files.txt"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-darwin-arm64-${{ env.RELEASE_VERSION }}
+          path: |
+            ${{ env.PACK_OUTPUT }}
+            codex-rs/target/${{ env.TARGET }}/release/codex
+            codex-rs/target/${{ env.TARGET }}/release/codex-exec
