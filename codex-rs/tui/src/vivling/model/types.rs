@@ -222,7 +222,7 @@ pub(crate) struct VivlingLoopProfile {
     pub(crate) wait_signals: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum VivlingLoopEventKind {
     Config,
     Runtime,

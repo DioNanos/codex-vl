@@ -92,7 +92,16 @@ impl Renderable for Vivling {
         let sprite = self.current_sprite(state, now);
         let live_context = self.live_context.borrow();
         let insight = super::crt_insight::compute_insight(state, live_context.as_ref());
-        let last_message = insight.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let animation_text = self.animation_text.borrow();
+        let animation_phrase = animation_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let last_message = insight
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or(animation_phrase);
         let activity = *self.activity.borrow();
         let mut surface = crate::vl::crt::CrtSurface::new(
             area.width,

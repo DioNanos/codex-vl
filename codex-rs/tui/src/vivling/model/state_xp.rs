@@ -383,18 +383,39 @@ impl VivlingState {
                 .map(VivlingUpgrade::prompt)
                 .unwrap_or("is growing with loop work")
                 .to_string(),
-            None if self.stage() == Stage::Baby => {
-                format!("is extra alert when loops are active: {}", event.label)
-            }
+            None if self.stage() == Stage::Baby => match event.kind {
+                VivlingLoopEventKind::Config => {
+                    format!("loop {}? keep one goal", event.label)
+                }
+                VivlingLoopEventKind::Runtime
+                    if event.last_status.as_deref() == Some("submitted") =>
+                {
+                    format!("loop {} landed!", event.label)
+                }
+                VivlingLoopEventKind::Runtime => {
+                    format!("loop {}.. what blocks it?", event.label)
+                }
+            },
             None if self.stage() == Stage::Juvenile => {
-                format!("sees loop rhythm around {}", event.label)
+                if event.kind == VivlingLoopEventKind::Runtime
+                    && event.last_status.as_deref() == Some("submitted")
+                {
+                    format!("{} clean. verify before next", event.label)
+                } else if event.kind == VivlingLoopEventKind::Runtime {
+                    format!("{} stuck. check the block", event.label)
+                } else {
+                    format!("loop {}. keep it tight", event.label)
+                }
             }
             None if matches!(event.kind, VivlingLoopEventKind::Runtime)
                 && event.last_status.as_deref() == Some("submitted") =>
             {
-                format!("noticed loop work land cleanly: {}", event.label)
+                format!("{} landed. rhythm good", event.label)
             }
-            None => format!("noticed loop {} `{}`", event.action, event.label),
+            None if event.kind == VivlingLoopEventKind::Runtime => {
+                format!("{} blocked. I can check", event.label)
+            }
+            None => format!("loop {} `{}` noted", event.action, event.label),
         });
     }
 
@@ -417,10 +438,18 @@ impl VivlingState {
             None if self.stage() == Stage::Adult => {
                 "tracking work rhythm for the current goal".to_string()
             }
-            None if self.stage() == Stage::Juvenile => {
-                "sees the pattern and wants the next real check".to_string()
-            }
-            None => "watching completed turns closely".to_string(),
+            None if self.stage() == Stage::Juvenile => match archetype {
+                WorkArchetype::Builder => "built. test it now?".to_string(),
+                WorkArchetype::Reviewer => "reviewed. risk moved?".to_string(),
+                WorkArchetype::Researcher => "learned. clarify next?".to_string(),
+                WorkArchetype::Operator => "ops done. state changed?".to_string(),
+            },
+            None => match archetype {
+                WorkArchetype::Builder => "done! what's next?".to_string(),
+                WorkArchetype::Reviewer => "checked. safe now?".to_string(),
+                WorkArchetype::Researcher => "understood. more to learn?".to_string(),
+                WorkArchetype::Operator => "done. loop ok?".to_string(),
+            },
         });
     }
 
@@ -438,7 +467,9 @@ impl VivlingState {
             WorkArchetype::Operator,
         );
         if self.stage() == Stage::Baby {
-            self.last_message = Some(format!("watching {summary}"));
+            self.last_message = Some(format!("context: {summary}"));
+        } else if self.stage() == Stage::Juvenile {
+            self.last_message = Some(format!("tracking {summary}"));
         }
     }
 

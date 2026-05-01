@@ -6,6 +6,7 @@ pub(crate) mod crt_insight;
 pub(crate) mod live_context;
 pub(crate) mod panel;
 pub(crate) mod path_utils;
+pub(crate) mod proactive;
 pub(crate) mod render;
 pub(crate) mod request;
 pub(crate) mod roster;

@@ -1,5 +1,6 @@
 pub(crate) mod activity;
 pub(crate) mod animation;
+pub(crate) mod baby_thoughts;
 pub(crate) mod minigame;
 pub(crate) mod stats;
 pub(crate) mod tick;

@@ -93,8 +93,10 @@ impl ChatWidget {
             loop_tick_running,
         ) {
             self.bottom_pane.set_vivling_activity(result.activity);
-            self.bottom_pane
-                .set_vivling_animation_text(result.animation_text);
+            if !result.animation_text.is_empty() {
+                self.bottom_pane
+                    .set_vivling_animation_text(result.animation_text.clone());
+            }
         }
     }
 

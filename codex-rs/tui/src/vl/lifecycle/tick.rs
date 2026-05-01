@@ -4,7 +4,11 @@ use super::activity::{
     EATING_DURATION, SLEEP_ENERGY_GAIN, SLEEP_ENERGY_INTERVAL, VivlingActivity, compute_activity,
 };
 use super::animation::VivlingAnimation;
+use super::baby_thoughts::idle_thought;
 use super::stats::VivlingLiveStats;
+
+const IDLE_THOUGHT_INTERVAL_SECS: u64 = 18;
+const IDLE_THOUGHT_FIRST_SECS: u64 = 22;
 
 pub(crate) struct LifecycleState {
     pub(crate) activity: VivlingActivity,
@@ -15,6 +19,8 @@ pub(crate) struct LifecycleState {
     pub(crate) last_persist: Instant,
     pub(crate) worker_turn_observed: bool,
     pub(crate) playing_duration: Option<Duration>,
+    idle_thought_tick: usize,
+    last_idle_thought_at: Instant,
 }
 
 impl LifecycleState {
@@ -29,6 +35,8 @@ impl LifecycleState {
             last_persist: now,
             worker_turn_observed: false,
             playing_duration: None,
+            idle_thought_tick: 0,
+            last_idle_thought_at: now,
         }
     }
 
@@ -97,9 +105,36 @@ impl LifecycleState {
         }
         self.worker_turn_observed = false;
 
+        // Activity-based animation text
+        let activity_text = self.animation.current_text(self.activity);
+
+        // Idle thoughts for baby/juvenile during prolonged idle
+        let idle_text = if is_baby_or_juvenile
+            && self.activity == VivlingActivity::Idle
+            && idle_secs >= IDLE_THOUGHT_FIRST_SECS
+        {
+            if self.last_idle_thought_at.elapsed()
+                >= Duration::from_secs(IDLE_THOUGHT_INTERVAL_SECS)
+            {
+                self.last_idle_thought_at = Instant::now();
+                let thought = idle_thought(
+                    idle_secs >= 60, // juvenile-like after 60s idle
+                    self.idle_thought_tick,
+                );
+                self.idle_thought_tick = self.idle_thought_tick.wrapping_add(1);
+                Some(thought.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let animation_text = idle_text.unwrap_or_else(|| activity_text.to_string());
+
         TickResult {
             activity: self.activity,
-            animation_text: self.animation.current_text(self.activity).to_string(),
+            animation_text,
         }
     }
 
@@ -107,6 +142,7 @@ impl LifecycleState {
         self.activity = transition.new_activity;
         self.last_state_change = Instant::now();
         self.last_sleep_energy_tick = Instant::now();
+        self.last_idle_thought_at = Instant::now();
 
         if self.activity == VivlingActivity::Sleeping {
             self.stats.naps_total = self.stats.naps_total.saturating_add(1);

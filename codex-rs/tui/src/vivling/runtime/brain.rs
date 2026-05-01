@@ -235,10 +235,14 @@ impl Vivling {
             if let Some(summary) = live_summary.as_deref() {
                 state.record_live_context_summary(summary);
             }
+            let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
+            if let Some(msg) = proactive.message {
+                state.last_message = Some(msg);
+            }
             state
                 .last_message
                 .clone()
-                .unwrap_or_else(|| format!("noticed loop {} `{}`", event.action, event.label))
+                .unwrap_or_else(|| format!("loop {} `{}` noted", event.action, event.label))
         })
         .map(|_| {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
@@ -255,6 +259,10 @@ impl Vivling {
             state.record_turn_completed(summary);
             if let Some(summary) = live_summary.as_deref() {
                 state.record_live_context_summary(summary);
+            }
+            let proactive = proactive::evaluate_after_turn(state, Utc::now());
+            if let Some(msg) = proactive.message {
+                state.last_message = Some(msg);
             }
             state
                 .last_message

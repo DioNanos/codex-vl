@@ -14,12 +14,25 @@ impl VivlingAnimation {
     }
 
     pub(crate) fn current_text(&self, activity: VivlingActivity) -> &'static str {
+        let idx = self.frame_index;
         match activity {
-            VivlingActivity::Idle
-            | VivlingActivity::Eating
-            | VivlingActivity::Sleeping
-            | VivlingActivity::Playing
-            | VivlingActivity::Working => "",
+            VivlingActivity::Eating => {
+                const EATING: &[&str] = &["*munch*", "*crunch*", "*nibble*", "*nom*"];
+                EATING[idx % EATING.len()]
+            }
+            VivlingActivity::Sleeping => {
+                const SLEEPING: &[&str] = &["zZz", "z..", ".z.", "z z"];
+                SLEEPING[idx % SLEEPING.len()]
+            }
+            VivlingActivity::Playing => {
+                const PLAYING: &[&str] = &["*hop*", "*bounce*", "*boing*", "*peek*"];
+                PLAYING[idx % PLAYING.len()]
+            }
+            VivlingActivity::Working => {
+                const WORKING: &[&str] = &["[>  ]", "[>> ]", "[>>>]", "[ >>]"];
+                WORKING[idx % WORKING.len()]
+            }
+            VivlingActivity::Idle => "",
         }
     }
 }

@@ -115,7 +115,7 @@ mod tests {
         let context = VivlingLiveContext {
             run_state: Some("Working".to_string()),
             active_agent_label: Some("main".to_string()),
-            cwd: Some("/home/user/work/codex-vl".to_string()),
+            cwd: Some("/home/dag/Dev/60_toolchains/codex-vl".to_string()),
             ..Default::default()
         };
 

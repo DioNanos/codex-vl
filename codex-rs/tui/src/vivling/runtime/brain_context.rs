@@ -301,7 +301,7 @@ mod tests {
             active_agent_label: Some("worker".to_string()),
             task_progress: Some("12% (3/25)".to_string()),
             git_branch: Some("develop".to_string()),
-            cwd: Some("/home/user/work/codex-vl".to_string()),
+            cwd: Some("/home/dag/Dev/60_toolchains/codex-vl".to_string()),
             ..Default::default()
         };
         let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", Some(&live))
