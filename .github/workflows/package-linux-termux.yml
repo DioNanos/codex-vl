@@ -1,0 +1,127 @@
+name: package-linux-termux
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version override (defaults to codex-cli/package.json)"
+        required: false
+        type: string
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - Cargo.lock
+      - codex-cli/**
+      - codex-rs/**
+      - scripts/stage_npm_packages.py
+      - .github/workflows/package-linux-termux.yml
+
+jobs:
+  build-linux-x64:
+    runs-on: linux-x64-primary
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          input_version="${{ inputs.release_version }}"
+          if [ -n "$input_version" ]; then
+            version="$input_version"
+          else
+            version="$(node -p "require('./codex-cli/package.json').version")"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build Linux x64 native payload
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli -p codex-exec
+          codex-rs/target/x86_64-unknown-linux-musl/release/codex --version
+      - name: Stage Linux x64 npm package
+        run: |
+          set -euo pipefail
+          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/linux-x64"
+          vendor="$root/vendor/x86_64-unknown-linux-musl"
+          out="$root/npm"
+          rm -rf "$root"
+          mkdir -p "$vendor/codex" "$vendor/path" "$out"
+          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex "$vendor/codex/codex"
+          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          if command -v rg >/dev/null 2>&1; then
+            cp "$(command -v rg)" "$vendor/path/rg"
+            chmod 755 "$vendor/path/rg"
+          else
+            printf '#!/usr/bin/env sh\nexec grep "$@"\n' > "$vendor/path/rg"
+            chmod 755 "$vendor/path/rg"
+          fi
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-linux-x64 \
+            --release-version "$RELEASE_VERSION" \
+            --vendor-src "$root/vendor" \
+            --staging-dir "$root/staging" \
+            --pack-output "$out/codex-npm-linux-x64-$RELEASE_VERSION.tgz"
+          find "$root" -maxdepth 5 -type f -print
+
+  build-android-arm64:
+    runs-on: android-heavy
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          input_version="${{ inputs.release_version }}"
+          if [ -n "$input_version" ]; then
+            version="$input_version"
+          else
+            version="$(node -p "require('./codex-cli/package.json').version")"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Locate Android NDK
+        run: |
+          set -euo pipefail
+          ndk="${ANDROID_NDK_HOME:-}"
+          if [ -z "$ndk" ]; then
+            for candidate in "$HOME/android-ndk/android-ndk-r27c" "$HOME/android-ndk" "$HOME/android-sdk/ndk"/*; do
+              if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+                ndk="$candidate"
+                break
+              fi
+            done
+          fi
+          if [ -z "$ndk" ]; then
+            echo "Android NDK not found on Forge runner" >&2
+            exit 1
+          fi
+          toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+      - name: Build Android arm64 native payload
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-linux-android
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli -p codex-exec
+      - name: Stage Android arm64 npm package
+        run: |
+          set -euo pipefail
+          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/android-arm64"
+          vendor="$root/vendor/aarch64-linux-android"
+          out="$root/npm"
+          rm -rf "$root"
+          mkdir -p "$vendor/codex" "$out"
+          cp codex-rs/target/aarch64-linux-android/release/codex "$vendor/codex/codex"
+          cp codex-rs/target/aarch64-linux-android/release/codex-exec "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-android-arm64 \
+            --release-version "$RELEASE_VERSION" \
+            --vendor-src "$root/vendor" \
+            --staging-dir "$root/staging" \
+            --pack-output "$out/codex-npm-android-arm64-$RELEASE_VERSION.tgz"
+          find "$root" -maxdepth 5 -type f -print

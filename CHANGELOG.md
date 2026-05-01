@@ -4,6 +4,12 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.128.2 - Corrected npm packaging
+
+- Publishes Linux x64 and Termux Android arm64 npm packages with native prebuilts.
+- Keeps macOS npm installs on local Cargo builds instead of shipping unsigned macOS binaries.
+- Supersedes the deprecated `0.128.1` candidate packages.
+
 ## 0.128.1 - macOS npm packaging cleanup
 
 - Changed the macOS npm package to build native binaries locally with Cargo.
