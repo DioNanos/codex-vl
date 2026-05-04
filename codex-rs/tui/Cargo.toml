@@ -125,7 +125,7 @@ codex-windows-sandbox = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
 [target.'cfg(all(not(target_os = "linux"), not(target_os = "android")))'.dependencies]
-cpal = { version = "0.15" }
+cpal = { version = "0.17" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
