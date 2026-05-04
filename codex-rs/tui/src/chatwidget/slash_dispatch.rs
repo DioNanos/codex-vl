@@ -6,11 +6,9 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
-use crate::app_event::LoopCommandRequest;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::slash_commands;
-use crate::vivling::VivlingAction;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -31,7 +29,6 @@ const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_REVIEW_UNAVAILABLE_MESSAGE: &str =
     "'/side' is unavailable while code review is running.";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str = "Press Esc to return to the main thread first.";
-const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 
@@ -237,15 +234,6 @@ impl ChatWidget {
             SlashCommand::Side => {
                 self.request_empty_side_conversation();
             }
-            SlashCommand::Loop => {
-                self.add_info_message(LOOP_USAGE.to_string(), /*hint*/ None);
-            }
-            SlashCommand::Vivling => {
-                self.dispatch_vivling_command("");
-            }
-            SlashCommand::VivlingAlias => {
-                self.add_error_message("Usage: /vl <message>".to_string());
-            }
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
@@ -254,6 +242,9 @@ impl ChatWidget {
             }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
+            }
+            SlashCommand::Vim => {
+                self.toggle_vim_mode_and_notify();
             }
             SlashCommand::Keymap => {
                 self.open_keymap_picker();
@@ -328,9 +319,6 @@ impl ChatWidget {
             SlashCommand::Logout => {
                 self.app_event_tx.send(AppEvent::Logout);
             }
-            // SlashCommand::Undo => {
-            //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
-            // }
             SlashCommand::Copy => {
                 self.copy_last_agent_markdown();
             }
@@ -357,6 +345,9 @@ impl ChatWidget {
             SlashCommand::Skills => {
                 self.open_skills_menu();
             }
+            SlashCommand::Hooks => {
+                self.add_hooks_output();
+            }
             SlashCommand::Status => {
                 if self.should_prefetch_rate_limits() {
                     let request_id = self.next_status_refresh_request_id;
@@ -371,6 +362,9 @@ impl ChatWidget {
                         /*refreshing_rate_limits*/ false, /*request_id*/ None,
                     );
                 }
+            }
+            SlashCommand::Ide => {
+                self.handle_ide_command();
             }
             SlashCommand::DebugConfig => {
                 self.add_debug_config_output();
@@ -421,8 +415,8 @@ impl ChatWidget {
             SlashCommand::TestApproval => {
                 use std::collections::HashMap;
 
-                use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
-                use codex_protocol::protocol::FileChange;
+                use crate::approval_events::ApplyPatchApprovalRequestEvent;
+                use crate::diff_model::FileChange;
 
                 self.on_apply_patch_approval_request(
                     "1".to_string(),
@@ -581,6 +575,9 @@ impl ChatWidget {
                     }
                 }
             }
+            SlashCommand::Ide => {
+                self.handle_ide_command_args(trimmed);
+            }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
                 "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
                 _ => self.add_error_message("Usage: /mcp [verbose]".to_string()),
@@ -716,30 +713,9 @@ impl ChatWidget {
                 );
                 self.request_side_conversation(parent_thread_id, Some(user_message));
             }
-            SlashCommand::Loop => {
-                let Some(thread_id) = self.thread_id else {
-                    self.add_error_message(
-                        "'/loop' is unavailable before the session starts.".to_string(),
-                    );
-                    return;
-                };
-                let Some(request) = parse_loop_command(trimmed) else {
-                    self.add_error_message(LOOP_USAGE.to_string());
-                    return;
-                };
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::LoopCommand { thread_id, request });
-            }
-            SlashCommand::Vivling => {
-                self.dispatch_vivling_command(trimmed);
-            }
-            SlashCommand::VivlingAlias => {
-                self.dispatch_vivling_direct_alias(trimmed);
-            }
             SlashCommand::Review if !trimmed.is_empty() => {
-                self.submit_op(AppCommand::review(ReviewRequest {
-                    target: ReviewTarget::Custom { instructions: args },
-                    user_facing_hint: None,
+                self.submit_op(AppCommand::review(ReviewTarget::Custom {
+                    instructions: args,
                 }));
             }
             SlashCommand::Resume if !trimmed.is_empty() => {
@@ -865,6 +841,7 @@ impl ChatWidget {
         }
         match cmd {
             SlashCommand::Fast
+            | SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
@@ -875,10 +852,8 @@ impl ChatWidget {
             | SlashCommand::Apps
             | SlashCommand::Plugins
             | SlashCommand::Rollout
-            | SlashCommand::Loop
-            | SlashCommand::Vivling
-            | SlashCommand::VivlingAlias
             | SlashCommand::Copy
+            | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::Rename
             | SlashCommand::TestApproval => QueueDrain::Continue,
@@ -913,91 +888,11 @@ impl ChatWidget {
             | SlashCommand::Logout
             | SlashCommand::Mention
             | SlashCommand::Skills
+            | SlashCommand::Hooks
             | SlashCommand::Title
             | SlashCommand::Statusline
             | SlashCommand::Theme => QueueDrain::Stop,
         }
-    }
-
-    fn dispatch_vivling_command(&mut self, args: &str) {
-        self.sync_vivling_live_context();
-        match VivlingAction::parse(args)
-            .and_then(|action| self.bottom_pane.run_vivling_command(&self.config, action))
-        {
-            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
-                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat)
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
-                let view = crate::bottom_pane::VivlingCardView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
-                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(
-                    "Vivling brain is thinking...".to_string(),
-                    crate::vl::VivlingLogKind::Assist,
-                );
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
-            }
-            Err(message) => self.add_error_message(message),
-        }
-    }
-
-    fn dispatch_vivling_direct_alias(&mut self, args: &str) {
-        self.sync_vivling_live_context();
-        let trimmed = args.trim();
-        if trimmed.is_empty() {
-            self.add_error_message("Usage: /vl <message>".to_string());
-            return;
-        }
-        let action = if trimmed.eq_ignore_ascii_case("status") {
-            VivlingAction::Status
-        } else {
-            VivlingAction::Chat(trimmed.to_string())
-        };
-        match self.bottom_pane.run_vivling_command(&self.config, action) {
-            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
-                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat)
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
-                let view = crate::bottom_pane::VivlingCardView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
-                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(
-                    "Vivling brain is thinking...".to_string(),
-                    crate::vl::VivlingLogKind::Assist,
-                );
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
-            }
-            Err(message) => self.add_error_message(message),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn dispatch_vivling_command_for_test(&mut self, args: &str) {
-        self.dispatch_vivling_command(args);
     }
 
     fn slash_command_args_elements(
@@ -1045,93 +940,5 @@ impl ChatWidget {
         self.add_error_message(SIDE_REVIEW_UNAVAILABLE_MESSAGE.to_string());
         self.bottom_pane.drain_pending_submission_state();
         false
-    }
-}
-
-fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
-    let trimmed = args.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let subcommand = parts.next()?;
-    match subcommand {
-        "ls" => Some(LoopCommandRequest::List),
-        "show" => Some(LoopCommandRequest::Show {
-            label: parts.next()?.to_string(),
-        }),
-        "on" => Some(LoopCommandRequest::Enable {
-            label: parts.next()?.to_string(),
-        }),
-        "off" => Some(LoopCommandRequest::Disable {
-            label: parts.next()?.to_string(),
-        }),
-        "rm" => Some(LoopCommandRequest::Remove {
-            label: parts.next()?.to_string(),
-        }),
-        "owner" => match parts.next() {
-            None => Some(LoopCommandRequest::OwnerShow),
-            Some("main") => Some(LoopCommandRequest::OwnerSetMain),
-            Some("vivling") => Some(LoopCommandRequest::OwnerSetVivling),
-            Some(_) => None,
-        },
-        "add" => {
-            let label = parts.next()?.to_string();
-            let interval_token = parts.next()?;
-            let prompt_text = parts.collect::<Vec<_>>().join(" ");
-            let interval_seconds = parse_loop_interval_seconds(interval_token)?;
-            if prompt_text.trim().is_empty() {
-                return None;
-            }
-            Some(LoopCommandRequest::Add {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text: None,
-                auto_remove_on_completion: None,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn parse_loop_interval_seconds(token: &str) -> Option<i64> {
-    if token.len() < 2 {
-        return None;
-    }
-    let (value, unit) = token.split_at(token.len() - 1);
-    let value = value.parse::<i64>().ok()?;
-    let interval_seconds = match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3600,
-        _ => return None,
-    };
-    ((30..=86_400).contains(&interval_seconds)).then_some(interval_seconds)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_loop_add_accepts_valid_interval() {
-        let command = parse_loop_command("add ci 5m check forge").expect("valid loop command");
-        assert_eq!(
-            command,
-            LoopCommandRequest::Add {
-                label: "ci".to_string(),
-                interval_seconds: 300,
-                prompt_text: "check forge".to_string(),
-                goal_text: None,
-                auto_remove_on_completion: None,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_loop_rejects_short_interval() {
-        assert_eq!(parse_loop_command("add ci 5s nope"), None);
     }
 }

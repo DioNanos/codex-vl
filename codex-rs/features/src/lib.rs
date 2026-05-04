@@ -172,6 +172,10 @@ pub enum Feature {
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
     BrowserUse,
+    /// Allow Browser Use integration with external browsers.
+    ///
+    /// Requirements-only gate: this should be set from requirements, not user config.
+    BrowserUseExternal,
     /// Allow Codex Computer Use.
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
@@ -589,6 +593,37 @@ impl FeaturesToml {
         }
         entries
     }
+
+    pub fn materialize_resolved_enabled(&mut self, features: &Features) {
+        let Self {
+            multi_agent_v2,
+            apps_mcp_path_override,
+            entries,
+        } = self;
+        for key in legacy::legacy_feature_keys() {
+            entries.remove(key);
+        }
+        for spec in FEATURES {
+            let enabled = features.enabled(spec.id);
+            if spec.id == Feature::MultiAgentV2 {
+                materialize_resolved_feature_enabled(multi_agent_v2, enabled);
+            } else if spec.id == Feature::AppsMcpPathOverride {
+                materialize_resolved_feature_enabled(apps_mcp_path_override, enabled);
+            } else {
+                entries.insert(spec.key.to_string(), enabled);
+            }
+        }
+    }
+}
+
+fn materialize_resolved_feature_enabled<T: FeatureConfig>(
+    feature: &mut Option<FeatureToml<T>>,
+    enabled: bool,
+) {
+    match feature {
+        Some(feature) => feature.set_enabled(enabled),
+        None => *feature = Some(FeatureToml::Enabled(enabled)),
+    }
 }
 
 impl From<BTreeMap<String, bool>> for FeaturesToml {
@@ -616,12 +651,20 @@ impl<T: FeatureConfig> FeatureToml<T> {
             Self::Config(config) => config.enabled(),
         }
     }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        match self {
+            Self::Enabled(value) => *value = enabled,
+            Self::Config(config) => config.set_enabled(enabled),
+        }
+    }
 }
 
 // A trait to be implemented by custom feature config structs when defining a feature that needs more configuration than
 // just enabled/disabled.
 pub trait FeatureConfig {
     fn enabled(&self) -> Option<bool>;
+    fn set_enabled(&mut self, enabled: bool);
 }
 
 /// Single, easy-to-read registry of all feature definitions.
@@ -778,7 +821,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     },
     FeatureSpec {
         id: Feature::CodexHooks,
-        key: "codex_hooks",
+        key: "hooks",
         stage: Stage::Stable,
         default_enabled: true,
     },
@@ -911,6 +954,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::BrowserUse,
         key: "browser_use",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::BrowserUseExternal,
+        key: "browser_use_external",
         stage: Stage::Stable,
         default_enabled: true,
     },

@@ -4,9 +4,8 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::bottom_pane::status_line_from_segments;
 use crate::status::format_tokens_compact;
-use crate::vivling::VivlingLiveContext;
-use crate::vivling::VivlingLiveStatusItem;
 
 /// Items shown in the terminal title when the user has not configured a
 /// custom selection. Intentionally minimal: activity indicator + project name.
@@ -35,7 +34,6 @@ const TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN: &str = "[ . ] Action Require
 pub(super) enum TerminalTitleStatusKind {
     Working,
     WaitingForBackgroundTerminal,
-    Undoing,
     #[default]
     Thinking,
 }
@@ -152,19 +150,17 @@ impl ChatWidget {
             return;
         }
 
-        let mut parts = Vec::new();
+        let mut segments = Vec::new();
         for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(item) {
-                parts.push(value);
+            if let Some(value) = self.status_line_value_for_item(*item) {
+                segments.push((*item, value));
             }
         }
 
-        let line = if parts.is_empty() {
-            None
-        } else {
-            Some(Line::from(parts.join(" · ")))
-        };
-        self.set_status_line(line);
+        self.set_status_line(status_line_from_segments(
+            segments,
+            self.config.tui_status_line_use_colors,
+        ));
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -246,7 +242,6 @@ impl ChatWidget {
         self.sync_status_surface_shared_state(&selections);
         self.refresh_status_line_from_selections(&selections);
         self.refresh_terminal_title_from_selections(&selections);
-        self.sync_vivling_live_context_from_status_items(&selections.status_line_items);
     }
 
     /// Recomputes and emits the terminal title from config and runtime state.
@@ -499,7 +494,7 @@ impl ChatWidget {
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
     /// this to keep partially available status lines readable while waiting for session, token, or
     /// git metadata.
-    pub(super) fn status_line_value_for_item(&mut self, item: &StatusLineItem) -> Option<String> {
+    pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
@@ -577,49 +572,6 @@ impl ChatWidget {
         }
     }
 
-    pub(super) fn sync_vivling_live_context(&mut self) {
-        let (status_line_items, _) = self.status_line_items_with_invalids();
-        self.sync_vivling_live_context_from_status_items(&status_line_items);
-    }
-
-    fn sync_vivling_live_context_from_status_items(&mut self, items: &[StatusLineItem]) {
-        let context = self.vivling_live_context_for_items(items);
-        self.bottom_pane.set_vivling_live_context(Some(context));
-    }
-
-    fn vivling_live_context_for_items(&mut self, items: &[StatusLineItem]) -> VivlingLiveContext {
-        let active_agent_label = self.bottom_pane.active_agent_label().map(str::to_string);
-        let run_state = Some(self.run_state_status_text());
-        let model = Some(self.model_with_reasoning_display_name());
-        let cwd = self.status_line_value_for_item(&StatusLineItem::CurrentDir);
-        let thread_title = self.status_line_value_for_item(&StatusLineItem::ThreadTitle);
-        let task_progress = self.status_line_value_for_item(&StatusLineItem::TaskProgress);
-        let session_id = self.status_line_value_for_item(&StatusLineItem::SessionId);
-        let git_branch = self.status_line_value_for_item(&StatusLineItem::GitBranch);
-        let status_items = items
-            .iter()
-            .filter_map(|item| {
-                self.status_line_value_for_item(item)
-                    .map(|value| VivlingLiveStatusItem {
-                        id: item.to_string(),
-                        value,
-                    })
-            })
-            .collect();
-
-        VivlingLiveContext {
-            status_items,
-            run_state,
-            active_agent_label,
-            model,
-            cwd,
-            thread_title,
-            task_progress,
-            session_id,
-            git_branch,
-        }
-    }
-
     pub(super) fn status_surface_preview_value_for_item(
         &mut self,
         item: StatusSurfacePreviewItem,
@@ -647,7 +599,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
         };
-        self.status_line_value_for_item(&status_line_item)
+        self.status_line_value_for_item(status_line_item)
     }
     /// Resolves one configured terminal-title item into a displayable segment.
     ///
@@ -682,34 +634,34 @@ impl ChatWidget {
                 Self::truncate_terminal_title_part(branch.clone(), /*max_chars*/ 32)
             }),
             TerminalTitleItem::ContextRemaining => self
-                .status_line_value_for_item(&StatusLineItem::ContextRemaining)
+                .status_line_value_for_item(StatusLineItem::ContextRemaining)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::ContextUsed => self
-                .status_line_value_for_item(&StatusLineItem::ContextUsed)
+                .status_line_value_for_item(StatusLineItem::ContextUsed)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::FiveHourLimit => self
-                .status_line_value_for_item(&StatusLineItem::FiveHourLimit)
+                .status_line_value_for_item(StatusLineItem::FiveHourLimit)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::WeeklyLimit => self
-                .status_line_value_for_item(&StatusLineItem::WeeklyLimit)
+                .status_line_value_for_item(StatusLineItem::WeeklyLimit)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::CodexVersion => self
-                .status_line_value_for_item(&StatusLineItem::CodexVersion)
+                .status_line_value_for_item(StatusLineItem::CodexVersion)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::UsedTokens => self
-                .status_line_value_for_item(&StatusLineItem::UsedTokens)
+                .status_line_value_for_item(StatusLineItem::UsedTokens)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::TotalInputTokens => self
-                .status_line_value_for_item(&StatusLineItem::TotalInputTokens)
+                .status_line_value_for_item(StatusLineItem::TotalInputTokens)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::TotalOutputTokens => self
-                .status_line_value_for_item(&StatusLineItem::TotalOutputTokens)
+                .status_line_value_for_item(StatusLineItem::TotalOutputTokens)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::SessionId => self
-                .status_line_value_for_item(&StatusLineItem::SessionId)
+                .status_line_value_for_item(StatusLineItem::SessionId)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::FastMode => self
-                .status_line_value_for_item(&StatusLineItem::FastMode)
+                .status_line_value_for_item(StatusLineItem::FastMode)
                 .map(|value| Self::truncate_terminal_title_part(value, /*max_chars*/ 32)),
             TerminalTitleItem::Model => Some(Self::truncate_terminal_title_part(
                 self.model_display_name().to_string(),
@@ -757,7 +709,6 @@ impl ChatWidget {
             }
             TerminalTitleStatusKind::Working => "Working".to_string(),
             TerminalTitleStatusKind::WaitingForBackgroundTerminal => "Waiting".to_string(),
-            TerminalTitleStatusKind::Undoing => "Undoing".to_string(),
             TerminalTitleStatusKind::Thinking => "Thinking".to_string(),
         }
     }
@@ -794,9 +745,7 @@ impl ChatWidget {
             return false;
         }
 
-        self.mcp_startup_status.is_some()
-            || self.bottom_pane.is_task_running()
-            || self.terminal_title_status_kind == TerminalTitleStatusKind::Undoing
+        self.mcp_startup_status.is_some() || self.bottom_pane.is_task_running()
     }
 
     pub(super) fn should_animate_terminal_title_spinner(&self) -> bool {

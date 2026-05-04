@@ -29,14 +29,13 @@ use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
-use crate::vivling::Vivling;
 pub(crate) use bottom_pane_view::BottomPaneView;
 use bottom_pane_view::ViewCompletion;
+use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_core_skills::model::SkillMetadata;
 use codex_features::Features;
 use codex_file_search::FileMatch;
 use codex_plugin::PluginCapabilitySummary;
-use codex_protocol::request_user_input::RequestUserInputEvent;
 use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -54,6 +53,7 @@ mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
 mod status_line_setup;
+mod status_line_style;
 mod status_surface_preview;
 mod title_setup;
 pub(crate) use action_required_title::ACTION_REQUIRED_PREVIEW_PREFIX;
@@ -68,6 +68,7 @@ pub(crate) use approval_overlay::format_requested_permissions_rule;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
+pub(crate) use status_line_style::status_line_from_segments;
 mod bottom_pane_view;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +112,7 @@ pub(crate) use list_selection_view::popup_content_width;
 pub(crate) use list_selection_view::side_by_side_layout_widths;
 pub(crate) use memories_settings_view::MemoriesSettingsView;
 mod feedback_view;
+mod hooks_browser_view;
 pub(crate) use feedback_view::FeedbackAudience;
 pub(crate) use feedback_view::feedback_classification;
 pub(crate) use feedback_view::feedback_disabled_params;
@@ -136,12 +138,9 @@ mod selection_popup_common;
 mod selection_tabs;
 mod textarea;
 mod unified_exec_footer;
-mod vivling_view;
-mod vl_ext;
 pub(crate) use feedback_view::FeedbackNoteView;
+pub(crate) use hooks_browser_view::HooksBrowserView;
 pub(crate) use selection_tabs::SelectionTab;
-pub(crate) use vivling_view::VivlingCardView;
-pub(crate) use vivling_view::VivlingUpgradeView;
 
 /// How long the "press again to quit" hint stays visible.
 ///
@@ -224,12 +223,6 @@ pub(crate) struct BottomPane {
     unified_exec_footer: UnifiedExecFooter,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
-    /// Local terminal companion.
-    vivling: Vivling,
-    /// Dedicated sidebar for Vivling chat/assist messages.
-    vl_sidebar: crate::vl::VivlingSidebar,
-    /// Lifecycle state for Vivling activity (sleeping, eating, etc.).
-    vl_lifecycle: Option<crate::vl::LifecycleState>,
     /// Inactive threads with pending approval requests.
     pending_thread_approvals: PendingThreadApprovals,
     context_window_percent: Option<i64>,
@@ -271,8 +264,6 @@ impl BottomPane {
         let keymap = RuntimeKeymap::defaults();
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
-        let mut vivling = Vivling::unavailable();
-        vivling.configure_runtime(frame_requester.clone(), animations_enabled);
         Self {
             composer,
             view_stack: Vec::new(),
@@ -287,9 +278,6 @@ impl BottomPane {
             status: None,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
-            vivling,
-            vl_sidebar: crate::vl::VivlingSidebar::new(),
-            vl_lifecycle: None,
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
             animations_enabled,
@@ -302,13 +290,6 @@ impl BottomPane {
     pub fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.composer.set_skill_mentions(skills);
         self.request_redraw();
-    }
-
-    // codex-vl: Vivling-related methods live in `bottom_pane/vl_ext.rs`.
-
-    #[cfg(test)]
-    pub(crate) fn active_view_id_for_test(&self) -> Option<&'static str> {
-        self.view_stack.last().and_then(|view| view.view_id())
     }
 
     /// Update image-paste behavior for the active composer and repaint immediately.
@@ -399,6 +380,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub fn set_ide_context_active(&mut self, active: bool) {
+        self.composer.set_ide_context_active(active);
+        self.request_redraw();
+    }
+
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
         self.composer.set_personality_command_enabled(enabled);
         self.request_redraw();
@@ -439,6 +425,17 @@ impl BottomPane {
     pub(crate) fn set_queued_message_edit_binding(&mut self, binding: Option<KeyBinding>) {
         self.pending_input_preview.set_edit_binding(binding);
         self.request_redraw();
+    }
+
+    pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {
+        self.composer.set_vim_enabled(enabled);
+        self.request_redraw();
+    }
+
+    pub(crate) fn toggle_vim_enabled(&mut self) -> bool {
+        let enabled = self.composer.toggle_vim_enabled();
+        self.request_redraw();
+        enabled
     }
 
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
@@ -596,31 +593,6 @@ impl BottomPane {
             self.request_redraw();
             InputResult::None
         } else {
-            // codex-vl: Ctrl+J toggles the Vivling sidebar.
-            if key_event.kind == KeyEventKind::Press
-                && key_event.code == KeyCode::Char('j')
-                && key_event
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL)
-            {
-                self.toggle_vl_sidebar();
-                return InputResult::None;
-            }
-            // codex-vl: PgUp/PgDn scroll the Vivling sidebar when expanded.
-            if self.vl_sidebar.is_expanded() && key_event.kind == KeyEventKind::Press {
-                match key_event.code {
-                    KeyCode::PageUp => {
-                        self.scroll_vl_sidebar(-5);
-                        return InputResult::None;
-                    }
-                    KeyCode::PageDown => {
-                        self.scroll_vl_sidebar(5);
-                        return InputResult::None;
-                    }
-                    _ => {}
-                }
-            }
-
             let is_agent_command = self
                 .composer_text()
                 .lines()
@@ -636,6 +608,7 @@ impl BottomPane {
                 && self.is_task_running
                 && !is_agent_command
                 && !self.composer.popup_active()
+                && !self.composer_should_handle_vim_insert_escape(key_event)
                 && let Some(status) = &self.status
             {
                 // Send Op::Interrupt
@@ -961,7 +934,6 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
-        self.vivling.set_task_running(running);
 
         if running {
             if !was_running {
@@ -1172,6 +1144,15 @@ impl BottomPane {
         self.composer.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn composer_is_vim_enabled(&self) -> bool {
+        self.composer.is_vim_enabled()
+    }
+
+    pub(crate) fn composer_should_handle_vim_insert_escape(&self, key_event: KeyEvent) -> bool {
+        self.composer.should_handle_vim_insert_escape(key_event)
+    }
+
     pub(crate) fn is_task_running(&self) -> bool {
         self.is_task_running
     }
@@ -1254,7 +1235,7 @@ impl BottomPane {
     }
 
     /// Called when the agent requests user input.
-    pub fn push_user_input_request(&mut self, request: RequestUserInputEvent) {
+    pub fn push_user_input_request(&mut self, request: ToolRequestUserInputParams) {
         let request = if let Some(view) = self.view_stack.last_mut() {
             match view.try_consume_user_input_request(request) {
                 Some(request) => request,
@@ -1536,15 +1517,6 @@ impl BottomPane {
                 /*flex*/ 1,
                 RenderableItem::Borrowed(&self.pending_input_preview),
             );
-            if self.vivling.should_render() {
-                if has_inline_previews || has_status_or_footer {
-                    flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
-                }
-                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
-            }
-            if self.vl_sidebar.should_render() {
-                flex.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
-            }
             if !has_inline_previews && has_status_or_footer {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
             }
@@ -1577,18 +1549,8 @@ impl BottomPane {
         }
     }
 
-    pub(crate) fn active_agent_label(&self) -> Option<&str> {
-        self.composer.active_agent_label()
-    }
-
     pub(crate) fn set_side_conversation_context_label(&mut self, label: Option<String>) {
         if self.composer.set_side_conversation_context_label(label) {
-            self.request_redraw();
-        }
-    }
-
-    pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) {
-        if self.composer.set_loop_context_label(label) {
             self.request_redraw();
         }
     }
@@ -1629,20 +1591,23 @@ impl Renderable for BottomPane {
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.as_renderable().cursor_pos(area)
     }
+
+    fn cursor_style(&self, area: Rect) -> crossterm::cursor::SetCursorStyle {
+        self.as_renderable().cursor_style(area)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::app_server_requests::ResolvedAppServerRequest;
-    use crate::app_command::AppCommand;
+    use crate::app_command::AppCommand as Op;
     use crate::app_event::AppEvent;
     use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
     use crate::status_indicator_widget::StatusDetailsCapitalization;
     use crate::test_support::PathBufExt;
     use crate::test_support::test_path_buf;
-    use codex_protocol::protocol::ReviewDecision;
-    use codex_protocol::protocol::SkillScope;
+    use codex_app_server_protocol::CommandExecutionApprovalDecision;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyEventKind;
@@ -1702,8 +1667,8 @@ mod tests {
             command: vec!["echo".into(), "ok".into()],
             reason: None,
             available_decisions: vec![
-                codex_protocol::protocol::ReviewDecision::Approved,
-                codex_protocol::protocol::ReviewDecision::Abort,
+                CommandExecutionApprovalDecision::Accept,
+                CommandExecutionApprovalDecision::Cancel,
             ],
             network_approval_context: None,
             additional_permissions: None,
@@ -1958,14 +1923,17 @@ mod tests {
         let mut approval_decision = None;
         while let Ok(event) = rx.try_recv() {
             if let AppEvent::SubmitThreadOp {
-                op: AppCommand::ExecApproval { decision, .. },
+                op: Op::ExecApproval { decision, .. },
                 ..
             } = event
             {
                 approval_decision = Some(decision);
             }
         }
-        assert_eq!(approval_decision, Some(ReviewDecision::Approved));
+        assert_eq!(
+            approval_decision,
+            Some(CommandExecutionApprovalDecision::Accept)
+        );
     }
 
     #[test]
@@ -2422,7 +2390,7 @@ mod tests {
                 dependencies: None,
                 policy: None,
                 path_to_skills_md: test_path_buf("/tmp/test-skill/SKILL.md").abs(),
-                scope: SkillScope::User,
+                scope: crate::test_support::skill_scope_user(),
             }]),
         });
 
@@ -2439,7 +2407,7 @@ mod tests {
 
         while let Ok(ev) = rx.try_recv() {
             assert!(
-                !matches!(ev, AppEvent::CodexOp(AppCommand::Interrupt)),
+                !matches!(ev, AppEvent::CodexOp(Op::Interrupt)),
                 "expected Esc to not send Op::Interrupt when dismissing skill popup"
             );
         }
@@ -2477,7 +2445,7 @@ mod tests {
 
         while let Ok(ev) = rx.try_recv() {
             assert!(
-                !matches!(ev, AppEvent::CodexOp(AppCommand::Interrupt)),
+                !matches!(ev, AppEvent::CodexOp(Op::Interrupt)),
                 "expected Esc to not send Op::Interrupt while command popup is active"
             );
         }
@@ -2513,7 +2481,7 @@ mod tests {
 
         while let Ok(ev) = rx.try_recv() {
             assert!(
-                !matches!(ev, AppEvent::CodexOp(AppCommand::Interrupt)),
+                !matches!(ev, AppEvent::CodexOp(Op::Interrupt)),
                 "expected Esc to not send Op::Interrupt while typing `/agent`"
             );
         }
@@ -2558,7 +2526,7 @@ mod tests {
 
         while let Ok(ev) = rx.try_recv() {
             assert!(
-                !matches!(ev, AppEvent::CodexOp(AppCommand::Interrupt)),
+                !matches!(ev, AppEvent::CodexOp(Op::Interrupt)),
                 "expected Esc release after dismissing agent picker to not interrupt"
             );
         }
@@ -2588,7 +2556,7 @@ mod tests {
         pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
         assert!(
-            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(AppCommand::Interrupt))),
+            matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "expected Esc to send Op::Interrupt while a task is running"
         );
     }

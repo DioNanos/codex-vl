@@ -5,51 +5,18 @@
 //! the main event loop remains single-threaded.
 
 use super::*;
-use crate::vivling::VivlingAssistRequest;
-use crate::vivling::VivlingLoopTickRequest;
-use crate::vivling::VivlingLoopTickResult;
 use codex_app_server_protocol::MarketplaceAddParams;
 use codex_app_server_protocol::MarketplaceAddResponse;
-use codex_core::ModelClient;
-use codex_core::Prompt;
-use codex_core::ResponseEvent;
-use codex_core::build_models_manager;
-use codex_core::content_items_to_text;
+use codex_app_server_protocol::MarketplaceRemoveParams;
+use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::MarketplaceUpgradeParams;
+use codex_app_server_protocol::MarketplaceUpgradeResponse;
+
+use codex_app_server_protocol::RequestId;
+
 use codex_utils_absolute_path::AbsolutePathBuf;
-use std::sync::Arc;
-use tokio_stream::StreamExt;
 
 impl App {
-    pub(super) fn run_vivling_assist(&mut self, request: VivlingAssistRequest) {
-        let app_event_tx = self.app_event_tx.clone();
-        let config = self.config.clone();
-        let session_telemetry = self.session_telemetry.clone();
-        tokio::spawn(async move {
-            let vivling_id = request.vivling_id.clone();
-            let result = run_vivling_assist_request(config, session_telemetry, request).await;
-            app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished { vivling_id, result });
-        });
-    }
-
-    pub(super) fn run_vivling_loop_tick(
-        &mut self,
-        thread_id: ThreadId,
-        job_id: String,
-        request: VivlingLoopTickRequest,
-    ) {
-        let app_event_tx = self.app_event_tx.clone();
-        let config = self.config.clone();
-        let session_telemetry = self.session_telemetry.clone();
-        tokio::spawn(async move {
-            let result = run_vivling_loop_tick_request(config, session_telemetry, request).await;
-            app_event_tx.send_vl(crate::vl::VlEvent::VivlingLoopTickFinished {
-                thread_id,
-                job_id,
-                result,
-            });
-        });
-    }
-
     pub(super) fn fetch_mcp_inventory(
         &mut self,
         app_server: &AppServerSession,
@@ -132,6 +99,17 @@ impl App {
         });
     }
 
+    pub(super) fn fetch_hooks_list(&mut self, app_server: &AppServerSession, cwd: PathBuf) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result = fetch_hooks_list(request_handle, cwd.clone())
+                .await
+                .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::HooksLoaded { cwd, result });
+        });
+    }
+
     pub(super) fn fetch_plugin_detail(
         &mut self,
         app_server: &AppServerSession,
@@ -165,6 +143,50 @@ impl App {
             app_event_tx.send(AppEvent::MarketplaceAddLoaded {
                 cwd: cwd_for_event,
                 source: source_for_event,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn fetch_marketplace_remove(
+        &mut self,
+        app_server: &AppServerSession,
+        cwd: PathBuf,
+        marketplace_name: String,
+        marketplace_display_name: String,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let cwd_for_event = cwd.clone();
+            let marketplace_name_for_event = marketplace_name.clone();
+            let result = fetch_marketplace_remove(request_handle, marketplace_name)
+                .await
+                .map_err(|err| format!("Failed to remove marketplace: {err}"));
+            app_event_tx.send(AppEvent::MarketplaceRemoveLoaded {
+                cwd: cwd_for_event,
+                marketplace_name: marketplace_name_for_event,
+                marketplace_display_name,
+                result,
+            });
+        });
+    }
+
+    pub(super) fn fetch_marketplace_upgrade(
+        &mut self,
+        app_server: &AppServerSession,
+        cwd: PathBuf,
+        marketplace_name: Option<String>,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let cwd_for_event = cwd.clone();
+            let result = fetch_marketplace_upgrade(request_handle, marketplace_name)
+                .await
+                .map_err(|err| format!("Failed to upgrade marketplace: {err}"));
+            app_event_tx.send(AppEvent::MarketplaceUpgradeLoaded {
+                cwd: cwd_for_event,
                 result,
             });
         });
@@ -263,6 +285,43 @@ impl App {
         });
     }
 
+    pub(super) fn set_hook_enabled(
+        &mut self,
+        app_server: &AppServerSession,
+        key: String,
+        enabled: bool,
+    ) {
+        if let Some(queued_enabled) = self.pending_hook_enabled_writes.get_mut(&key) {
+            *queued_enabled = Some(enabled);
+            return;
+        }
+
+        self.pending_hook_enabled_writes.insert(key.clone(), None);
+        self.spawn_hook_enabled_write(app_server, key, enabled);
+    }
+
+    pub(super) fn spawn_hook_enabled_write(
+        &mut self,
+        app_server: &AppServerSession,
+        key: String,
+        enabled: bool,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let key_for_event = key.clone();
+            let result = write_hook_enabled(request_handle, key, enabled)
+                .await
+                .map(|_| ())
+                .map_err(|err| format!("Failed to update hook config: {err}"));
+            app_event_tx.send(AppEvent::HookEnabledSet {
+                key: key_for_event,
+                enabled,
+                result,
+            });
+        });
+    }
+
     pub(super) fn refresh_plugin_mentions(&mut self) {
         let config = self.config.clone();
         let app_event_tx = self.app_event_tx.clone();
@@ -272,8 +331,9 @@ impl App {
         }
 
         tokio::spawn(async move {
+            let plugins_input = config.plugins_config_input();
             let plugins = PluginsManager::new(config.codex_home.to_path_buf())
-                .plugins_for_config(&config)
+                .plugins_for_config(&plugins_input)
                 .await
                 .capability_summaries()
                 .to_vec();
@@ -454,234 +514,6 @@ impl App {
     }
 }
 
-async fn run_vivling_assist_request(
-    config: Config,
-    session_telemetry: SessionTelemetry,
-    request: VivlingAssistRequest,
-) -> Result<String, String> {
-    let profile_config = ConfigBuilder::default()
-        .codex_home(config.codex_home.to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            cwd: Some(config.cwd.to_path_buf()),
-            config_profile: Some(request.brain_profile.clone()),
-            ..ConfigOverrides::default()
-        })
-        .build()
-        .await
-        .map_err(|err| format!("Failed to load Vivling brain profile: {err}"))?;
-
-    let auth_manager = Arc::new(
-        codex_login::AuthManager::new(
-            profile_config.codex_home.to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            profile_config.cli_auth_credentials_store_mode,
-            Some(profile_config.chatgpt_base_url.clone()),
-        )
-        .await,
-    );
-    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_name = profile_config.model.clone().ok_or_else(|| {
-        format!(
-            "Vivling profile `{}` does not resolve to a model.",
-            request.brain_profile
-        )
-    })?;
-    let model_info = models_manager
-        .get_model_info(&model_name, &profile_config.to_models_manager_config())
-        .await;
-
-    let client = ModelClient::new(
-        Some(auth_manager),
-        ThreadId::new(),
-        request.vivling_id.clone(),
-        profile_config.model_provider.clone(),
-        codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
-        profile_config.model_verbosity,
-        profile_config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        profile_config.features.enabled(Feature::RuntimeMetrics),
-        None,
-    );
-    let mut prompt = Prompt::default();
-    prompt.input = vec![codex_protocol::models::ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![codex_protocol::models::ContentItem::InputText {
-            text: request.prompt_context,
-        }],
-        phase: None,
-    }];
-    let instruction_text = match &request.kind {
-        crate::vivling::VivlingBrainRequestKind::Assist => format!(
-            "You are {} speaking as a Vivling inside Codex. Stay concise, operational, verification-first, and speak from your dominant role. Treat learned memory as history and bias, not as proof of current live state. Do not claim the system is blocked, idle, active, or complete unless the task explicitly says so. Answer only the task at hand. Do not claim actions you did not perform. If blocked, say exactly what is missing.",
-            request.vivling_name
-        ),
-        crate::vivling::VivlingBrainRequestKind::Chat => format!(
-            "You are {} speaking as a Vivling inside Codex. Reply conversationally to your owner, in character, but stay concise and useful. Treat learned memory as history and bias, not proof of current live state. Do not claim actions, tool results, blockers, or completion unless the user message explicitly provides that state.",
-            request.vivling_name
-        ),
-    };
-    prompt.base_instructions = codex_protocol::models::BaseInstructions {
-        text: instruction_text,
-    };
-
-    let mut client_session = client.new_session();
-    let mut stream = client_session
-        .stream(
-            &prompt,
-            &model_info,
-            &session_telemetry,
-            profile_config.model_reasoning_effort,
-            profile_config.model_reasoning_summary.unwrap_or_default(),
-            profile_config.service_tier,
-            None,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
-        )
-        .await
-        .map_err(|err| format!("Vivling brain request failed: {err}"))?;
-
-    let mut result = String::new();
-    while let Some(event) = stream
-        .next()
-        .await
-        .transpose()
-        .map_err(|err: codex_protocol::error::CodexErr| err.to_string())?
-    {
-        match event {
-            ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
-            ResponseEvent::OutputItemDone(item) => {
-                if result.is_empty()
-                    && let codex_protocol::models::ResponseItem::Message { content, .. } = item
-                    && let Some(text) = content_items_to_text(&content)
-                {
-                    result.push_str(&text);
-                }
-            }
-            ResponseEvent::Completed { .. } => break,
-            _ => {}
-        }
-    }
-
-    let trimmed = result.trim();
-    if trimmed.is_empty() {
-        Err("Vivling brain returned no output.".to_string())
-    } else {
-        Ok(trimmed.to_string())
-    }
-}
-
-async fn run_vivling_loop_tick_request(
-    config: Config,
-    session_telemetry: SessionTelemetry,
-    request: VivlingLoopTickRequest,
-) -> Result<VivlingLoopTickResult, String> {
-    let profile_config = ConfigBuilder::default()
-        .codex_home(config.codex_home.to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            cwd: Some(config.cwd.to_path_buf()),
-            config_profile: Some(request.brain_profile.clone()),
-            ..ConfigOverrides::default()
-        })
-        .build()
-        .await
-        .map_err(|err| format!("Failed to load Vivling brain profile: {err}"))?;
-
-    let auth_manager = Arc::new(
-        codex_login::AuthManager::new(
-            profile_config.codex_home.to_path_buf(),
-            false,
-            profile_config.cli_auth_credentials_store_mode,
-            Some(profile_config.chatgpt_base_url.clone()),
-        )
-        .await,
-    );
-    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_name = profile_config.model.clone().ok_or_else(|| {
-        format!(
-            "Vivling profile `{}` does not resolve to a model.",
-            request.brain_profile
-        )
-    })?;
-    let model_info = models_manager
-        .get_model_info(&model_name, &profile_config.to_models_manager_config())
-        .await;
-
-    let client = ModelClient::new(
-        Some(auth_manager),
-        ThreadId::new(),
-        request.vivling_id.clone(),
-        profile_config.model_provider.clone(),
-        codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
-        profile_config.model_verbosity,
-        profile_config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        profile_config.features.enabled(Feature::RuntimeMetrics),
-        None,
-    );
-
-    let mut prompt = Prompt::default();
-    prompt.input = vec![codex_protocol::models::ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![codex_protocol::models::ContentItem::InputText {
-            text: request.prompt_context,
-        }],
-        phase: None,
-    }];
-    prompt.base_instructions = codex_protocol::models::BaseInstructions {
-        text: format!(
-            "You are {} managing a Codex loop tick. Return only valid JSON. Do not include markdown fences or commentary.",
-            request.vivling_name
-        ),
-    };
-
-    let mut client_session = client.new_session();
-    let mut stream = client_session
-        .stream(
-            &prompt,
-            &model_info,
-            &session_telemetry,
-            profile_config.model_reasoning_effort,
-            profile_config.model_reasoning_summary.unwrap_or_default(),
-            profile_config.service_tier,
-            None,
-            &codex_rollout_trace::InferenceTraceContext::disabled(),
-        )
-        .await
-        .map_err(|err| format!("Vivling loop tick failed: {err}"))?;
-
-    let mut result = String::new();
-    while let Some(event) = stream
-        .next()
-        .await
-        .transpose()
-        .map_err(|err: codex_protocol::error::CodexErr| err.to_string())?
-    {
-        match event {
-            ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
-            ResponseEvent::OutputItemDone(item) => {
-                if result.is_empty()
-                    && let codex_protocol::models::ResponseItem::Message { content, .. } = item
-                    && let Some(text) = content_items_to_text(&content)
-                {
-                    result.push_str(&text);
-                }
-            }
-            ResponseEvent::Completed { .. } => break,
-            _ => {}
-        }
-    }
-
-    let trimmed = result.trim();
-    if trimmed.is_empty() {
-        return Err("Vivling loop tick returned no output.".to_string());
-    }
-    serde_json::from_str(trimmed)
-        .map_err(|err| format!("Vivling loop tick returned invalid JSON: {err}"))
-}
-
 pub(super) async fn fetch_all_mcp_server_statuses(
     request_handle: AppServerRequestHandle,
     detail: McpServerStatusDetail,
@@ -725,7 +557,7 @@ pub(super) async fn fetch_account_rate_limits(
         .await
         .wrap_err("account/rateLimits/read failed in TUI")?;
 
-    Ok(app_server_rate_limit_snapshots_to_core(response))
+    Ok(app_server_rate_limit_snapshots(response))
 }
 
 pub(super) async fn send_add_credits_nudge_email(
@@ -781,6 +613,20 @@ pub(super) async fn fetch_plugins_list(
         .wrap_err("plugin/list failed in TUI")?;
     hide_cli_only_plugin_marketplaces(&mut response);
     Ok(response)
+}
+
+pub(super) async fn fetch_hooks_list(
+    request_handle: AppServerRequestHandle,
+    cwd: PathBuf,
+) -> Result<HooksListResponse> {
+    let request_id = RequestId::String(format!("hooks-list-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::HooksList {
+            request_id,
+            params: HooksListParams { cwds: vec![cwd] },
+        })
+        .await
+        .wrap_err("hooks/list failed in TUI")
 }
 
 const CLI_HIDDEN_PLUGIN_MARKETPLACES: &[&str] = &["openai-bundled"];
@@ -850,6 +696,33 @@ fn marketplace_add_source_for_request(cwd: &std::path::Path, source: String) -> 
     source
 }
 
+pub(super) async fn fetch_marketplace_remove(
+    request_handle: AppServerRequestHandle,
+    marketplace_name: String,
+) -> Result<MarketplaceRemoveResponse> {
+    let request_id = RequestId::String(format!("marketplace-remove-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::MarketplaceRemove {
+            request_id,
+            params: MarketplaceRemoveParams { marketplace_name },
+        })
+        .await
+        .wrap_err("marketplace/remove failed in TUI")
+}
+
+pub(super) async fn fetch_marketplace_upgrade(
+    request_handle: AppServerRequestHandle,
+    marketplace_name: Option<String>,
+) -> Result<MarketplaceUpgradeResponse> {
+    let request_id = RequestId::String(format!("marketplace-upgrade-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::MarketplaceUpgrade {
+            request_id,
+            params: MarketplaceUpgradeParams { marketplace_name },
+        })
+        .await
+        .wrap_err("marketplace/upgrade failed in TUI")
+}
 pub(super) async fn fetch_plugin_install(
     request_handle: AppServerRequestHandle,
     marketplace_path: AbsolutePathBuf,
@@ -902,6 +775,34 @@ pub(super) async fn write_plugin_enabled(
         })
         .await
         .wrap_err("config/value/write failed while updating plugin enablement in TUI")
+}
+
+pub(super) async fn write_hook_enabled(
+    request_handle: AppServerRequestHandle,
+    key: String,
+    enabled: bool,
+) -> Result<ConfigWriteResponse> {
+    let request_id = RequestId::String(format!("hooks-config-write-{}", Uuid::new_v4()));
+    request_handle
+        .request_typed(ClientRequest::ConfigBatchWrite {
+            request_id,
+            params: ConfigBatchWriteParams {
+                edits: vec![codex_app_server_protocol::ConfigEdit {
+                    key_path: "hooks.state".to_string(),
+                    value: serde_json::json!({
+                        key: {
+                            "enabled": enabled,
+                        }
+                    }),
+                    merge_strategy: MergeStrategy::Upsert,
+                }],
+                file_path: None,
+                expected_version: None,
+                reload_user_config: true,
+            },
+        })
+        .await
+        .wrap_err("config/batchWrite failed while updating hook enablement in TUI")
 }
 
 pub(super) fn build_feedback_upload_params(
