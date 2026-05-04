@@ -42,7 +42,7 @@ npm install -g @mmmbuto/codex-vl
 
 ## Current Release Focus
 
-The `0.128.2` line focuses on keeping the fork close to upstream while
+The `0.128.3` line focuses on keeping the fork close to upstream while
 stabilizing the first useful Codex VL layers:
 
 - loop management as a conservative, user-controlled local feature

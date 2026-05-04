@@ -4,6 +4,11 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.128.3 - Local Linux rebuild
+
+- Rebuilds and reinstalls the local Linux package from the aligned Forge/GitHub base.
+- Keeps the 0.128.2 packaging corrections while refreshing the installed CLI payload.
+
 ## 0.128.2 - Corrected npm packaging
 
 - Publishes Linux x64 and Termux Android arm64 npm packages with native prebuilts.
