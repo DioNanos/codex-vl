@@ -1173,6 +1173,7 @@ fn namespace_specs_are_hidden_when_namespace_tools_are_disabled() {
     );
 
     assert_lacks_tool_name(&tools, "mcp__sample__");
+    assert_contains_tool_names(&tools, &["mcp__sample__echo"]);
     assert!(handlers.contains(&ToolHandlerSpec {
         name: ToolName::namespaced("mcp__sample__", "echo"),
         kind: ToolHandlerKind::Mcp,

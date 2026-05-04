@@ -158,6 +158,13 @@ impl ModelProvider for ConfiguredModelProvider {
         &self.info
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            namespace_tools: self.info.namespace_tools.unwrap_or(true),
+            ..ProviderCapabilities::default()
+        }
+    }
+
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -293,6 +300,7 @@ mod tests {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            namespace_tools: None,
         }
     }
 
@@ -331,6 +339,25 @@ mod tests {
         );
 
         assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+    }
+
+    #[test]
+    fn configured_provider_can_disable_namespace_tools() {
+        let provider = create_model_provider(
+            ModelProviderInfo {
+                namespace_tools: Some(false),
+                ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+            },
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: false,
+                ..ProviderCapabilities::default()
+            }
+        );
     }
 
     #[test]

@@ -556,15 +556,26 @@ pub fn build_tool_registry_plan(
             }
 
             if !tools.is_empty() {
-                plan.push_spec(
-                    ToolSpec::Namespace(ResponsesApiNamespace {
-                        name: namespace,
-                        description,
-                        tools,
-                    }),
-                    /*supports_parallel_tool_calls*/ false,
-                    config.code_mode_enabled,
-                );
+                if config.namespace_tools {
+                    plan.push_spec(
+                        ToolSpec::Namespace(ResponsesApiNamespace {
+                            name: namespace,
+                            description,
+                            tools,
+                        }),
+                        /*supports_parallel_tool_calls*/ false,
+                        config.code_mode_enabled,
+                    );
+                } else {
+                    for ResponsesApiNamespaceTool::Function(mut tool) in tools {
+                        tool.name = format!("{namespace}{}", tool.name);
+                        plan.push_spec(
+                            ToolSpec::Function(tool),
+                            /*supports_parallel_tool_calls*/ false,
+                            config.code_mode_enabled,
+                        );
+                    }
+                }
             }
         }
     }

@@ -713,6 +713,70 @@ async fn resolve_tool_info_accepts_canonical_namespaced_tool_names() {
 }
 
 #[tokio::test]
+async fn resolve_tool_info_accepts_flat_model_visible_tool_names() {
+    let startup_tools = vec![create_test_tool("memory", "memory_read")];
+    let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
+        .boxed()
+        .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager =
+        McpConnectionManager::new_uninitialized(&approval_policy, &permission_profile);
+    manager.clients.insert(
+        "memory".to_string(),
+        AsyncManagedClient {
+            client: pending_client,
+            startup_snapshot: Some(startup_tools),
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let tool = manager
+        .resolve_tool_info(&ToolName::plain("mcp__memory__read"))
+        .await
+        .expect("short flat MCP alias should resolve to namespaced metadata");
+
+    assert_eq!(tool.server_name, "memory");
+    assert_eq!(tool.callable_namespace, "mcp__memory__");
+    assert_eq!(tool.callable_name, "memory_read");
+    assert_eq!(tool.tool.name.as_ref(), "memory_read");
+}
+
+#[tokio::test]
+async fn resolve_tool_info_accepts_full_flat_model_visible_tool_names() {
+    let startup_tools = vec![create_test_tool("memory", "memory_read")];
+    let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
+        .boxed()
+        .shared();
+    let approval_policy = Constrained::allow_any(AskForApproval::OnFailure);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager =
+        McpConnectionManager::new_uninitialized(&approval_policy, &permission_profile);
+    manager.clients.insert(
+        "memory".to_string(),
+        AsyncManagedClient {
+            client: pending_client,
+            startup_snapshot: Some(startup_tools),
+            startup_complete: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
+            cancel_token: CancellationToken::new(),
+        },
+    );
+
+    let tool = manager
+        .resolve_tool_info(&ToolName::plain("mcp__memory__memory_read"))
+        .await
+        .expect("full flat MCP tool name should resolve to namespaced metadata");
+
+    assert_eq!(tool.server_name, "memory");
+    assert_eq!(tool.callable_namespace, "mcp__memory__");
+    assert_eq!(tool.callable_name, "memory_read");
+    assert_eq!(tool.tool.name.as_ref(), "memory_read");
+}
+
+#[tokio::test]
 async fn list_all_tools_blocks_while_client_is_pending_without_startup_snapshot() {
     let pending_client = futures::future::pending::<Result<ManagedClient, StartupOutcomeError>>()
         .boxed()
