@@ -455,7 +455,13 @@ def extract_archive(
 
 def _load_manifest(manifest_path: Path) -> dict:
     cmd = ["dotslash", "--", "parse", str(manifest_path)]
-    stdout = subprocess.check_output(cmd, text=True)
+    try:
+        stdout = subprocess.check_output(cmd, text=True)
+    except FileNotFoundError:
+        lines = manifest_path.read_text(encoding="utf-8").splitlines()
+        if lines and lines[0].startswith("#!"):
+            lines = lines[1:]
+        stdout = "\n".join(lines)
     try:
         manifest = json.loads(stdout)
     except json.JSONDecodeError as exc:
