@@ -238,7 +238,7 @@ impl ChatWidget {
             ConversationStartParams {
                 output_modality: RealtimeOutputModality::Audio,
                 prompt: None,
-                session_id: None,
+                realtime_session_id: None,
                 transport,
                 voice: self.config.realtime.voice,
             },
@@ -295,7 +295,7 @@ impl ChatWidget {
             self.request_realtime_conversation_close(/*info_message*/ None);
             return;
         }
-        self.realtime_conversation.session_id = ev.session_id;
+        self.realtime_conversation.session_id = ev.realtime_session_id;
         self.set_footer_hint_override(Some(Self::realtime_footer_hint_items()));
         if self.realtime_conversation_uses_webrtc() {
             self.realtime_conversation.phase = RealtimeConversationPhase::Starting;
@@ -323,8 +323,11 @@ impl ChatWidget {
             return;
         }
         match ev.payload {
-            RealtimeEvent::SessionUpdated { session_id, .. } => {
-                self.realtime_conversation.session_id = Some(session_id);
+            RealtimeEvent::SessionUpdated {
+                realtime_session_id,
+                ..
+            } => {
+                self.realtime_conversation.session_id = Some(realtime_session_id);
             }
             RealtimeEvent::InputAudioSpeechStarted(_) => self.interrupt_realtime_audio_playback(),
             RealtimeEvent::InputTranscriptDelta(_) => {}

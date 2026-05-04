@@ -50,7 +50,6 @@ use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::legacy_core::lookup_message_history_entry;
-use crate::legacy_core::plugins::PluginsManager;
 #[cfg(target_os = "windows")]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::model_catalog::ModelCatalog;
@@ -110,6 +109,7 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadItem;
+use codex_core_plugins::PluginsManager;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadRollbackResponse;

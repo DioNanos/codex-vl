@@ -1,0 +1,25 @@
+status	check	command	log
+PASS	version	<user-bin>/codex-vl --version	test-report/automated/linux-x64/20260501-090224/logs/version.log
+PASS	top-level help	<user-bin>/codex-vl --help	test-report/automated/linux-x64/20260501-090224/logs/top-level_help.log
+PASS	exec help	<user-bin>/codex-vl exec --help	test-report/automated/linux-x64/20260501-090224/logs/exec_help.log
+PASS	review help	<user-bin>/codex-vl review --help	test-report/automated/linux-x64/20260501-090224/logs/review_help.log
+PASS	login help	<user-bin>/codex-vl login --help	test-report/automated/linux-x64/20260501-090224/logs/login_help.log
+PASS	logout help	<user-bin>/codex-vl logout --help	test-report/automated/linux-x64/20260501-090224/logs/logout_help.log
+PASS	resume help	<user-bin>/codex-vl resume --help	test-report/automated/linux-x64/20260501-090224/logs/resume_help.log
+PASS	fork help	<user-bin>/codex-vl fork --help	test-report/automated/linux-x64/20260501-090224/logs/fork_help.log
+PASS	mcp help	<user-bin>/codex-vl mcp --help	test-report/automated/linux-x64/20260501-090224/logs/mcp_help.log
+PASS	sandbox help	<user-bin>/codex-vl sandbox --help	test-report/automated/linux-x64/20260501-090224/logs/sandbox_help.log
+PASS	app-server help	<user-bin>/codex-vl app-server --help	test-report/automated/linux-x64/20260501-090224/logs/app-server_help.log
+PASS	completion bash	<user-bin>/codex-vl completion bash	test-report/automated/linux-x64/20260501-090224/logs/completion_bash.log
+PASS	login status	<user-bin>/codex-vl login status	test-report/automated/linux-x64/20260501-090224/logs/login_status.log
+PASS	mcp list	<user-bin>/codex-vl mcp list	test-report/automated/linux-x64/20260501-090224/logs/mcp_list.log
+PASS	features list	<user-bin>/codex-vl features list	test-report/automated/linux-x64/20260501-090224/logs/features_list.log
+PASS	schema generate help	<user-bin>/codex-vl app-server generate-json-schema --help	test-report/automated/linux-x64/20260501-090224/logs/schema_generate_help.log
+PASS	schema generate out	<user-bin>/codex-vl app-server generate-json-schema --out test-report/automated/linux-x64/20260501-090224/schema	test-report/automated/linux-x64/20260501-090224/logs/schema_generate_out.log
+PASS	node wrapper help	node <node-global-prefix>/lib/node_modules/@mmmbuto/codex-vl/bin/codex.js --help	test-report/automated/linux-x64/20260501-090224/logs/node_wrapper_help.log
+PASS	node wrapper exec help	node <node-global-prefix>/lib/node_modules/@mmmbuto/codex-vl/bin/codex.js exec --help	test-report/automated/linux-x64/20260501-090224/logs/node_wrapper_exec_help.log
+PASS	node wrapper review help	node <node-global-prefix>/lib/node_modules/@mmmbuto/codex-vl/bin/codex.js review --help	test-report/automated/linux-x64/20260501-090224/logs/node_wrapper_review_help.log
+PASS	node wrapper resume help	node <node-global-prefix>/lib/node_modules/@mmmbuto/codex-vl/bin/codex.js resume --help	test-report/automated/linux-x64/20260501-090224/logs/node_wrapper_resume_help.log
+PASS	codex-exec version	<user-bin>/codex-vl-exec --version	test-report/automated/linux-x64/20260501-090224/logs/codex-exec_version.log
+SKIP	installed binary linkage	installed codex binary not found under vendor tree	test-report/automated/linux-x64/20260501-090224/logs/installed_binary_linkage.log
+SKIP	live exec smokes	run with --live to enable real exec/workspace/network checks	test-report/automated/linux-x64/20260501-090224/logs/live_exec_smokes.log

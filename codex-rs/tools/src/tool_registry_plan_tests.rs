@@ -386,6 +386,46 @@ fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
 }
 
 #[test]
+fn test_build_specs_multi_agent_v2_does_not_require_collab_feature() {
+    let model_info = model_info();
+    let mut features = Features::with_defaults();
+    features.disable(Feature::Collab);
+    features.enable(Feature::MultiAgentV2);
+    assert!(!features.enabled(Feature::Collab));
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        permission_profile: &PermissionProfile::Disabled,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let (tools, _) = build_specs(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        &[],
+    );
+
+    assert_contains_tool_names(
+        &tools,
+        &[
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "wait_agent",
+            "close_agent",
+            "list_agents",
+        ],
+    );
+    assert_lacks_tool_name(&tools, "send_input");
+    assert_lacks_tool_name(&tools, "resume_agent");
+}
+
+#[test]
 fn test_build_specs_enable_fanout_enables_agent_jobs_and_collab_tools() {
     let model_info = model_info();
     let mut features = Features::with_defaults();
@@ -1722,7 +1762,7 @@ fn search_tool_keeps_plain_deferred_dynamic_tools_when_namespace_tools_are_disab
 }
 
 #[test]
-fn tool_suggest_is_not_registered_without_feature_flag() {
+fn request_plugin_install_is_not_registered_without_feature_flag() {
     let model_info = search_capable_model_info();
     let mut features = Features::with_defaults();
     features.enable(Feature::ToolSearch);
@@ -1755,12 +1795,12 @@ fn tool_suggest_is_not_registered_without_feature_flag() {
     assert!(
         !tools
             .iter()
-            .any(|tool| tool.name() == TOOL_SUGGEST_TOOL_NAME)
+            .any(|tool| tool.name() == REQUEST_PLUGIN_INSTALL_TOOL_NAME)
     );
 }
 
 #[test]
-fn tool_suggest_can_be_registered_without_search_tool() {
+fn request_plugin_install_can_be_registered_without_search_tool() {
     let model_info = ModelInfo {
         supports_search_tool: false,
         ..search_capable_model_info()
@@ -1792,12 +1832,13 @@ fn tool_suggest_can_be_registered_without_search_tool() {
         &[],
     );
 
-    assert_contains_tool_names(&tools, &[TOOL_SUGGEST_TOOL_NAME]);
-    let tool_suggest = find_tool(&tools, TOOL_SUGGEST_TOOL_NAME);
-    assert!(tool_suggest.supports_parallel_tool_calls);
+    assert_contains_tool_names(&tools, &[REQUEST_PLUGIN_INSTALL_TOOL_NAME]);
+    let request_plugin_install = find_tool(&tools, REQUEST_PLUGIN_INSTALL_TOOL_NAME);
+    assert!(request_plugin_install.supports_parallel_tool_calls);
     assert_lacks_tool_name(&tools, TOOL_SEARCH_TOOL_NAME);
 
-    let ToolSpec::Function(ResponsesApiTool { description, .. }) = &tool_suggest.spec else {
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) = &request_plugin_install.spec
+    else {
         panic!("expected function tool");
     };
     assert!(description.contains(
@@ -1809,7 +1850,7 @@ fn tool_suggest_can_be_registered_without_search_tool() {
 }
 
 #[test]
-fn tool_suggest_description_lists_discoverable_tools() {
+fn request_plugin_install_description_lists_discoverable_tools() {
     let model_info = search_capable_model_info();
     let mut features = Features::with_defaults();
     features.enable(Feature::Apps);
@@ -1857,16 +1898,16 @@ fn tool_suggest_description_lists_discoverable_tools() {
         &[],
     );
     assert!(handlers.contains(&ToolHandlerSpec {
-        name: ToolName::plain(TOOL_SUGGEST_TOOL_NAME),
-        kind: ToolHandlerKind::ToolSuggest,
+        name: ToolName::plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME),
+        kind: ToolHandlerKind::RequestPluginInstall,
     }));
 
-    let tool_suggest = find_tool(&tools, TOOL_SUGGEST_TOOL_NAME);
+    let request_plugin_install = find_tool(&tools, REQUEST_PLUGIN_INSTALL_TOOL_NAME);
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
         ..
-    }) = &tool_suggest.spec
+    }) = &request_plugin_install.spec
     else {
         panic!("expected function tool");
     };
@@ -1885,30 +1926,27 @@ fn tool_suggest_description_lists_discoverable_tools() {
     );
     assert!(
         description.contains(
-            "The user explicitly wants a specific plugin or connector that is not already available in the current context or active `tools` list."
+            "The user explicitly asks to use a specific plugin or connector that is not already available in the current context or active `tools` list."
         )
     );
     assert!(description.contains(
         "`tool_search` is not available, or it has already been called and did not find or make the requested tool callable."
     ));
     assert!(description.contains(
-        "The tool is one of the known installable plugins or connectors listed below. Only ask to install tools from this list."
+        "The plugin or connector is one of the known installable plugins or connectors listed below. Only ask to install plugins or connectors from this list."
     ));
     assert!(description.contains(
-        "Do not use tool suggestion for adjacent capabilities, broad recommendations, or tools that merely seem useful."
+        "Do not use this tool for adjacent capabilities, broad recommendations, or tools that merely seem useful."
     ));
     assert!(description.contains("IMPORTANT: DO NOT call this tool in parallel with other tools."));
     assert!(description.contains(
-        "Do not use tool suggestion if the needed tool is already available, found through `tool_search`, or callable after discovery."
-    ));
-    assert!(description.contains(
-        "If `tool_search` is available, call `tool_search` before calling `tool_suggest`."
+        "If current active tools aren't relevant and `tool_search` is available, only call this tool after `tool_search` has already been tried and found no relevant tool."
     ));
     assert!(!description.contains("targeted lookup"));
     assert!(!description.contains("broad or speculative searches"));
     assert!(description.contains("Only proceed when one listed plugin or connector exactly fits."));
     assert!(description.contains(
-        "If we found both connectors and plugins to suggest, use plugins first, only use connectors if the corresponding plugin is installed but the connector is not."
+        "If we found both connectors and plugins to install, use plugins first, only use connectors if the corresponding plugin is installed but the connector is not."
     ));
     assert!(!description.contains("{{discoverable_tools}}"));
     assert!(!description.contains("tool_search fails to find a good match"));

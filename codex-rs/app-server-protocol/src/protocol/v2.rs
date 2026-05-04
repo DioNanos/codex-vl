@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::RequestId;
 use crate::protocol::common::AuthMode;
+use crate::protocol::item_builders::convert_patch_changes;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
 use codex_protocol::account::ProviderAccount;
@@ -30,6 +31,8 @@ use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
+use codex_protocol::items::McpToolCallError as CoreMcpToolCallError;
+use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::mcp::CallToolResult as CoreMcpCallToolResult;
 use codex_protocol::mcp::Resource as McpResource;
@@ -2794,6 +2797,24 @@ impl From<CoreMcpCallToolResult> for McpServerToolCallResponse {
     }
 }
 
+impl From<CoreMcpCallToolResult> for McpToolCallResult {
+    fn from(result: CoreMcpCallToolResult) -> Self {
+        Self {
+            content: result.content,
+            structured_content: result.structured_content,
+            meta: result.meta,
+        }
+    }
+}
+
+impl From<CoreMcpToolCallError> for McpToolCallError {
+    fn from(error: CoreMcpToolCallError) -> Self {
+        Self {
+            message: error.message,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -3753,6 +3774,7 @@ pub struct ThreadResumeParams {
     /// When true, return only thread metadata and live-resume state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after resuming.
+    #[experimental("thread/resume.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// If true, persist additional rollout EventMsg variants required to
@@ -3860,6 +3882,7 @@ pub struct ThreadForkParams {
     /// When true, return only thread metadata and live fork state without
     /// populating `thread.turns`. This is useful when the client plans to call
     /// `thread/turns/list` immediately after forking.
+    #[experimental("thread/fork.excludeTurns")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exclude_turns: bool,
     /// If true, persist additional rollout EventMsg variants required to
@@ -4625,6 +4648,72 @@ pub struct PluginReadResponse {
     pub plugin: PluginDetail,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginSkillReadParams {
+    pub remote_marketplace_name: String,
+    pub remote_plugin_id: String,
+    pub skill_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginSkillReadResponse {
+    pub contents: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareSaveParams {
+    pub plugin_path: AbsolutePathBuf,
+    #[ts(optional = nullable)]
+    pub remote_plugin_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareSaveResponse {
+    pub remote_plugin_id: String,
+    pub share_url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareListParams {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareListResponse {
+    pub data: Vec<PluginShareListItem>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareDeleteParams {
+    pub remote_plugin_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareDeleteResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginShareListItem {
+    pub plugin: PluginSummary,
+    pub share_url: String,
+    pub local_plugin_path: Option<AbsolutePathBuf>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
@@ -4802,6 +4891,21 @@ pub enum PluginAuthPolicy {
     OnUse,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema, TS)]
+#[ts(export_to = "v2/")]
+pub enum PluginAvailability {
+    /// Plugin-service currently sends `"ENABLED"` for available remote plugins.
+    /// Codex app-server exposes `"AVAILABLE"` in its API; the alias keeps
+    /// decoding compatible with that upstream response.
+    #[serde(rename = "AVAILABLE", alias = "ENABLED")]
+    #[ts(rename = "AVAILABLE")]
+    #[default]
+    Available,
+    #[serde(rename = "DISABLED_BY_ADMIN")]
+    #[ts(rename = "DISABLED_BY_ADMIN")]
+    DisabledByAdmin,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -4813,6 +4917,9 @@ pub struct PluginSummary {
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub auth_policy: PluginAuthPolicy,
+    /// Availability state for installing and using the plugin.
+    #[serde(default)]
+    pub availability: PluginAvailability,
     pub interface: Option<PluginInterface>,
 }
 
@@ -5270,7 +5377,7 @@ pub struct ThreadRealtimeStartParams {
     #[ts(optional = nullable)]
     pub prompt: Option<Option<String>>,
     #[ts(optional = nullable)]
-    pub session_id: Option<String>,
+    pub realtime_session_id: Option<String>,
     #[ts(optional = nullable)]
     pub transport: Option<ThreadRealtimeStartTransport>,
     #[ts(optional = nullable)]
@@ -5360,7 +5467,7 @@ pub struct ThreadRealtimeListVoicesResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadRealtimeStartedNotification {
     pub thread_id: String,
-    pub session_id: Option<String>,
+    pub realtime_session_id: Option<String>,
     pub version: RealtimeConversationVersion,
 }
 
@@ -6394,6 +6501,10 @@ impl From<CoreTurnItem> for ThreadItem {
                 query: search.query,
                 action: Some(WebSearchAction::from(search.action)),
             },
+            CoreTurnItem::ImageView(image) => ThreadItem::ImageView {
+                id: image.id,
+                path: image.path,
+            },
             CoreTurnItem::ImageGeneration(image) => ThreadItem::ImageGeneration {
                 id: image.id,
                 status: image.status,
@@ -6401,6 +6512,32 @@ impl From<CoreTurnItem> for ThreadItem {
                 result: image.result,
                 saved_path: image.saved_path,
             },
+            CoreTurnItem::FileChange(file_change) => ThreadItem::FileChange {
+                id: file_change.id,
+                changes: convert_patch_changes(&file_change.changes),
+                status: file_change
+                    .status
+                    .as_ref()
+                    .map(PatchApplyStatus::from)
+                    .unwrap_or(PatchApplyStatus::InProgress),
+            },
+            CoreTurnItem::McpToolCall(mcp) => {
+                let duration_ms = mcp
+                    .duration
+                    .and_then(|duration| i64::try_from(duration.as_millis()).ok());
+
+                ThreadItem::McpToolCall {
+                    id: mcp.id,
+                    server: mcp.server,
+                    tool: mcp.tool,
+                    status: McpToolCallStatus::from(mcp.status),
+                    arguments: mcp.arguments,
+                    mcp_app_resource_uri: mcp.mcp_app_resource_uri,
+                    result: mcp.result.map(McpToolCallResult::from).map(Box::new),
+                    error: mcp.error.map(McpToolCallError::from),
+                    duration_ms,
+                }
+            }
             CoreTurnItem::ContextCompaction(compaction) => {
                 ThreadItem::ContextCompaction { id: compaction.id }
             }
@@ -6506,6 +6643,16 @@ impl From<&CorePatchApplyStatus> for PatchApplyStatus {
             CorePatchApplyStatus::Completed => PatchApplyStatus::Completed,
             CorePatchApplyStatus::Failed => PatchApplyStatus::Failed,
             CorePatchApplyStatus::Declined => PatchApplyStatus::Declined,
+        }
+    }
+}
+
+impl From<CoreMcpToolCallStatus> for McpToolCallStatus {
+    fn from(value: CoreMcpToolCallStatus) -> Self {
+        match value {
+            CoreMcpToolCallStatus::InProgress => McpToolCallStatus::InProgress,
+            CoreMcpToolCallStatus::Completed => McpToolCallStatus::Completed,
+            CoreMcpToolCallStatus::Failed => McpToolCallStatus::Failed,
         }
     }
 }
@@ -6969,6 +7116,9 @@ pub struct CommandExecOutputDeltaNotification {
     pub cap_reached: bool,
 }
 
+/// Deprecated legacy notification for `apply_patch` textual output.
+///
+/// The server no longer emits this notification.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -8007,10 +8157,15 @@ mod tests {
     use super::*;
     use codex_protocol::items::AgentMessageContent;
     use codex_protocol::items::AgentMessageItem;
+    use codex_protocol::items::FileChangeItem;
+    use codex_protocol::items::ImageViewItem;
+    use codex_protocol::items::McpToolCallItem;
+    use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
     use codex_protocol::items::ReasoningItem;
     use codex_protocol::items::TurnItem;
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::items::WebSearchItem;
+    use codex_protocol::mcp::CallToolResult;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
     use codex_protocol::user_input::UserInput as CoreUserInput;
@@ -8020,6 +8175,7 @@ mod tests {
     use serde_json::json;
     use std::num::NonZeroUsize;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn absolute_path_string(path: &str) -> String {
         let path = format!("/{}", path.trim_start_matches('/'));
@@ -10287,6 +10443,111 @@ mod tests {
                 }),
             }
         );
+
+        let image_view_item = TurnItem::ImageView(ImageViewItem {
+            id: "view-image-1".to_string(),
+            path: test_path_buf("/tmp/view-image.png").abs(),
+        });
+
+        assert_eq!(
+            ThreadItem::from(image_view_item),
+            ThreadItem::ImageView {
+                id: "view-image-1".to_string(),
+                path: test_path_buf("/tmp/view-image.png").abs(),
+            }
+        );
+
+        let file_change_item = TurnItem::FileChange(FileChangeItem {
+            id: "patch-1".to_string(),
+            changes: [(
+                PathBuf::from("README.md"),
+                codex_protocol::protocol::FileChange::Add {
+                    content: "hello\n".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            status: Some(codex_protocol::protocol::PatchApplyStatus::Completed),
+            auto_approved: None,
+            stdout: Some("Done!".to_string()),
+            stderr: Some(String::new()),
+        });
+
+        assert_eq!(
+            ThreadItem::from(file_change_item),
+            ThreadItem::FileChange {
+                id: "patch-1".to_string(),
+                changes: vec![FileUpdateChange {
+                    path: "README.md".to_string(),
+                    kind: PatchChangeKind::Add,
+                    diff: "hello\n".to_string(),
+                }],
+                status: PatchApplyStatus::Completed,
+            }
+        );
+
+        let mcp_tool_call_item = TurnItem::McpToolCall(McpToolCallItem {
+            id: "mcp-1".to_string(),
+            server: "server".to_string(),
+            tool: "tool".to_string(),
+            arguments: json!({"arg": "value"}),
+            mcp_app_resource_uri: Some("app://connector".to_string()),
+            status: CoreMcpToolCallStatus::InProgress,
+            result: None,
+            error: None,
+            duration: None,
+        });
+
+        assert_eq!(
+            ThreadItem::from(mcp_tool_call_item),
+            ThreadItem::McpToolCall {
+                id: "mcp-1".to_string(),
+                server: "server".to_string(),
+                tool: "tool".to_string(),
+                status: McpToolCallStatus::InProgress,
+                arguments: json!({"arg": "value"}),
+                mcp_app_resource_uri: Some("app://connector".to_string()),
+                result: None,
+                error: None,
+                duration_ms: None,
+            }
+        );
+
+        let completed_mcp_tool_call_item = TurnItem::McpToolCall(McpToolCallItem {
+            id: "mcp-2".to_string(),
+            server: "server".to_string(),
+            tool: "tool".to_string(),
+            arguments: JsonValue::Null,
+            mcp_app_resource_uri: None,
+            status: CoreMcpToolCallStatus::Completed,
+            result: Some(CallToolResult {
+                content: vec![json!({"type": "text", "text": "ok"})],
+                structured_content: Some(json!({"ok": true})),
+                is_error: Some(false),
+                meta: Some(json!({"trace": "1"})),
+            }),
+            error: None,
+            duration: Some(Duration::from_millis(42)),
+        });
+
+        assert_eq!(
+            ThreadItem::from(completed_mcp_tool_call_item),
+            ThreadItem::McpToolCall {
+                id: "mcp-2".to_string(),
+                server: "server".to_string(),
+                tool: "tool".to_string(),
+                status: McpToolCallStatus::Completed,
+                arguments: JsonValue::Null,
+                mcp_app_resource_uri: None,
+                result: Some(Box::new(McpToolCallResult {
+                    content: vec![json!({"type": "text", "text": "ok"})],
+                    structured_content: Some(json!({"ok": true})),
+                    meta: Some(json!({"trace": "1"})),
+                })),
+                error: None,
+                duration_ms: Some(42),
+            }
+        );
     }
 
     #[test]
@@ -10618,6 +10879,156 @@ mod tests {
                 remote_marketplace_name: Some("openai-curated".to_string()),
                 plugin_name: "gmail".to_string(),
             },
+        );
+    }
+
+    #[test]
+    fn plugin_skill_read_params_serialization_uses_remote_plugin_id() {
+        assert_eq!(
+            serde_json::to_value(PluginSkillReadParams {
+                remote_marketplace_name: "chatgpt-global".to_string(),
+                remote_plugin_id: "plugins~Plugin_00000000000000000000000000000000".to_string(),
+                skill_name: "plan-work".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "remoteMarketplaceName": "chatgpt-global",
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                "skillName": "plan-work",
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_share_params_and_response_serialization_use_camel_case_fields() {
+        let plugin_path = if cfg!(windows) {
+            r"C:\plugins\gmail"
+        } else {
+            "/plugins/gmail"
+        };
+        let plugin_path = AbsolutePathBuf::try_from(PathBuf::from(plugin_path)).unwrap();
+        let plugin_path_json = plugin_path.as_path().display().to_string();
+
+        assert_eq!(
+            serde_json::to_value(PluginShareSaveParams {
+                plugin_path: plugin_path.clone(),
+                remote_plugin_id: None,
+            })
+            .unwrap(),
+            json!({
+                "pluginPath": plugin_path_json,
+                "remotePluginId": null,
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginShareSaveParams {
+                plugin_path,
+                remote_plugin_id: Some(
+                    "plugins~Plugin_00000000000000000000000000000000".to_string(),
+                ),
+            })
+            .unwrap(),
+            json!({
+                "pluginPath": plugin_path_json,
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginShareSaveResponse {
+                remote_plugin_id: "plugins~Plugin_00000000000000000000000000000000".to_string(),
+                share_url: String::new(),
+            })
+            .unwrap(),
+            json!({
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+                "shareUrl": "",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::from_value::<PluginShareListParams>(json!({})).unwrap(),
+            PluginShareListParams {},
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginShareDeleteParams {
+                remote_plugin_id: "plugins~Plugin_00000000000000000000000000000000".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "remotePluginId": "plugins~Plugin_00000000000000000000000000000000",
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_share_list_response_serializes_share_items() {
+        assert_eq!(
+            serde_json::to_value(PluginShareListResponse {
+                data: vec![PluginShareListItem {
+                    plugin: PluginSummary {
+                        id: "plugins~Plugin_00000000000000000000000000000000".to_string(),
+                        name: "gmail".to_string(),
+                        source: PluginSource::Remote,
+                        installed: false,
+                        enabled: false,
+                        install_policy: PluginInstallPolicy::Available,
+                        auth_policy: PluginAuthPolicy::OnUse,
+                        availability: PluginAvailability::Available,
+                        interface: None,
+                    },
+                    share_url: "https://chatgpt.example/plugins/share/share-key-1".to_string(),
+                    local_plugin_path: None,
+                }],
+            })
+            .unwrap(),
+            json!({
+                "data": [{
+                    "plugin": {
+                        "id": "plugins~Plugin_00000000000000000000000000000000",
+                        "name": "gmail",
+                        "source": { "type": "remote" },
+                        "installed": false,
+                        "enabled": false,
+                        "installPolicy": "AVAILABLE",
+                        "authPolicy": "ON_USE",
+                        "availability": "AVAILABLE",
+                        "interface": null,
+                    },
+                    "shareUrl": "https://chatgpt.example/plugins/share/share-key-1",
+                    "localPluginPath": null,
+                }],
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_summary_defaults_missing_availability_to_available() {
+        let summary: PluginSummary = serde_json::from_value(json!({
+            "id": "plugins~Plugin_00000000000000000000000000000000",
+            "name": "gmail",
+            "source": { "type": "remote" },
+            "installed": false,
+            "enabled": false,
+            "installPolicy": "AVAILABLE",
+            "authPolicy": "ON_USE",
+            "interface": null,
+        }))
+        .unwrap();
+
+        assert_eq!(summary.availability, PluginAvailability::Available);
+    }
+
+    #[test]
+    fn plugin_availability_deserializes_enabled_alias() {
+        let availability: PluginAvailability = serde_json::from_value(json!("ENABLED")).unwrap();
+
+        assert_eq!(availability, PluginAvailability::Available);
+        assert_eq!(
+            serde_json::to_value(availability).unwrap(),
+            json!("AVAILABLE")
         );
     }
 
