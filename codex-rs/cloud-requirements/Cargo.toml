@@ -17,7 +17,7 @@ codex-core = { workspace = true }
 codex-login = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol = { workspace = true }
-hmac = "0.12.1"
+hmac = "0.13.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
