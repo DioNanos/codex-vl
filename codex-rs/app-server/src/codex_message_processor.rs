@@ -2767,23 +2767,19 @@ impl CodexMessageProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd)
         });
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
+        let dynamic_tools = with_builtin_dynamic_tools(dynamic_tools.unwrap_or_default());
+        validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
         let response_dynamic_tools = dynamic_tools.clone();
-        let core_dynamic_tools = if dynamic_tools.is_empty() {
-            Vec::new()
-        } else {
-            validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-            dynamic_tools
-                .into_iter()
-                .map(|tool| CoreDynamicToolSpec {
-                    namespace: tool.namespace,
-                    name: tool.name,
-                    description: tool.description,
-                    input_schema: tool.input_schema,
-                    defer_loading: tool.defer_loading,
-                })
-                .collect()
-        };
+        let core_dynamic_tools = dynamic_tools
+            .into_iter()
+            .map(|tool| CoreDynamicToolSpec {
+                namespace: tool.namespace,
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+                defer_loading: tool.defer_loading,
+            })
+            .collect();
         let core_dynamic_tool_count = core_dynamic_tools.len();
 
         let NewThread {
@@ -8607,6 +8603,56 @@ fn validate_dynamic_tools(tools: &[ApiDynamicToolSpec]) -> Result<(), String> {
     Ok(())
 }
 
+const MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE: &str = "codex_app";
+const MANAGE_LOOPS_DYNAMIC_TOOL_NAME: &str = "manage_loops";
+const MANAGE_LOOPS_DYNAMIC_TOOL_DESCRIPTION: &str = "Manage local per-thread loop jobs that supervise recurring work while the TUI session stays attached. Use this for polling, retries, recurring status checks, long-running build monitoring, and other monitor-until-done workflows.";
+
+fn is_builtin_manage_loops_tool(tool: &ApiDynamicToolSpec) -> bool {
+    tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+        && matches!(
+            tool.namespace.as_deref(),
+            None | Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE)
+        )
+}
+
+fn builtin_manage_loops_dynamic_tool(namespace: Option<&str>) -> ApiDynamicToolSpec {
+    ApiDynamicToolSpec {
+        namespace: namespace.map(str::to_string),
+        name: MANAGE_LOOPS_DYNAMIC_TOOL_NAME.to_string(),
+        description: MANAGE_LOOPS_DYNAMIC_TOOL_DESCRIPTION.to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "add", "update", "disable", "enable", "remove", "trigger"]
+                },
+                "label": { "type": "string" },
+                "interval": { "type": "string" },
+                "prompt": { "type": "string" },
+                "auto_remove_on_completion": { "type": "boolean" },
+                "enabled": { "type": "boolean" }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+        defer_loading: false,
+    }
+}
+
+fn builtin_manage_loops_dynamic_tools() -> [ApiDynamicToolSpec; 2] {
+    [
+        builtin_manage_loops_dynamic_tool(None),
+        builtin_manage_loops_dynamic_tool(Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE)),
+    ]
+}
+
+fn with_builtin_dynamic_tools(mut tools: Vec<ApiDynamicToolSpec>) -> Vec<ApiDynamicToolSpec> {
+    tools.retain(|tool| !is_builtin_manage_loops_tool(tool));
+    tools.extend(builtin_manage_loops_dynamic_tools());
+    tools
+}
+
 async fn read_summary_from_state_db_context_by_thread_id(
     state_db_ctx: Option<&StateDbHandle>,
     thread_id: ThreadId,
@@ -9692,6 +9738,45 @@ mod tests {
             defer_loading: false,
         }];
         validate_dynamic_tools(&tools).expect("valid schema");
+    }
+
+    #[test]
+    fn builtin_manage_loops_tools_validate() {
+        let tools = with_builtin_dynamic_tools(Vec::new());
+        assert!(tools.iter().any(|tool| {
+            tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME && tool.namespace.is_none()
+        }));
+        assert!(tools.iter().any(|tool| {
+            tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+                && tool.namespace.as_deref() == Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE)
+        }));
+        validate_dynamic_tools(&tools).expect("builtin manage_loops schema must be valid");
+    }
+
+    #[test]
+    fn builtin_manage_loops_tools_replace_spoofed_specs() {
+        let tools = with_builtin_dynamic_tools(vec![ApiDynamicToolSpec {
+            namespace: Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE.to_string()),
+            name: MANAGE_LOOPS_DYNAMIC_TOOL_NAME.to_string(),
+            description: "spoofed".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            defer_loading: true,
+        }]);
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME)
+                .count(),
+            2
+        );
+        assert!(tools.iter().all(|tool| {
+            tool.name != MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+                || tool.description == MANAGE_LOOPS_DYNAMIC_TOOL_DESCRIPTION
+        }));
     }
 
     #[test]

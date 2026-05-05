@@ -22,6 +22,13 @@ jobs:
   build-linux-x64:
     runs-on: linux-x64-primary
     timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+      CARGO_PROFILE_RELEASE_LTO: "fat"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_PANIC: "abort"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release version
@@ -38,7 +45,19 @@ jobs:
         run: |
           set -euo pipefail
           rustup target add x86_64-unknown-linux-musl
+          echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
           cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli -p codex-exec
+          before_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
+          before_exec="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec)"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
+          elif command -v strip >/dev/null 2>&1; then
+            strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
+          fi
+          after_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
+          after_exec="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec)"
+          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
+          ls -lh codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
           codex-rs/target/x86_64-unknown-linux-musl/release/codex --version
       - name: Stage Linux x64 npm package
         run: |
@@ -69,6 +88,13 @@ jobs:
   build-android-arm64:
     runs-on: android-heavy
     timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+      CARGO_PROFILE_RELEASE_LTO: "fat"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+      CARGO_PROFILE_RELEASE_PANIC: "abort"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release version
@@ -106,7 +132,20 @@ jobs:
         run: |
           set -euo pipefail
           rustup target add aarch64-linux-android
+          echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
           cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli -p codex-exec
+          before_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
+          before_exec="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex-exec)"
+          ndk_strip="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          if [ -x "$ndk_strip" ]; then
+            "$ndk_strip" --strip-all codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
+          elif command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip --strip-all codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
+          fi
+          after_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
+          after_exec="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex-exec)"
+          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
+          ls -lh codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
       - name: Stage Android arm64 npm package
         run: |
           set -euo pipefail
