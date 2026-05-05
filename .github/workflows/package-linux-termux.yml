@@ -84,6 +84,12 @@ jobs:
             --staging-dir "$root/staging" \
             --pack-output "$out/codex-npm-linux-x64-$RELEASE_VERSION.tgz"
           find "$root" -maxdepth 5 -type f -print
+      - name: Upload Linux x64 npm package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-linux-x64-npm-${{ env.RELEASE_VERSION }}
+          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
+          if-no-files-found: error
 
   build-android-arm64:
     runs-on: android-heavy
@@ -164,3 +170,9 @@ jobs:
             --staging-dir "$root/staging" \
             --pack-output "$out/codex-npm-android-arm64-$RELEASE_VERSION.tgz"
           find "$root" -maxdepth 5 -type f -print
+      - name: Upload Android arm64 npm package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-android-arm64-npm-${{ env.RELEASE_VERSION }}
+          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
+          if-no-files-found: error
