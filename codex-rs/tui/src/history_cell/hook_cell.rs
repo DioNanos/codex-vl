@@ -338,6 +338,10 @@ impl HistoryCell for HookCell {
         self.display_lines(width)
     }
 
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        self.display_lines(u16::MAX)
+    }
+
     /// Produces a coarse cache key for transcript overlays while hook animations are active.
     fn transcript_animation_tick(&self) -> Option<u64> {
         if !self.animations_enabled {

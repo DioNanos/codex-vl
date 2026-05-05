@@ -6,31 +6,56 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();
     let spawned_thread_id = ThreadId::new();
+    chat.set_collab_agent_metadata(
+        spawned_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+    );
 
-    chat.handle_codex_event(Event {
-        id: "spawn-begin".into(),
-        msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
-            call_id: "call-spawn".to_string(),
-            sender_thread_id,
-            prompt: "Explore the repo".to_string(),
-            model: "gpt-5".to_string(),
-            reasoning_effort: ReasoningEffortConfig::High,
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "call-spawn".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::new(),
+            },
         }),
-    });
-    chat.handle_codex_event(Event {
-        id: "spawn-end".into(),
-        msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
-            call_id: "call-spawn".to_string(),
-            sender_thread_id,
-            new_thread_id: Some(spawned_thread_id),
-            new_agent_nickname: Some("Robie".to_string()),
-            new_agent_role: Some("explorer".to_string()),
-            prompt: "Explore the repo".to_string(),
-            model: "gpt-5".to_string(),
-            reasoning_effort: ReasoningEffortConfig::High,
-            status: AgentStatus::PendingInit,
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "call-spawn".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![spawned_thread_id.to_string()],
+                prompt: Some("Explore the repo".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    spawned_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::PendingInit,
+                        message: None,
+                    },
+                )]),
+            },
         }),
-    });
+        /*replay_kind*/ None,
+    );
 
     let cells = drain_insert_history(&mut rx);
     let rendered = cells
@@ -67,6 +92,7 @@ async fn live_app_server_user_message_item_completed_does_not_duplicate_rendered
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: "user-1".to_string(),
                 content: vec![AppServerUserInput::Text {
@@ -90,6 +116,7 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -112,6 +139,7 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "Yes. What do you need?".to_string(),
@@ -132,6 +160,7 @@ async fn live_app_server_turn_completed_clears_working_status_after_answer_item(
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::Completed,
                 error: None,
@@ -156,6 +185,7 @@ async fn live_app_server_turn_started_sets_feedback_turn_id() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -264,6 +294,7 @@ async fn live_app_server_file_change_item_started_preserves_changes() {
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
             item: AppServerThreadItem::FileChange {
                 id: "patch-1".to_string(),
                 changes: vec![FileUpdateChange {
@@ -297,6 +328,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command: command.clone(),
@@ -318,6 +350,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command,
@@ -373,6 +406,7 @@ async fn live_app_server_collab_wait_items_render_history() {
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
@@ -395,6 +429,7 @@ async fn live_app_server_collab_wait_items_render_history() {
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "wait-1".to_string(),
                 tool: AppServerCollabAgentTool::Wait,
@@ -448,6 +483,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         ServerNotification::ItemStarted(ItemStartedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
@@ -467,6 +503,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         ServerNotification::ItemCompleted(ItemCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
             item: AppServerThreadItem::CollabAgentToolCall {
                 id: "spawn-1".to_string(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
@@ -508,6 +545,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -542,6 +580,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::Failed,
                 error: Some(AppServerTurnError {
@@ -570,6 +609,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -586,7 +626,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "Reconnecting... 1/5".to_string(),
-                codex_error_info: Some(CodexErrorInfo::Other.into()),
+                codex_error_info: Some(CodexErrorInfo::Other),
                 additional_details: None,
             },
             will_retry: true,
@@ -627,6 +667,7 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -643,7 +684,7 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "server overloaded".to_string(),
-                codex_error_info: Some(CodexErrorInfo::ServerOverloaded.into()),
+                codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 additional_details: None,
             },
             will_retry: false,
@@ -668,6 +709,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
             thread_id: "thread-1".to_string(),
             turn: AppServerTurn {
                 id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: AppServerTurnStatus::InProgress,
                 error: None,
@@ -684,7 +726,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "server fallback message".to_string(),
-                codex_error_info: Some(CodexErrorInfo::CyberPolicy.into()),
+                codex_error_info: Some(CodexErrorInfo::CyberPolicy),
                 additional_details: None,
             },
             will_retry: false,

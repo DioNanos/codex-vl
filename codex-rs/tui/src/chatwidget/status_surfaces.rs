@@ -58,6 +58,12 @@ impl StatusSurfaceSelections {
     fn uses_git_branch(&self) -> bool {
         self.status_line_items.contains(&StatusLineItem::GitBranch)
             || self
+                .status_line_items
+                .contains(&StatusLineItem::PullRequestNumber)
+            || self
+                .status_line_items
+                .contains(&StatusLineItem::BranchChanges)
+            || self
                 .terminal_title_items
                 .contains(&TerminalTitleItem::GitBranch)
     }
@@ -134,13 +140,20 @@ impl ChatWidget {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
+            self.status_line_git_summary = None;
+            self.status_line_git_summary_pending = false;
+            self.status_line_git_summary_lookup_complete = false;
             return;
         }
 
         let cwd = self.status_line_cwd().to_path_buf();
         self.sync_status_line_branch_state(&cwd);
         if !self.status_line_branch_lookup_complete {
-            self.request_status_line_branch(cwd);
+            self.request_status_line_branch(cwd.clone());
+        }
+        self.sync_status_line_git_summary_state(&cwd);
+        if !self.status_line_git_summary_lookup_complete {
+            self.request_status_line_git_summary(cwd);
         }
     }
 
@@ -353,6 +366,16 @@ impl ChatWidget {
         self.request_status_line_branch(cwd);
     }
 
+    pub(super) fn request_status_line_git_summary_refresh(&mut self) {
+        let selections = self.status_surface_selections();
+        if !selections.uses_git_branch() {
+            return;
+        }
+        let cwd = self.status_line_cwd().to_path_buf();
+        self.sync_status_line_git_summary_state(&cwd);
+        self.request_status_line_git_summary(cwd);
+    }
+
     /// Parses configured status-line ids into known items and collects unknown ids.
     ///
     /// Unknown ids are deduplicated in insertion order for warning messages.
@@ -486,11 +509,46 @@ impl ChatWidget {
         if self.status_line_branch_pending {
             return;
         }
+        let Some(runner) = self.workspace_command_runner.clone() else {
+            self.status_line_branch_lookup_complete = true;
+            return;
+        };
         self.status_line_branch_pending = true;
         let tx = self.app_event_tx.clone();
         tokio::spawn(async move {
-            let branch = current_branch_name(&cwd).await;
+            let branch = crate::branch_summary::current_branch_name(runner.as_ref(), &cwd).await;
             tx.send(AppEvent::StatusLineBranchUpdated { cwd, branch });
+        });
+    }
+
+    fn sync_status_line_git_summary_state(&mut self, cwd: &Path) {
+        if self
+            .status_line_git_summary_cwd
+            .as_ref()
+            .is_some_and(|path| path == cwd)
+        {
+            return;
+        }
+        self.status_line_git_summary_cwd = Some(cwd.to_path_buf());
+        self.status_line_git_summary = None;
+        self.status_line_git_summary_pending = false;
+        self.status_line_git_summary_lookup_complete = false;
+    }
+
+    fn request_status_line_git_summary(&mut self, cwd: PathBuf) {
+        if self.status_line_git_summary_pending {
+            return;
+        }
+        let Some(runner) = self.workspace_command_runner.clone() else {
+            self.status_line_git_summary_lookup_complete = true;
+            return;
+        };
+        self.status_line_git_summary_pending = true;
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let summary =
+                crate::branch_summary::status_line_git_summary(runner.as_ref(), &cwd).await;
+            tx.send(AppEvent::StatusLineGitSummaryUpdated { cwd, summary });
         });
     }
 
@@ -511,6 +569,16 @@ impl ChatWidget {
             }
             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+            StatusLineItem::PullRequestNumber => self
+                .status_line_git_summary
+                .as_ref()
+                .and_then(|summary| summary.pull_request.as_ref())
+                .map(|pull_request| format!("PR #{}", pull_request.number)),
+            StatusLineItem::BranchChanges => self
+                .status_line_git_summary
+                .as_ref()
+                .and_then(|summary| summary.branch_change_stats.as_ref())
+                .map(|stats| format!("+{} -{}", stats.additions, stats.deletions)),
             StatusLineItem::Status => Some(self.run_state_status_text()),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
@@ -574,6 +642,7 @@ impl ChatWidget {
                 (!trimmed.is_empty()).then(|| trimmed.to_string())
             }),
             StatusLineItem::TaskProgress => self.terminal_title_task_progress(),
+            StatusLineItem::RawOutput => self.raw_output_mode().then(|| "raw output".to_string()),
         }
     }
 
@@ -633,6 +702,8 @@ impl ChatWidget {
             StatusSurfacePreviewItem::CurrentDir => StatusLineItem::CurrentDir,
             StatusSurfacePreviewItem::ThreadTitle => StatusLineItem::ThreadTitle,
             StatusSurfacePreviewItem::GitBranch => StatusLineItem::GitBranch,
+            StatusSurfacePreviewItem::PullRequestNumber => StatusLineItem::PullRequestNumber,
+            StatusSurfacePreviewItem::BranchChanges => StatusLineItem::BranchChanges,
             StatusSurfacePreviewItem::ContextRemaining => StatusLineItem::ContextRemaining,
             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,
@@ -644,6 +715,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::TotalOutputTokens => StatusLineItem::TotalOutputTokens,
             StatusSurfacePreviewItem::SessionId => StatusLineItem::SessionId,
             StatusSurfacePreviewItem::FastMode => StatusLineItem::FastMode,
+            StatusSurfacePreviewItem::RawOutput => StatusLineItem::RawOutput,
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
         };

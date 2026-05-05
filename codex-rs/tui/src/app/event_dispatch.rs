@@ -51,6 +51,10 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::RawOutputModeChanged { enabled } => {
+                self.chat_widget.set_raw_output_mode_and_notify(enabled);
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::OpenResumePicker => {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,
@@ -61,6 +65,7 @@ impl App {
                         },
                         None => crate::AppServerTarget::Embedded,
                     },
+                    self.state_db.clone(),
                     self.environment_manager.clone(),
                 )
                 .await
@@ -182,7 +187,8 @@ impl App {
 
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::BeginInitialHistoryReplayBuffer => {
+            AppEvent::BeginInitialHistoryReplayBuffer
+            | AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
                 self.begin_initial_history_replay_buffer();
             }
             AppEvent::InsertHistoryCell(cell) => {
@@ -1606,6 +1612,12 @@ impl App {
             AppEvent::OpenPermissionsPopup => {
                 self.chat_widget.open_permissions_popup();
             }
+            AppEvent::SetHookEnabled { .. } | AppEvent::TrustHook { .. } => {}
+            AppEvent::HookEnabledSet { result, .. } | AppEvent::HookTrusted { result } => {
+                if let Err(err) = result {
+                    self.chat_widget.add_error_message(err);
+                }
+            }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
             }
@@ -1722,6 +1734,10 @@ impl App {
             }
             AppEvent::StatusLineBranchUpdated { cwd, branch } => {
                 self.chat_widget.set_status_line_branch(cwd, branch);
+                self.refresh_status_line();
+            }
+            AppEvent::StatusLineGitSummaryUpdated { cwd, summary } => {
+                self.chat_widget.set_status_line_git_summary(cwd, summary);
                 self.refresh_status_line();
             }
             AppEvent::StatusLineSetupCancelled => {

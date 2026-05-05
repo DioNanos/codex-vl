@@ -2869,6 +2869,7 @@ dependencies = [
  "codex-plugin",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "codex-utils-output-truncation",
  "futures",
  "pretty_assertions",
  "regex",
@@ -2877,6 +2878,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3037,6 +3040,23 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wiremock",
+]
+
+[[package]]
+name = "codex-memories-mcp"
+version = "0.128.4"
+dependencies = [
+ "anyhow",
+ "codex-utils-absolute-path",
+ "codex-utils-output-truncation",
+ "pretty_assertions",
+ "rmcp",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -4203,6 +4223,7 @@ dependencies = [
  "codex-core",
  "codex-exec-server",
  "codex-features",
+ "codex-hooks",
  "codex-login",
  "codex-model-provider-info",
  "codex-models-manager",

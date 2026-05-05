@@ -1379,6 +1379,9 @@ pub enum EventMsg {
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
 
+    /// Cleared long-running goal metadata for the thread.
+    ThreadGoalCleared(ThreadGoalClearedEvent),
+
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
 
@@ -1559,19 +1562,13 @@ pub enum HookSource {
     Unknown,
 }
 
-impl HookSource {
-    /// Returns whether hooks from this source are managed and therefore not
-    /// user-configurable.
-    pub fn is_managed(self) -> bool {
-        matches!(
-            self,
-            Self::System
-                | Self::Mdm
-                | Self::CloudRequirements
-                | Self::LegacyManagedConfigFile
-                | Self::LegacyManagedConfigMdm
-        )
-    }
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HookTrustStatus {
+    Managed,
+    Untrusted,
+    Trusted,
+    Modified,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -1828,6 +1825,7 @@ pub struct ItemStartedEvent {
     pub thread_id: ThreadId,
     pub turn_id: String,
     pub item: TurnItem,
+    pub started_at_ms: i64,
 }
 
 impl HasLegacyEvent for ItemStartedEvent {
@@ -1854,6 +1852,15 @@ pub struct ItemCompletedEvent {
     pub thread_id: ThreadId,
     pub turn_id: String,
     pub item: TurnItem,
+    // Old rollout files may contain ItemCompleted events for PlanItem without
+    // this field. Default to 0 so those persisted rollouts still deserialize
+    // after tightening the core event contract.
+    #[serde(default = "default_item_completed_at_ms")]
+    pub completed_at_ms: i64,
+}
+
+const fn default_item_completed_at_ms() -> i64 {
+    0
 }
 
 pub trait HasLegacyEvent {
@@ -2348,6 +2355,8 @@ pub struct DynamicToolCallResponseEvent {
     pub call_id: String,
     /// Turn ID that this dynamic tool call belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Dynamic tool namespace, when one was provided.
     #[serde(default)]
     pub namespace: Option<String>,
@@ -3058,6 +3067,8 @@ pub struct ExecCommandBeginEvent {
     pub process_id: Option<String>,
     /// Turn ID that this command belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// The command to be executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3082,6 +3093,8 @@ pub struct ExecCommandEndEvent {
     pub process_id: Option<String>,
     /// Turn ID that this command belongs to.
     pub turn_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// The command that was executed.
     pub command: Vec<String>,
     /// The command's working directory if not the default cwd for the agent.
@@ -3641,6 +3654,16 @@ pub struct ThreadGoalUpdatedEvent {
     pub goal: ThreadGoal,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "protocol/")]
+pub struct ThreadGoalClearedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub turn_id: Option<String>,
+}
+
 /// User's decision in response to an ExecApprovalRequest.
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq, Display, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -3750,6 +3773,8 @@ pub enum TurnAbortReason {
 pub struct CollabAgentSpawnBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
@@ -3789,6 +3814,8 @@ pub struct CollabAgentStatusEntry {
 pub struct CollabAgentSpawnEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the newly spawned agent, if it was created.
@@ -3814,6 +3841,8 @@ pub struct CollabAgentSpawnEndEvent {
 pub struct CollabAgentInteractionBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3827,6 +3856,8 @@ pub struct CollabAgentInteractionBeginEvent {
 pub struct CollabAgentInteractionEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3846,6 +3877,8 @@ pub struct CollabAgentInteractionEndEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct CollabWaitingBeginEvent {
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receivers.
@@ -3863,6 +3896,8 @@ pub struct CollabWaitingEndEvent {
     pub sender_thread_id: ThreadId,
     /// ID of the waiting call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Optional receiver metadata paired with final statuses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_statuses: Vec<CollabAgentStatusEntry>,
@@ -3874,6 +3909,8 @@ pub struct CollabWaitingEndEvent {
 pub struct CollabCloseBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3884,6 +3921,8 @@ pub struct CollabCloseBeginEvent {
 pub struct CollabCloseEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3903,6 +3942,8 @@ pub struct CollabCloseEndEvent {
 pub struct CollabResumeBeginEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub started_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3919,6 +3960,8 @@ pub struct CollabResumeBeginEvent {
 pub struct CollabResumeEndEvent {
     /// Identifier for the collab tool call.
     pub call_id: String,
+    #[serde(default)]
+    pub completed_at_ms: i64,
     /// Thread ID of the sender.
     pub sender_thread_id: ThreadId,
     /// Thread ID of the receiver.
@@ -3959,20 +4002,6 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
-
-    #[test]
-    fn hook_source_managedness_is_source_derived() {
-        assert_eq!(HookSource::System.is_managed(), true);
-        assert_eq!(HookSource::Mdm.is_managed(), true);
-        assert_eq!(HookSource::CloudRequirements.is_managed(), true);
-        assert_eq!(HookSource::LegacyManagedConfigFile.is_managed(), true);
-        assert_eq!(HookSource::LegacyManagedConfigMdm.is_managed(), true);
-        assert_eq!(HookSource::User.is_managed(), false);
-        assert_eq!(HookSource::Project.is_managed(), false);
-        assert_eq!(HookSource::SessionFlags.is_managed(), false);
-        assert_eq!(HookSource::Plugin.is_managed(), false);
-        assert_eq!(HookSource::Unknown.is_managed(), false);
-    }
 
     fn sorted_writable_roots(roots: Vec<WritableRoot>) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut sorted_roots: Vec<(PathBuf, Vec<PathBuf>)> = roots
@@ -4596,6 +4625,7 @@ mod tests {
                     queries: None,
                 },
             }),
+            started_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4612,6 +4642,7 @@ mod tests {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
             item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            started_at_ms: 0,
         };
 
         assert!(
@@ -4633,6 +4664,7 @@ mod tests {
                 result: String::new(),
                 saved_path: None,
             }),
+            started_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4648,6 +4680,7 @@ mod tests {
         let event = ItemStartedEvent {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
+            started_at_ms: 0,
             item: TurnItem::FileChange(FileChangeItem {
                 id: "patch-1".into(),
                 changes: [(
@@ -4683,6 +4716,7 @@ mod tests {
         let event = ItemStartedEvent {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
+            started_at_ms: 0,
             item: TurnItem::McpToolCall(McpToolCallItem {
                 id: "mcp-1".into(),
                 server: "server".into(),
@@ -4724,6 +4758,7 @@ mod tests {
                 result: "Zm9v".into(),
                 saved_path: Some(test_path_buf("/tmp/ig-1.png").abs()),
             }),
+            completed_at_ms: 0,
         };
 
         let legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
@@ -4748,6 +4783,7 @@ mod tests {
         let event = ItemCompletedEvent {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
+            completed_at_ms: 0,
             item: TurnItem::FileChange(FileChangeItem {
                 id: "patch-1".into(),
                 changes: [(
@@ -4785,6 +4821,7 @@ mod tests {
         let event = ItemCompletedEvent {
             thread_id: ThreadId::new(),
             turn_id: "turn-1".into(),
+            completed_at_ms: 0,
             item: TurnItem::McpToolCall(McpToolCallItem {
                 id: "mcp-1".into(),
                 server: "server".into(),
@@ -4821,6 +4858,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn item_started_event_requires_started_at_ms() {
+        let mut value = serde_json::to_value(ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            started_at_ms: 123,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("started_at_ms");
+
+        assert!(serde_json::from_value::<ItemStartedEvent>(value).is_err());
+    }
+
+    #[test]
+    fn item_completed_event_defaults_missing_completed_at_ms() {
+        let mut value = serde_json::to_value(ItemCompletedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".into(),
+            item: TurnItem::UserMessage(UserMessageItem::new(&[])),
+            completed_at_ms: 123,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("completed_at_ms");
+
+        let event = serde_json::from_value::<ItemCompletedEvent>(value).unwrap();
+        assert_eq!(event.completed_at_ms, 0);
+    }
     #[test]
     fn rollback_failed_error_does_not_affect_turn_status() {
         let event = ErrorEvent {

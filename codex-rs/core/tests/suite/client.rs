@@ -770,10 +770,15 @@ async fn includes_conversation_id_and_model_headers_in_request() {
     let installation_id =
         std::fs::read_to_string(test.codex_home_path().join(INSTALLATION_ID_FILENAME))
             .expect("read installation id");
+    let session_id_string = session_id.to_string();
 
-    assert_eq!(request_session_id, session_id.to_string());
+    assert_eq!(request_session_id, session_id_string);
     assert_eq!(request_originator, originator().value);
     assert_eq!(request_authorization, "Bearer Test API Key");
+    assert_eq!(
+        request_body["prompt_cache_key"].as_str(),
+        Some(session_id_string.as_str())
+    );
     assert_eq!(
         request_body["client_metadata"]["x-codex-installation-id"].as_str(),
         Some(installation_id.as_str())
@@ -852,6 +857,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -1072,6 +1078,7 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
     let model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
         supports_websockets: false,
+        namespace_tools: None,
         ..built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone()
     };
 
@@ -1107,7 +1114,8 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         /*analytics_events_client*/ None,
-        thread_store_from_config(&config),
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
     );
     let NewThread { thread: codex, .. } = thread_manager
         .start_thread(config.clone())
@@ -2255,6 +2263,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -2886,6 +2895,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     // Init session
@@ -2974,6 +2984,7 @@ async fn env_var_overrides_loaded_auth() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        namespace_tools: None,
     };
 
     // Init session

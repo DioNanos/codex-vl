@@ -30,7 +30,7 @@ pub fn create_create_goal_tool() -> ToolSpec {
         (
             "objective".to_string(),
             JsonSchema::string(Some(
-                "Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails."
+                "Required. The concrete objective to start pursuing. This starts a new active goal or replaces the existing goal when the objective changes."
                     .to_string(),
             )),
         ),
@@ -46,7 +46,7 @@ pub fn create_create_goal_tool() -> ToolSpec {
         name: CREATE_GOAL_TOOL_NAME.to_string(),
         description: format!(
             r#"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.
-Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use {UPDATE_GOAL_TOOL_NAME} only for status."#
+Set token_budget only when an explicit token budget is requested. If this thread already has a goal, this replaces it with the new objective so changing requirements do not leave stale focus; use {UPDATE_GOAL_TOOL_NAME} only for completion status."#
         ),
         strict: false,
         defer_loading: None,
@@ -78,7 +78,7 @@ Use this tool only to mark the goal achieved.
 Set status to `complete` only when the objective has actually been achieved and no required work remains.
 Do not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.
 You cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system.
-When marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user."#
+When marking a goal achieved with status `complete`, the goal is closed and cleared from the thread. Report any final token usage from the tool result to the user."#
             .to_string(),
         strict: false,
         defer_loading: None,

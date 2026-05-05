@@ -158,6 +158,9 @@ pub(crate) enum AppEvent {
     ClearUiAndSubmitUserMessage {
         text: String,
     },
+    RawOutputModeChanged {
+        enabled: bool,
+    },
 
     /// Open the resume picker inside the running TUI session.
     OpenResumePicker,
@@ -429,6 +432,7 @@ pub(crate) enum AppEvent {
 
     /// Begin buffering initial resume replay rows before they are written to scrollback.
     BeginInitialHistoryReplayBuffer,
+    BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
@@ -688,6 +692,30 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    /// Enable or disable a hook by stable hook key.
+    SetHookEnabled {
+        key: String,
+        enabled: bool,
+    },
+
+    /// Trust the current definition for a hook by stable hook key.
+    TrustHook {
+        key: String,
+        current_hash: String,
+    },
+
+    /// Result of persisting hook enabled state.
+    HookEnabledSet {
+        key: String,
+        enabled: bool,
+        result: Result<(), String>,
+    },
+
+    /// Result of persisting hook trust state.
+    HookTrusted {
+        result: Result<(), String>,
+    },
+
     /// Notify that the manage skills popup was closed.
     ManageSkillsClosed,
 
@@ -754,6 +782,11 @@ pub(crate) enum AppEvent {
     StatusLineBranchUpdated {
         cwd: PathBuf,
         branch: Option<String>,
+    },
+    /// Async update of PR and branch-change metadata for status line rendering.
+    StatusLineGitSummaryUpdated {
+        cwd: PathBuf,
+        summary: crate::branch_summary::StatusLineGitSummary,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {

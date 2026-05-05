@@ -102,6 +102,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::AskForApproval;
@@ -1076,6 +1077,15 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
             .collect(),
         supports_personality: model.supports_personality,
         additional_speed_tiers: model.additional_speed_tiers,
+        service_tiers: model
+            .service_tiers
+            .into_iter()
+            .map(|service_tier| ModelServiceTier {
+                id: service_tier.id,
+                name: service_tier.name,
+                description: service_tier.description,
+            })
+            .collect(),
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
@@ -1911,6 +1921,7 @@ mod tests {
                 name: None,
                 turns: vec![Turn {
                     id: "turn-1".to_string(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![
                         codex_app_server_protocol::ThreadItem::UserMessage {
                             id: "user-1".to_string(),
