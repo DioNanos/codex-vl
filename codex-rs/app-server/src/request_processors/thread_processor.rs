@@ -399,20 +399,34 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_resume_inner(request_id, params)
-            .await
-            .map(|()| None)
+        self.thread_resume_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await
+        .map(|()| None)
     }
 
     pub(crate) async fn thread_fork(
         &self,
         request_id: ConnectionRequestId,
         params: ThreadForkParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_fork_inner(request_id, params)
-            .await
-            .map(|()| None)
+        self.thread_fork_inner(
+            request_id,
+            params,
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await
+        .map(|()| None)
     }
 
     pub(crate) async fn thread_archive(
@@ -660,8 +674,16 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
+        let mcp_elicitations_auto_deny = xcode_26_4_mcp_elicitations_auto_deny(
+            app_server_client_name.as_deref(),
+            app_server_client_version.as_deref(),
+        );
         thread
-            .set_app_server_client_info(app_server_client_name, app_server_client_version)
+            .set_app_server_client_info(
+                app_server_client_name,
+                app_server_client_version,
+                mcp_elicitations_auto_deny,
+            )
             .await
             .map_err(|err| internal_error(format!("failed to set app server client info: {err}")))
     }
@@ -2239,6 +2261,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
@@ -2279,7 +2303,15 @@ impl ThreadRequestProcessor {
                 return Ok(());
             }
         };
-        match self.resume_running_thread(&request_id, &params).await {
+        match self
+            .resume_running_thread(
+                &request_id,
+                &params,
+                app_server_client_name.clone(),
+                app_server_client_version.clone(),
+            )
+            .await
+        {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
@@ -2380,6 +2412,16 @@ impl ThreadRequestProcessor {
                 session_configured,
                 ..
             }) => {
+                if let Err(err) = Self::set_app_server_client_info(
+                    codex_thread.as_ref(),
+                    app_server_client_name,
+                    app_server_client_version,
+                )
+                .await
+                {
+                    self.outgoing.send_error(request_id, err).await;
+                    return Ok(());
+                }
                 let SessionConfiguredEvent { rollout_path, .. } = session_configured;
                 let Some(rollout_path) = rollout_path else {
                     let error =
@@ -2527,6 +2569,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: &ConnectionRequestId,
         params: &ThreadResumeParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<bool, JSONRPCErrorError> {
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
@@ -2608,6 +2652,12 @@ impl ThreadRequestProcessor {
                 thread_state.clone(),
             )
             .await?;
+            Self::set_app_server_client_info(
+                existing_thread.as_ref(),
+                app_server_client_name,
+                app_server_client_version,
+            )
+            .await?;
 
             let config_snapshot = existing_thread.config_snapshot().await;
             let mismatch_details = collect_resume_override_mismatches(params, &config_snapshot);
@@ -2640,10 +2690,10 @@ impl ThreadRequestProcessor {
                 )));
             };
 
-            let (emit_thread_goal_update, thread_goal_state_db) = self
-                .thread_goal_processor
-                .pending_resume_goal_state(existing_thread.as_ref())
-                .await;
+            let emit_thread_goal_update = self.config.features.enabled(Feature::Goals);
+            let thread_goal_state_db = emit_thread_goal_update
+                .then(|| self.state_db.clone())
+                .flatten();
 
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
@@ -2892,6 +2942,8 @@ impl ThreadRequestProcessor {
         &self,
         request_id: ConnectionRequestId,
         params: ThreadForkParams,
+        app_server_client_name: Option<String>,
+        app_server_client_version: Option<String>,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadForkParams {
             thread_id,
@@ -3009,6 +3061,13 @@ impl ThreadRequestProcessor {
                 CodexErr::InvalidRequest(message) => invalid_request(message),
                 err => internal_error(format!("error forking thread: {err}")),
             })?;
+
+        Self::set_app_server_client_info(
+            forked_thread.as_ref(),
+            app_server_client_name,
+            app_server_client_version,
+        )
+        .await?;
 
         // Auto-attach a conversation listener when forking a thread.
         log_listener_attach_result(
@@ -3264,6 +3323,17 @@ impl ThreadRequestProcessor {
 
         Ok((items, next_cursor))
     }
+}
+
+fn xcode_26_4_mcp_elicitations_auto_deny(
+    client_name: Option<&str>,
+    client_version: Option<&str>,
+) -> bool {
+    // Xcode 26.4 shipped before app-server MCP elicitation requests were
+    // client-visible. Keep elicitations auto-denied for that client line.
+    // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
+    client_name == Some("Xcode")
+        && client_version.is_some_and(|version| version.starts_with("26.4"))
 }
 
 const THREAD_TURNS_DEFAULT_LIMIT: usize = 25;

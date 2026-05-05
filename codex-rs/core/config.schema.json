@@ -674,6 +674,15 @@
         "tools_view_image": {
           "type": "boolean"
         },
+        "tui": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ProfileTui"
+            }
+          ],
+          "default": null,
+          "description": "TUI settings scoped to this profile."
+        },
         "web_search": {
           "$ref": "#/definitions/WebSearchMode"
         },
@@ -1876,6 +1885,22 @@
       },
       "type": "object"
     },
+    "ProfileTui": {
+      "additionalProperties": false,
+      "description": "TUI settings supported inside a named profile.",
+      "properties": {
+        "session_picker_view": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionPickerViewMode"
+            }
+          ],
+          "default": null,
+          "description": "Preferred layout for resume/fork session picker results."
+        }
+      },
+      "type": "object"
+    },
     "ProjectConfig": {
       "additionalProperties": false,
       "properties": {
@@ -2160,6 +2185,14 @@
       "enum": [
         "fast",
         "flex"
+      ],
+      "type": "string"
+    },
+    "SessionPickerViewMode": {
+      "description": "Preferred layout for the resume/fork session picker.",
+      "enum": [
+        "comfortable",
+        "dense"
       ],
       "type": "string"
     },
@@ -2566,6 +2599,15 @@
           "default": false,
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
+        },
+        "session_picker_view": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionPickerViewMode"
+            }
+          ],
+          "default": null,
+          "description": "Preferred layout for resume/fork session picker results."
         },
         "show_tooltips": {
           "default": true,

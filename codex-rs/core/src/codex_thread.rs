@@ -223,9 +223,14 @@ impl CodexThread {
         &self,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        mcp_elicitations_auto_deny: bool,
     ) -> ConstraintResult<()> {
         self.codex
-            .set_app_server_client_info(app_server_client_name, app_server_client_version)
+            .set_app_server_client_info(
+                app_server_client_name,
+                app_server_client_version,
+                mcp_elicitations_auto_deny,
+            )
             .await
     }
 

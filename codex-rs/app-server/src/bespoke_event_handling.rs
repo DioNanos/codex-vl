@@ -2640,7 +2640,8 @@ mod tests {
                 config.model_provider.clone(),
                 config.codex_home.to_path_buf(),
                 Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-            ),
+            )
+            .await,
         );
         let codex_core::NewThread {
             thread_id: conversation_id,
@@ -3225,7 +3226,8 @@ mod tests {
                 config.model_provider.clone(),
                 config.codex_home.to_path_buf(),
                 Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-            ),
+            )
+            .await,
         );
         let codex_core::NewThread {
             thread_id: conversation_id,

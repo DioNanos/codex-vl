@@ -184,7 +184,7 @@ async fn exec_command_pre_tool_use_payload_uses_raw_command() {
         arguments: serde_json::json!({ "cmd": "printf exec command" }).to_string(),
     };
     let (session, turn) = make_session_and_context().await;
-    let handler = UnifiedExecHandler;
+    let handler = ExecCommandHandler;
 
     assert_eq!(
         handler.pre_tool_use_payload(&ToolInvocation {
@@ -210,7 +210,7 @@ async fn exec_command_pre_tool_use_payload_skips_write_stdin() {
         arguments: serde_json::json!({ "chars": "echo hi" }).to_string(),
     };
     let (session, turn) = make_session_and_context().await;
-    let handler = UnifiedExecHandler;
+    let handler = WriteStdinHandler;
 
     assert_eq!(
         handler.pre_tool_use_payload(&ToolInvocation {
@@ -244,8 +244,9 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
         hook_command: Some("echo three".to_string()),
     };
     let invocation = invocation_for_payload("exec_command", "call-43", payload).await;
+    let handler = ExecCommandHandler;
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        handler.post_tool_use_payload(&invocation, &output),
         Some(crate::tools::registry::PostToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_use_id: "call-43".to_string(),
@@ -272,9 +273,10 @@ async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completi
         hook_command: Some("echo three".to_string()),
     };
     let invocation = invocation_for_payload("exec_command", "call-44", payload).await;
+    let handler = ExecCommandHandler;
 
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        handler.post_tool_use_payload(&invocation, &output),
         Some(crate::tools::registry::PostToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_use_id: "call-44".to_string(),
@@ -301,10 +303,8 @@ async fn exec_command_post_tool_use_payload_skips_running_sessions() {
         hook_command: Some("echo three".to_string()),
     };
     let invocation = invocation_for_payload("exec_command", "call-45", payload).await;
-    assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
-        None
-    );
+    let handler = ExecCommandHandler;
+    assert_eq!(handler.post_tool_use_payload(&invocation, &output), None);
 }
 
 #[tokio::test]
@@ -328,9 +328,10 @@ async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_comman
         hook_command: Some("sleep 1; echo finished".to_string()),
     };
     let invocation = invocation_for_payload("write_stdin", "write-stdin-call", payload).await;
+    let handler = WriteStdinHandler;
 
     assert_eq!(
-        UnifiedExecHandler.post_tool_use_payload(&invocation, &output),
+        handler.post_tool_use_payload(&invocation, &output),
         Some(crate::tools::registry::PostToolUsePayload {
             tool_name: HookToolName::bash(),
             tool_use_id: "exec-call-45".to_string(),
@@ -369,10 +370,11 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
     };
     let invocation_b = invocation_for_payload("write_stdin", "write-call-b", payload.clone()).await;
     let invocation_a = invocation_for_payload("write_stdin", "write-call-a", payload).await;
+    let handler = WriteStdinHandler;
 
     let payloads = [
-        UnifiedExecHandler.post_tool_use_payload(&invocation_b, &output_b),
-        UnifiedExecHandler.post_tool_use_payload(&invocation_a, &output_a),
+        handler.post_tool_use_payload(&invocation_b, &output_b),
+        handler.post_tool_use_payload(&invocation_a, &output_a),
     ];
 
     assert_eq!(

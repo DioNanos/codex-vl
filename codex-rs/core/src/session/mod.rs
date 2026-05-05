@@ -132,7 +132,6 @@ use codex_terminal_detection::user_agent;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::LiveThread;
 use codex_thread_store::LiveThreadInitGuard;
-use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadEventPersistenceMode;
 use codex_thread_store::ThreadPersistenceMetadata;
@@ -357,7 +356,6 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
-use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -413,6 +411,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) parent_trace: Option<W3cTraceContext>,
     pub(crate) environment_selections: ResolvedTurnEnvironments,
     pub(crate) analytics_events_client: Option<AnalyticsEventsClient>,
+    pub(crate) state_db: Option<state_db::StateDbHandle>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,
 }
 
@@ -470,6 +469,7 @@ impl Codex {
             parent_trace: _,
             environment_selections,
             analytics_events_client,
+            state_db,
             thread_store,
         } = args;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -558,15 +558,7 @@ impl Codex {
             };
             match thread_id {
                 Some(thread_id) => {
-                    let state_db_ctx = if config.ephemeral {
-                        None
-                    } else if let Some(local_store) =
-                        thread_store.as_any().downcast_ref::<LocalThreadStore>()
-                    {
-                        local_store.state_db().await
-                    } else {
-                        None
-                    };
+                    let state_db_ctx = state_db.clone();
                     state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
                         .await
                 }
@@ -652,6 +644,7 @@ impl Codex {
             agent_control,
             environment_manager,
             analytics_events_client,
+            state_db,
             thread_store,
             parent_rollout_thread_trace,
         )
@@ -759,6 +752,7 @@ impl Codex {
         &self,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        mcp_elicitations_auto_deny: bool,
     ) -> ConstraintResult<()> {
         self.session
             .update_settings(SessionSettingsUpdate {
@@ -766,7 +760,10 @@ impl Codex {
                 app_server_client_version,
                 ..Default::default()
             })
-            .await
+            .await?;
+        let mcp_connection_manager = self.session.services.mcp_connection_manager.read().await;
+        mcp_connection_manager.set_elicitations_auto_deny(mcp_elicitations_auto_deny);
+        Ok(())
     }
 
     pub(crate) async fn agent_status(&self) -> AgentStatus {
@@ -1308,7 +1305,7 @@ impl Session {
             self.services.user_shell.as_ref().clone(),
             self.services.shell_snapshot_tx.clone(),
             self.services.session_telemetry.clone(),
-            self.services.state_db.clone(),
+            self.state_db(),
         );
     }
 

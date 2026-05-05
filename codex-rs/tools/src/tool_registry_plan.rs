@@ -172,8 +172,8 @@ pub fn build_tool_registry_plan(
                     /*supports_parallel_tool_calls*/ false,
                     config.code_mode_enabled,
                 );
-                plan.register_handler("exec_command", ToolHandlerKind::UnifiedExec);
-                plan.register_handler("write_stdin", ToolHandlerKind::UnifiedExec);
+                plan.register_handler("exec_command", ToolHandlerKind::ExecCommand);
+                plan.register_handler("write_stdin", ToolHandlerKind::WriteStdin);
             }
             ConfigShellToolType::Disabled => {}
             ConfigShellToolType::ShellCommand => {
@@ -193,8 +193,8 @@ pub fn build_tool_registry_plan(
         && config.shell_type != ConfigShellToolType::Disabled
     {
         plan.register_handler("shell", ToolHandlerKind::Shell);
-        plan.register_handler("container.exec", ToolHandlerKind::Shell);
-        plan.register_handler("local_shell", ToolHandlerKind::Shell);
+        plan.register_handler("container.exec", ToolHandlerKind::ContainerExec);
+        plan.register_handler("local_shell", ToolHandlerKind::LocalShell);
         plan.register_handler("shell_command", ToolHandlerKind::ShellCommand);
     }
 
@@ -214,9 +214,12 @@ pub fn build_tool_registry_plan(
             /*supports_parallel_tool_calls*/ true,
             config.code_mode_enabled,
         );
-        plan.register_handler("list_mcp_resources", ToolHandlerKind::McpResource);
-        plan.register_handler("list_mcp_resource_templates", ToolHandlerKind::McpResource);
-        plan.register_handler("read_mcp_resource", ToolHandlerKind::McpResource);
+        plan.register_handler("list_mcp_resources", ToolHandlerKind::ListMcpResources);
+        plan.register_handler(
+            "list_mcp_resource_templates",
+            ToolHandlerKind::ListMcpResourceTemplates,
+        );
+        plan.register_handler("read_mcp_resource", ToolHandlerKind::ReadMcpResource);
     }
 
     plan.push_spec(
@@ -231,19 +234,19 @@ pub fn build_tool_registry_plan(
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        plan.register_handler("get_goal", ToolHandlerKind::Goal);
+        plan.register_handler("get_goal", ToolHandlerKind::GetGoal);
         plan.push_spec(
             create_create_goal_tool(),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        plan.register_handler("create_goal", ToolHandlerKind::Goal);
+        plan.register_handler("create_goal", ToolHandlerKind::CreateGoal);
         plan.push_spec(
             create_update_goal_tool(),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        plan.register_handler("update_goal", ToolHandlerKind::Goal);
+        plan.register_handler("update_goal", ToolHandlerKind::UpdateGoal);
     }
 
     plan.push_spec(
@@ -493,14 +496,17 @@ pub fn build_tool_registry_plan(
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
         );
-        plan.register_handler("spawn_agents_on_csv", ToolHandlerKind::AgentJobs);
+        plan.register_handler("spawn_agents_on_csv", ToolHandlerKind::SpawnAgentsOnCsv);
         if config.agent_jobs_worker_tools {
             plan.push_spec(
                 create_report_agent_job_result_tool(),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
-            plan.register_handler("report_agent_job_result", ToolHandlerKind::AgentJobs);
+            plan.register_handler(
+                "report_agent_job_result",
+                ToolHandlerKind::ReportAgentJobResult,
+            );
         }
     }
 
