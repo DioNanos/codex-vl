@@ -189,11 +189,11 @@ mod mcp;
 mod multi_agents;
 mod review;
 mod rollout_reconstruction;
-mod vl_loop_awareness;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
+mod vl_loop_awareness;
 use self::config_lock::export_config_lock_if_configured;
 use self::config_lock::validate_config_lock_if_configured;
 #[cfg(test)]
