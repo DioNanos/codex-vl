@@ -144,7 +144,9 @@ impl App {
                             crate::vl::VivlingLogKind::Assist
                         }
                     };
-                    self.chat_widget.add_vivling_message(reply, log_kind);
+                    let visible_reply = format_vivling_brain_reply(kind, &reply);
+                    self.chat_widget
+                        .add_vivling_message(visible_reply, log_kind);
                 }
                 Err(err) => {
                     if let Err(persist_err) =
@@ -182,5 +184,42 @@ impl App {
             }
         }
         Ok(AppRunControl::Continue)
+    }
+}
+
+fn format_vivling_brain_reply(
+    kind: crate::vivling::VivlingBrainRequestKind,
+    reply: &str,
+) -> String {
+    let prefix = match kind {
+        crate::vivling::VivlingBrainRequestKind::Chat => "Brain response",
+        crate::vivling::VivlingBrainRequestKind::Assist => "Brain assist",
+    };
+    format!("{prefix}: {reply}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vivling::VivlingBrainRequestKind;
+
+    #[test]
+    fn brain_response_label_distinguishes_chat_from_assist() {
+        assert_eq!(
+            format_vivling_brain_reply(VivlingBrainRequestKind::Chat, "ready"),
+            "Brain response: ready"
+        );
+        assert_eq!(
+            format_vivling_brain_reply(VivlingBrainRequestKind::Assist, "check logs"),
+            "Brain assist: check logs"
+        );
+    }
+
+    #[test]
+    fn brain_response_label_preserves_multiline_reply() {
+        assert_eq!(
+            format_vivling_brain_reply(VivlingBrainRequestKind::Chat, "first\nsecond"),
+            "Brain response: first\nsecond"
+        );
     }
 }
