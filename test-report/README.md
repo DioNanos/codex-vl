@@ -1,93 +1,38 @@
-# Test Report
+# Codex-VL Test Reports
 
-This directory is the dedicated validation area for `codex-vl` release candidates.
+This directory is intentionally small. Its job is to give the next validating AI
+one clear path through release-candidate testing without old reports, stale
+templates, or local machine noise.
 
-Use it to keep install notes, automated runtime validation, screenshots, and
-manual acceptance evidence before promoting a `develop` build into a clean
-GitHub `main` release.
+## Start Here
 
-## Validation policy
+Use `AI_GUIDED_TEST_SUITE.md` as the canonical checklist.
 
-`codex-vl` should test everything that is realistically automatable first.
-Manual/UI checks come after that and should only cover what cannot be trusted to
-an unattended runtime suite.
+The suite is AI-guided by design: the AI runs commands, inspects outputs,
+classifies PASS/FAIL, and writes a sanitized report. Do not replace this with a
+blind runner unless a maintainer explicitly asks for that.
 
-This means:
+## Current Files
 
-- automatic checks should cover the widest possible command and runtime surface
-- `/loop` behavior should be validated automatically where the agent can create,
-  trigger, update, list, disable, and remove loop jobs on its own
-- non-interactive CLI, packaging, install, and first-start checks should stay in
-  the automated section
-- manual testing should be reserved for TUI behavior, visual flows, and product
-  judgment calls
+- `AI_GUIDED_TEST_SUITE.md`: reusable guide for future validating AIs.
+- `automated/2026-05-06_0.128.4_next_build_publish.md`: 0.128.4 build,
+  package, publish, and Forge push evidence.
+- `manual/2026-05-06_0.128.4_ai_guided_surface.md`: 0.128.4 AI-guided
+  command, tool, TUI, read/write, patch, and runtime smoke report.
 
-## Folder structure
+## Report Rules
 
-- `automated/`
-  - unattended runtime reports
-  - install smoke results
-  - platform-specific CLI/runtime validation
-  - loop self-management checks
-- `manual/`
-  - UI/TUI walkthroughs
-  - screenshots
-  - subjective UX notes
-  - Vivling interaction checks
-  - final release acceptance summaries
+Keep only the latest useful release evidence here. Remove stale reports once a
+newer suite supersedes them.
 
-## Automatic suite expectations
+Reports must be sanitized before they are committed:
 
-The automatic suite should validate as much as possible from the installed
-package, not just from the source tree.
+- no absolute local paths
+- no private hosts or IPs
+- no tokens, usernames, or account identifiers
+- no raw environment dumps
+- no unrelated process lists
+- no unredacted MCP secrets
 
-Expected automatic coverage:
-
-- package/version checks
-- top-level help and subcommand help routing
-- login status and safe auth entry points
-- MCP listing and feature listing
-- completion generation
-- app-server schema generation
-- non-interactive `exec` flows
-- workspace write/read checks
-- network smoke where allowed
-- binary linkage/package sanity
-- `/loop` lifecycle checks that are feasible without a human in the TUI
-- no-crash first-start validation on supported targets
-
-Good automatic reports should look similar in spirit to the practical runtime
-reports already used in `codex-termux`: clear PASS/FAIL status, explicit command
-surface tested, and a short outcome summary.
-
-## Manual/UI suite expectations
-
-Manual validation should be tracked separately from the automatic suite.
-
-Expected manual coverage:
-
-- first interactive TUI launch
-- thread start/resume/fork in the UI
-- `/loop` interaction from the TUI surface
-- `/vivling` and `/vl` interaction quality
-- visual regressions
-- release-candidate acceptance decision
-
-## Suggested files
-
-- `automated/YYYY-MM-DD_<target>_runtime.md`
-- `automated/YYYY-MM-DD_<target>_install.md`
-- `manual/YYYY-MM-DD_<target>_ui.md`
-- `manual/YYYY-MM-DD_release_candidate_summary.md`
-
-Templates:
-
-- `AUTOMATED_RUNTIME_TEMPLATE.md`
-- `MANUAL_UI_TEMPLATE.md`
-
-AI-guided future suite:
-
-- `AI_GUIDED_TEST_SUITE.md`
-
-This folder is intentionally versioned so each release candidate can carry its
-own validation evidence.
+Use placeholders such as `<repo>`, `<tmp-workspace>`, and `<platform-device>`
+when concrete local values are not safe for public GitHub mirroring.
