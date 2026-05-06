@@ -230,3 +230,32 @@ fn recap_reads_synthesized_memory_view() {
     assert!(message.contains("distilled:"));
     assert!(message.contains("paths:"));
 }
+
+#[test]
+fn missing_focus_target_points_to_roster() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+
+    let err = vivling
+        .command(VivlingAction::Focus("unknown".to_string()), temp.path())
+        .expect_err("missing target should fail");
+
+    assert!(err.contains("No Vivling matches `unknown`"), "{err}");
+    assert!(err.contains("/vivling roster"), "{err}");
+}
+
+#[test]
+fn missing_import_package_points_to_import_usage() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+
+    let err = vivling
+        .command(
+            VivlingAction::Import("missing.vivegg".to_string()),
+            temp.path(),
+        )
+        .expect_err("missing package should fail");
+
+    assert!(err.contains("Failed to open Vivling package"), "{err}");
+    assert!(err.contains("/vivling import <path.vivegg>"), "{err}");
+}

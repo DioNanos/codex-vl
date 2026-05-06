@@ -458,7 +458,11 @@ impl Vivling {
         let target_id = self
             .resolve_vivling_target(target)
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| format!("No Vivling matches `{target}`."))?;
+            .ok_or_else(|| {
+                format!(
+                    "No Vivling matches `{target}`. Use /vivling roster to see available Vivlings."
+                )
+            })?;
         let mut state = self
             .load_state_for_id(&target_id)
             .map_err(|err| err.to_string())?
@@ -597,8 +601,18 @@ impl Vivling {
                 "All top-level Vivling slots are full ({EXTERNAL_SLOT_LIMIT}/{EXTERNAL_SLOT_LIMIT})."
             ));
         }
-        let file = fs::File::open(&import_path).map_err(|err| err.to_string())?;
-        let mut archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+        let file = fs::File::open(&import_path).map_err(|err| {
+            format!(
+                "Failed to open Vivling package {}: {err}. Use /vivling import <path.vivegg>.",
+                import_path.display()
+            )
+        })?;
+        let mut archive = ZipArchive::new(file).map_err(|err| {
+            format!(
+                "Invalid Vivling package {}: {err}. Use a .vivegg file exported with /vivling export.",
+                import_path.display()
+            )
+        })?;
         let manifest: VivlingPackageManifest =
             read_zip_json(&mut archive, "manifest.json").map_err(|err| err.to_string())?;
         let mut state: VivlingState =

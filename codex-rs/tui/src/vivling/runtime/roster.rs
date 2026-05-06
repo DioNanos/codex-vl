@@ -12,6 +12,36 @@ pub(crate) struct VivlingRoster {
     pub(crate) external_vivling_ids: Vec<String>,
 }
 
+impl VivlingRoster {
+    fn normalize_ids(&mut self) -> bool {
+        fn normalize_list(list: &mut Vec<String>) -> bool {
+            let before = list.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            list.retain(|entry| {
+                let trimmed = entry.trim();
+                !trimmed.is_empty() && seen.insert(trimmed.to_string())
+            });
+            *list != before
+        }
+
+        let mut changed = normalize_list(&mut self.vivling_ids);
+        changed |= normalize_list(&mut self.external_vivling_ids);
+        let before_external = self.external_vivling_ids.clone();
+        self.external_vivling_ids
+            .retain(|entry| self.vivling_ids.iter().any(|id| id == entry));
+        changed |= self.external_vivling_ids != before_external;
+        if self
+            .active_vivling_id
+            .as_deref()
+            .is_some_and(|id| !self.vivling_ids.iter().any(|entry| entry == id))
+        {
+            self.active_vivling_id = self.vivling_ids.first().cloned();
+            changed = true;
+        }
+        changed
+    }
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub(crate) struct VivlingPackageManifest {
     pub(crate) package_version: u32,
@@ -196,7 +226,11 @@ impl Vivling {
         let target_id = self
             .resolve_vivling_target(target)
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| format!("No Vivling matches `{target}`."))?;
+            .ok_or_else(|| {
+                format!(
+                    "No Vivling matches `{target}`. Use /vivling roster to see available Vivlings."
+                )
+            })?;
         if self.active_vivling_id.as_deref() == Some(target_id.as_str()) {
             return Err("Cannot remove the active Vivling. Focus another one first.".to_string());
         }
@@ -314,17 +348,21 @@ impl Vivling {
             }
             Err(err) => return Err(err),
         };
-        serde_json::from_str(&text).map_err(io::Error::other)
+        let mut roster: VivlingRoster = serde_json::from_str(&text).map_err(io::Error::other)?;
+        roster.normalize_ids();
+        Ok(roster)
     }
 
     pub(crate) fn save_roster(&self, roster: &VivlingRoster) -> io::Result<()> {
         let Some(path) = self.roster_path() else {
             return Ok(());
         };
+        let mut roster = roster.clone();
+        roster.normalize_ids();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let text = serde_json::to_string_pretty(roster).map_err(io::Error::other)?;
+        let text = serde_json::to_string_pretty(&roster).map_err(io::Error::other)?;
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, &text)?;
         fs::rename(&tmp, &path)
@@ -369,14 +407,46 @@ impl Vivling {
 
     pub(crate) fn load_state(&self) -> io::Result<Option<VivlingState>> {
         let mut roster = self.load_roster()?;
-        let active_id = roster
-            .active_vivling_id
-            .clone()
-            .or_else(|| roster.vivling_ids.first().cloned());
+        let mut roster_changed = false;
+        let before_vivling_ids = roster.vivling_ids.clone();
+        roster.vivling_ids.retain(|vivling_id| {
+            self.state_path_for_id(vivling_id)
+                .is_some_and(|path| path.exists())
+        });
+        roster_changed |= roster.vivling_ids != before_vivling_ids;
+        let before_external_ids = roster.external_vivling_ids.clone();
+        roster
+            .external_vivling_ids
+            .retain(|vivling_id| roster.vivling_ids.iter().any(|id| id == vivling_id));
+        roster_changed |= roster.external_vivling_ids != before_external_ids;
+        let active_id = match roster.active_vivling_id.clone() {
+            Some(active_id)
+                if self
+                    .state_path_for_id(&active_id)
+                    .is_some_and(|path| path.exists()) =>
+            {
+                Some(active_id)
+            }
+            _ => {
+                let first_existing = roster.vivling_ids.iter().find_map(|vivling_id| {
+                    self.state_path_for_id(vivling_id)
+                        .filter(|path| path.exists())
+                        .map(|_| vivling_id.clone())
+                });
+                if roster.active_vivling_id != first_existing {
+                    roster.active_vivling_id = first_existing.clone();
+                    roster_changed = true;
+                }
+                first_existing
+            }
+        };
         let Some(path) = self
             .roster_dir()
             .and_then(|dir| active_id.as_ref().map(|id| dir.join(format!("{id}.json"))))
         else {
+            if roster_changed {
+                let _ = self.save_roster(&roster);
+            }
             return Ok(None);
         };
         let text = match fs::read_to_string(path) {

@@ -221,3 +221,95 @@ fn legacy_single_state_with_sparse_memory_entries_migrates_into_roster() {
     assert!(migrated.work_xp > 0);
     assert!(migrated.level >= 1);
 }
+
+#[test]
+fn roster_with_duplicate_and_missing_entries_heals_active_to_existing_state() {
+    let temp = TempDir::new().expect("tempdir");
+    let vivling = configured_vivling(temp.path());
+    let mut first = exportable_state(30);
+    first.vivling_id = "viv-existing-one".to_string();
+    first.primary_vivling_id = first.vivling_id.clone();
+    vivling
+        .save_state_record(&first, true, false)
+        .expect("save first");
+    let mut second = exportable_state(30);
+    second.vivling_id = "viv-existing-two".to_string();
+    second.primary_vivling_id = second.vivling_id.clone();
+    second.is_imported = true;
+    vivling
+        .save_state_record(&second, false, true)
+        .expect("save second");
+    let roster_path = vivling.roster_path().expect("roster path");
+    fs::write(
+        &roster_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": first.version,
+            "active_vivling_id": "viv-missing",
+            "vivling_ids": [
+                "viv-missing",
+                "viv-existing-one",
+                "viv-existing-one",
+                "viv-existing-two"
+            ],
+            "external_vivling_ids": [
+                "viv-existing-two",
+                "viv-missing",
+                "viv-existing-two"
+            ]
+        }))
+        .expect("roster json"),
+    )
+    .expect("write dirty roster");
+
+    let reloaded = configured_vivling(temp.path());
+
+    assert_eq!(
+        reloaded.active_vivling_id.as_deref(),
+        Some("viv-existing-one")
+    );
+    let healed = reloaded.load_roster().expect("healed roster");
+    assert_eq!(
+        healed.vivling_ids,
+        vec![
+            "viv-existing-one".to_string(),
+            "viv-existing-two".to_string()
+        ]
+    );
+    assert_eq!(
+        healed.external_vivling_ids,
+        vec!["viv-existing-two".to_string()]
+    );
+    assert_eq!(
+        healed.active_vivling_id.as_deref(),
+        Some("viv-existing-one")
+    );
+}
+
+#[test]
+fn roster_with_only_missing_entries_loads_empty_without_deleting_directory() {
+    let temp = TempDir::new().expect("tempdir");
+    let vivling = configured_vivling(temp.path());
+    let roster_dir = vivling.roster_dir().expect("roster dir");
+    fs::create_dir_all(&roster_dir).expect("roster dir");
+    let roster_path = vivling.roster_path().expect("roster path");
+    fs::write(
+        &roster_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "version": 6,
+            "active_vivling_id": "viv-missing",
+            "vivling_ids": ["viv-missing", "viv-missing"],
+            "external_vivling_ids": ["viv-missing"]
+        }))
+        .expect("roster json"),
+    )
+    .expect("write dirty roster");
+
+    let reloaded = configured_vivling(temp.path());
+
+    assert!(reloaded.state.is_none());
+    assert!(roster_dir.exists());
+    let healed = reloaded.load_roster().expect("healed roster");
+    assert!(healed.vivling_ids.is_empty());
+    assert!(healed.external_vivling_ids.is_empty());
+    assert!(healed.active_vivling_id.is_none());
+}

@@ -465,21 +465,8 @@ async fn run_vivling_assist_request(
     session_telemetry: SessionTelemetry,
     request: VivlingAssistRequest,
 ) -> Result<String, String> {
-    let profile_config = ConfigBuilder::default()
-        .codex_home(config.codex_home.to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            cwd: Some(config.cwd.to_path_buf()),
-            config_profile: Some(request.brain_profile.clone()),
-            ..ConfigOverrides::default()
-        })
-        .build()
-        .await
-        .map_err(|err| {
-            format!(
-                "Vivling brain profile `{}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying.",
-                request.brain_profile
-            )
-        })?;
+    let (profile_config, model_name) =
+        resolve_vivling_brain_profile_config(&config, &request.brain_profile).await?;
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -491,12 +478,6 @@ async fn run_vivling_assist_request(
         .await,
     );
     let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_name = profile_config.model.clone().ok_or_else(|| {
-        format!(
-            "Vivling brain profile `{}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`.",
-            request.brain_profile
-        )
-    })?;
     let model_info = models_manager
         .get_model_info(&model_name, &profile_config.to_models_manager_config())
         .await;
@@ -591,16 +572,8 @@ async fn run_vivling_loop_tick_request(
     session_telemetry: SessionTelemetry,
     request: VivlingLoopTickRequest,
 ) -> Result<VivlingLoopTickResult, String> {
-    let profile_config = ConfigBuilder::default()
-        .codex_home(config.codex_home.to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            cwd: Some(config.cwd.to_path_buf()),
-            config_profile: Some(request.brain_profile.clone()),
-            ..ConfigOverrides::default()
-        })
-        .build()
-        .await
-        .map_err(|err| format!("Failed to load Vivling brain profile: {err}"))?;
+    let (profile_config, model_name) =
+        resolve_vivling_brain_profile_config(&config, &request.brain_profile).await?;
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -612,12 +585,6 @@ async fn run_vivling_loop_tick_request(
         .await,
     );
     let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_name = profile_config.model.clone().ok_or_else(|| {
-        format!(
-            "Vivling profile `{}` does not resolve to a model.",
-            request.brain_profile
-        )
-    })?;
     let model_info = models_manager
         .get_model_info(&model_name, &profile_config.to_models_manager_config())
         .await;
@@ -695,6 +662,32 @@ async fn run_vivling_loop_tick_request(
     }
     serde_json::from_str(trimmed)
         .map_err(|err| format!("Vivling loop tick returned invalid JSON: {err}"))
+}
+
+async fn resolve_vivling_brain_profile_config(
+    config: &Config,
+    brain_profile: &str,
+) -> Result<(Config, String), String> {
+    let profile_config = ConfigBuilder::default()
+        .codex_home(config.codex_home.to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(config.cwd.to_path_buf()),
+            config_profile: Some(brain_profile.to_string()),
+            ..ConfigOverrides::default()
+        })
+        .build()
+        .await
+        .map_err(|err| {
+            format!(
+                "Vivling brain profile `{brain_profile}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying."
+            )
+        })?;
+    let model_name = profile_config.model.clone().ok_or_else(|| {
+        format!(
+            "Vivling brain profile `{brain_profile}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`."
+        )
+    })?;
+    Ok((profile_config, model_name))
 }
 
 pub(super) async fn fetch_all_mcp_server_statuses(
@@ -1001,9 +994,53 @@ mod tests {
     use codex_protocol::mcp::Tool;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
+    use std::fs;
+    use tempfile::TempDir;
 
     fn test_absolute_path(path: &str) -> AbsolutePathBuf {
         AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+    }
+
+    #[tokio::test]
+    async fn vivling_brain_profile_preflight_rejects_profile_without_model() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join("config.toml"),
+            r#"
+[profiles.vivling-empty]
+model_provider = "openai"
+"#,
+        )
+        .expect("write config");
+        let config = ConfigBuilder::default()
+            .codex_home(temp.path().to_path_buf())
+            .build()
+            .await
+            .expect("base config");
+
+        let err = resolve_vivling_brain_profile_config(&config, "vivling-empty")
+            .await
+            .expect_err("missing model should fail before request setup");
+
+        assert!(err.contains("does not resolve to a model"), "{err}");
+        assert!(err.contains("/vivling model <profile>"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn vivling_brain_profile_preflight_reports_unloadable_profile() {
+        let temp = TempDir::new().expect("tempdir");
+        let config = ConfigBuilder::default()
+            .codex_home(temp.path().to_path_buf())
+            .build()
+            .await
+            .expect("base config");
+
+        let err = resolve_vivling_brain_profile_config(&config, "missing-vivling-profile")
+            .await
+            .expect_err("missing profile should fail before request setup");
+
+        assert!(err.contains("not ready"), "{err}");
+        assert!(err.contains("Check `/vivling model`"), "{err}");
     }
 
     #[test]
