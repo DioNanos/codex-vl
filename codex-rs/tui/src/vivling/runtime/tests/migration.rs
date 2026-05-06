@@ -177,6 +177,7 @@ fn captured_current_one_member_roster_loads_active_state() {
     );
     let active = reloaded.state.expect("active captured state");
     assert_eq!(active.version, CURRENT_STATE_VERSION);
+    assert!(!active.gene_vector.is_neutral());
     assert_eq!(active.vivling_id, "viv-captured-current");
     assert_eq!(active.primary_vivling_id, "viv-captured-current");
     assert!(active.is_primary);

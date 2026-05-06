@@ -1,4 +1,5 @@
 use super::common::*;
+use crate::vivling::model::VivlingGeneVector;
 
 #[test]
 fn spawn_requires_level_30_and_persists_new_roster_member() {
@@ -54,6 +55,20 @@ fn spawn_requires_level_30_and_persists_new_roster_member() {
     assert!(spawned.distilled_summaries.is_empty());
     assert_eq!(spawned.loop_exposure, 0);
     assert_eq!(spawned.turns_observed, 0);
+    assert_ne!(spawned.gene_vector, VivlingGeneVector::default());
+    assert_ne!(spawned.gene_vector, state.gene_vector);
+    let mut inherited = [0usize; 4];
+    for index in 0..4 {
+        if (spawned.gene_vector.affinity_mod[index] - state.gene_vector.affinity_mod[index]).abs()
+            <= 0.05
+        {
+            inherited[index] = 1;
+        }
+    }
+    assert!(
+        inherited.iter().sum::<usize>() >= 2,
+        "spawn should inherit at least two close gene affinities"
+    );
 }
 
 #[test]

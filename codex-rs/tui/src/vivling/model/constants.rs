@@ -1,4 +1,4 @@
-pub(crate) const VERSION: u32 = 6;
+pub(crate) const VERSION: u32 = 7;
 pub(crate) const MAX_LEVEL: u64 = 99;
 pub(crate) const JUVENILE_LEVEL: u64 = 30;
 pub(crate) const ADULT_LEVEL: u64 = 60;

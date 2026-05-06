@@ -1,4 +1,5 @@
 use super::common::*;
+use crate::vivling::model::VivlingGeneVector;
 
 #[test]
 fn active_footer_pose_changes_while_task_running() {
@@ -112,4 +113,44 @@ fn animation_text_expires_without_touching_saved_last_message() {
             .and_then(|state| state.last_message.as_deref()),
         Some(original.as_str())
     );
+}
+
+#[test]
+fn status_and_card_include_individual_gene_surface() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let mut state = vivling.state.clone().expect("state");
+    state.gene_vector = VivlingGeneVector {
+        affinity_mod: [1.12, 0.96, 1.03, 1.18],
+        curiosity: 72,
+        caution: 66,
+        sociability: 40,
+        patience: 82,
+        brain_potential: 1.11,
+    };
+    vivling.state = Some(state);
+    vivling.save_state().expect("save gene state");
+
+    let status = match vivling
+        .command(VivlingAction::Status, temp.path())
+        .expect("status")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    assert!(status.contains("genes BLD +12%"));
+    assert!(status.contains("temperament patient, curious, cautious"));
+    assert!(status.contains("brain potential high"));
+
+    let card = match vivling
+        .command(VivlingAction::Card, temp.path())
+        .expect("card")
+    {
+        VivlingCommandOutcome::OpenCard(card) => card,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    let rendered = card.narrow_lines.join("\n");
+    assert!(rendered.contains("Genes BLD +12%"));
+    assert!(rendered.contains("Temperament patient, curious, cautious"));
+    assert!(rendered.contains("brain potential high"));
 }

@@ -110,12 +110,14 @@ pub(crate) fn compose_brain_prompt(
 
 fn identity_section(state: &VivlingState, profile: &str) -> String {
     format!(
-        "Vivling identity:\n- id: {}\n- name: {}\n- profile: {}\n- stage: {}\n- dominant role: {}\n- tone: {}\n- verification bias: {}\n- caution bias: {}\n- question bias: {}",
+        "Vivling identity:\n- id: {}\n- name: {}\n- profile: {}\n- stage: {}\n- dominant role: {}\n- temperament: {}\n- brain potential: {}\n- tone: {}\n- verification bias: {}\n- caution bias: {}\n- question bias: {}",
         state.vivling_id,
         state.name,
         profile,
         state.stage().label(),
         state.dominant_archetype().label(),
+        state.gene_vector.temperament_summary(),
+        state.gene_vector.brain_potential_label(),
         state.identity_profile.tone,
         state.identity_profile.verification_bias,
         state.identity_profile.caution_bias,

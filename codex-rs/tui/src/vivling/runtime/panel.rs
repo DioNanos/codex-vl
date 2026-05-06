@@ -9,7 +9,11 @@ pub(crate) struct VivlingPanelData {
 
 pub(crate) fn render_vivling_card(state: &mut VivlingState) -> VivlingPanelData {
     let species = species_for_id(&state.species);
-    let displayed = state.work_affinities.totals_with_bias(state.species_bias());
+    let displayed = modulated_totals(
+        &state.work_affinities,
+        state.species_bias(),
+        &state.gene_vector,
+    );
     let memory = state
         .last_work_summary
         .as_deref()
@@ -33,6 +37,12 @@ pub(crate) fn render_vivling_card(state: &mut VivlingState) -> VivlingPanelData 
             state.mood(),
             state.ai_mode.label(),
             state.active_work_days
+        ));
+        lines.push(format!("Genes {}", state.gene_vector.gene_stripe()));
+        lines.push(format!(
+            "Temperament {} · brain potential {}",
+            state.gene_vector.temperament_summary(),
+            state.gene_vector.brain_potential_label()
         ));
         lines.push(format!(
             "Tone {} · recent {} · distilled {} · paths {}",

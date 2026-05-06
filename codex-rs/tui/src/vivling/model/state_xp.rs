@@ -41,6 +41,8 @@ impl VivlingState {
         spawned.hatched = true;
         spawned.visible = true;
         spawned.seed_hash = format!("{hash:016x}");
+        spawned.gene_vector =
+            VivlingGeneVector::inherit_from(&self.gene_vector, &spawned.seed_hash);
         spawned.vivling_id = vivling_id;
         spawned.install_id = None;
         spawned.origin_install_id = self.origin_install_id.clone();
@@ -245,17 +247,24 @@ impl VivlingState {
     }
 
     pub(crate) fn dominant_archetype(&self) -> WorkArchetype {
-        self.work_affinities.dominant_with_bias(self.species_bias())
+        dominant_with_genes(
+            &self.work_affinities,
+            self.species_bias(),
+            &self.gene_vector,
+        )
     }
 
     pub(crate) fn mood(&self) -> &'static str {
+        let lonely_threshold =
+            15 + i64::from(90u8.saturating_sub(self.gene_vector.sociability) / 5);
+        let grumpy_threshold = 20 + i64::from(90u8.saturating_sub(self.gene_vector.patience) / 6);
         if self.hunger <= 20 {
             "hungry"
         } else if self.energy <= 20 {
             "sleepy"
-        } else if self.social <= 20 {
+        } else if self.social <= lonely_threshold {
             "lonely"
-        } else if self.happiness <= 25 {
+        } else if self.happiness <= grumpy_threshold {
             "grumpy"
         } else if self.happiness >= 78 {
             "happy"

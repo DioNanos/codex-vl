@@ -35,6 +35,7 @@ pub(crate) use super::model::VivlingAiMode;
 pub(crate) use super::model::VivlingLoopEvent;
 pub(crate) use super::model::VivlingState;
 pub(crate) use super::model::hatch_species_from_unlocked;
+pub(crate) use super::model::modulated_totals;
 pub(crate) use super::model::truncate_summary;
 pub(crate) use super::registry::active_footer_sprites_for_species;
 pub(crate) use super::registry::card_art_for_species;
