@@ -736,7 +736,31 @@ fn chat_falls_back_to_direct_reply_without_ready_brain() {
         other => panic!("unexpected outcome: {other:?}"),
     };
 
+    assert!(message.starts_with("Local fallback: "), "{message}");
     assert!(message.contains("I'm ") || message.contains("As "));
+}
+
+#[test]
+fn adult_chat_without_brain_profile_is_explicit_local_fallback() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+
+    let message = match vivling
+        .command(
+            VivlingAction::Chat("what should we check?".to_string()),
+            temp.path(),
+        )
+        .expect("chat")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+
+    assert!(message.starts_with("Local fallback: "), "{message}");
+    assert!(!message.contains("brain is thinking"), "{message}");
 }
 
 #[test]
@@ -763,6 +787,23 @@ fn adult_chat_with_ready_brain_dispatches_chat_request() {
     assert_eq!(request.brain_profile, "vivling-spark");
     assert!(request.prompt_context.contains("User message:\nciao bello"));
     assert!(request.prompt_context.contains("Live state contract:"));
+}
+
+#[test]
+fn brain_runtime_error_persists_actionable_text() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let err = "Vivling brain request failed before a reply: auth missing. Check auth, provider, model, or disable the brain with `/vivling brain off`.";
+
+    vivling
+        .mark_brain_runtime_error(err)
+        .expect("mark brain error");
+
+    let state = vivling.state.as_ref().expect("state");
+    let stored = state.brain_last_error.as_deref().expect("brain error");
+    assert!(stored.contains("Check auth, provider, model"), "{stored}");
+    assert!(stored.contains("/vivling brain off"), "{stored}");
+    assert_eq!(state.last_message.as_deref(), Some(stored));
 }
 
 #[test]

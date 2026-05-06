@@ -26,8 +26,13 @@ impl App {
         let session_telemetry = self.session_telemetry.clone();
         tokio::spawn(async move {
             let vivling_id = request.vivling_id.clone();
+            let kind = request.kind.clone();
             let result = run_vivling_assist_request(config, session_telemetry, request).await;
-            app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished { vivling_id, result });
+            app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished {
+                vivling_id,
+                kind,
+                result,
+            });
         });
     }
 
@@ -469,7 +474,12 @@ async fn run_vivling_assist_request(
         })
         .build()
         .await
-        .map_err(|err| format!("Failed to load Vivling brain profile: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "Vivling brain profile `{}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying.",
+                request.brain_profile
+            )
+        })?;
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -483,7 +493,7 @@ async fn run_vivling_assist_request(
     let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
     let model_name = profile_config.model.clone().ok_or_else(|| {
         format!(
-            "Vivling profile `{}` does not resolve to a model.",
+            "Vivling brain profile `{}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`.",
             request.brain_profile
         )
     })?;
@@ -540,7 +550,11 @@ async fn run_vivling_assist_request(
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
         .await
-        .map_err(|err| format!("Vivling brain request failed: {err}"))?;
+        .map_err(|err| {
+            format!(
+                "Vivling brain request failed before a reply: {err}. Check auth, provider, model, or disable the brain with `/vivling brain off`."
+            )
+        })?;
 
     let mut result = String::new();
     while let Some(event) = stream

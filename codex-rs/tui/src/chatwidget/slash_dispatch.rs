@@ -997,12 +997,25 @@ impl ChatWidget {
                 self.request_redraw();
             }
             Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
+                let log_kind = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        crate::vl::VivlingLogKind::Chat
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        crate::vl::VivlingLogKind::Assist
+                    }
+                };
+                let pending_message = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        "Vivling brain chat is thinking...".to_string()
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        "Vivling brain assist is thinking...".to_string()
+                    }
+                };
                 self.app_event_tx
                     .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(
-                    "Vivling brain is thinking...".to_string(),
-                    crate::vl::VivlingLogKind::Assist,
-                );
+                self.add_vivling_message(pending_message, log_kind);
             }
             Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
                 self.app_event_tx
@@ -1039,12 +1052,25 @@ impl ChatWidget {
                 self.request_redraw();
             }
             Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
+                let log_kind = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        crate::vl::VivlingLogKind::Chat
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        crate::vl::VivlingLogKind::Assist
+                    }
+                };
+                let pending_message = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        "Vivling brain chat is thinking...".to_string()
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        "Vivling brain assist is thinking...".to_string()
+                    }
+                };
                 self.app_event_tx
                     .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(
-                    "Vivling brain is thinking...".to_string(),
-                    crate::vl::VivlingLogKind::Assist,
-                );
+                self.add_vivling_message(pending_message, log_kind);
             }
             Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
                 self.app_event_tx

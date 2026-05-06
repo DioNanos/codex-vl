@@ -125,15 +125,26 @@ impl App {
             VlEvent::RunVivlingAssist { request } => {
                 self.run_vivling_assist(request);
             }
-            VlEvent::VivlingAssistFinished { vivling_id, result } => match result {
+            VlEvent::VivlingAssistFinished {
+                vivling_id,
+                kind,
+                result,
+            } => match result {
                 Ok(reply) => {
                     if let Err(err) = self.chat_widget.mark_vivling_brain_reply(&reply) {
                         tracing::warn!(
                             "failed to persist Vivling brain reply for {vivling_id}: {err}"
                         );
                     }
-                    self.chat_widget
-                        .add_vivling_message(reply, crate::vl::VivlingLogKind::Assist);
+                    let log_kind = match kind {
+                        crate::vivling::VivlingBrainRequestKind::Chat => {
+                            crate::vl::VivlingLogKind::Chat
+                        }
+                        crate::vivling::VivlingBrainRequestKind::Assist => {
+                            crate::vl::VivlingLogKind::Assist
+                        }
+                    };
+                    self.chat_widget.add_vivling_message(reply, log_kind);
                 }
                 Err(err) => {
                     if let Err(persist_err) =

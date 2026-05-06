@@ -159,6 +159,7 @@ impl Vivling {
                 .map(VivlingCommandOutcome::DispatchAssist)
         } else {
             self.update_existing_result(|state| state.direct_chat_reply(text))
+                .map(|reply| format!("Local fallback: {reply}"))
                 .map(VivlingCommandOutcome::Message)
         }
     }
