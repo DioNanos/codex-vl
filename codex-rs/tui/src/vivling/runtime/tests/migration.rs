@@ -1,4 +1,334 @@
 use super::common::*;
+use crate::vivling::model::VERSION as CURRENT_STATE_VERSION;
+use crate::vivling::model::VivlingDistilledSummary;
+use crate::vivling::model::VivlingIdentityProfile;
+use crate::vivling::model::VivlingLoopProfile;
+use crate::vivling::model::VivlingMentalPath;
+use crate::vivling::model::VivlingWorkMemoryEntry;
+use crate::vivling::model::WorkArchetype;
+
+fn captured_timestamp() -> chrono::DateTime<Utc> {
+    "2026-05-01T08:18:18Z"
+        .parse()
+        .expect("captured fixture timestamp")
+}
+
+fn captured_memory_entries(count: usize) -> Vec<VivlingWorkMemoryEntry> {
+    (0..count)
+        .map(|index| VivlingWorkMemoryEntry {
+            kind: "turn".to_string(),
+            summary: format!("sanitized captured turn {}", index + 1),
+            archetype: WorkArchetype::Builder,
+            weight: 12 + index as u64,
+            created_at: captured_timestamp(),
+        })
+        .collect()
+}
+
+fn captured_distilled_summaries(count: usize) -> Vec<VivlingDistilledSummary> {
+    (0..count)
+        .map(|index| VivlingDistilledSummary {
+            topic: "work_pattern".to_string(),
+            summary: format!("sanitized captured pattern {}", index + 1),
+            kind: "turn".to_string(),
+            archetype: WorkArchetype::Builder,
+            total_weight: 1000 + index as u64,
+            observations: 100 + index as u64,
+            first_seen_at: captured_timestamp(),
+            last_seen_at: captured_timestamp(),
+        })
+        .collect()
+}
+
+fn captured_mental_paths(count: usize) -> Vec<VivlingMentalPath> {
+    (0..count)
+        .map(|index| VivlingMentalPath {
+            from: "topic:work_pattern".to_string(),
+            to: "focus:builder".to_string(),
+            weight: 500 + index as u64,
+            last_seen_at: captured_timestamp(),
+        })
+        .collect()
+}
+
+fn captured_state(id: &str, level: u64, active_days: u64) -> VivlingState {
+    let mut state = leveled_state(level, active_days);
+    state.version = 6;
+    state.hatched = true;
+    state.visible = true;
+    state.seed_hash = format!("sanitized-{id}");
+    state.vivling_id = id.to_string();
+    state.install_id = None;
+    state.origin_install_id = None;
+    state.species = "syllo".to_string();
+    state.rarity = "Common".to_string();
+    state.name = "Captured".to_string();
+    state.primary_vivling_id = id.to_string();
+    state.parent_vivling_id = None;
+    state.spawn_generation = 0;
+    state.is_primary = true;
+    state.is_imported = false;
+    state.imported_at = None;
+    state.import_source = None;
+    state.export_count = 0;
+    state.instance_label = None;
+    state.created_at = Some(captured_timestamp());
+    state.last_seen_at = Some(captured_timestamp());
+    state.last_fed_at = None;
+    state.brain_enabled = false;
+    state.brain_profile = None;
+    state.brain_last_error = None;
+    state.brain_last_used_at = None;
+    state.seed_origin = None;
+    state.adult_bootstrap = level >= ADULT_LEVEL;
+    state.last_work_summary = Some("sanitized captured work summary".to_string());
+    state.last_live_context_summary = Some("sanitized captured live context".to_string());
+    state.work_memory = captured_memory_entries(64);
+    state.distilled_summaries =
+        captured_distilled_summaries(if level >= ADULT_LEVEL { 17 } else { 8 });
+    state.mental_paths = captured_mental_paths(if level >= ADULT_LEVEL { 16 } else { 13 });
+    state.identity_profile = VivlingIdentityProfile {
+        tone: "skeptical".to_string(),
+        dominant_focus: WorkArchetype::Builder,
+        question_bias: if level >= ADULT_LEVEL { 60 } else { 25 },
+        caution_bias: if level >= ADULT_LEVEL { 10 } else { 29 },
+        verification_bias: if level >= ADULT_LEVEL { 243 } else { 135 },
+    };
+    state.loop_profile = VivlingLoopProfile {
+        clean_submissions: if level >= ADULT_LEVEL { 36 } else { 0 },
+        noisy_churn: if level >= ADULT_LEVEL { 433 } else { 220 },
+        blocked_runs: if level >= ADULT_LEVEL { 12 } else { 0 },
+        milestone_signals: if level >= ADULT_LEVEL { 30 } else { 0 },
+        partial_signals: if level >= ADULT_LEVEL { 46 } else { 0 },
+        verification_signals: if level >= ADULT_LEVEL { 239 } else { 135 },
+        wait_signals: if level >= ADULT_LEVEL { 675 } else { 350 },
+    };
+    state.last_message = Some("sanitized captured lifecycle message".to_string());
+    state.unlocked_species = vec!["syllo".to_string()];
+    state
+}
+
+fn write_captured_roster(home: &Path, roster: serde_json::Value, states: &[VivlingState]) {
+    let roster_dir = home.join(ROSTER_DIR);
+    fs::create_dir_all(&roster_dir).expect("captured roster dir");
+    fs::write(
+        roster_dir.join(ROSTER_FILE),
+        serde_json::to_string_pretty(&roster).expect("captured roster json"),
+    )
+    .expect("write captured roster");
+    for state in states {
+        fs::write(
+            roster_dir.join(format!("{}.json", state.vivling_id)),
+            serde_json::to_string_pretty(state).expect("captured state json"),
+        )
+        .expect("write captured state");
+    }
+}
+
+fn assert_captured_adult_state(state: &VivlingState, id: &str) {
+    assert_eq!(state.vivling_id, id);
+    assert_eq!(state.version, CURRENT_STATE_VERSION);
+    assert_eq!(state.species, "syllo");
+    assert_eq!(state.rarity, "Common");
+    assert_eq!(state.primary_vivling_id, id);
+    assert!(state.is_primary);
+    assert!(!state.is_imported);
+    assert_eq!(state.level, 61);
+    assert_eq!(state.work_xp, 3600);
+    assert_eq!(state.active_work_days, 91);
+    assert!(!state.brain_enabled);
+    assert!(state.brain_profile.is_none());
+    assert_eq!(state.work_memory.len(), 64);
+    assert_eq!(state.distilled_summaries.len(), 17);
+    assert_eq!(state.mental_paths.len(), 16);
+    assert_eq!(
+        state.identity_profile.dominant_focus,
+        WorkArchetype::Builder
+    );
+    assert_eq!(state.loop_profile.noisy_churn, 433);
+    assert!(
+        state
+            .unlocked_species
+            .iter()
+            .any(|species| species == "syllo")
+    );
+}
+
+#[test]
+fn captured_current_one_member_roster_loads_active_state() {
+    let temp = TempDir::new().expect("tempdir");
+    let state = captured_state("viv-captured-current", 4, 3);
+    write_captured_roster(
+        temp.path(),
+        serde_json::json!({
+            "version": 6,
+            "active_vivling_id": "viv-captured-current",
+            "vivling_ids": ["viv-captured-current"],
+            "external_vivling_ids": []
+        }),
+        std::slice::from_ref(&state),
+    );
+
+    let reloaded = configured_vivling(temp.path());
+
+    assert_eq!(
+        reloaded.active_vivling_id.as_deref(),
+        Some("viv-captured-current")
+    );
+    let active = reloaded.state.expect("active captured state");
+    assert_eq!(active.version, CURRENT_STATE_VERSION);
+    assert_eq!(active.vivling_id, "viv-captured-current");
+    assert_eq!(active.primary_vivling_id, "viv-captured-current");
+    assert!(active.is_primary);
+    assert_eq!(active.level, 4);
+    assert_eq!(active.work_xp, 180);
+    assert_eq!(active.active_work_days, 3);
+    assert_eq!(active.work_memory.len(), 64);
+    assert_eq!(active.distilled_summaries.len(), 8);
+    assert_eq!(active.mental_paths.len(), 13);
+    assert!(!active.brain_enabled);
+    assert_eq!(
+        active.last_message.as_deref(),
+        Some("sanitized captured lifecycle message")
+    );
+}
+
+#[test]
+fn captured_primary_memory_rich_state_preserves_progress_and_memory() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut state = captured_state("viv-captured-primary", 61, 91);
+    state.seed_origin = Some("adult_seed_v1".to_string());
+    state.export_count = 1;
+    write_captured_roster(
+        temp.path(),
+        serde_json::json!({
+            "version": 6,
+            "active_vivling_id": "viv-captured-primary",
+            "vivling_ids": ["viv-captured-primary"],
+            "external_vivling_ids": []
+        }),
+        std::slice::from_ref(&state),
+    );
+
+    let reloaded = configured_vivling(temp.path());
+    let active = reloaded.state.expect("active captured state");
+
+    assert_captured_adult_state(&active, "viv-captured-primary");
+    assert_eq!(active.export_count, 1);
+    assert_eq!(active.seed_origin.as_deref(), Some("adult_seed_v1"));
+    assert!(active.adult_bootstrap);
+}
+
+#[test]
+fn captured_two_member_roster_preserves_spawned_lineage() {
+    let temp = TempDir::new().expect("tempdir");
+    let primary = captured_state("viv-captured-primary", 61, 91);
+    let mut spawned = captured_state("viv-captured-spawned", 61, 91);
+    spawned.name = "Captured Spawn".to_string();
+    spawned.primary_vivling_id = primary.vivling_id.clone();
+    spawned.parent_vivling_id = Some(primary.vivling_id.clone());
+    spawned.spawn_generation = 1;
+    spawned.is_primary = false;
+    spawned.instance_label = Some("spawn-1".to_string());
+    spawned.last_message = Some("sanitized captured spawn message".to_string());
+    write_captured_roster(
+        temp.path(),
+        serde_json::json!({
+            "version": 6,
+            "active_vivling_id": "viv-captured-primary",
+            "vivling_ids": ["viv-captured-primary", "viv-captured-spawned"],
+            "external_vivling_ids": []
+        }),
+        &[primary.clone(), spawned.clone()],
+    );
+
+    let reloaded = configured_vivling(temp.path());
+    assert_eq!(
+        reloaded.active_vivling_id.as_deref(),
+        Some("viv-captured-primary")
+    );
+    let roster = reloaded.load_roster().expect("captured roster");
+    assert_eq!(
+        roster.vivling_ids,
+        vec![
+            "viv-captured-primary".to_string(),
+            "viv-captured-spawned".to_string()
+        ]
+    );
+    let loaded_spawned = reloaded
+        .load_state_for_id("viv-captured-spawned")
+        .expect("load spawned")
+        .expect("spawned state");
+    assert_eq!(loaded_spawned.primary_vivling_id, "viv-captured-primary");
+    assert_eq!(
+        loaded_spawned.parent_vivling_id.as_deref(),
+        Some("viv-captured-primary")
+    );
+    assert_eq!(loaded_spawned.spawn_generation, 1);
+    assert!(!loaded_spawned.is_primary);
+    assert!(!loaded_spawned.is_imported);
+    assert_eq!(loaded_spawned.instance_label.as_deref(), Some("spawn-1"));
+    assert_eq!(loaded_spawned.work_memory.len(), 64);
+    assert_eq!(loaded_spawned.distilled_summaries.len(), 17);
+    assert_eq!(loaded_spawned.mental_paths.len(), 16);
+}
+
+#[test]
+fn captured_vivegg_package_imports_without_losing_metadata() {
+    let package_dir = TempDir::new().expect("package dir");
+    let target = TempDir::new().expect("target dir");
+    let package_path = package_dir.path().join("captured-primary.vivegg");
+    let state = captured_state("viv-captured-package", 61, 91);
+    let manifest = VivlingPackageManifest {
+        package_version: VIVPKG_VERSION,
+        exported_at: captured_timestamp(),
+        vivling_id: state.vivling_id.clone(),
+        primary_vivling_id: state.primary_vivling_id.clone(),
+        species: state.species.clone(),
+        rarity: state.rarity.clone(),
+        level: state.level,
+        is_primary: state.is_primary,
+        is_imported: state.is_imported,
+        spawn_generation: state.spawn_generation,
+    };
+    make_package(&package_path, &manifest, &state);
+    let mut target_vivling = hatched_vivling(target.path());
+    let active_before = target_vivling.active_vivling_id.clone();
+
+    let import_message = match target_vivling
+        .command(
+            VivlingAction::Import(package_path.display().to_string()),
+            target.path(),
+        )
+        .expect("import captured package")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+
+    assert!(import_message.contains("Imported"));
+    assert_eq!(target_vivling.active_vivling_id, active_before);
+    let imported = target_vivling
+        .load_state_for_id("viv-captured-package")
+        .expect("load imported")
+        .expect("imported captured state");
+    assert_eq!(imported.vivling_id, "viv-captured-package");
+    assert_eq!(imported.primary_vivling_id, "viv-captured-package");
+    assert!(imported.is_imported);
+    assert!(imported.imported_at.is_some());
+    assert!(
+        imported
+            .import_source
+            .as_deref()
+            .is_some_and(|path| path.ends_with("captured-primary.vivegg"))
+    );
+    assert_eq!(imported.level, 61);
+    assert_eq!(imported.work_xp, 3600);
+    assert_eq!(imported.work_memory.len(), 64);
+    assert_eq!(imported.distilled_summaries.len(), 17);
+    assert_eq!(imported.mental_paths.len(), 16);
+    assert!(!imported.brain_enabled);
+}
 
 #[test]
 fn legacy_single_state_migrates_into_roster_on_configure() {
