@@ -18,6 +18,10 @@ fn main() {
             vendor_dir.join(source).display()
         );
     }
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("src/libcap_syscalls.c").display()
+    );
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "linux" || env::var_os("CODEX_SKIP_BWRAP_BUILD").is_some() {
@@ -34,10 +38,18 @@ fn try_build_bwrap() -> Result<(), String> {
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|err| err.to_string())?);
     let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|err| err.to_string())?);
     let src_dir = resolve_bwrap_source_dir(&manifest_dir)?;
-    let libcap = pkg_config::Config::new()
-        .cargo_metadata(false)
-        .probe("libcap")
-        .map_err(|err| format!("libcap not available via pkg-config: {err}"))?;
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let libcap = if target_env == "musl" {
+        None
+    } else {
+        Some(
+            pkg_config::Config::new()
+                .cargo_metadata(false)
+                .probe("libcap")
+                .map_err(|err| format!("libcap not available via pkg-config: {err}"))?,
+        )
+    };
 
     let config_h = out_dir.join("config.h");
     std::fs::write(
@@ -59,19 +71,28 @@ fn try_build_bwrap() -> Result<(), String> {
         .define("_GNU_SOURCE", None)
         // Rename `main` so the Rust wrapper can expose the Cargo-built binary.
         .define("main", Some("bwrap_main"));
-    for include_path in libcap.include_paths {
-        // Use -idirafter so target sysroot headers win (musl cross builds),
-        // while still allowing libcap headers from the host toolchain.
-        build.flag(format!("-idirafter{}", include_path.display()));
+    if target_env == "musl" {
+        build.file(manifest_dir.join("src/libcap_syscalls.c"));
+        build.flag("-idirafter/usr/include");
+        if target_arch == "x86_64" && Path::new("/usr/include/x86_64-linux-gnu").exists() {
+            build.flag("-idirafter/usr/include/x86_64-linux-gnu");
+        }
+    }
+    if let Some(libcap) = libcap {
+        for include_path in libcap.include_paths {
+            // Use -idirafter so target sysroot headers win (musl cross builds),
+            // while still allowing libcap headers from the host toolchain.
+            build.flag(format!("-idirafter{}", include_path.display()));
+        }
+        for link_path in libcap.link_paths {
+            println!("cargo:rustc-link-search=native={}", link_path.display());
+        }
+        for lib in libcap.libs {
+            println!("cargo:rustc-link-lib={lib}");
+        }
     }
 
     build.compile("standalone_bwrap");
-    for link_path in libcap.link_paths {
-        println!("cargo:rustc-link-search=native={}", link_path.display());
-    }
-    for lib in libcap.libs {
-        println!("cargo:rustc-link-lib={lib}");
-    }
     println!("cargo:rustc-cfg=bwrap_available");
     Ok(())
 }

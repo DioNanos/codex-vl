@@ -29,6 +29,7 @@ jobs:
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
       CARGO_PROFILE_RELEASE_PANIC: "abort"
       CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: "x86_64-linux-musl-gcc"
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release version

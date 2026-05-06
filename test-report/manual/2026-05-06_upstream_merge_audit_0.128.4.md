@@ -10,7 +10,7 @@ Required fork surfaces checked:
 - `/loop` command, persisted loop jobs, Vivling loop owner routing, and dynamic `manage_loops`
 - `/goal` UI, state, protocol events, state accounting, and model tools
 - Linux x64 and Termux Android arm64 npm package path
-- macOS local build/install documentation only
+- macOS local source-build npm package and install path
 
 ## Upstream Merge Notes
 
@@ -59,7 +59,26 @@ Verified by repository search:
 
 ## Release Gates Still Required
 
-- Optimized Linux x64 build and local npm install/runtime verification.
-- Optimized Termux Android arm64 build and package/linkage verification.
-- npm publish with `next` for root package and platform tags for native packages.
-- Clean merge commit and push only to Forge `origin/develop`.
+- Optimized Linux x64 build and local npm install/runtime verification: complete.
+- Optimized Termux Android arm64 build and package/linkage verification: complete.
+- macOS arm64 source-build npm package staging: complete.
+- npm publish with `next` for root package and platform tags for native packages: complete.
+- Clean merge commit and push only to Forge `origin/develop`: pending at report update time.
+
+## Release Completion Update - 2026-05-06
+
+- Linux x64 static PIE binaries built with maximum release profile and explicit
+  `x86_64-linux-musl-gcc` linker.
+- Linux npm tarball verified by temporary install and `codex-cli 0.128.4`
+  version check.
+- Android arm64 binaries built with NDK r27c, API 24 clang, maximum release
+  profile, and `rusty-v8-v146.4.0` Android artifacts.
+- Android npm tarball verified for AArch64 payload and package metadata.
+- Darwin arm64 npm tarball staged as a source-build payload for local Mac
+  postinstall/build testing.
+- npm registry verified after publish:
+  - `next`: `0.128.4`
+  - `linux-x64`: `0.128.4-linux-x64`
+  - `android-arm64`: `0.128.4-android-arm64`
+  - `darwin-arm64`: `0.128.4-darwin-arm64`
+  - `latest`: unchanged at `0.128.2`
