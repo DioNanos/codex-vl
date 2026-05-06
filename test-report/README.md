@@ -19,6 +19,8 @@ blind runner unless a maintainer explicitly asks for that.
   package, publish, and Forge push evidence.
 - `manual/2026-05-06_0.128.4_ai_guided_surface.md`: 0.128.4 AI-guided
   command, tool, TUI, read/write, patch, and runtime smoke report.
+- `manual/2026-05-06_termux_persist_extended_history_warning.md`: Termux
+  source update and startup deprecation-warning fix evidence.
 
 ## Report Rules
 
