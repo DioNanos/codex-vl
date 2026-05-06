@@ -65,18 +65,20 @@ mkdir -p "${DIST_DIR}"
 echo "==> Ensuring Rust target ${TARGET}"
 rustup target add "${TARGET}"
 
-echo "==> Building native macOS arm64 codex binary"
+echo "==> Building native macOS arm64 binaries"
 cargo build \
   --manifest-path "${REPO_ROOT}/codex-rs/Cargo.toml" \
   --target "${TARGET}" \
   --release \
-  --bin codex
+  --bin codex \
+  --bin codex-exec
 
 echo "==> Preparing vendor payload"
 python3 "${REPO_ROOT}/codex-cli/scripts/prepare_local_vendor.py" \
   --vendor-root "${VENDOR_ROOT}" \
   --target "${TARGET}" \
   --codex-binary "${REPO_ROOT}/codex-rs/target/${TARGET}/release/codex" \
+  --codex-exec-binary "${REPO_ROOT}/codex-rs/target/${TARGET}/release/codex-exec" \
   --include-rg
 
 echo "==> Staging side-by-side npm package"
@@ -110,6 +112,8 @@ if [[ "${INSTALL}" -eq 1 ]]; then
   mkdir -p "${PREFIX}" "${BIN_DIR}"
   npm install --prefix "${PREFIX}" "${TARBALL_PATH}"
   ln -sf "${PREFIX}/node_modules/.bin/codex-vl" "${BIN_DIR}/codex-vl"
+  ln -sf "${PREFIX}/node_modules/.bin/codex-vl-exec" "${BIN_DIR}/codex-vl-exec"
   echo "==> Installed ${BIN_DIR}/codex-vl"
+  echo "==> Installed ${BIN_DIR}/codex-vl-exec"
   echo "==> Shared runtime state remains under ~/.codex"
 fi
