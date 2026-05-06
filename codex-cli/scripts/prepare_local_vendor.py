@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to the locally built codex binary for the target.",
     )
     parser.add_argument(
+        "--codex-exec-binary",
+        type=Path,
+        help="Path to the locally built codex-exec binary for the target.",
+    )
+    parser.add_argument(
         "--include-rg",
         action="store_true",
         help="Fetch ripgrep for this target using the checked-in DotSlash manifest.",
@@ -69,6 +74,15 @@ def main() -> int:
     codex_dest = codex_dest_dir / "codex"
     shutil.copy2(codex_binary, codex_dest)
     ensure_executable(codex_dest)
+
+    if args.codex_exec_binary is not None:
+        codex_exec_binary = args.codex_exec_binary.resolve()
+        if not codex_exec_binary.exists():
+            raise FileNotFoundError(f"codex-exec binary not found: {codex_exec_binary}")
+
+        codex_exec_dest = codex_dest_dir / "codex-exec"
+        shutil.copy2(codex_exec_binary, codex_exec_dest)
+        ensure_executable(codex_exec_dest)
 
     if args.include_rg:
         fetch_rg(vendor_root, [args.target], manifest_path=RG_MANIFEST)
