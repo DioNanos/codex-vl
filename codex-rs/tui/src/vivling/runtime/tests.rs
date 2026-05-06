@@ -118,6 +118,21 @@ fn make_package(path: &Path, manifest: &VivlingPackageManifest, state: &VivlingS
     zip.finish().expect("finish package");
 }
 
+fn write_legacy_state(
+    home: &Path,
+    state: &VivlingState,
+    mutate: impl FnOnce(&mut serde_json::Value),
+) {
+    let legacy_path = home.join("vivling.json");
+    let mut raw = serde_json::to_value(state).expect("serialize legacy state");
+    mutate(&mut raw);
+    fs::write(
+        &legacy_path,
+        serde_json::to_string_pretty(&raw).expect("legacy json"),
+    )
+    .expect("write legacy state");
+}
+
 fn exportable_state(level: u64) -> VivlingState {
     let mut state = leveled_state(
         level,
@@ -807,6 +822,27 @@ fn brain_runtime_error_persists_actionable_text() {
 }
 
 #[test]
+fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
+    let temp = TempDir::new().expect("tempdir");
+    let vivling = hatched_vivling(temp.path());
+    let original = vivling
+        .state
+        .as_ref()
+        .and_then(|state| state.last_message.clone())
+        .expect("last message");
+
+    *vivling.animation_text.borrow_mut() = Some("is counting sparks".to_string());
+    vivling
+        .save_state()
+        .expect("save with volatile animation text");
+
+    let reloaded = configured_vivling(temp.path());
+    let state = reloaded.state.as_ref().expect("reloaded state");
+    assert_eq!(state.last_message.as_deref(), Some(original.as_str()));
+    assert!(reloaded.animation_text.borrow().is_none());
+}
+
+#[test]
 fn assist_request_keeps_assist_kind() {
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
@@ -892,6 +928,17 @@ fn export_and_import_roundtrip_uses_external_slots_without_auto_focus() {
     };
     assert!(export_message.contains("Exported"));
     assert!(export_path.exists());
+    assert_eq!(
+        source_vivling
+            .state
+            .as_ref()
+            .map(|state| state.export_count),
+        Some(source_state.export_count + 1)
+    );
+    assert_eq!(
+        source_vivling.active_vivling_id.as_deref(),
+        Some(source_state.vivling_id.as_str())
+    );
 
     let mut target_vivling = configured_vivling(target.path());
     let _ = target_vivling
@@ -913,6 +960,120 @@ fn export_and_import_roundtrip_uses_external_slots_without_auto_focus() {
     assert_eq!(target_vivling.active_vivling_id, active_before);
     let roster = target_vivling.load_roster().expect("target roster");
     assert_eq!(roster.external_vivling_ids.len(), 1);
+    let imported = target_vivling
+        .load_state_for_id(&roster.external_vivling_ids[0])
+        .expect("load imported")
+        .expect("imported state");
+    assert_eq!(imported.vivling_id, source_state.vivling_id);
+    assert_eq!(imported.primary_vivling_id, source_state.primary_vivling_id);
+    assert!(imported.is_imported);
+    assert!(
+        imported
+            .import_source
+            .as_deref()
+            .is_some_and(|path| path.ends_with("demo.vivegg"))
+    );
+    assert_eq!(imported.export_count, source_state.export_count);
+}
+
+#[test]
+fn import_rejects_duplicate_vivling_id_without_roster_duplication() {
+    let source = TempDir::new().expect("source tempdir");
+    let target = TempDir::new().expect("target tempdir");
+
+    let mut source_vivling = hatched_vivling(source.path());
+    let _ = set_active_level(&mut source_vivling, 30);
+    let export_path = source.path().join("duplicate.vivegg");
+    let _ = source_vivling
+        .command(
+            VivlingAction::Export(Some(export_path.display().to_string())),
+            source.path(),
+        )
+        .expect("export");
+
+    let mut target_vivling = hatched_vivling(target.path());
+    let _ = target_vivling
+        .command(
+            VivlingAction::Import(export_path.display().to_string()),
+            target.path(),
+        )
+        .expect("first import");
+    let err = target_vivling
+        .command(
+            VivlingAction::Import(export_path.display().to_string()),
+            target.path(),
+        )
+        .expect_err("duplicate import should fail");
+    assert!(err.contains("already exists"), "{err}");
+
+    let roster = target_vivling.load_roster().expect("target roster");
+    assert_eq!(roster.external_vivling_ids.len(), 1);
+    assert_eq!(
+        roster
+            .vivling_ids
+            .iter()
+            .filter(|id| *id == &roster.external_vivling_ids[0])
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn import_preserves_spawned_lineage_metadata_as_external_entry() {
+    let target = TempDir::new().expect("target");
+    let package_dir = TempDir::new().expect("package");
+    let package_path = package_dir.path().join("spawned-lineage.vivegg");
+    let mut state = exportable_state(30);
+    state.vivling_id = "viv-spawned-import".to_string();
+    state.primary_vivling_id = "viv-primary-origin".to_string();
+    state.parent_vivling_id = Some("viv-primary-origin".to_string());
+    state.spawn_generation = 2;
+    state.is_primary = false;
+    state.is_imported = false;
+    state.instance_label = Some("spawn-2".to_string());
+    let manifest = VivlingPackageManifest {
+        package_version: VIVPKG_VERSION,
+        exported_at: Utc::now(),
+        vivling_id: state.vivling_id.clone(),
+        primary_vivling_id: state.primary_vivling_id.clone(),
+        species: state.species.clone(),
+        rarity: state.rarity.clone(),
+        level: state.level,
+        is_primary: state.is_primary,
+        is_imported: false,
+        spawn_generation: state.spawn_generation,
+    };
+    make_package(&package_path, &manifest, &state);
+
+    let mut vivling = hatched_vivling(target.path());
+    let _ = vivling
+        .command(
+            VivlingAction::Import(package_path.display().to_string()),
+            target.path(),
+        )
+        .expect("import spawned package");
+
+    let roster = vivling.load_roster().expect("roster");
+    assert!(roster.external_vivling_ids.contains(&state.vivling_id));
+    let imported = vivling
+        .load_state_for_id(&state.vivling_id)
+        .expect("load imported")
+        .expect("imported state");
+    assert_eq!(imported.primary_vivling_id, "viv-primary-origin");
+    assert_eq!(
+        imported.parent_vivling_id.as_deref(),
+        Some("viv-primary-origin")
+    );
+    assert_eq!(imported.spawn_generation, 2);
+    assert!(!imported.is_primary);
+    assert!(imported.is_imported);
+    assert_eq!(imported.instance_label.as_deref(), Some("spawn-2"));
+    assert!(
+        imported
+            .import_source
+            .as_deref()
+            .is_some_and(|path| path.ends_with("spawned-lineage.vivegg"))
+    );
 }
 
 #[test]
@@ -1534,6 +1695,114 @@ fn legacy_single_state_with_suggest_ai_mode_migrates_into_roster() {
     assert_eq!(migrated.ai_mode, VivlingAiMode::On);
     assert_eq!(migrated.primary_vivling_id, migrated.vivling_id);
     assert!(migrated.is_primary);
+}
+
+#[test]
+fn legacy_juvenile_state_with_missing_modern_fields_keeps_stage_and_disables_brain() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut legacy_state = exportable_state(JUVENILE_LEVEL);
+    legacy_state.primary_vivling_id = String::new();
+    legacy_state.origin_install_id = None;
+    legacy_state.is_primary = false;
+    legacy_state.brain_enabled = true;
+    legacy_state.brain_profile = Some("old-profile".to_string());
+    legacy_state.brain_last_error = Some(String::new());
+    legacy_state.last_message = None;
+    let expected_work_xp = legacy_state.work_xp;
+    let expected_days = legacy_state.active_work_days;
+    write_legacy_state(temp.path(), &legacy_state, |raw| {
+        for key in [
+            "origin_install_id",
+            "primary_vivling_id",
+            "parent_vivling_id",
+            "spawn_generation",
+            "is_primary",
+            "is_imported",
+            "imported_at",
+            "import_source",
+            "export_count",
+            "brain_last_used_at",
+            "seed_origin",
+            "adult_bootstrap",
+            "last_message",
+            "unlocked_species",
+        ] {
+            raw.as_object_mut().expect("object").remove(key);
+        }
+    });
+
+    let vivling = configured_vivling(temp.path());
+    let migrated = vivling
+        .load_state_for_id(&legacy_state.vivling_id)
+        .expect("load migrated")
+        .expect("migrated state");
+    assert_eq!(migrated.stage(), Stage::Juvenile);
+    assert_eq!(migrated.work_xp, expected_work_xp);
+    assert_eq!(migrated.active_work_days, expected_days);
+    assert_eq!(migrated.primary_vivling_id, migrated.vivling_id);
+    assert!(migrated.is_primary);
+    assert!(!migrated.brain_enabled);
+    assert_eq!(migrated.brain_profile.as_deref(), Some("old-profile"));
+    assert!(migrated.brain_last_error.is_none());
+    assert_eq!(
+        migrated.last_message.as_deref(),
+        Some("is watching the session")
+    );
+    assert!(migrated.unlocked_species.iter().any(|id| id == "syllo"));
+}
+
+#[test]
+fn legacy_adult_state_with_missing_modern_fields_preserves_brain_and_unlocks() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut legacy_state = exportable_state(ADULT_LEVEL);
+    legacy_state.primary_vivling_id = String::new();
+    legacy_state.origin_install_id = None;
+    legacy_state.is_primary = false;
+    legacy_state.brain_enabled = true;
+    legacy_state.brain_profile = Some("adult-profile".to_string());
+    legacy_state.brain_last_error = Some(String::new());
+    legacy_state.adult_bootstrap = true;
+    legacy_state.seed_origin = Some(String::new());
+    legacy_state.unlocked_species = vec!["orchestra".to_string(), "syllo".to_string()];
+    let expected_work_xp = legacy_state.work_xp;
+    let expected_days = legacy_state.active_work_days;
+    write_legacy_state(temp.path(), &legacy_state, |raw| {
+        for key in [
+            "origin_install_id",
+            "primary_vivling_id",
+            "parent_vivling_id",
+            "spawn_generation",
+            "is_primary",
+            "is_imported",
+            "imported_at",
+            "import_source",
+            "export_count",
+            "brain_last_used_at",
+            "last_live_context_summary",
+            "identity_profile",
+            "loop_profile",
+        ] {
+            raw.as_object_mut().expect("object").remove(key);
+        }
+    });
+
+    let vivling = configured_vivling(temp.path());
+    let migrated = vivling
+        .load_state_for_id(&legacy_state.vivling_id)
+        .expect("load migrated")
+        .expect("migrated state");
+    assert_eq!(migrated.stage(), Stage::Adult);
+    assert_eq!(migrated.work_xp, expected_work_xp);
+    assert_eq!(migrated.active_work_days, expected_days);
+    assert_eq!(migrated.primary_vivling_id, migrated.vivling_id);
+    assert!(migrated.is_primary);
+    assert!(migrated.brain_enabled);
+    assert_eq!(migrated.brain_profile.as_deref(), Some("adult-profile"));
+    assert!(migrated.brain_last_error.is_none());
+    assert!(migrated.adult_bootstrap);
+    assert!(migrated.seed_origin.is_none());
+    assert!(migrated.unlocked_species.iter().any(|id| id == "syllo"));
+    assert!(migrated.unlocked_species.iter().any(|id| id == "orchestra"));
 }
 
 #[test]
