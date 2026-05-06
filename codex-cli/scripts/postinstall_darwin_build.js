@@ -15,6 +15,18 @@ function fail(message) {
   process.exit(1);
 }
 
+function appendRustflags(env, flags) {
+  const existing = env.RUSTFLAGS || "";
+  if (existing.includes("target-cpu=")) {
+    return env;
+  }
+
+  return {
+    ...env,
+    RUSTFLAGS: [existing, flags].filter(Boolean).join(" "),
+  };
+}
+
 if (os.platform() !== "darwin" || os.arch() !== "arm64") {
   console.log("[codex-vl] skipping macOS local build on this platform");
   process.exit(0);
@@ -44,7 +56,11 @@ const build = spawnSync(
     "-p",
     "codex-exec",
   ],
-  { cwd: root, stdio: "inherit" },
+  {
+    cwd: root,
+    env: appendRustflags(process.env, "-C target-cpu=native"),
+    stdio: "inherit",
+  },
 );
 
 if (build.status !== 0) {
