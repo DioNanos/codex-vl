@@ -41,12 +41,40 @@ jobs:
             version="$(node -p "require('./codex-cli/package.json').version")"
           fi
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install Linux musl build tools
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        run: |
+          set -euo pipefail
+          bash .github/scripts/install-musl-build-tools.sh
       - name: Build Linux x64 native payload
         run: |
           set -euo pipefail
           rustup target add x86_64-unknown-linux-musl
+          target="x86_64-unknown-linux-musl"
+          version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
+          release_tag="rusty-v8-v${version}"
+          base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+          binding_dir="${RUNNER_TEMP:-/tmp}/rusty_v8"
+          archive_path="${binding_dir}/librusty_v8_release_${target}.a.gz"
+          binding_path="${binding_dir}/src_binding_release_${target}.rs"
+          checksums_path="${binding_dir}/rusty_v8_release_${target}.sha256"
+          checksums_source="third_party/v8/rusty_v8_${version//./_}.sha256"
+          mkdir -p "$binding_dir"
+          curl -fsSL "${base_url}/librusty_v8_release_${target}.a.gz" -o "$archive_path"
+          curl -fsSL "${base_url}/src_binding_release_${target}.rs" -o "$binding_path"
+          grep -E "  (librusty_v8_release_${target}[.]a[.]gz|src_binding_release_${target}[.]rs)$" \
+            "$checksums_source" > "$checksums_path"
+          if [ "$(wc -l < "$checksums_path")" -ne 2 ]; then
+            echo "Expected exactly two checksums for ${target} in ${checksums_source}" >&2
+            exit 1
+          fi
+          (cd "$binding_dir" && sha256sum -c "$checksums_path")
+          export RUSTY_V8_ARCHIVE="$archive_path"
+          export RUSTY_V8_SRC_BINDING_PATH="$binding_path"
           echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
-          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli -p codex-exec
+          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
           before_exec="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec)"
           if command -v llvm-strip >/dev/null 2>&1; then
@@ -138,8 +166,17 @@ jobs:
         run: |
           set -euo pipefail
           rustup target add aarch64-linux-android
+          v8_env="$(python3 scripts/fetch_rusty_v8_android.py --target aarch64-linux-android)"
+          printf '%s\n' "$v8_env"
+          export RUSTY_V8_ARCHIVE="$(printf '%s\n' "$v8_env" | sed -n 's/^export RUSTY_V8_ARCHIVE="\([^"]*\)"$/\1/p')"
+          export RUSTY_V8_SRC_BINDING_PATH="$(printf '%s\n' "$v8_env" | sed -n 's/^export RUSTY_V8_SRC_BINDING_PATH="\([^"]*\)"$/\1/p')"
+          if [ -z "$RUSTY_V8_ARCHIVE" ] || [ -z "$RUSTY_V8_SRC_BINDING_PATH" ]; then
+            echo "Failed to resolve Android rusty_v8 artifact overrides" >&2
+            exit 1
+          fi
           echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
-          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli -p codex-exec
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
           before_exec="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex-exec)"
           ndk_strip="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
