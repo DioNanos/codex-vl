@@ -3724,7 +3724,8 @@ mod tests {
 
     fn session_configured_event(model: &str) -> SessionConfiguredEvent {
         SessionConfiguredEvent {
-            session_id: ThreadId::new(),
+            session_id: ThreadId::new().into(),
+            thread_id: ThreadId::new(),
             forked_from_id: None,
             thread_source: None,
             thread_name: None,
@@ -3737,8 +3738,6 @@ mod tests {
             active_permission_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
             initial_messages: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),

@@ -5687,6 +5687,7 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
             forked_from_id: None,
             preview: String::from("remote thread"),
             ephemeral: false,
@@ -5720,6 +5721,7 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
             forked_from_id: None,
             preview: String::from("preview"),
             ephemeral: false,
@@ -5786,6 +5788,7 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
             forked_from_id: None,
             preview: String::from("preview"),
             ephemeral: false,
@@ -5842,6 +5845,7 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
             forked_from_id: None,
             preview: String::from("preview"),
             ephemeral: false,

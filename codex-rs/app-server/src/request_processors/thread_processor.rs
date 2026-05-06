@@ -375,7 +375,6 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
     pub(super) thread_manager: Arc<ThreadManager>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
-    pub(super) analytics_events_client: AnalyticsEventsClient,
     pub(super) arg0_paths: Arg0DispatchPaths,
     pub(super) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
@@ -387,6 +386,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) thread_goal_processor: ThreadGoalRequestProcessor,
     pub(super) state_db: Option<StateDbHandle>,
     pub(super) background_tasks: TaskTracker,
+    pub(super) skills_watcher: Arc<SkillsWatcher>,
 }
 
 impl ThreadRequestProcessor {
@@ -395,7 +395,6 @@ impl ThreadRequestProcessor {
         auth_manager: Arc<AuthManager>,
         thread_manager: Arc<ThreadManager>,
         outgoing: Arc<OutgoingMessageSender>,
-        analytics_events_client: AnalyticsEventsClient,
         arg0_paths: Arg0DispatchPaths,
         config: Arc<Config>,
         config_manager: ConfigManager,
@@ -406,12 +405,12 @@ impl ThreadRequestProcessor {
         thread_list_state_permit: Arc<Semaphore>,
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
+        skills_watcher: Arc<SkillsWatcher>,
     ) -> Self {
         Self {
             auth_manager,
             thread_manager,
             outgoing,
-            analytics_events_client,
             arg0_paths,
             config,
             config_manager,
@@ -423,6 +422,7 @@ impl ThreadRequestProcessor {
             thread_goal_processor,
             state_db,
             background_tasks: TaskTracker::new(),
+            skills_watcher,
         }
     }
 
@@ -811,11 +811,11 @@ impl ThreadRequestProcessor {
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
-            analytics_events_client: self.analytics_events_client.clone(),
             thread_watch_manager: self.thread_watch_manager.clone(),
             thread_list_state_permit: self.thread_list_state_permit.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
+            skills_watcher: Arc::clone(&self.skills_watcher),
         }
     }
 
@@ -909,11 +909,11 @@ impl ThreadRequestProcessor {
             thread_state_manager: self.thread_state_manager.clone(),
             outgoing: Arc::clone(&self.outgoing),
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
-            analytics_events_client: self.analytics_events_client.clone(),
             thread_watch_manager: self.thread_watch_manager.clone(),
             thread_list_state_permit: self.thread_list_state_permit.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
+            skills_watcher: Arc::clone(&self.skills_watcher),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
@@ -1099,7 +1099,6 @@ impl ThreadRequestProcessor {
         });
         let dynamic_tools = with_builtin_dynamic_tools(dynamic_tools.unwrap_or_default());
         validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
-        let response_dynamic_tools = dynamic_tools.clone();
         let core_dynamic_tools = dynamic_tools
             .into_iter()
             .map(|tool| CoreDynamicToolSpec {
@@ -1111,7 +1110,6 @@ impl ThreadRequestProcessor {
             })
             .collect::<Vec<_>>();
         let core_dynamic_tool_count = core_dynamic_tools.len();
-
         let NewThread {
             thread_id,
             thread,
@@ -1163,6 +1161,7 @@ impl ThreadRequestProcessor {
             .await;
         let mut thread = build_thread_from_snapshot(
             thread_id,
+            session_configured.session_id.to_string(),
             &config_snapshot,
             session_configured.rollout_path.clone(),
         );
@@ -1219,7 +1218,6 @@ impl ThreadRequestProcessor {
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
             service_tier: config_snapshot.service_tier,
-            dynamic_tools: response_dynamic_tools,
             cwd: config_snapshot.cwd,
             instruction_sources,
             approval_policy: config_snapshot.approval_policy.into(),
@@ -1255,7 +1253,7 @@ impl ThreadRequestProcessor {
         &self,
         model: Option<String>,
         model_provider: Option<String>,
-        service_tier: Option<Option<codex_protocol::config_types::ServiceTier>>,
+        service_tier: Option<Option<String>>,
         cwd: Option<String>,
         approval_policy: Option<codex_app_server_protocol::AskForApproval>,
         approvals_reviewer: Option<codex_app_server_protocol::ApprovalsReviewer>,
@@ -1596,9 +1594,9 @@ impl ThreadRequestProcessor {
             ..Default::default()
         };
 
+        let loaded_thread = self.thread_manager.get_thread(thread_uuid).await.ok();
         let updated_thread = {
             let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
-            let loaded_thread = self.thread_manager.get_thread(thread_uuid).await.ok();
             if let Some(loaded_thread) = loaded_thread.as_ref() {
                 if loaded_thread.config_snapshot().await.ephemeral {
                     return Err(invalid_request(format!(
@@ -1619,12 +1617,14 @@ impl ThreadRequestProcessor {
             }
             .map_err(|err| thread_store_write_error("update thread metadata", err))?
         };
-
         let (mut thread, _) = thread_from_stored_thread(
             updated_thread,
             self.config.model_provider_id.as_str(),
             &self.config.cwd,
         );
+        if let Some(loaded_thread) = loaded_thread.as_ref() {
+            thread.session_id = loaded_thread.session_configured().session_id.to_string();
+        }
         self.attach_thread_name(thread_uuid, &mut thread).await;
         thread.status = resolve_thread_status(
             self.thread_watch_manager
@@ -1670,18 +1670,16 @@ impl ThreadRequestProcessor {
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
         let fallback_provider = self.config.model_provider_id.clone();
-        let mut thread = self
+        let stored_thread = self
             .thread_store
             .unarchive_thread(StoreArchiveThreadParams { thread_id })
             .await
-            .map_err(|err| thread_store_archive_error("unarchive", err))
-            .and_then(|stored_thread| {
-                summary_from_stored_thread(stored_thread, fallback_provider.as_str())
-                    .map(|summary| summary_to_thread(summary, &self.config.cwd))
-                    .ok_or_else(|| {
-                        internal_error(format!("failed to read unarchived thread {thread_id}"))
-                    })
+            .map_err(|err| thread_store_archive_error("unarchive", err))?;
+        let summary = summary_from_stored_thread(stored_thread, fallback_provider.as_str())
+            .ok_or_else(|| {
+                internal_error(format!("failed to read unarchived thread {thread_id}"))
             })?;
+        let mut thread = summary_to_thread(summary, &self.config.cwd);
 
         thread.status = resolve_thread_status(
             self.thread_watch_manager
@@ -2107,6 +2105,7 @@ impl ThreadRequestProcessor {
             if thread.path.is_none() {
                 thread.path = fallback_thread.path.clone();
             }
+            thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
             thread
         } else {
@@ -2290,8 +2289,12 @@ impl ThreadRequestProcessor {
     ) {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
             let config_snapshot = thread.config_snapshot().await;
-            let loaded_thread =
-                build_thread_from_snapshot(thread_id, &config_snapshot, thread.rollout_path());
+            let loaded_thread = build_thread_from_snapshot(
+                thread_id,
+                thread.session_configured().session_id.to_string(),
+                &config_snapshot,
+                thread.rollout_path(),
+            );
             self.thread_watch_manager.upsert_thread(loaded_thread).await;
         }
 
@@ -2548,17 +2551,6 @@ impl ThreadRequestProcessor {
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
                     service_tier: session_configured.service_tier,
-                    dynamic_tools: codex_rollout::state_db::get_dynamic_tools(
-                        codex_thread.state_db().as_deref(),
-                        thread_id,
-                        "thread_resume",
-                    )
-                    .await
-                    .map(with_builtin_core_dynamic_tools)
-                    .unwrap_or_else(|| with_builtin_core_dynamic_tools(Vec::new()))
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
                     cwd: session_configured.cwd,
                     instruction_sources,
                     approval_policy: session_configured.approval_policy.into(),
@@ -2728,11 +2720,12 @@ impl ThreadRequestProcessor {
             }
             let mut summary_source_thread = source_thread;
             summary_source_thread.history = None;
-            let thread_summary = self.stored_thread_to_api_thread(
+            let mut thread_summary = self.stored_thread_to_api_thread(
                 summary_source_thread,
                 config_snapshot.model_provider_id.as_str(),
                 /*include_turns*/ false,
             );
+            thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
             let mut config_for_instruction_sources = self.config.as_ref().clone();
             config_for_instruction_sources.cwd = config_snapshot.cwd.clone();
             let instruction_sources =
@@ -2902,6 +2895,7 @@ impl ThreadRequestProcessor {
         include_turns: bool,
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
+        let session_id = thread.session_configured().session_id.to_string();
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
                 let fallback_provider = config_snapshot.model_provider_id.as_str();
@@ -2963,6 +2957,7 @@ impl ThreadRequestProcessor {
             InitialHistory::Forked(items) => {
                 let mut thread = build_thread_from_snapshot(
                     thread_id,
+                    session_id.clone(),
                     &config_snapshot,
                     Some(rollout_path.into()),
                 );
@@ -2975,6 +2970,7 @@ impl ThreadRequestProcessor {
         };
         let mut thread = thread?;
         thread.id = thread_id.to_string();
+        thread.session_id = session_id;
         thread.path = Some(rollout_path.to_path_buf());
         if include_turns {
             let history_items = thread_history.get_rollout_items();
@@ -3156,8 +3152,12 @@ impl ThreadRequestProcessor {
         } else {
             let config_snapshot = forked_thread.config_snapshot().await;
             // forked thread names do not inherit the source thread name
-            let mut thread =
-                build_thread_from_snapshot(thread_id, &config_snapshot, /*path*/ None);
+            let mut thread = build_thread_from_snapshot(
+                thread_id,
+                session_configured.session_id.to_string(),
+                &config_snapshot,
+                /*path*/ None,
+            );
             thread.preview = preview_from_rollout_items(&history_items);
             thread.forked_from_id = Some(source_thread_id.to_string());
             if include_turns {
@@ -3169,6 +3169,7 @@ impl ThreadRequestProcessor {
             }
             thread
         };
+        thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = forked_thread
             .config_snapshot()
             .await
@@ -3757,8 +3758,10 @@ pub(crate) fn thread_from_stored_thread(
         thread.agent_role.clone(),
     );
     let history = thread.history;
+    let thread_id = thread.thread_id.to_string();
     let thread = Thread {
-        id: thread.thread_id.to_string(),
+        id: thread_id.clone(),
+        session_id: thread_id,
         forked_from_id: thread.forked_from_id.map(|id| id.to_string()),
         preview: thread.first_user_message.unwrap_or(thread.preview),
         ephemeral: false,
@@ -3955,12 +3958,14 @@ fn permission_profile_trusts_project(
 
 fn build_thread_from_snapshot(
     thread_id: ThreadId,
+    session_id: String,
     config_snapshot: &ThreadConfigSnapshot,
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     Thread {
         id: thread_id.to_string(),
+        session_id,
         forked_from_id: None,
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
@@ -3986,7 +3991,12 @@ fn build_thread_from_loaded_snapshot(
     config_snapshot: &ThreadConfigSnapshot,
     loaded_thread: &CodexThread,
 ) -> Thread {
-    build_thread_from_snapshot(thread_id, config_snapshot, loaded_thread.rollout_path())
+    build_thread_from_snapshot(
+        thread_id,
+        loaded_thread.session_configured().session_id.to_string(),
+        config_snapshot,
+        loaded_thread.rollout_path(),
+    )
 }
 
 #[cfg(test)]

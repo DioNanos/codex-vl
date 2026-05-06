@@ -118,4 +118,27 @@ impl AppEventSender {
             op: AppCommand::resolve_elicitation(server_name, request_id, decision, content, meta),
         });
     }
+
+    pub(crate) fn resolve_app_server_elicitation(
+        &self,
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: codex_app_server_protocol::RequestId,
+        decision: codex_app_server_protocol::McpServerElicitationAction,
+        content: Option<serde_json::Value>,
+        meta: Option<serde_json::Value>,
+    ) {
+        let request_id = match request_id {
+            codex_app_server_protocol::RequestId::String(value) => McpRequestId::String(value),
+            codex_app_server_protocol::RequestId::Integer(value) => McpRequestId::Integer(value),
+        };
+        self.resolve_elicitation(
+            thread_id,
+            server_name,
+            request_id,
+            decision.to_core(),
+            content,
+            meta,
+        );
+    }
 }

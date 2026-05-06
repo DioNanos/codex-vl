@@ -32,7 +32,6 @@ use crate::context::PersonalitySpecInstructions;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::exec_policy::ExecPolicyManager;
-use crate::installation_id::resolve_installation_id;
 use crate::parse_turn_item;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::realtime_conversation::RealtimeConversationManager;
@@ -114,6 +113,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -283,8 +283,6 @@ use crate::rollout::map_session_init_error;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
-use crate::skills_watcher::SkillsWatcher;
-use crate::skills_watcher::SkillsWatcherEvent;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::PendingRequestPermissions;
@@ -308,6 +306,7 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core_plugins::PluginsManager;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
+use codex_mcp::host_owned_codex_apps_enabled;
 use codex_mcp::with_codex_apps_mcp;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
@@ -384,13 +383,13 @@ pub struct CodexSpawnOk {
 
 pub(crate) struct CodexSpawnArgs {
     pub(crate) config: Config,
+    pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) skills_manager: Arc<SkillsManager>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
-    pub(crate) skills_watcher: Arc<SkillsWatcher>,
     pub(crate) conversation_history: InitialHistory,
     pub(crate) session_source: SessionSource,
     pub(crate) thread_source: Option<ThreadSource>,
@@ -447,13 +446,13 @@ impl Codex {
     async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
         let CodexSpawnArgs {
             mut config,
+            installation_id,
             auth_manager,
             models_manager,
             environment_manager,
             skills_manager,
             plugins_manager,
             mcp_manager,
-            skills_watcher,
             conversation_history,
             session_source,
             thread_source,
@@ -587,7 +586,7 @@ impl Codex {
             .auth_cached()
             .and_then(|auth| auth.account_plan_type());
         let service_tier = get_service_tier(
-            config.service_tier,
+            config.service_tier.clone(),
             config.notices.fast_default_opt_out.unwrap_or(false),
             account_plan_type,
             config.features.enabled(Feature::FastMode),
@@ -630,6 +629,7 @@ impl Codex {
         let session = Session::new(
             session_configuration,
             config.clone(),
+            installation_id,
             auth_manager.clone(),
             models_manager.clone(),
             exec_policy,
@@ -640,7 +640,6 @@ impl Codex {
             skills_manager,
             plugins_manager,
             mcp_manager.clone(),
-            skills_watcher,
             agent_control,
             environment_manager,
             analytics_events_client,
@@ -775,6 +774,11 @@ impl Codex {
         state.session_configuration.thread_config_snapshot()
     }
 
+    pub(crate) async fn thread_environment_selections(&self) -> Vec<TurnEnvironmentSelection> {
+        let state = self.session.state.lock().await;
+        state.session_configuration.environments.clone()
+    }
+
     pub(crate) fn state_db(&self) -> Option<state_db::StateDbHandle> {
         self.session.state_db()
     }
@@ -785,18 +789,18 @@ impl Codex {
 }
 
 fn get_service_tier(
-    configured_service_tier: Option<ServiceTier>,
+    configured_service_tier: Option<String>,
     fast_default_opt_out: bool,
     account_plan_type: Option<AccountPlanType>,
     fast_mode_enabled: bool,
-) -> Option<ServiceTier> {
+) -> Option<String> {
     if configured_service_tier.is_some() || fast_default_opt_out || !fast_mode_enabled {
         return configured_service_tier;
     }
 
     account_plan_type
         .is_some_and(is_enterprise_default_service_tier_plan)
-        .then_some(ServiceTier::Fast)
+        .then_some(ServiceTier::Fast.request_value().to_string())
 }
 
 fn is_enterprise_default_service_tier_plan(plan_type: AccountPlanType) -> bool {
@@ -997,29 +1001,6 @@ impl Session {
 
     pub(crate) fn set_out_of_band_elicitation_pause_state(&self, paused: bool) {
         self.out_of_band_elicitation_paused.send_replace(paused);
-    }
-
-    fn start_skills_watcher_listener(self: &Arc<Self>) {
-        let mut rx = self.services.skills_watcher.subscribe();
-        let weak_sess = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(SkillsWatcherEvent::SkillsChanged { .. }) => {
-                        let Some(sess) = weak_sess.upgrade() else {
-                            break;
-                        };
-                        let event = Event {
-                            id: sess.next_internal_sub_id(),
-                            msg: EventMsg::SkillsUpdateAvailable,
-                        };
-                        sess.send_event_raw(event).await;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                }
-            }
-        });
     }
 
     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
@@ -2701,13 +2682,14 @@ impl Session {
             );
         }
         if turn_context.config.include_environment_context {
+            let shell = self.user_shell();
             let subagents = self
                 .services
                 .agent_control
                 .format_environment_context_subagents(self.conversation_id)
                 .await;
             contextual_user_sections.push(
-                crate::context::EnvironmentContext::from_turn_context(turn_context)
+                crate::context::EnvironmentContext::from_turn_context(turn_context, shell.as_ref())
                     .with_subagents(subagents)
                     .render(),
             );

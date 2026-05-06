@@ -35,6 +35,7 @@ use crate::request_processors::WindowsSandboxRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
+use crate::skills_watcher::SkillsWatcher;
 use crate::thread_state::ThreadStateManager;
 use crate::transport::AppServerTransport;
 use crate::transport::ConnectionOrigin;
@@ -259,6 +260,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) installation_id: String,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
     pub(crate) plugin_startup_tasks: crate::PluginStartupTasks,
@@ -281,6 +283,7 @@ impl MessageProcessor {
             config_warnings,
             session_source,
             auth_manager,
+            installation_id,
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
@@ -302,10 +305,12 @@ impl MessageProcessor {
             state_db.clone(),
             Arc::clone(&thread_store),
             agent_graph_store.clone(),
+            installation_id,
         ));
         thread_manager
             .plugins_manager()
             .set_analytics_events_client(analytics_events_client.clone());
+        let skills_watcher = SkillsWatcher::new(thread_manager.skills_manager(), outgoing.clone());
 
         let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
         let thread_state_manager = ThreadStateManager::new();
@@ -388,7 +393,6 @@ impl MessageProcessor {
             auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
-            analytics_events_client.clone(),
             arg0_paths.clone(),
             Arc::clone(&config),
             config_manager.clone(),
@@ -399,6 +403,7 @@ impl MessageProcessor {
             Arc::clone(&thread_list_state_permit),
             thread_goal_processor.clone(),
             Some(state_db.clone()),
+            Arc::clone(&skills_watcher),
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager.clone(),
@@ -412,6 +417,7 @@ impl MessageProcessor {
             thread_state_manager,
             thread_watch_manager,
             thread_list_state_permit,
+            Arc::clone(&skills_watcher),
         );
         if matches!(plugin_startup_tasks, crate::PluginStartupTasks::Start) {
             // Keep plugin startup warmups aligned at app-server startup.

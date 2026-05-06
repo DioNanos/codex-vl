@@ -263,8 +263,10 @@ pub(crate) fn summary_to_thread(
                 fallback_cwd.clone()
             });
 
+    let thread_id = conversation_id.to_string();
     Thread {
-        id: conversation_id.to_string(),
+        id: thread_id.clone(),
+        session_id: thread_id,
         forked_from_id: None,
         preview,
         ephemeral: false,

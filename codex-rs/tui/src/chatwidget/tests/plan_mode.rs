@@ -582,16 +582,17 @@ async fn request_user_input_notification_overrides_pending_agent_turn_complete_n
     chat.notify(Notification::AgentTurnComplete {
         response: "done".to_string(),
     });
-    chat.handle_request_user_input_now(RequestUserInputEvent {
+    chat.handle_request_user_input_now(ToolRequestUserInputParams {
+        thread_id: "thread-1".to_string(),
+        item_id: "call-1".to_string(),
         turn_id: "turn-1".to_string(),
-        call_id: "call-1".to_string(),
-        questions: vec![RequestUserInputQuestion {
+        questions: vec![ToolRequestUserInputQuestion {
             id: "reasoning_scope".to_string(),
             header: "Reasoning scope".to_string(),
             question: "Which reasoning scope should I use?".to_string(),
             is_other: false,
             is_secret: false,
-            options: Some(vec![RequestUserInputQuestionOption {
+            options: Some(vec![ToolRequestUserInputOption {
                 label: "Plan only".to_string(),
                 description: "Update only Plan mode.".to_string(),
             }]),
@@ -610,16 +611,17 @@ async fn handle_request_user_input_sets_pending_notification() {
     chat.config.tui_notifications.notifications =
         Notifications::Custom(vec!["plan-mode-prompt".to_string()]);
 
-    chat.handle_request_user_input_now(RequestUserInputEvent {
+    chat.handle_request_user_input_now(ToolRequestUserInputParams {
+        thread_id: "thread-1".to_string(),
+        item_id: "call-1".to_string(),
         turn_id: "turn-1".to_string(),
-        call_id: "call-1".to_string(),
-        questions: vec![RequestUserInputQuestion {
+        questions: vec![ToolRequestUserInputQuestion {
             id: "reasoning_scope".to_string(),
             header: "Reasoning scope".to_string(),
             question: "Which reasoning scope should I use?".to_string(),
             is_other: false,
             is_secret: false,
-            options: Some(vec![RequestUserInputQuestionOption {
+            options: Some(vec![ToolRequestUserInputOption {
                 label: "Plan only".to_string(),
                 description: "Update only Plan mode.".to_string(),
             }]),
@@ -1200,17 +1202,16 @@ async fn submit_user_message_queues_while_compaction_turn_is_running() {
 #[tokio::test(flavor = "multi_thread")]
 async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -1218,8 +1219,7 @@ async fn submit_user_message_emits_structured_plugin_mentions_from_bindings() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -1447,7 +1447,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
 
-    let configured = crate::app_server_session::ThreadSessionState {
+    let configured = crate::session_state::ThreadSessionState {
         thread_id: ThreadId::new(),
         forked_from_id: None,
         fork_parent_title: None,
@@ -1455,7 +1455,6 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -1463,8 +1462,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: None,
     };
@@ -1503,14 +1501,12 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
     );
 }
 
-#[cfg(any())]
 #[tokio::test]
 async fn vim_mode_default_disabled_starts_composer_in_insert_mode() {
     let chat = make_startup_chat_with_cli_overrides(Vec::new()).await;
     assert!(!chat.bottom_pane.composer_is_vim_enabled());
 }
 
-#[cfg(any())]
 #[tokio::test]
 async fn vim_mode_default_enabled_starts_composer_in_normal_mode() {
     let chat = make_startup_chat_with_cli_overrides(vec![(
@@ -1550,6 +1546,7 @@ async fn make_startup_chat_with_cli_overrides(
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
+        runtime_model_provider_base_url: None,
         initial_plan_type: None,
         model: Some(resolved_model),
         startup_tooltip_override: None,

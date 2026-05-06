@@ -189,6 +189,7 @@ mod tests {
             state_db,
             thread_store,
             agent_graph_store,
+            "11111111-1111-4111-8111-111111111111".to_string(),
         ));
         thread_manager.start_thread(good_config).await?;
         thread_manager.start_thread(bad_config).await?;

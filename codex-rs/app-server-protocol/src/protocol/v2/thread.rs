@@ -12,7 +12,6 @@ use super::TurnEnvironmentParams;
 use super::shared::v2_enum_from_core;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
@@ -84,18 +83,6 @@ impl<'de> Deserialize<'de> for DynamicToolSpec {
     }
 }
 
-impl From<codex_protocol::dynamic_tools::DynamicToolSpec> for DynamicToolSpec {
-    fn from(value: codex_protocol::dynamic_tools::DynamicToolSpec) -> Self {
-        Self {
-            namespace: value.namespace,
-            name: value.name,
-            description: value.description,
-            input_schema: value.input_schema,
-            defer_loading: value.defer_loading,
-        }
-    }
-}
-
 // === Threads, Turns, and Items ===
 // Thread APIs
 #[derive(
@@ -115,7 +102,7 @@ pub struct ThreadStartParams {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional = nullable)]
-    pub service_tier: Option<Option<ServiceTier>>,
+    pub service_tier: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[experimental(nested)]
@@ -204,10 +191,7 @@ pub struct ThreadStartResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    pub service_tier: Option<ServiceTier>,
-    #[experimental("thread/start.dynamicTools")]
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dynamic_tools: Vec<DynamicToolSpec>,
+    pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
@@ -275,7 +259,7 @@ pub struct ThreadResumeParams {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional = nullable)]
-    pub service_tier: Option<Option<ServiceTier>>,
+    pub service_tier: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[experimental(nested)]
@@ -322,10 +306,7 @@ pub struct ThreadResumeResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    pub service_tier: Option<ServiceTier>,
-    #[experimental("thread/resume.dynamicTools")]
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub dynamic_tools: Vec<DynamicToolSpec>,
+    pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]
@@ -384,7 +365,7 @@ pub struct ThreadForkParams {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional = nullable)]
-    pub service_tier: Option<Option<ServiceTier>>,
+    pub service_tier: Option<Option<String>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
     #[experimental(nested)]
@@ -434,7 +415,7 @@ pub struct ThreadForkResponse {
     pub thread: Thread,
     pub model: String,
     pub model_provider: String,
-    pub service_tier: Option<ServiceTier>,
+    pub service_tier: Option<String>,
     pub cwd: AbsolutePathBuf,
     /// Instruction source files currently loaded for this thread.
     #[serde(default)]

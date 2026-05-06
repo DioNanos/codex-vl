@@ -12,17 +12,16 @@ use pretty_assertions::assert_eq;
 async fn submission_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -30,8 +29,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -96,7 +94,7 @@ async fn submission_preserves_text_elements_and_local_images() {
 async fn submission_includes_configured_permission_profile() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let expected_permission_profile: PermissionProfile = AppServerPermissionProfile::Managed {
         network: PermissionProfileNetworkPermissions { enabled: false },
@@ -119,15 +117,14 @@ async fn submission_includes_configured_permission_profile() {
         },
     }
     .into();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: expected_permission_profile.clone(),
@@ -135,8 +132,7 @@ async fn submission_includes_configured_permission_profile() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -156,29 +152,28 @@ async fn submission_includes_configured_permission_profile() {
         } => permission_profile,
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
-    assert_eq!(permission_profile, Some(expected_permission_profile));
+    assert_eq!(permission_profile, expected_permission_profile);
 }
 
 #[tokio::test]
 async fn submission_keeps_profile_when_legacy_projection_is_external() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
     let expected_permission_profile: PermissionProfile = AppServerPermissionProfile::Managed {
         network: PermissionProfileNetworkPermissions { enabled: false },
         file_system: PermissionProfileFileSystemPermissions::Unrestricted,
     }
     .into();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: expected_permission_profile.clone(),
@@ -186,8 +181,7 @@ async fn submission_keeps_profile_when_legacy_projection_is_external() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -204,24 +198,23 @@ async fn submission_keeps_profile_when_legacy_projection_is_external() {
         } => permission_profile,
         other => panic!("expected Op::UserTurn, got {other:?}"),
     };
-    assert_eq!(permission_profile, Some(expected_permission_profile));
+    assert_eq!(permission_profile, expected_permission_profile);
 }
 
 #[tokio::test]
 async fn submission_with_remote_and_local_images_keeps_local_placeholder_numbering() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -229,8 +222,7 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -261,7 +253,7 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
     assert_eq!(
         items[0],
         UserInput::Image {
-            image_url: remote_url.clone(),
+            url: remote_url.clone(),
         }
     );
     assert_eq!(
@@ -306,17 +298,16 @@ async fn submission_with_remote_and_local_images_keeps_local_placeholder_numberi
 async fn enter_with_only_remote_images_submits_user_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -324,8 +315,7 @@ async fn enter_with_only_remote_images_submits_user_turn() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -345,7 +335,7 @@ async fn enter_with_only_remote_images_submits_user_turn() {
     assert_eq!(
         items,
         vec![UserInput::Image {
-            image_url: remote_url.clone(),
+            url: remote_url.clone(),
         }]
     );
     assert_eq!(summary, None);
@@ -371,17 +361,16 @@ async fn enter_with_only_remote_images_submits_user_turn() {
 async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -389,8 +378,7 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -411,17 +399,16 @@ async fn shift_enter_with_only_remote_images_does_not_submit_user_turn() {
 async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -429,8 +416,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -451,17 +437,16 @@ async fn enter_with_only_remote_images_does_not_submit_when_modal_is_active() {
 async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -469,8 +454,7 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -494,17 +478,16 @@ async fn enter_with_only_remote_images_does_not_submit_when_input_disabled() {
 async fn submission_prefers_selected_duplicate_skill_path() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    let conversation_id = ThreadId::new();
+    let thread_id = ThreadId::new();
     let rollout_file = NamedTempFile::new().unwrap();
-    let configured = crate::app_server_session::ThreadSessionState {
-        thread_id: conversation_id,
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
         forked_from_id: None,
         fork_parent_title: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
-        dynamic_tools: Vec::new(),
         approval_policy: AskForApproval::Never,
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
@@ -512,8 +495,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         cwd: test_path_buf("/home/user/project").abs(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
-        history_log_id: 0,
-        history_entry_count: 0,
+        message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
     };
@@ -906,7 +888,6 @@ async fn empty_enter_during_task_does_not_queue() {
     assert!(chat.queued_user_messages.is_empty());
 }
 
-#[cfg(any())]
 #[tokio::test]
 async fn pending_steer_esc_does_not_steal_vim_insert_escape() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -943,6 +924,7 @@ async fn restore_thread_input_state_syncs_sleep_inhibitor_state() {
         composer: None,
         pending_steers: VecDeque::new(),
         pending_steer_history_records: VecDeque::new(),
+        pending_steer_compare_keys: VecDeque::new(),
         rejected_steers_queue: VecDeque::new(),
         rejected_steer_history_records: VecDeque::new(),
         queued_user_messages: VecDeque::new(),
@@ -1151,29 +1133,28 @@ async fn enqueueing_history_prompt_multiple_times_is_stable() {
 }
 
 #[test]
-#[cfg(any())]
 fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
     let local_image = PathBuf::from("/tmp/local.png");
     let rendered = ChatWidget::user_message_display_from_inputs(&[
-        AppServerUserInput::Text {
+        UserInput::Text {
             text: "hello ".to_string(),
             text_elements: vec![TextElement::new((0..5).into(), /*placeholder*/ None).into()],
         },
-        AppServerUserInput::Image {
+        UserInput::Image {
             url: "https://example.com/remote.png".to_string(),
         },
-        AppServerUserInput::LocalImage {
+        UserInput::LocalImage {
             path: local_image.clone(),
         },
-        AppServerUserInput::Skill {
+        UserInput::Skill {
             name: "demo".to_string(),
             path: PathBuf::from("/tmp/skill/SKILL.md"),
         },
-        AppServerUserInput::Mention {
+        UserInput::Mention {
             name: "repo".to_string(),
             path: "app://repo".to_string(),
         },
-        AppServerUserInput::Text {
+        UserInput::Text {
             text: "world".to_string(),
             text_elements: vec![TextElement::new((0..5).into(), Some("planet".to_string())).into()],
         },
@@ -1194,11 +1175,10 @@ fn user_message_display_from_inputs_matches_flattened_user_message_shape() {
 }
 
 #[test]
-#[cfg(any())]
 fn user_message_display_from_inputs_hides_prompt_context() {
     let raw_message = "# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for Codex:\nAsk $figma";
     let mention_start = raw_message.find("$figma").expect("mention in raw message");
-    let rendered = ChatWidget::user_message_display_from_inputs(&[AppServerUserInput::Text {
+    let rendered = ChatWidget::user_message_display_from_inputs(&[UserInput::Text {
         text: raw_message.to_string(),
         text_elements: vec![
             TextElement::new(
@@ -1231,11 +1211,11 @@ async fn committed_user_message_with_hidden_prompt_context_renders_local_images(
         &mut chat,
         "user-1",
         vec![
-            AppServerUserInput::Text {
+            UserInput::Text {
                 text: raw_message.to_string(),
                 text_elements: Vec::new(),
             },
-            AppServerUserInput::LocalImage {
+            UserInput::LocalImage {
                 path: local_image.clone(),
             },
         ],

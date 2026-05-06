@@ -728,7 +728,6 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         /*bundled_skills_enabled*/ true,
     ));
     let mcp_manager = Arc::new(McpManager::new(Arc::clone(&plugins_manager)));
-    let skills_watcher = Arc::new(SkillsWatcher::noop());
     let thread_store = Arc::new(codex_thread_store::LocalThreadStore::new(
         codex_thread_store::LocalThreadStoreConfig::from_config(&config),
         codex_state::StateRuntime::init(
@@ -741,13 +740,13 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
 
     let CodexSpawnOk { codex, .. } = Codex::spawn(CodexSpawnArgs {
         config,
+        installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         auth_manager,
         models_manager,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         skills_manager,
         plugins_manager,
         mcp_manager,
-        skills_watcher,
         conversation_history: InitialHistory::New,
         session_source: SessionSource::SubAgent(SubAgentSource::Other(
             GUARDIAN_REVIEWER_NAME.to_string(),

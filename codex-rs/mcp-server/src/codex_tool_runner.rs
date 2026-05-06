@@ -340,7 +340,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentReasoningSectionBreak(_)
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
-                    | EventMsg::McpListToolsResponse(_)
                     | EventMsg::RealtimeConversationListVoicesResponse(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::TerminalInteraction(_)
@@ -353,7 +352,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TurnDiff(_)
                     | EventMsg::WebSearchBegin(_)
                     | EventMsg::WebSearchEnd(_)
-                    | EventMsg::GetHistoryEntryResponse(_)
                     | EventMsg::PlanUpdate(_)
                     | EventMsg::TurnAborted(_)
                     | EventMsg::UserMessage(_)
@@ -370,7 +368,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentMessageContentDelta(_)
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
-                    | EventMsg::SkillsUpdateAvailable
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::RequestUserInput(_)
                     | EventMsg::RequestPermissions(_)

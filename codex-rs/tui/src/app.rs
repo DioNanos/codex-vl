@@ -5,7 +5,6 @@
 
 use crate::app_backtrack::BacktrackState;
 use crate::app_command::AppCommand;
-use crate::app_command::AppCommandView;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
@@ -17,8 +16,8 @@ use crate::app_event_sender::AppEventSender;
 use crate::app_server_approval_conversions::network_approval_context_to_core;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
-use crate::app_server_session::ThreadSessionState;
-use crate::app_server_session::app_server_rate_limit_snapshots_to_core;
+use crate::app_server_session::app_server_rate_limit_snapshots;
+use crate::bottom_pane::AppLinkViewParams;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
@@ -39,17 +38,16 @@ use crate::external_editor;
 use crate::file_search::FileSearchManager;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
+use crate::session_state::ThreadSessionState;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
-use crate::legacy_core::append_message_history_entry;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
-use crate::legacy_core::lookup_message_history_entry;
 #[cfg(target_os = "windows")]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::model_catalog::ModelCatalog;
@@ -61,7 +59,6 @@ use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
-use crate::read_session_model;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
@@ -141,10 +138,8 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FinalOutput;
-use codex_protocol::protocol::GetHistoryEntryResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::McpAuthStatus;
-use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
@@ -222,50 +217,9 @@ const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue."
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 
 enum ThreadInteractiveRequest {
+    AppLink(AppLinkViewParams),
     Approval(ApprovalRequest),
     McpServerElicitation(McpServerElicitationFormRequest),
-}
-
-fn app_server_request_id_to_mcp_request_id(
-    request_id: &codex_app_server_protocol::RequestId,
-) -> codex_protocol::mcp::RequestId {
-    match request_id {
-        codex_app_server_protocol::RequestId::String(value) => {
-            codex_protocol::mcp::RequestId::String(value.clone())
-        }
-        codex_app_server_protocol::RequestId::Integer(value) => {
-            codex_protocol::mcp::RequestId::Integer(*value)
-        }
-    }
-}
-
-fn command_execution_decision_to_review_decision(
-    decision: codex_app_server_protocol::CommandExecutionApprovalDecision,
-) -> codex_protocol::protocol::ReviewDecision {
-    match decision {
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Accept => {
-            codex_protocol::protocol::ReviewDecision::Approved
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptForSession => {
-            codex_protocol::protocol::ReviewDecision::ApprovedForSession
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
-            execpolicy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::ApprovedExecpolicyAmendment {
-            proposed_execpolicy_amendment: execpolicy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
-            network_policy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::NetworkPolicyAmendment {
-            network_policy_amendment: network_policy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Decline => {
-            codex_protocol::protocol::ReviewDecision::Denied
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Cancel => {
-            codex_protocol::protocol::ReviewDecision::Abort
-        }
-    }
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.

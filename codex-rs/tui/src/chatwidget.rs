@@ -44,14 +44,12 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use self::realtime::PendingSteerCompareKey;
 use crate::app::app_server_requests::ResolvedAppServerRequest;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
 use crate::app_event::RealtimeAudioDeviceKind;
 use crate::app_server_approval_conversions::file_update_changes_to_core;
 use crate::app_server_approval_conversions::network_approval_context_to_core;
-use crate::app_server_session::ThreadSessionState;
 #[cfg(not(target_os = "linux"))]
 use crate::audio_device::list_realtime_audio_device_names;
 use crate::bottom_pane::StatusLineItem;
@@ -70,6 +68,7 @@ use crate::mention_codec::LinkedMention;
 use crate::mention_codec::encode_history_mentions;
 use crate::model_catalog::ModelCatalog;
 use crate::multi_agents;
+use crate::session_state::ThreadSessionState;
 use crate::status::RateLimitWindowDisplay;
 use crate::status::StatusAccountDisplay;
 use crate::status::StatusHistoryHandle;
@@ -190,8 +189,6 @@ use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
-#[cfg(test)]
-use codex_protocol::protocol::McpListToolsResponseEvent;
 use codex_protocol::protocol::McpStartupStatus;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
@@ -416,6 +413,7 @@ use self::plugins::PluginsCacheState;
 mod plan_implementation;
 use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
 mod realtime;
+use self::realtime::PendingSteerCompareKey;
 use self::realtime::RealtimeConversationUiState;
 use self::realtime::RenderedUserMessageEvent;
 mod reasoning_shortcuts;
@@ -423,6 +421,10 @@ mod side;
 mod status_surfaces;
 use self::status_surfaces::CachedProjectRootName;
 use self::status_surfaces::TerminalTitleStatusKind;
+mod user_messages;
+use self::user_messages::UserMessageDisplay;
+mod warnings;
+use self::warnings::WarningDisplayState;
 pub(crate) use crate::branch_summary::StatusLineGitSummary;
 use crate::streaming::chunking::AdaptiveChunkingPolicy;
 use crate::streaming::commit_tick::CommitTickScope;
@@ -853,6 +855,7 @@ pub(crate) struct ChatWidget {
     plan_type: Option<PlanType>,
     codex_rate_limit_reached_type: Option<RateLimitReachedType>,
     rate_limit_warnings: RateLimitWarningState,
+    warning_display_state: WarningDisplayState,
     rate_limit_switch_prompt: RateLimitSwitchPromptState,
     add_credits_nudge_email_in_flight: Option<AddCreditsNudgeCreditType>,
     adaptive_chunking: AdaptiveChunkingPolicy,
@@ -1699,23 +1702,27 @@ fn thread_session_state_to_legacy_event(
     session: ThreadSessionState,
 ) -> codex_protocol::protocol::SessionConfiguredEvent {
     codex_protocol::protocol::SessionConfiguredEvent {
-        session_id: session.thread_id,
+        session_id: session.thread_id.into(),
+        thread_id: session.thread_id,
         forked_from_id: session.forked_from_id,
         thread_source: None,
         thread_name: session.thread_name,
         model: session.model,
         model_provider_id: session.model_provider_id,
         service_tier: session.service_tier,
-        approval_policy: session.approval_policy,
+        approval_policy: session.approval_policy.to_core(),
         approvals_reviewer: session.approvals_reviewer,
         permission_profile: session.permission_profile,
         active_permission_profile: session.active_permission_profile,
         cwd: session.cwd,
         reasoning_effort: session.reasoning_effort,
-        history_log_id: session.history_log_id,
-        history_entry_count: usize::try_from(session.history_entry_count).unwrap_or(usize::MAX),
         initial_messages: None,
-        network_proxy: session.network_proxy,
+        network_proxy: session.network_proxy.map(|network_proxy| {
+            codex_protocol::protocol::SessionNetworkProxyRuntime {
+                http_addr: network_proxy.http_addr,
+                socks_addr: network_proxy.socks_addr,
+            }
+        }),
         rollout_path: session.rollout_path,
     }
 }
@@ -2429,12 +2436,10 @@ impl ChatWidget {
         self.visible_user_turn_count = 0;
         self.copy_history_evicted_by_rollback = false;
         self.saw_copy_source_this_turn = false;
-        self.bottom_pane
-            .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.set_skills(/*skills*/ None);
         self.session_network_proxy = event.network_proxy.clone();
         let previous_thread_id = self.thread_id;
-        self.thread_id = Some(event.session_id);
+        self.thread_id = Some(event.thread_id);
         if previous_thread_id != self.thread_id {
             self.recent_auto_review_denials = RecentAutoReviewDenials::default();
         }
@@ -2450,7 +2455,10 @@ impl ChatWidget {
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.to_path_buf());
         self.config.cwd = event.cwd.clone();
-        self.effective_service_tier = event.service_tier;
+        self.effective_service_tier = event
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value);
         if let Err(err) = self
             .config
             .permissions
@@ -2497,11 +2505,11 @@ impl ChatWidget {
         self.sync_goal_command_enabled();
         self.refresh_plugin_mentions();
         if display == SessionConfiguredDisplay::Normal {
-            let startup_tooltip_override = self.startup_tooltip_override.take();
-            let show_fast_status =
-                self.should_show_fast_status(&model_for_header, event.service_tier);
             #[cfg(test)]
             let initial_messages = event.initial_messages.clone();
+            let startup_tooltip_override = self.startup_tooltip_override.take();
+            let show_fast_status =
+                self.should_show_fast_status(&model_for_header, self.effective_service_tier);
             let session_info_cell = history_cell::new_session_info(
                 &self.config,
                 &model_for_header,
@@ -2560,6 +2568,13 @@ impl ChatWidget {
     pub(crate) fn handle_thread_session(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
         let fork_parent_title = session.fork_parent_title.clone();
+        if let Some(history_metadata) = session.message_history {
+            self.bottom_pane.set_history_metadata(
+                session.thread_id,
+                history_metadata.log_id,
+                history_metadata.entry_count,
+            );
+        }
         self.on_session_configured_with_display_and_fork_parent_title(
             thread_session_state_to_legacy_event(session),
             SessionConfiguredDisplay::Normal,
@@ -2569,6 +2584,13 @@ impl ChatWidget {
 
     pub(crate) fn handle_thread_session_quiet(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
+        if let Some(history_metadata) = session.message_history {
+            self.bottom_pane.set_history_metadata(
+                session.thread_id,
+                history_metadata.log_id,
+                history_metadata.entry_count,
+            );
+        }
         self.on_session_configured_with_display_and_fork_parent_title(
             thread_session_state_to_legacy_event(session),
             SessionConfiguredDisplay::Quiet,
@@ -2579,6 +2601,13 @@ impl ChatWidget {
     pub(crate) fn handle_side_thread_session(&mut self, session: ThreadSessionState) {
         self.instruction_source_paths = session.instruction_source_paths.clone();
         let fork_parent_title = session.fork_parent_title.clone();
+        if let Some(history_metadata) = session.message_history {
+            self.bottom_pane.set_history_metadata(
+                session.thread_id,
+                history_metadata.log_id,
+                history_metadata.entry_count,
+            );
+        }
         self.on_session_configured_with_display_and_fork_parent_title(
             thread_session_state_to_legacy_event(session),
             SessionConfiguredDisplay::SideConversation,
@@ -3558,7 +3587,11 @@ impl ChatWidget {
     }
 
     fn on_warning(&mut self, message: impl Into<String>) {
-        self.add_to_history(history_cell::new_warning_event(message.into()));
+        let message = message.into();
+        if !self.warning_display_state.should_display(&message) {
+            return;
+        }
+        self.add_to_history(history_cell::new_warning_event(message));
         self.request_redraw();
     }
 
@@ -4594,15 +4627,15 @@ impl ChatWidget {
 
     pub(crate) fn handle_history_entry_response(
         &mut self,
-        event: codex_protocol::protocol::GetHistoryEntryResponseEvent,
+        event: crate::app_event::HistoryLookupResponse,
     ) {
-        let codex_protocol::protocol::GetHistoryEntryResponseEvent {
+        let crate::app_event::HistoryLookupResponse {
             offset,
             log_id,
             entry,
         } = event;
         self.bottom_pane
-            .on_history_entry_response(log_id, offset, entry.map(|e| e.text));
+            .on_history_entry_response(log_id, offset, entry);
     }
 
     fn on_shutdown_complete(&mut self) {
@@ -5386,7 +5419,10 @@ impl ChatWidget {
         let active_cell = Some(Self::placeholder_session_header_cell(&config));
 
         let current_cwd = Some(config.cwd.to_path_buf());
-        let effective_service_tier = config.service_tier;
+        let effective_service_tier = config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value);
         let current_terminal_info = terminal_info();
         let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).ok();
         let default_keymap = RuntimeKeymap::defaults();
@@ -5438,6 +5474,7 @@ impl ChatWidget {
             plan_type: initial_plan_type,
             codex_rate_limit_reached_type: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            warning_display_state: WarningDisplayState::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             add_credits_nudge_email_in_flight: None,
             adaptive_chunking: AdaptiveChunkingPolicy::default(),
@@ -6078,9 +6115,7 @@ impl ChatWidget {
     ) -> QueueDrain {
         let drain = self.submit_shell_command(command);
         if drain == QueueDrain::Stop {
-            self.submit_op(Op::AddToHistory {
-                text: history_text.to_string(),
-            });
+            self.append_message_history_entry(history_text.to_string());
         }
         drain
     }
@@ -6360,7 +6395,7 @@ impl ChatWidget {
             .personality
             .filter(|_| self.config.features.enabled(Feature::Personality))
             .filter(|_| self.current_model_supports_personality());
-        let service_tier = match self.config.service_tier {
+        let service_tier = match self.config.service_tier.clone() {
             Some(service_tier) => Some(Some(service_tier)),
             None if self.config.notices.fast_default_opt_out == Some(true) => Some(None),
             None => None,
@@ -6408,7 +6443,7 @@ impl ChatWidget {
             }
         };
         if let Some(history_text) = history_text {
-            self.submit_op(Op::AddToHistory { text: history_text });
+            self.append_message_history_entry(history_text);
         }
 
         if let Some(pending_steer) = pending_steer {
@@ -7679,11 +7714,6 @@ impl ChatWidget {
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
-            EventMsg::GetHistoryEntryResponse(ev) => self.handle_history_entry_response(ev),
-            EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
-            EventMsg::SkillsUpdateAvailable => {
-                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
-            }
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
@@ -10523,7 +10553,8 @@ impl ChatWidget {
 
     /// Set Fast mode in the widget's config copy.
     pub(crate) fn set_service_tier(&mut self, service_tier: Option<ServiceTier>) {
-        self.config.service_tier = service_tier;
+        self.config.service_tier =
+            service_tier.map(|service_tier| service_tier.request_value().to_string());
         self.effective_service_tier = service_tier;
     }
 
@@ -10532,7 +10563,10 @@ impl ChatWidget {
     }
 
     pub(crate) fn configured_service_tier(&self) -> Option<ServiceTier> {
-        self.config.service_tier
+        self.config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value)
     }
 
     pub(crate) fn fast_default_opt_out(&self) -> Option<bool> {
@@ -10635,7 +10669,7 @@ impl ChatWidget {
                 /*model*/ None,
                 /*effort*/ None,
                 /*summary*/ None,
-                Some(service_tier),
+                Some(service_tier.map(|service_tier| service_tier.request_value().to_string())),
                 /*collaboration_mode*/ None,
                 /*personality*/ None,
             )));
@@ -11795,6 +11829,15 @@ impl ChatWidget {
         true
     }
 
+    fn append_message_history_entry(&self, text: String) {
+        let Some(thread_id) = self.thread_id else {
+            tracing::warn!("failed to append to message history: no active thread id");
+            return;
+        };
+        self.app_event_tx
+            .send(AppEvent::AppendMessageHistoryEntry { thread_id, text });
+    }
+
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {
         if matches!(op.view(), crate::app_command::AppCommandView::Interrupt)
             && self.agent_turn_running
@@ -11807,17 +11850,6 @@ impl ChatWidget {
             }
             self.request_redraw();
         }
-    }
-
-    #[cfg(test)]
-    fn on_list_mcp_tools(&mut self, ev: McpListToolsResponseEvent) {
-        self.add_to_history(history_cell::new_mcp_tools_output(
-            &self.config,
-            ev.tools,
-            ev.resources,
-            ev.resource_templates,
-            &ev.auth_statuses,
-        ));
     }
 
     fn on_list_skills(&mut self, ev: SkillsListResponse) {

@@ -128,46 +128,6 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn builtin_manage_loops_tools_validate() {
-        let tools = with_builtin_dynamic_tools(Vec::new());
-        assert!(tools.iter().any(|tool| {
-            tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME && tool.namespace.is_none()
-        }));
-        assert!(tools.iter().any(|tool| {
-            tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
-                && tool.namespace.as_deref() == Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE)
-        }));
-        validate_dynamic_tools(&tools).expect("builtin manage_loops schema must be valid");
-    }
-
-    #[test]
-    fn builtin_manage_loops_tools_replace_spoofed_specs() {
-        let tools = with_builtin_dynamic_tools(vec![ApiDynamicToolSpec {
-            namespace: Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE.to_string()),
-            name: MANAGE_LOOPS_DYNAMIC_TOOL_NAME.to_string(),
-            description: "spoofed".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-            defer_loading: true,
-        }]);
-
-        assert_eq!(
-            tools
-                .iter()
-                .filter(|tool| tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME)
-                .count(),
-            2
-        );
-        assert!(tools.iter().all(|tool| {
-            tool.name != MANAGE_LOOPS_DYNAMIC_TOOL_NAME
-                || tool.description == MANAGE_LOOPS_DYNAMIC_TOOL_DESCRIPTION
-        }));
-    }
-
-    #[test]
     fn validate_dynamic_tools_accepts_same_name_in_different_namespaces() {
         let tools = vec![
             ApiDynamicToolSpec {
@@ -618,7 +578,6 @@ mod thread_processor_behavior_tests {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: true,
-            namespace_tools: None,
         };
         let config_manager = ConfigManager::new(
             temp_dir.path().to_path_buf(),
@@ -670,7 +629,7 @@ mod thread_processor_behavior_tests {
             path: None,
             model: None,
             model_provider: None,
-            service_tier: Some(Some(codex_protocol::config_types::ServiceTier::Fast)),
+            service_tier: Some(Some("priority".to_string())),
             cwd: None,
             approval_policy: None,
             approvals_reviewer: None,
@@ -686,8 +645,7 @@ mod thread_processor_behavior_tests {
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
-            service_tier: Some(codex_protocol::config_types::ServiceTier::Flex),
-            dynamic_tools: Vec::new(),
+            service_tier: Some("flex".to_string()),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
@@ -702,7 +660,7 @@ mod thread_processor_behavior_tests {
 
         assert_eq!(
             collect_resume_override_mismatches(&request, &config_snapshot),
-            vec!["service_tier requested=Some(Fast) active=Some(Flex)".to_string()]
+            vec!["service_tier requested=Some(\"priority\") active=Some(\"flex\")".to_string()]
         );
     }
 

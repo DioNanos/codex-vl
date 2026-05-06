@@ -109,9 +109,19 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
         .and_then(Value::as_object)
         .expect("thread/fork result.thread must be an object");
     assert_eq!(
+        thread_json.get("sessionId").and_then(Value::as_str),
+        Some(thread.session_id.as_str()),
+        "forked threads should serialize `sessionId` on the thread object"
+    );
+    assert_eq!(
         thread_json.get("name"),
         Some(&Value::Null),
         "forked threads do not inherit a name; expected `name: null`"
+    );
+    assert_eq!(
+        fork_result.get("sessionId"),
+        None,
+        "thread/fork should not serialize a top-level `sessionId`"
     );
 
     let after_contents = std::fs::read_to_string(&original_path)?;
@@ -121,6 +131,7 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     );
 
     assert_ne!(thread.id, conversation_id);
+    assert_eq!(thread.session_id, thread.id);
     assert_eq!(thread.forked_from_id, Some(conversation_id.clone()));
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");

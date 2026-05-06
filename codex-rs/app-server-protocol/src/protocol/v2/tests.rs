@@ -3437,10 +3437,11 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
-fn thread_lifecycle_responses_default_missing_compat_fields() {
+fn thread_lifecycle_responses_default_missing_optional_fields() {
     let response = json!({
         "thread": {
             "id": "thread-id",
+            "sessionId": "thread-id",
             "forkedFromId": null,
             "preview": "",
             "ephemeral": false,

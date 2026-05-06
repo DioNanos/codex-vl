@@ -2178,6 +2178,7 @@ mod tests {
             response: v2::ThreadStartResponse {
                 thread: v2::Thread {
                     id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                    session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
                     forked_from_id: None,
                     preview: "first prompt".to_string(),
                     ephemeral: true,
@@ -2219,6 +2220,7 @@ mod tests {
                 "response": {
                     "thread": {
                         "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "sessionId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
                         "forkedFromId": null,
                         "preview": "first prompt",
                         "ephemeral": true,

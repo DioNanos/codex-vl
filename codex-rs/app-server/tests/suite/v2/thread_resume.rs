@@ -271,6 +271,10 @@ async fn thread_resume_tracks_thread_initialized_analytics() -> Result<()> {
     )
     .await??;
     let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert!(
+        !thread.session_id.is_empty(),
+        "session id should not be empty"
+    );
     assert_eq!(thread.thread_source, Some(ThreadSource::User));
 
     let payload = wait_for_analytics_payload(&server, DEFAULT_READ_TIMEOUT).await?;

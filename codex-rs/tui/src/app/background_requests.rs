@@ -484,6 +484,7 @@ async fn run_vivling_assist_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        codex_protocol::SessionId::new(),
         ThreadId::new(),
         request.vivling_id.clone(),
         profile_config.model_provider.clone(),
@@ -591,6 +592,7 @@ async fn run_vivling_loop_tick_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        codex_protocol::SessionId::new(),
         ThreadId::new(),
         request.vivling_id.clone(),
         profile_config.model_provider.clone(),
@@ -733,7 +735,7 @@ pub(super) async fn fetch_account_rate_limits(
         .await
         .wrap_err("account/rateLimits/read failed in TUI")?;
 
-    Ok(app_server_rate_limit_snapshots_to_core(response))
+    Ok(app_server_rate_limit_snapshots(response))
 }
 
 pub(super) async fn send_add_credits_nudge_email(

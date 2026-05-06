@@ -38,14 +38,16 @@ fn recall_latest_after_clearing(chat: &mut ChatWidget) -> String {
     chat.bottom_pane.composer_text()
 }
 
-fn next_add_to_history_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> String {
+fn next_add_to_history_event(rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> String {
     loop {
-        match op_rx.try_recv() {
-            Ok(Op::AddToHistory { text }) => return text,
+        match rx.try_recv() {
+            Ok(AppEvent::AppendMessageHistoryEntry { text, .. }) => return text,
             Ok(_) => continue,
-            Err(TryRecvError::Empty) => panic!("expected AddToHistory op but queue was empty"),
+            Err(TryRecvError::Empty) => {
+                panic!("expected AppendMessageHistoryEntry event but queue was empty")
+            }
             Err(TryRecvError::Disconnected) => {
-                panic!("expected AddToHistory op but channel closed")
+                panic!("expected AppendMessageHistoryEntry event but channel closed")
             }
         }
     }
@@ -59,7 +61,7 @@ async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
 
     assert!(chat.bottom_pane.is_task_running());
     match rx.try_recv() {
-        Ok(AppEvent::CodexOp(AppCommand::Compact)) => {}
+        Ok(AppEvent::CodexOp(Op::Compact)) => {}
         other => panic!("expected compact op to be submitted, got {other:?}"),
     }
 
@@ -100,7 +102,7 @@ async fn queued_slash_compact_dispatches_after_active_turn() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, AppEvent::CodexOp(AppCommand::Compact))),
+            .any(|event| matches!(event, AppEvent::CodexOp(Op::Compact))),
         "expected queued /compact to submit compact op; events: {events:?}"
     );
 }
@@ -116,17 +118,8 @@ async fn queued_slash_review_with_args_dispatches_after_active_turn() {
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     match op_rx.try_recv() {
-        Ok(Op::AddToHistory { .. }) => match op_rx.try_recv() {
-            Ok(Op::Review { review_request }) => assert_eq!(
-                review_request.target,
-                ReviewTarget::Custom {
-                    instructions: "check regressions".to_string(),
-                }
-            ),
-            other => panic!("expected queued /review to submit review op, got {other:?}"),
-        },
-        Ok(Op::Review { review_request }) => assert_eq!(
-            review_request.target,
+        Ok(Op::Review { target }) => assert_eq!(
+            target,
             ReviewTarget::Custom {
                 instructions: "check regressions".to_string(),
             }
@@ -152,7 +145,7 @@ async fn queued_slash_review_with_args_restores_for_edit() {
 
 #[tokio::test]
 async fn queued_bang_shell_dispatches_after_active_turn() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
 
@@ -171,10 +164,7 @@ async fn queued_bang_shell_dispatches_after_active_turn() {
         Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
         other => panic!("expected queued shell command op, got {other:?}"),
     }
-    assert_matches!(
-        op_rx.try_recv(),
-        Ok(Op::AddToHistory { text }) if text == "!echo hi"
-    );
+    assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
     assert!(chat.queued_user_messages.is_empty());
 }
 
@@ -217,7 +207,7 @@ async fn queued_empty_bang_shell_reports_help_when_dequeued_and_drains_next_inpu
 
 #[tokio::test]
 async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-1");
 
@@ -230,10 +220,7 @@ async fn queued_bang_shell_waits_for_user_shell_completion_before_next_input() {
         Ok(Op::RunUserShellCommand { command }) => assert_eq!(command, "echo hi"),
         other => panic!("expected queued shell command op, got {other:?}"),
     }
-    assert_matches!(
-        op_rx.try_recv(),
-        Ok(Op::AddToHistory { text }) if text == "!echo hi"
-    );
+    assert_eq!(next_add_to_history_event(&mut rx), "!echo hi");
     assert_eq!(chat.queued_user_messages.len(), 1);
 
     let begin = begin_exec_with_source(
@@ -352,7 +339,7 @@ async fn queued_bare_rename_drains_next_input_after_name_update() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::SetThreadName { name }) if name == "Queued rename"
+            AppEvent::CodexOp(Op::SetThreadName { name }) if name == "Queued rename"
         )),
         "expected rename prompt to submit thread name; events: {events:?}"
     );
@@ -397,7 +384,7 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::SetThreadName { name }) if name == "Queued rename"
+            AppEvent::CodexOp(Op::SetThreadName { name }) if name == "Queued rename"
         )),
         "expected queued /rename to submit thread name; events: {events:?}"
     );
@@ -412,10 +399,10 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
         ),
         other => panic!("expected first queued message after /rename, got {other:?}"),
     }
-    assert_matches!(
-        op_rx.try_recv(),
-        Ok(Op::AddToHistory { text }) if text == "first after rename"
-    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AppEvent::AppendMessageHistoryEntry { text, .. } if text == "first after rename"
+    )));
     assert_eq!(
         chat.queued_user_message_texts(),
         vec!["second after rename"]
@@ -945,7 +932,7 @@ fn merged_history_record_remaps_override_image_placeholders() {
 
 #[tokio::test]
 async fn interrupted_merged_message_history_encodes_mentions_once() {
-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
     chat.on_task_started();
     chat.on_agent_message_delta("Final answer line\n".to_string());
@@ -977,7 +964,7 @@ async fn interrupted_merged_message_history_encodes_mentions_once() {
         other => panic!("expected user turn, got {other:?}"),
     }
     let encoded = "use [$figma](app://figma) now";
-    assert_eq!(next_add_to_history_op(&mut op_rx), encoded);
+    assert_eq!(next_add_to_history_event(&mut rx), encoded);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     next_interrupt_op(&mut op_rx);
@@ -997,7 +984,7 @@ async fn interrupted_merged_message_history_encodes_mentions_once() {
         }
         other => panic!("expected resubmitted user turn, got {other:?}"),
     }
-    assert_eq!(next_add_to_history_op(&mut op_rx), encoded);
+    assert_eq!(next_add_to_history_event(&mut rx), encoded);
 }
 
 #[tokio::test]
@@ -1014,7 +1001,7 @@ async fn slash_rename_prefills_existing_thread_name() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::CodexOp(AppCommand::SetThreadName { name })) if name == "Current project title"
+        Ok(AppEvent::CodexOp(Op::SetThreadName { name })) if name == "Current project title"
     );
 }
 
@@ -1265,7 +1252,6 @@ async fn slash_keymap_capture_can_capture_app_shortcuts() {
 }
 
 #[tokio::test]
-#[cfg(any())]
 async fn slash_keymap_debug_opens_keypress_inspector() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1285,7 +1271,6 @@ async fn slash_keymap_debug_opens_keypress_inspector() {
 }
 
 #[tokio::test]
-#[cfg(any())]
 async fn slash_keymap_debug_can_inspect_app_shortcuts() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1597,6 +1582,37 @@ async fn slash_clear_requests_ui_clear_when_idle() {
 }
 
 #[tokio::test]
+async fn slash_clear_after_ctrl_c_keeps_stashed_draft_recallable() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.bottom_pane
+        .set_history_metadata(thread_id, /*log_id*/ 1, /*entry_count*/ 0);
+
+    submit_composer_text(&mut chat, "ok");
+    assert_eq!(next_add_to_history_event(&mut rx), "ok");
+
+    let stashed_draft = "explain why history recall lost this draft";
+
+    chat.bottom_pane
+        .set_composer_text(stashed_draft.to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert_eq!(chat.bottom_pane.composer_text(), "");
+    assert_eq!(next_add_to_history_event(&mut rx), stashed_draft);
+
+    chat.bottom_pane
+        .set_composer_text("/clear".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::ClearUi));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), stashed_draft);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), "ok");
+}
+
+#[tokio::test]
 async fn slash_clear_is_disabled_while_task_running() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_task_running(/*running*/ true);
@@ -1804,10 +1820,10 @@ async fn fast_slash_command_updates_and_persists_local_service_tier() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
                 ..
-            })
+            }) if service_tier == ServiceTier::Fast.request_value()
         )),
         "expected fast-mode override app event; events: {events:?}"
     );
@@ -1835,10 +1851,10 @@ async fn fast_keybinding_toggle_uses_same_events_as_fast_slash_command() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
                 ..
-            })
+            }) if service_tier == ServiceTier::Fast.request_value()
         )),
         "expected fast-mode override app event; events: {events:?}"
     );
@@ -1886,9 +1902,9 @@ async fn user_turn_carries_service_tier_after_fast_toggle() {
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
-            service_tier: Some(Some(ServiceTier::Fast)),
+            service_tier: Some(Some(service_tier)),
             ..
-        } => {}
+        } if service_tier == ServiceTier::Fast.request_value() => {}
         other => panic!("expected Op::UserTurn with fast service tier, got {other:?}"),
     }
 }
@@ -1910,10 +1926,10 @@ async fn queued_fast_slash_applies_before_next_queued_message() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
-                service_tier: Some(Some(ServiceTier::Fast)),
+            AppEvent::CodexOp(Op::OverrideTurnContext {
+                service_tier: Some(Some(service_tier)),
                 ..
-            })
+            }) if service_tier == ServiceTier::Fast.request_value()
         )),
         "expected queued /fast to update service tier before next turn; events: {events:?}"
     );
@@ -1921,9 +1937,9 @@ async fn queued_fast_slash_applies_before_next_queued_message() {
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
             items,
-            service_tier: Some(Some(ServiceTier::Fast)),
+            service_tier: Some(Some(service_tier)),
             ..
-        } => assert_eq!(
+        } if service_tier == ServiceTier::Fast.request_value() => assert_eq!(
             items,
             vec![UserInput::Text {
                 text: "hello after fast".to_string(),
@@ -1949,7 +1965,7 @@ async fn user_turn_sends_standard_override_after_fast_is_turned_off() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
+            AppEvent::CodexOp(Op::OverrideTurnContext {
                 service_tier: Some(None),
                 ..
             })

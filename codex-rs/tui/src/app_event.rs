@@ -26,7 +26,6 @@ use codex_app_server_protocol::ThreadGoalStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::protocol::GetHistoryEntryResponseEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
@@ -63,6 +62,13 @@ pub(crate) enum RealtimeAudioDeviceKind {
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
     ReplaceExisting,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryLookupResponse {
+    pub(crate) offset: usize,
+    pub(crate) log_id: u64,
+    pub(crate) entry: Option<String>,
 }
 
 impl RealtimeAudioDeviceKind {
@@ -141,7 +147,20 @@ pub(crate) enum AppEvent {
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
-        event: GetHistoryEntryResponseEvent,
+        event: HistoryLookupResponse,
+    },
+
+    /// Persist a submitted prompt in the cross-session message history.
+    AppendMessageHistoryEntry {
+        thread_id: ThreadId,
+        text: String,
+    },
+
+    /// Fetch a persistent cross-session message history entry by offset.
+    LookupMessageHistoryEntry {
+        thread_id: ThreadId,
+        offset: usize,
+        log_id: u64,
     },
 
     /// Start a new session.

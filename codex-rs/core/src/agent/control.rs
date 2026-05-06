@@ -14,6 +14,7 @@ use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
 use codex_features::Feature;
 use codex_protocol::AgentPath;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -132,6 +133,9 @@ fn keep_forked_rollout_item(item: &RolloutItem) -> bool {
 /// which keeps the registry scoped to that root thread rather than the entire `ThreadManager`.
 #[derive(Clone, Default)]
 pub(crate) struct AgentControl {
+    /// ID shared by the whole agent control session. This means every sub-agents from a common
+    /// root share the same session ID.
+    session_id: SessionId,
     /// Weak handle back to the global thread registry/state.
     /// This is `Weak` to avoid reference cycles and shadow persistence of the form
     /// `ThreadManagerState -> CodexThread -> Session -> SessionServices -> ThreadManagerState`.
@@ -146,6 +150,15 @@ impl AgentControl {
             manager,
             ..Default::default()
         }
+    }
+
+    pub(crate) fn with_session_id(mut self, session_id: SessionId) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
+    pub(crate) fn session_id(&self) -> SessionId {
+        self.session_id
     }
 
     /// Spawn a new agent thread and submit the initial prompt.
