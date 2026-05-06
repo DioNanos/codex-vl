@@ -247,6 +247,7 @@ fn goal_tools_require_goals_feature() {
     let model_info = model_info();
     let available_models = Vec::new();
     let mut features = Features::with_defaults();
+    features.disable(Feature::Goals);
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &model_info,
         available_models: &available_models,

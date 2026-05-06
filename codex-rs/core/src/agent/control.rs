@@ -27,6 +27,7 @@ use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::ReadThreadParams;
@@ -234,6 +235,7 @@ impl AgentControl {
                         config.clone(),
                         self.clone(),
                         session_source,
+                        /*thread_source*/ Some(ThreadSource::Subagent),
                         /*persist_extended_history*/ false,
                         /*metrics_service_name*/ None,
                         inherited_shell_snapshot,
@@ -354,14 +356,10 @@ impl AgentControl {
         let parent_thread_id = *parent_thread_id;
         let parent_thread = state.get_thread(parent_thread_id).await.ok();
         if let Some(parent_thread) = parent_thread.as_ref() {
-            // `record_conversation_items` only queues rollout writes asynchronously.
-            // Flush/materialize the live parent before snapshotting JSONL for a fork.
-            parent_thread
-                .codex
-                .session
-                .ensure_rollout_materialized()
-                .await;
-            parent_thread.codex.session.flush_rollout().await?;
+            // `record_conversation_items` only queues persistence writes asynchronously.
+            // Flush before snapshotting store history for a fork.
+            parent_thread.ensure_rollout_materialized().await;
+            parent_thread.flush_rollout().await?;
         }
 
         let parent_history = state
@@ -424,6 +422,7 @@ impl AgentControl {
                 InitialHistory::Forked(forked_rollout_items),
                 self.clone(),
                 session_source,
+                /*thread_source*/ Some(ThreadSource::Subagent),
                 /*persist_extended_history*/ false,
                 inherited_shell_snapshot,
                 inherited_exec_policy,

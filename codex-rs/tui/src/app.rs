@@ -142,13 +142,11 @@ use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FinalOutput;
 use codex_protocol::protocol::GetHistoryEntryResponseEvent;
-use codex_protocol::protocol::ListSkillsResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::McpAuthStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SkillErrorInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout::StateDbHandle;
 use codex_terminal_detection::user_agent;
@@ -421,84 +419,16 @@ fn rollout_path_is_resumable(rollout_path: &Path) -> bool {
     std::fs::metadata(rollout_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
-fn errors_for_cwd(cwd: &Path, response: &ListSkillsResponseEvent) -> Vec<SkillErrorInfo> {
+fn errors_for_cwd(
+    cwd: &Path,
+    response: &SkillsListResponse,
+) -> Vec<codex_app_server_protocol::SkillErrorInfo> {
     response
-        .skills
+        .data
         .iter()
         .find(|entry| entry.cwd.as_path() == cwd)
         .map(|entry| entry.errors.clone())
         .unwrap_or_default()
-}
-
-fn list_skills_response_to_core(response: SkillsListResponse) -> ListSkillsResponseEvent {
-    ListSkillsResponseEvent {
-        skills: response
-            .data
-            .into_iter()
-            .map(|entry| codex_protocol::protocol::SkillsListEntry {
-                cwd: entry.cwd,
-                skills: entry
-                    .skills
-                    .into_iter()
-                    .map(|skill| codex_protocol::protocol::SkillMetadata {
-                        name: skill.name,
-                        description: skill.description,
-                        short_description: skill.short_description,
-                        interface: skill.interface.map(|interface| {
-                            codex_protocol::protocol::SkillInterface {
-                                display_name: interface.display_name,
-                                short_description: interface.short_description,
-                                icon_small: interface.icon_small,
-                                icon_large: interface.icon_large,
-                                brand_color: interface.brand_color,
-                                default_prompt: interface.default_prompt,
-                            }
-                        }),
-                        dependencies: skill.dependencies.map(|dependencies| {
-                            codex_protocol::protocol::SkillDependencies {
-                                tools: dependencies
-                                    .tools
-                                    .into_iter()
-                                    .map(|tool| codex_protocol::protocol::SkillToolDependency {
-                                        r#type: tool.r#type,
-                                        value: tool.value,
-                                        description: tool.description,
-                                        transport: tool.transport,
-                                        command: tool.command,
-                                        url: tool.url,
-                                    })
-                                    .collect(),
-                            }
-                        }),
-                        path: skill.path,
-                        scope: match skill.scope {
-                            codex_app_server_protocol::SkillScope::User => {
-                                codex_protocol::protocol::SkillScope::User
-                            }
-                            codex_app_server_protocol::SkillScope::Repo => {
-                                codex_protocol::protocol::SkillScope::Repo
-                            }
-                            codex_app_server_protocol::SkillScope::System => {
-                                codex_protocol::protocol::SkillScope::System
-                            }
-                            codex_app_server_protocol::SkillScope::Admin => {
-                                codex_protocol::protocol::SkillScope::Admin
-                            }
-                        },
-                        enabled: skill.enabled,
-                    })
-                    .collect(),
-                errors: entry
-                    .errors
-                    .into_iter()
-                    .map(|error| codex_protocol::protocol::SkillErrorInfo {
-                        path: error.path,
-                        message: error.message,
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

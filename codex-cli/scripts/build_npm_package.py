@@ -54,7 +54,7 @@ PACKAGE_EXPANSIONS: dict[str, list[str]] = {
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
-    "codex-linux-x64": ["codex", "rg"],
+    "codex-linux-x64": ["bwrap", "codex", "rg"],
     "codex-android-arm64": ["codex"],
     "codex-darwin-arm64": [],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
@@ -69,6 +69,7 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
 COMPONENT_DEST_DIR: dict[str, str] = {
+    "bwrap": "codex-resources",
     "codex": "codex",
     "codex-responses-api-proxy": "codex-responses-api-proxy",
     "codex-windows-sandbox-setup": "codex",
@@ -126,6 +127,16 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Platform package to omit from the main package optionalDependencies.",
     )
+    parser.add_argument(
+        "--allow-missing-native-component",
+        dest="allow_missing_native_components",
+        action="append",
+        default=[],
+        help=(
+            "Native component that may be absent from --vendor-src. Intended for CI "
+            "compatibility with older artifact workflows; releases should not use this."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -171,6 +182,7 @@ def main() -> int:
                 staging_dir,
                 native_components,
                 target_filter={target_filter} if target_filter else None,
+                allow_missing_components=set(args.allow_missing_native_components),
             )
             validate_native_payload(staging_dir, package)
 
@@ -415,12 +427,14 @@ def copy_native_binaries(
     staging_dir: Path,
     components: list[str],
     target_filter: set[str] | None = None,
+    allow_missing_components: set[str] | None = None,
 ) -> None:
     vendor_src = vendor_src.resolve()
     if not vendor_src.exists():
         raise RuntimeError(f"Vendor source directory not found: {vendor_src}")
 
     components_set = {component for component in components if component in COMPONENT_DEST_DIR}
+    allow_missing_components = allow_missing_components or set()
     if not components_set:
         return
 
@@ -449,6 +463,8 @@ def copy_native_binaries(
 
             src_component_dir = target_dir / dest_dir_name
             if not src_component_dir.exists():
+                if component in allow_missing_components:
+                    continue
                 raise RuntimeError(
                     f"Missing native component '{component}' in vendor source: {src_component_dir}"
                 )

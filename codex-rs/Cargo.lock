@@ -2127,6 +2127,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-bwrap"
+version = "0.128.4"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "codex-chatgpt"
 version = "0.128.4"
 dependencies = [
@@ -2906,7 +2915,6 @@ dependencies = [
 name = "codex-linux-sandbox"
 version = "0.128.4"
 dependencies = [
- "cc",
  "clap",
  "codex-core",
  "codex-process-hardening",
@@ -2916,11 +2924,11 @@ dependencies = [
  "globset",
  "landlock",
  "libc",
- "pkg-config",
  "pretty_assertions",
  "seccompiler",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "url",

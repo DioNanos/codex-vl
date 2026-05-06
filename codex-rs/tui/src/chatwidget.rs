@@ -101,6 +101,8 @@ use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::ModelVerification as AppServerModelVerification;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SkillMetadata as ProtocolSkillMetadata;
+use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoal as AppThreadGoal;
 use codex_app_server_protocol::ThreadGoalStatus as AppThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -188,7 +190,6 @@ use codex_protocol::protocol::GuardianAssessmentEvent;
 use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
-use codex_protocol::protocol::ListSkillsResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::McpListToolsResponseEvent;
 use codex_protocol::protocol::McpStartupStatus;
@@ -202,7 +203,6 @@ use codex_protocol::protocol::RateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget;
-use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
 #[cfg(test)]
 use codex_protocol::protocol::StreamErrorEvent;
 use codex_protocol::protocol::TerminalInteractionEvent;
@@ -1699,6 +1699,7 @@ fn thread_session_state_to_legacy_event(
         reasoning_effort: session.reasoning_effort,
         history_log_id: session.history_log_id,
         history_entry_count: usize::try_from(session.history_entry_count).unwrap_or(usize::MAX),
+        thread_source: None,
         initial_messages: None,
         network_proxy: session.network_proxy,
         rollout_path: session.rollout_path,
@@ -7149,7 +7150,7 @@ impl ChatWidget {
         }
     }
 
-    pub(crate) fn handle_skills_list_response(&mut self, response: ListSkillsResponseEvent) {
+    pub(crate) fn handle_skills_list_response(&mut self, response: SkillsListResponse) {
         self.on_list_skills(response);
     }
 
@@ -7666,7 +7667,6 @@ impl ChatWidget {
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
             EventMsg::GetHistoryEntryResponse(ev) => self.handle_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
-            EventMsg::ListSkillsResponse(ev) => self.on_list_skills(ev),
             EventMsg::SkillsUpdateAvailable => {
                 self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
@@ -11772,7 +11772,7 @@ impl ChatWidget {
         ));
     }
 
-    fn on_list_skills(&mut self, ev: ListSkillsResponseEvent) {
+    fn on_list_skills(&mut self, ev: SkillsListResponse) {
         self.set_skills_from_response(&ev);
         self.refresh_plugin_mentions();
     }

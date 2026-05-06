@@ -1349,7 +1349,6 @@ impl App {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_skills_list_response(&mut self, response: SkillsListResponse) {
-        let response = list_skills_response_to_core(response);
         let cwd = self.chat_widget.config_ref().cwd.clone();
         let errors = errors_for_cwd(&cwd, &response);
         emit_skill_load_warnings(&self.app_event_tx, &errors);

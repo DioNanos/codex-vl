@@ -73,6 +73,14 @@ jobs:
           export RUSTY_V8_ARCHIVE="$archive_path"
           export RUSTY_V8_SRC_BINDING_PATH="$binding_path"
           echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
+          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-bwrap
+          bwrap_path="codex-rs/target/x86_64-unknown-linux-musl/release/bwrap"
+          if [ ! -f "$bwrap_path" ]; then
+            echo "bwrap binary ${bwrap_path} not found" >&2
+            exit 1
+          fi
+          export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
           cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli
           cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
@@ -94,10 +102,12 @@ jobs:
           vendor="$root/vendor/x86_64-unknown-linux-musl"
           out="$root/npm"
           rm -rf "$root"
-          mkdir -p "$vendor/codex" "$vendor/path" "$out"
+          mkdir -p "$vendor/codex" "$vendor/codex-resources" "$vendor/path" "$out"
           cp codex-rs/target/x86_64-unknown-linux-musl/release/codex "$vendor/codex/codex"
           cp codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec "$vendor/codex/codex-exec"
+          cp codex-rs/target/x86_64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
           chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex-resources/bwrap"
           if command -v rg >/dev/null 2>&1; then
             cp "$(command -v rg)" "$vendor/path/rg"
             chmod 755 "$vendor/path/rg"
