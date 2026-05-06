@@ -1346,14 +1346,27 @@ pub enum EventMsg {
     /// Agent text output message
     AgentMessage(AgentMessageEvent),
 
+    /// Legacy TUI streaming text delta.
+    ///
+    /// New app-server traffic should prefer `AgentMessageContentDelta`, but
+    /// the Rust TUI still uses this compact legacy event in test and replay
+    /// paths while the migration is in progress.
+    AgentMessageDelta(AgentMessageDeltaEvent),
+
     /// User/system input message (what was sent to the model)
     UserMessage(UserMessageEvent),
 
     /// Reasoning event from agent.
     AgentReasoning(AgentReasoningEvent),
 
+    /// Legacy TUI reasoning summary delta.
+    AgentReasoningDelta(AgentReasoningDeltaEvent),
+
     /// Raw chain-of-thought from agent.
     AgentReasoningRawContent(AgentReasoningRawContentEvent),
+
+    /// Legacy TUI raw reasoning delta.
+    AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent),
 
     /// Signaled when the model begins a new reasoning summary section (e.g., a new titled block).
     AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent),
@@ -1369,6 +1382,13 @@ pub enum EventMsg {
 
     /// Updated app-server thread name metadata.
     ThreadNameUpdated(ThreadNameUpdatedEvent),
+
+    /// Legacy UI-only background message.
+    BackgroundEvent(BackgroundEventEvent),
+
+    /// Legacy UI-only undo lifecycle events.
+    UndoStarted(UndoStartedEvent),
+    UndoCompleted(UndoCompletedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -2264,6 +2284,11 @@ pub struct AgentMessageEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct AgentMessageDeltaEvent {
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct UserMessageEvent {
     pub message: String,
     /// Image URLs sourced from `UserInput::Image`. These are safe
@@ -2287,8 +2312,18 @@ pub struct AgentReasoningEvent {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct AgentReasoningDeltaEvent {
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningRawContentEvent {
     pub text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct AgentReasoningRawContentDeltaEvent {
+    pub delta: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -2298,6 +2333,26 @@ pub struct AgentReasoningSectionBreakEvent {
     pub item_id: String,
     #[serde(default)]
     pub summary_index: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct BackgroundEventEvent {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct UndoStartedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct UndoCompletedEvent {
+    pub success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]

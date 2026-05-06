@@ -1453,6 +1453,7 @@ fn agent_message_text(item: &codex_protocol::items::AgentMessageItem) -> String 
 pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
     match msg {
         EventMsg::AgentMessage(event) => Some(event.message.clone()),
+        EventMsg::AgentMessageDelta(event) => Some(event.delta.clone()),
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item) => Some(agent_message_text(item)),
             _ => None,
@@ -1473,12 +1474,17 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::TokenCount(_)
         | EventMsg::UserMessage(_)
         | EventMsg::AgentReasoning(_)
+        | EventMsg::AgentReasoningDelta(_)
         | EventMsg::AgentReasoningRawContent(_)
+        | EventMsg::AgentReasoningRawContentDelta(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::ThreadNameUpdated(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadGoalCleared(_)
+        | EventMsg::BackgroundEvent(_)
+        | EventMsg::UndoStarted(_)
+        | EventMsg::UndoCompleted(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::McpToolCallBegin(_)

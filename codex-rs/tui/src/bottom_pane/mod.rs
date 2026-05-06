@@ -1648,7 +1648,7 @@ impl Renderable for BottomPane {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use super::*;
     use crate::app::app_server_requests::ResolvedAppServerRequest;

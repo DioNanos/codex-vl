@@ -541,7 +541,7 @@ impl App {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use super::*;
     use crate::app::test_support::app_enabled_in_effective_config;

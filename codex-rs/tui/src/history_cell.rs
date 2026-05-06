@@ -3738,6 +3738,7 @@ mod tests {
             reasoning_effort: None,
             history_log_id: 0,
             history_entry_count: 0,
+            thread_source: None,
             initial_messages: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),

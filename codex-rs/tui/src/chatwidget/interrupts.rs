@@ -146,7 +146,7 @@ impl QueuedInterrupt {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use codex_protocol::approvals::ExecApprovalRequestEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;

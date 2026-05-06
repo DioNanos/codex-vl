@@ -331,6 +331,9 @@ async fn run_codex_tool_session_inner(
                         // TODO: think how we want to support this in the MCP
                     }
                     EventMsg::AgentReasoningRawContent(_)
+                    | EventMsg::AgentMessageDelta(_)
+                    | EventMsg::AgentReasoningDelta(_)
+                    | EventMsg::AgentReasoningRawContentDelta(_)
                     | EventMsg::TurnStarted(_)
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
@@ -375,6 +378,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::DynamicToolCallResponse(_)
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::ModelReroute(_)
+                    | EventMsg::BackgroundEvent(_)
+                    | EventMsg::UndoStarted(_)
+                    | EventMsg::UndoCompleted(_)
                     | EventMsg::ThreadRolledBack(_)
                     | EventMsg::CollabAgentSpawnBegin(_)
                     | EventMsg::CollabAgentSpawnEnd(_)

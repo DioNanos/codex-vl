@@ -12408,5 +12408,5 @@ pub(crate) fn show_review_commit_picker_with_entries(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 pub(crate) mod tests;

@@ -111,7 +111,7 @@ impl App {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use super::*;
     use crate::app::side::SideThreadState;

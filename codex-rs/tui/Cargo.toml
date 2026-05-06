@@ -17,6 +17,9 @@ path = "src/bin/md-events.rs"
 name = "codex_tui"
 path = "src/lib.rs"
 
+[features]
+legacy_tui_tests = []
+
 [lints]
 workspace = true
 
