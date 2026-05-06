@@ -260,6 +260,51 @@ async fn raw_output_mode_can_change_without_inserting_notice() {
 }
 
 #[tokio::test]
+async fn vivling_life_message_does_not_touch_visible_ui_surfaces() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.set_status_line(Some(ratatui::text::Line::from("stable status")));
+    chat.set_active_agent_label(Some("agent alpha".to_string()));
+    chat.set_footer_hint_override(Some(vec![("K".to_string(), "keep".to_string())]));
+    chat.bottom_pane.set_composer_text(
+        "existing draft paste.txt".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.bottom_pane
+        .set_composer_pending_pastes(vec![("paste.txt".to_string(), "payload".to_string())]);
+
+    chat.add_vivling_message(
+        "internal lifecycle tick".to_string(),
+        crate::vl::VivlingLogKind::Life,
+    );
+
+    assert!(drain_insert_history(&mut rx).is_empty());
+    assert_eq!(chat.bottom_pane.composer_text(), "existing draft paste.txt");
+    assert_eq!(
+        chat.bottom_pane.composer_pending_pastes(),
+        vec![("paste.txt".to_string(), "payload".to_string())]
+    );
+    assert_eq!(status_line_text(&chat), Some("stable status".to_string()));
+    assert_eq!(chat.bottom_pane.active_agent_label(), Some("agent alpha"));
+}
+
+#[tokio::test]
+async fn vivling_chat_message_still_enters_visible_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.add_vivling_message(
+        "visible response".to_string(),
+        crate::vl::VivlingLogKind::Chat,
+    );
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Vivling: visible response"));
+}
+
+#[tokio::test]
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);

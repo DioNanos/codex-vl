@@ -11122,12 +11122,17 @@ impl ChatWidget {
 
     pub(crate) fn add_vivling_message(&mut self, text: String, kind: crate::vl::VivlingLogKind) {
         let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
+        let is_life = kind == crate::vl::VivlingLogKind::Life;
         self.app_event_tx
             .send_vl(crate::vl::VlEvent::SidebarPushMessage {
                 kind,
                 text: text.clone(),
                 vivling_id,
             });
+        if is_life {
+            self.request_redraw();
+            return;
+        }
         let mut lines = Vec::new();
         for (index, line) in text.lines().enumerate() {
             if index == 0 {
