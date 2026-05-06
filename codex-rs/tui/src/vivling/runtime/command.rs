@@ -14,6 +14,7 @@ impl Vivling {
             active_started_at: Cell::new(None),
             next_scheduled_frame_at: RefCell::new(None),
             animation_text: RefCell::new(None),
+            animation_text_expires_at: Cell::new(None),
             activity: RefCell::new(None),
             live_context: RefCell::new(None),
         }
@@ -62,6 +63,40 @@ impl Vivling {
             return;
         }
         *self.live_context.borrow_mut() = context;
+        self.request_frame();
+    }
+
+    pub(crate) fn set_animation_text(&self, text: String) {
+        self.set_animation_text_at(text, Instant::now());
+    }
+
+    pub(crate) fn set_animation_text_at(&self, text: String, now: Instant) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.clear_animation_text();
+            return;
+        }
+        *self.animation_text.borrow_mut() = Some(text);
+        self.animation_text_expires_at
+            .set(Some(now + ANIMATION_TEXT_TTL));
+        self.request_frame();
+    }
+
+    pub(crate) fn current_animation_text_at(&self, now: Instant) -> Option<String> {
+        let expired = self
+            .animation_text_expires_at
+            .get()
+            .is_some_and(|deadline| deadline <= now);
+        if expired {
+            self.clear_animation_text();
+            return None;
+        }
+        self.animation_text.borrow().clone()
+    }
+
+    fn clear_animation_text(&self) {
+        *self.animation_text.borrow_mut() = None;
+        self.animation_text_expires_at.set(None);
         self.request_frame();
     }
 

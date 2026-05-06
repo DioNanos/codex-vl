@@ -281,6 +281,7 @@ mod tests {
         let mut sidebar = VivlingSidebar::new();
         sidebar.push(VivlingLogKind::Life, "started playing".to_string(), None);
         assert_eq!(sidebar.log.len(), 0);
+        assert_eq!(sidebar.log.unread_count(), 0);
         assert_eq!(sidebar.desired_height(80), 0);
     }
 }

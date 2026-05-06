@@ -92,7 +92,7 @@ impl Renderable for Vivling {
         let sprite = self.current_sprite(state, now);
         let live_context = self.live_context.borrow();
         let insight = super::crt_insight::compute_insight(state, live_context.as_ref());
-        let animation_text = self.animation_text.borrow();
+        let animation_text = self.current_animation_text_at(now);
         let animation_phrase = animation_text
             .as_deref()
             .map(str::trim)

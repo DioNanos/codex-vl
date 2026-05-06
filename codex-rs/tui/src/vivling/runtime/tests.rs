@@ -831,7 +831,7 @@ fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
         .and_then(|state| state.last_message.clone())
         .expect("last message");
 
-    *vivling.animation_text.borrow_mut() = Some("is counting sparks".to_string());
+    vivling.set_animation_text("is counting sparks".to_string());
     vivling
         .save_state()
         .expect("save with volatile animation text");
@@ -840,6 +840,38 @@ fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
     let state = reloaded.state.as_ref().expect("reloaded state");
     assert_eq!(state.last_message.as_deref(), Some(original.as_str()));
     assert!(reloaded.animation_text.borrow().is_none());
+}
+
+#[test]
+fn animation_text_expires_without_touching_saved_last_message() {
+    let temp = TempDir::new().expect("tempdir");
+    let vivling = hatched_vivling(temp.path());
+    let original = vivling
+        .state
+        .as_ref()
+        .and_then(|state| state.last_message.clone())
+        .expect("last message");
+    let now = Instant::now();
+
+    vivling.set_animation_text_at("working now".to_string(), now);
+    assert_eq!(
+        vivling.current_animation_text_at(now).as_deref(),
+        Some("working now")
+    );
+
+    assert!(
+        vivling
+            .current_animation_text_at(now + ANIMATION_TEXT_TTL)
+            .is_none()
+    );
+    assert!(vivling.animation_text.borrow().is_none());
+    assert_eq!(
+        vivling
+            .state
+            .as_ref()
+            .and_then(|state| state.last_message.as_deref()),
+        Some(original.as_str())
+    );
 }
 
 #[test]

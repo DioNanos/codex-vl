@@ -76,6 +76,7 @@ pub(crate) const VIVEGG_EXT: &str = "vivegg";
 pub(crate) const EXTERNAL_SLOT_LIMIT: usize = 3;
 pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(140);
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
+pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Vivling {
@@ -91,6 +92,7 @@ pub(crate) struct Vivling {
     pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
     pub(crate) animation_text: RefCell<Option<String>>,
+    pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
     pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
     pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
 }
