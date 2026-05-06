@@ -85,5 +85,9 @@ Templates:
 - `AUTOMATED_RUNTIME_TEMPLATE.md`
 - `MANUAL_UI_TEMPLATE.md`
 
+AI-guided future suite:
+
+- `AI_GUIDED_TEST_SUITE.md`
+
 This folder is intentionally versioned so each release candidate can carry its
 own validation evidence.
