@@ -7,16 +7,6 @@ on:
         description: "Release version override (defaults to codex-cli/package.json)"
         required: false
         type: string
-  push:
-    branches:
-      - develop
-      - main
-    paths:
-      - Cargo.lock
-      - codex-cli/**
-      - codex-rs/**
-      - scripts/stage_npm_packages.py
-      - .github/workflows/package-linux-termux.yml
 
 jobs:
   build-linux-x64:

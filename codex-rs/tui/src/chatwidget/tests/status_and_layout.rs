@@ -37,7 +37,7 @@ async fn core_cyber_policy_error_renders_dedicated_notice() {
         id: "cyber-policy".into(),
         msg: EventMsg::Error(ErrorEvent {
             message: "server fallback message".to_string(),
-            codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+            codex_error_info: Some(CodexErrorInfo::CyberPolicy.into()),
         }),
     });
 
@@ -169,11 +169,11 @@ async fn status_line_git_summary_items_render_values() {
     });
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::PullRequestNumber),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::PullRequestNumber),
         Some("PR #20252".to_string())
     );
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::BranchChanges),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::BranchChanges),
         Some("+143 -22".to_string())
     );
 }
@@ -183,14 +183,14 @@ async fn raw_output_status_line_value_only_shows_when_enabled() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::RawOutput),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::RawOutput),
         None
     );
 
     chat.set_raw_output_mode(/*enabled*/ true);
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::RawOutput),
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::RawOutput),
         Some("raw output".to_string())
     );
 }
@@ -207,8 +207,8 @@ async fn status_line_branch_changes_render_no_changes() {
     });
 
     assert_eq!(
-        chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::BranchChanges),
-        Some("No changes".to_string())
+        chat.status_line_value_for_item(&crate::bottom_pane::StatusLineItem::BranchChanges),
+        Some("+0 -0".to_string())
     );
 }
 
@@ -1342,7 +1342,7 @@ async fn stream_error_updates_status_indicator() {
         id: "sub-1".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: msg.to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: Some(details.to_string()),
         }),
     });
@@ -1375,7 +1375,7 @@ async fn stream_error_restores_hidden_status_indicator() {
         id: "sub-1".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: msg.to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: Some(details.to_string()),
         }),
     });
@@ -1924,6 +1924,7 @@ async fn session_configured_clears_goal_status_footer() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-5.4".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -2361,7 +2362,7 @@ async fn user_prompt_submit_app_server_hook_notifications_render_snapshot() {
 #[tokio::test]
 async fn pre_tool_use_hook_events_render_snapshot() {
     assert_hook_events_snapshot(
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         "pre-tool-use:0:/tmp/hooks.json",
         "warming the shell",
         "pre_tool_use_hook_events_render_snapshot",
@@ -2372,7 +2373,7 @@ async fn pre_tool_use_hook_events_render_snapshot() {
 #[tokio::test]
 async fn post_tool_use_hook_events_render_snapshot() {
     assert_hook_events_snapshot(
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         "post-tool-use:0:/tmp/hooks.json",
         "warming the shell",
         "post_tool_use_hook_events_render_snapshot",
@@ -2390,7 +2391,7 @@ async fn completed_hook_with_no_entries_stays_out_of_history() {
             turn_id: None,
             run: codex_protocol::protocol::HookRunSummary {
                 id: "post-tool-use:0:/tmp/hooks.json".to_string(),
-                event_name: codex_protocol::protocol::HookEventName::PostToolUse,
+                event_name: codex_protocol::protocol::HookEventName::PostToolUse.into(),
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
@@ -2416,7 +2417,7 @@ async fn completed_hook_with_no_entries_stays_out_of_history() {
             turn_id: None,
             run: codex_protocol::protocol::HookRunSummary {
                 id: "post-tool-use:0:/tmp/hooks.json".to_string(),
-                event_name: codex_protocol::protocol::HookEventName::PostToolUse,
+                event_name: codex_protocol::protocol::HookEventName::PostToolUse.into(),
                 handler_type: codex_protocol::protocol::HookHandlerType::Command,
                 execution_mode: codex_protocol::protocol::HookExecutionMode::Sync,
                 scope: codex_protocol::protocol::HookScope::Turn,
@@ -2450,7 +2451,7 @@ async fn quiet_hook_linger_starts_when_delayed_redraw_reveals_hook() {
 
     chat.handle_codex_event(hook_started_event(
         "post-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         Some("checking output policy"),
     ));
     assert!(drain_insert_history(&mut rx).is_empty());
@@ -2458,7 +2459,7 @@ async fn quiet_hook_linger_starts_when_delayed_redraw_reveals_hook() {
     reveal_running_hooks_after_delayed_redraw(&mut chat);
     chat.handle_codex_event(hook_completed_event(
         "post-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Completed,
         Vec::new(),
     ));
@@ -2478,7 +2479,7 @@ async fn blocked_and_failed_hooks_render_feedback_and_errors() {
 
     chat.handle_codex_event(hook_completed_event(
         "pre-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Blocked,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Feedback,
@@ -2487,7 +2488,7 @@ async fn blocked_and_failed_hooks_render_feedback_and_errors() {
     ));
     chat.handle_codex_event(hook_completed_event(
         "post-tool-use:1:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Failed,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Error,
@@ -2518,7 +2519,7 @@ async fn completed_hook_with_output_flushes_immediately() {
 
     chat.handle_codex_event(hook_started_event(
         "pre-tool-use:0:/tmp/hooks.json:tool-call-1",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         Some("checking command"),
     ));
     reveal_running_hooks(&mut chat);
@@ -2526,7 +2527,7 @@ async fn completed_hook_with_output_flushes_immediately() {
 
     chat.handle_codex_event(hook_completed_event(
         "pre-tool-use:0:/tmp/hooks.json:tool-call-1",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Blocked,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Feedback,
@@ -2551,14 +2552,14 @@ async fn completed_hook_output_precedes_following_assistant_message() {
 
     chat.handle_codex_event(hook_started_event(
         "pre-tool-use:0:/tmp/hooks.json:tool-call-1",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         Some("checking command"),
     ));
     reveal_running_hooks(&mut chat);
 
     chat.handle_codex_event(hook_completed_event(
         "pre-tool-use:0:/tmp/hooks.json:tool-call-1",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Blocked,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Feedback,
@@ -2603,13 +2604,13 @@ async fn completed_same_id_hook_output_survives_restart() {
 
     chat.handle_codex_event(hook_started_event(
         hook_id,
-        codex_protocol::protocol::HookEventName::Stop,
+        codex_protocol::protocol::HookEventName::Stop.into(),
         Some("checking stop condition"),
     ));
     reveal_running_hooks(&mut chat);
     chat.handle_codex_event(hook_completed_event(
         hook_id,
-        codex_protocol::protocol::HookEventName::Stop,
+        codex_protocol::protocol::HookEventName::Stop.into(),
         codex_protocol::protocol::HookRunStatus::Stopped,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Stop,
@@ -2618,7 +2619,7 @@ async fn completed_same_id_hook_output_survives_restart() {
     ));
     chat.handle_codex_event(hook_started_event(
         hook_id,
-        codex_protocol::protocol::HookEventName::Stop,
+        codex_protocol::protocol::HookEventName::Stop.into(),
         Some("checking stop condition"),
     ));
     reveal_running_hooks(&mut chat);
@@ -2647,7 +2648,7 @@ async fn identical_parallel_running_hooks_collapse_to_count() {
     for tool_call_id in ["tool-call-1", "tool-call-2", "tool-call-3"] {
         chat.handle_codex_event(hook_started_event(
             &format!("pre-tool-use:0:/tmp/hooks.json:{tool_call_id}"),
-            codex_protocol::protocol::HookEventName::PreToolUse,
+            codex_protocol::protocol::HookEventName::PreToolUse.into(),
             Some("checking command policy"),
         ));
     }
@@ -2668,7 +2669,7 @@ async fn overlapping_hook_live_cell_tracks_parallel_quiet_hooks() {
 
     chat.handle_codex_event(hook_started_event(
         "pre-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         Some("checking command policy"),
     ));
     assert_eq!(chat.current_status.header, "Thinking");
@@ -2677,7 +2678,7 @@ async fn overlapping_hook_live_cell_tracks_parallel_quiet_hooks() {
 
     chat.handle_codex_event(hook_started_event(
         "post-tool-use:1:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         Some("checking output policy"),
     ));
     assert_eq!(chat.current_status.header, "Thinking");
@@ -2686,7 +2687,7 @@ async fn overlapping_hook_live_cell_tracks_parallel_quiet_hooks() {
 
     chat.handle_codex_event(hook_completed_event(
         "pre-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PreToolUse,
+        codex_protocol::protocol::HookEventName::PreToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Completed,
         Vec::new(),
     ));
@@ -2699,7 +2700,7 @@ async fn overlapping_hook_live_cell_tracks_parallel_quiet_hooks() {
 
     chat.handle_codex_event(hook_completed_event(
         "post-tool-use:1:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Completed,
         Vec::new(),
     ));
@@ -2727,7 +2728,7 @@ async fn running_hook_does_not_displace_active_exec_cell() {
 
     chat.handle_codex_event(hook_started_event(
         "post-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         Some("checking output policy"),
     ));
     reveal_running_hooks(&mut chat);
@@ -2746,7 +2747,7 @@ async fn running_hook_does_not_displace_active_exec_cell() {
 
     chat.handle_codex_event(hook_completed_event(
         "post-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         codex_protocol::protocol::HookRunStatus::Completed,
         Vec::new(),
     ));
@@ -2775,7 +2776,7 @@ async fn hidden_active_hook_does_not_add_transcript_separator() {
 
     chat.handle_codex_event(hook_started_event(
         "post-tool-use:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::PostToolUse,
+        codex_protocol::protocol::HookEventName::PostToolUse.into(),
         Some("checking output policy"),
     ));
     let hidden_hook_transcript = chat
@@ -2810,14 +2811,14 @@ async fn hook_completed_before_reveal_renders_completed_without_running_flash() 
 
     chat.handle_codex_event(hook_started_event(
         "session-start:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::SessionStart,
+        codex_protocol::protocol::HookEventName::SessionStart.into(),
         Some("warming the shell"),
     ));
     let started_hidden_snapshot = active_hook_blob(&chat);
 
     chat.handle_codex_event(hook_completed_event(
         "session-start:0:/tmp/hooks.json",
-        codex_protocol::protocol::HookEventName::SessionStart,
+        codex_protocol::protocol::HookEventName::SessionStart.into(),
         codex_protocol::protocol::HookRunStatus::Completed,
         vec![codex_protocol::protocol::HookOutputEntry {
             kind: codex_protocol::protocol::HookOutputEntryKind::Context,
@@ -2838,7 +2839,7 @@ async fn hook_completed_before_reveal_renders_completed_without_running_flash() 
 #[tokio::test]
 async fn session_start_hook_events_render_snapshot() {
     assert_hook_events_snapshot(
-        codex_protocol::protocol::HookEventName::SessionStart,
+        codex_protocol::protocol::HookEventName::SessionStart.into(),
         "session-start:0:/tmp/hooks.json",
         "warming the shell",
         "session_start_hook_events_render_snapshot",
@@ -2953,6 +2954,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             call_id: "c1".into(),
             process_id: None,
             turn_id: "turn-1".into(),
+            started_at_ms: 0,
             command: command.clone(),
             cwd: cwd.clone(),
             parsed_cmd: parsed_cmd.clone(),
@@ -2975,6 +2977,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
             stderr: String::new(),
             aggregated_output: String::new(),
             exit_code: 0,
+            completed_at_ms: 0,
             duration: std::time::Duration::from_millis(16000),
             formatted_output: String::new(),
             status: CoreExecCommandStatus::Completed,

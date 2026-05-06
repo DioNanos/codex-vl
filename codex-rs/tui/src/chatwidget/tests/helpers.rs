@@ -106,8 +106,8 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
         primary: Some(RateLimitWindow {
-            used_percent: percent.round() as i32,
-            window_duration_mins: Some(60),
+            used_percent: percent.round(),
+            window_minutes: Some(60),
             resets_at: None,
         }),
         secondary: None,
@@ -190,6 +190,7 @@ pub(super) async fn make_chatwidget_manual(
         active_cell: None,
         active_cell_revision: 0,
         raw_output_mode: cfg.tui_raw_output_mode,
+        loop_jobs: BTreeMap::new(),
         config: cfg,
         effective_service_tier,
         current_collaboration_mode,
@@ -200,7 +201,6 @@ pub(super) async fn make_chatwidget_manual(
         session_header: SessionHeader::new(resolved_model.clone()),
         initial_user_message: None,
         status_account_display: None,
-        runtime_model_provider_base_url: None,
         token_info: None,
         rate_limit_snapshots_by_limit_id: BTreeMap::new(),
         refreshing_status_outputs: Vec::new(),
@@ -250,7 +250,6 @@ pub(super) async fn make_chatwidget_manual(
         newly_installed_marketplace_tab_id: None,
         connectors_prefetch_in_flight: false,
         connectors_force_refetch_pending: false,
-        ide_context: super::super::ide_context::IdeContextState::default(),
         plugins_cache: PluginsCacheState::default(),
         plugins_fetch_state: PluginListFetchState::default(),
         interrupts: InterruptManager::new(),
@@ -326,7 +325,7 @@ pub(super) async fn make_chatwidget_manual(
         goal_status_active_turn_started_at: None,
         external_editor_state: ExternalEditorState::Closed,
         realtime_conversation: RealtimeConversationUiState::default(),
-        last_rendered_user_message_display: None,
+        last_rendered_user_message_event: None,
         last_non_retry_error: None,
     };
     widget.set_model(&resolved_model);
@@ -546,7 +545,7 @@ pub(super) fn handle_error(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: message.into(),
-                codex_error_info,
+                codex_error_info: codex_error_info.map(Into::into),
                 additional_details: None,
             },
             will_retry: false,
@@ -943,7 +942,7 @@ pub(super) fn begin_exec_with_source(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: None,
-        source,
+        source: source.into(),
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions,
         aggregated_output: None,
@@ -966,7 +965,7 @@ pub(super) fn begin_unified_exec_startup(
         command: codex_shell_command::parse_command::shlex_join(&command),
         cwd: chat.config.cwd.clone(),
         process_id: Some(process_id.to_string()),
-        source: ExecCommandSource::UnifiedExecStartup,
+        source: ExecCommandSource::UnifiedExecStartup.into(),
         status: AppServerCommandExecutionStatus::InProgress,
         command_actions: Vec::new(),
         aggregated_output: None,
@@ -1052,7 +1051,7 @@ pub(super) fn complete_user_message(chat: &mut ChatWidget, item_id: &str, text: 
     complete_user_message_for_inputs(
         chat,
         item_id,
-        vec![UserInput::Text {
+        vec![AppServerUserInput::Text {
             text: text.to_string(),
             text_elements: Vec::new(),
         }],
@@ -1062,7 +1061,7 @@ pub(super) fn complete_user_message(chat: &mut ChatWidget, item_id: &str, text: 
 pub(super) fn complete_user_message_for_inputs(
     chat: &mut ChatWidget,
     item_id: &str,
-    content: Vec<UserInput>,
+    content: Vec<AppServerUserInput>,
 ) {
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {

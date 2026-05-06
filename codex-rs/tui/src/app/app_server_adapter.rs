@@ -585,6 +585,7 @@ fn server_notification_thread_events(
                             thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
                             turn_id: notification.turn_id.clone(),
                             item: thread_item_to_core(&notification.item)?,
+                            started_at_ms: notification.started_at_ms,
                         }),
                     }])
                 },
@@ -600,6 +601,7 @@ fn server_notification_thread_events(
                             thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
                             turn_id: notification.turn_id.clone(),
                             item: thread_item_to_core(&notification.item)?,
+                            completed_at_ms: notification.completed_at_ms,
                         }),
                     }])
                 },
@@ -769,12 +771,16 @@ fn turn_snapshot_events(
                         thread_id,
                         turn_id: turn.id.clone(),
                         item,
+                        completed_at_ms: 0,
                     }),
                 });
             }
             TurnItem::Reasoning(_)
             | TurnItem::WebSearch(_)
             | TurnItem::ImageGeneration(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
             | TurnItem::ContextCompaction(_) => {
                 events.extend(
                     item.as_legacy_events(show_raw_agent_reasoning)
@@ -966,6 +972,7 @@ fn command_execution_started_event(turn_id: &str, item: &ThreadItem) -> Option<V
             call_id: id.clone(),
             process_id: process_id.clone(),
             turn_id: turn_id.to_string(),
+            started_at_ms: 0,
             command: split_command_string(command),
             cwd: cwd.clone(),
             parsed_cmd: command_actions
@@ -1026,6 +1033,7 @@ fn command_execution_completed_event(turn_id: &str, item: &ThreadItem) -> Option
             call_id: id.clone(),
             process_id: process_id.clone(),
             turn_id: turn_id.to_string(),
+            completed_at_ms: 0,
             command: split_command_string(command),
             cwd: cwd.clone(),
             parsed_cmd: command_actions
@@ -1139,6 +1147,7 @@ mod tests {
                 },
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
+                completed_at_ms: 0,
             }),
         )
         .expect("notification should bridge");
@@ -1185,6 +1194,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -1236,6 +1246,7 @@ mod tests {
                 item,
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
+                started_at_ms: 0,
             }),
         )
         .expect("command execution start should bridge");
@@ -1291,6 +1302,7 @@ mod tests {
                 item: completed_item,
                 thread_id,
                 turn_id,
+                completed_at_ms: 0,
             }),
         )
         .expect("command execution completion should bridge");
@@ -1351,6 +1363,7 @@ mod tests {
             cwd: test_path_buf("/tmp").abs(),
             cli_version: "test".to_string(),
             source: SessionSource::Cli.into(),
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             git_info: None,
@@ -1371,6 +1384,7 @@ mod tests {
                     exit_code: Some(0),
                     duration_ms: Some(5),
                 }],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1405,6 +1419,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Interrupted,
                     error: None,
                     started_at: None,
@@ -1440,6 +1455,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Failed,
                     error: Some(TurnError {
                         message: "request failed".to_string(),
@@ -1527,6 +1543,7 @@ mod tests {
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "test".to_string(),
                 source: SessionSource::Cli.into(),
+                thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
@@ -1549,6 +1566,7 @@ mod tests {
                                 memory_citation: None,
                             },
                         ],
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Completed,
                         error: None,
                         started_at: None,
@@ -1558,6 +1576,7 @@ mod tests {
                     Turn {
                         id: "turn-interrupted".to_string(),
                         items: Vec::new(),
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Interrupted,
                         error: None,
                         started_at: None,
@@ -1567,6 +1586,7 @@ mod tests {
                     Turn {
                         id: "turn-failed".to_string(),
                         items: Vec::new(),
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Failed,
                         error: Some(TurnError {
                             message: "request failed".to_string(),
@@ -1636,6 +1656,7 @@ mod tests {
                         id: "compact-1".to_string(),
                     },
                 ],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1682,6 +1703,7 @@ mod tests {
                     summary: vec!["Need to inspect config".to_string()],
                     content: vec!["hidden chain".to_string()],
                 }],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,

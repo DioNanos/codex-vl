@@ -1629,6 +1629,20 @@ fn merge_user_messages_with_history_record(
     )
 }
 
+fn strip_ide_prompt_context(message: String) -> (String, usize) {
+    let Some(marker_start) = message.find(codex_protocol::protocol::USER_MESSAGE_BEGIN) else {
+        return (message, 0);
+    };
+    let content_start = marker_start + codex_protocol::protocol::USER_MESSAGE_BEGIN.len();
+    let trimmed_start = content_start
+        + message[content_start..]
+            .chars()
+            .take_while(|ch| *ch == '\n' || *ch == '\r')
+            .map(char::len_utf8)
+            .sum::<usize>();
+    (message[trimmed_start..].to_string(), trimmed_start)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayKind {
     ResumeInitialMessages,
@@ -1687,6 +1701,7 @@ fn thread_session_state_to_legacy_event(
     codex_protocol::protocol::SessionConfiguredEvent {
         session_id: session.thread_id,
         forked_from_id: session.forked_from_id,
+        thread_source: None,
         thread_name: session.thread_name,
         model: session.model,
         model_provider_id: session.model_provider_id,
@@ -1699,7 +1714,6 @@ fn thread_session_state_to_legacy_event(
         reasoning_effort: session.reasoning_effort,
         history_log_id: session.history_log_id,
         history_entry_count: usize::try_from(session.history_entry_count).unwrap_or(usize::MAX),
-        thread_source: None,
         initial_messages: None,
         network_proxy: session.network_proxy,
         rollout_path: session.rollout_path,
@@ -7688,7 +7702,13 @@ impl ChatWidget {
                 }
             }
             EventMsg::UserMessage(ev) => {
-                if from_replay || self.should_render_realtime_user_message_event(&ev) {
+                let remote_image_urls = ev.images.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+                let replay_has_visible_text_or_remote_image = !ev.message.trim().is_empty()
+                    || !ev.text_elements.is_empty()
+                    || !remote_image_urls.is_empty();
+                if (from_replay && replay_has_visible_text_or_remote_image)
+                    || self.should_render_realtime_user_message_event(&ev)
+                {
                     self.on_user_message_event(ev);
                 }
             }
@@ -7859,7 +7879,13 @@ impl ChatWidget {
         };
         if from_replay {
             if !self.is_review_mode {
-                self.on_user_message_event(event);
+                let remote_image_urls = event.images.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+                if !event.message.trim().is_empty()
+                    || !event.text_elements.is_empty()
+                    || !remote_image_urls.is_empty()
+                {
+                    self.on_user_message_event(event);
+                }
             }
             return;
         }
@@ -7890,11 +7916,28 @@ impl ChatWidget {
     }
 
     fn on_user_message_event(&mut self, event: UserMessageEvent) {
+        let UserMessageEvent {
+            message,
+            mut text_elements,
+            local_images,
+            images,
+        } = event;
+        let (message, prompt_offset) = strip_ide_prompt_context(message);
+        if prompt_offset > 0 {
+            text_elements.retain(|element| element.byte_range.start >= prompt_offset);
+        }
+        let event = UserMessageEvent {
+            message,
+            text_elements,
+            local_images,
+            images,
+        };
         self.last_rendered_user_message_event =
             Some(Self::rendered_user_message_event_from_event(&event));
         let remote_image_urls = event.images.unwrap_or_default();
         if !event.message.trim().is_empty()
             || !event.text_elements.is_empty()
+            || !event.local_images.is_empty()
             || !remote_image_urls.is_empty()
         {
             self.record_visible_user_turn_for_copy();

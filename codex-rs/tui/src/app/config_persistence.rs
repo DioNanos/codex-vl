@@ -639,6 +639,7 @@ mod tests {
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: ThreadId::new(),
                 forked_from_id: None,
+                thread_source: None,
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),

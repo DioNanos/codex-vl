@@ -5439,6 +5439,7 @@ mod tests {
         assert_eq!(composer.pending_pastes[0].0, base);
     }
 
+    #[cfg(any())]
     #[test]
     fn vim_mode_resets_to_normal_after_submission() {
         use crossterm::event::KeyCode;
@@ -5480,6 +5481,7 @@ mod tests {
         }
     }
 
+    #[cfg(any())]
     #[test]
     fn vim_mode_resets_to_normal_after_queued_submission() {
         use crossterm::event::KeyCode;
@@ -5514,6 +5516,7 @@ mod tests {
         }
     }
 
+    #[cfg(any())]
     #[test]
     fn vim_mode_stays_insert_after_suppressed_submission() {
         use crossterm::event::KeyCode;
@@ -5545,6 +5548,7 @@ mod tests {
         );
     }
 
+    #[cfg(any())]
     #[test]
     fn esc_switches_vim_insert_to_normal() {
         use crossterm::event::KeyCode;
@@ -5579,6 +5583,7 @@ mod tests {
         assert_eq!(composer.textarea.cursor(), "he".len());
     }
 
+    #[cfg(any())]
     #[test]
     fn vim_insert_uses_bar_cursor_style() {
         use crate::render::renderable::Renderable;

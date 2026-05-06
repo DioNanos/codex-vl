@@ -535,6 +535,7 @@ async fn permissions_selection_marks_auto_review_current_after_session_configure
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -590,6 +591,7 @@ async fn permissions_selection_marks_auto_review_current_with_custom_workspace_w
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),

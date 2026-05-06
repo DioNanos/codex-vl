@@ -17,6 +17,7 @@ async fn resumed_initial_messages_render_history() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -90,6 +91,7 @@ async fn thread_snapshot_replay_does_not_duplicate_agent_message_history() {
                 phase: None,
                 memory_citation: None,
             }),
+            completed_at_ms: 0,
         }),
     });
     chat.handle_codex_event_replay(Event {
@@ -131,6 +133,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -193,6 +196,7 @@ async fn replayed_user_message_preserves_remote_image_urls() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -282,6 +286,7 @@ async fn session_configured_syncs_widget_config_permissions_and_cwd() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: ThreadId::new(),
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -341,6 +346,7 @@ async fn session_configured_external_sandbox_keeps_external_runtime_policy() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: ThreadId::new(),
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -391,6 +397,7 @@ async fn replayed_user_message_with_only_remote_images_renders_history_cell() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -445,6 +452,7 @@ async fn replayed_user_message_with_only_local_images_does_not_render_history_ce
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -768,6 +776,7 @@ async fn replayed_reasoning_item_hides_raw_reasoning_when_disabled() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "test-model".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -816,6 +825,7 @@ async fn replayed_reasoning_item_shows_raw_reasoning_when_enabled() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "test-model".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -983,7 +993,7 @@ async fn replayed_stream_error_does_not_set_retry_status_or_status_indicator() {
 
     chat.replay_initial_messages(vec![EventMsg::StreamError(StreamErrorEvent {
         message: "Reconnecting... 2/5".to_string(),
-        codex_error_info: Some(CodexErrorInfo::Other),
+        codex_error_info: Some(CodexErrorInfo::Other.into()),
         additional_details: Some("Idle timeout waiting for SSE".to_string()),
     })]);
 
@@ -1016,7 +1026,7 @@ async fn thread_snapshot_replayed_stream_recovery_restores_previous_status_heade
         id: "retry".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 1/5".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: None,
         }),
     });
@@ -1052,7 +1062,7 @@ async fn resume_replay_interrupted_reconnect_does_not_leave_stale_working_state(
         }),
         EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 1/5".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: None,
         }),
         EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
@@ -1084,7 +1094,7 @@ async fn replayed_interrupted_reconnect_footer_row_snapshot() {
         }),
         EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 2/5".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: Some("Idle timeout waiting for SSE".to_string()),
         }),
     ]);
@@ -1114,7 +1124,7 @@ async fn stream_recovery_restores_previous_status_header() {
         id: "retry".into(),
         msg: EventMsg::StreamError(StreamErrorEvent {
             message: "Reconnecting... 1/5".to_string(),
-            codex_error_info: Some(CodexErrorInfo::Other),
+            codex_error_info: Some(CodexErrorInfo::Other.into()),
             additional_details: None,
         }),
     });

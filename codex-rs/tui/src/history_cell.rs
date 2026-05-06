@@ -3726,6 +3726,7 @@ mod tests {
         SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: model.to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -3738,7 +3739,6 @@ mod tests {
             reasoning_effort: None,
             history_log_id: 0,
             history_entry_count: 0,
-            thread_source: None,
             initial_messages: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),

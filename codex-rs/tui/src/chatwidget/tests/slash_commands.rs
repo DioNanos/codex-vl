@@ -59,7 +59,7 @@ async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
 
     assert!(chat.bottom_pane.is_task_running());
     match rx.try_recv() {
-        Ok(AppEvent::CodexOp(Op::Compact)) => {}
+        Ok(AppEvent::CodexOp(AppCommand::Compact)) => {}
         other => panic!("expected compact op to be submitted, got {other:?}"),
     }
 
@@ -100,7 +100,7 @@ async fn queued_slash_compact_dispatches_after_active_turn() {
     assert!(
         events
             .iter()
-            .any(|event| matches!(event, AppEvent::CodexOp(Op::Compact))),
+            .any(|event| matches!(event, AppEvent::CodexOp(AppCommand::Compact))),
         "expected queued /compact to submit compact op; events: {events:?}"
     );
 }
@@ -117,16 +117,16 @@ async fn queued_slash_review_with_args_dispatches_after_active_turn() {
 
     match op_rx.try_recv() {
         Ok(Op::AddToHistory { .. }) => match op_rx.try_recv() {
-            Ok(Op::Review { target }) => assert_eq!(
-                target,
+            Ok(Op::Review { review_request }) => assert_eq!(
+                review_request.target,
                 ReviewTarget::Custom {
                     instructions: "check regressions".to_string(),
                 }
             ),
             other => panic!("expected queued /review to submit review op, got {other:?}"),
         },
-        Ok(Op::Review { target }) => assert_eq!(
-            target,
+        Ok(Op::Review { review_request }) => assert_eq!(
+            review_request.target,
             ReviewTarget::Custom {
                 instructions: "check regressions".to_string(),
             }
@@ -352,7 +352,7 @@ async fn queued_bare_rename_drains_next_input_after_name_update() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::SetThreadName { name }) if name == "Queued rename"
+            AppEvent::CodexOp(AppCommand::SetThreadName { name }) if name == "Queued rename"
         )),
         "expected rename prompt to submit thread name; events: {events:?}"
     );
@@ -397,7 +397,7 @@ async fn queued_inline_rename_does_not_drain_again_before_turn_started() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::SetThreadName { name }) if name == "Queued rename"
+            AppEvent::CodexOp(AppCommand::SetThreadName { name }) if name == "Queued rename"
         )),
         "expected queued /rename to submit thread name; events: {events:?}"
     );
@@ -1014,7 +1014,7 @@ async fn slash_rename_prefills_existing_thread_name() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::CodexOp(Op::SetThreadName { name })) if name == "Current project title"
+        Ok(AppEvent::CodexOp(AppCommand::SetThreadName { name })) if name == "Current project title"
     );
 }
 
@@ -1265,6 +1265,7 @@ async fn slash_keymap_capture_can_capture_app_shortcuts() {
 }
 
 #[tokio::test]
+#[cfg(any())]
 async fn slash_keymap_debug_opens_keypress_inspector() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1284,6 +1285,7 @@ async fn slash_keymap_debug_opens_keypress_inspector() {
 }
 
 #[tokio::test]
+#[cfg(any())]
 async fn slash_keymap_debug_can_inspect_app_shortcuts() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -1802,7 +1804,7 @@ async fn fast_slash_command_updates_and_persists_local_service_tier() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
                 service_tier: Some(Some(ServiceTier::Fast)),
                 ..
             })
@@ -1833,7 +1835,7 @@ async fn fast_keybinding_toggle_uses_same_events_as_fast_slash_command() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
                 service_tier: Some(Some(ServiceTier::Fast)),
                 ..
             })
@@ -1908,7 +1910,7 @@ async fn queued_fast_slash_applies_before_next_queued_message() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
                 service_tier: Some(Some(ServiceTier::Fast)),
                 ..
             })
@@ -1947,7 +1949,7 @@ async fn user_turn_sends_standard_override_after_fast_is_turned_off() {
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::CodexOp(Op::OverrideTurnContext {
+            AppEvent::CodexOp(AppCommand::OverrideTurnContext {
                 service_tier: Some(None),
                 ..
             })

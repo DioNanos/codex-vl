@@ -590,5 +590,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

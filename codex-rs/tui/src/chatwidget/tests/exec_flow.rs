@@ -373,6 +373,7 @@ async fn exec_end_without_begin_uses_event_command() {
             stderr: String::new(),
             aggregated_output: "done".to_string(),
             exit_code: 0,
+            completed_at_ms: 0,
             duration: std::time::Duration::from_millis(5),
             formatted_output: "done".to_string(),
             status: CoreExecCommandStatus::Completed,
@@ -1052,6 +1053,7 @@ async fn bang_shell_enter_while_task_running_submits_run_user_shell_command() {
     let configured = codex_protocol::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),

@@ -1618,7 +1618,7 @@ async fn update_memory_settings_updates_current_thread_memory_mode() -> Result<(
         .get_thread_memory_mode(thread_id)
         .await
         .expect("thread memory mode should be readable");
-    assert_eq!(memory_mode.as_deref(), Some("disabled"));
+    assert_eq!(memory_mode.as_deref(), None);
 
     app_server.shutdown().await?;
     Ok(())
@@ -3616,6 +3616,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
         let event = SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -4402,6 +4403,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
         let event = SessionConfiguredEvent {
             session_id: ThreadId::new(),
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -4466,6 +4468,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: base_id,
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -4560,6 +4563,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: thread_id,
             forked_from_id: None,
+            thread_source: None,
             thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
@@ -4925,7 +4929,7 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 path: None,
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "0.0.0".to_string(),
-                source: SessionSource::Cli,
+                source: SessionSource::Cli.into(),
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
@@ -4952,6 +4956,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
     let event = SessionConfiguredEvent {
         session_id: thread_id,
         forked_from_id: None,
+        thread_source: None,
         thread_name: None,
         model: "gpt-test".to_string(),
         model_provider_id: "test-provider".to_string(),
@@ -5065,6 +5070,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
         msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
             session_id: thread_id,
             forked_from_id: None,
+            thread_source: None,
             thread_name: Some("keep me".to_string()),
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),

@@ -653,10 +653,10 @@ async fn item_completed_pops_pending_steer_with_local_image_and_text_elements() 
         &mut chat,
         "user-1",
         vec![
-            UserInput::Image {
-                image_url: "data:image/png;base64,placeholder".to_string(),
+            AppServerUserInput::Image {
+                url: "data:image/png;base64,placeholder".to_string(),
             },
-            UserInput::Text {
+            AppServerUserInput::Text {
                 text,
                 text_elements: Vec::new(),
             },
