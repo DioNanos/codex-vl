@@ -26,6 +26,9 @@ blind runner unless a maintainer explicitly asks for that.
   command, tool, TUI, read/write, patch, and runtime smoke report.
 - `manual/2026-05-06_termux_persist_extended_history_warning.md`: Termux
   source update and startup deprecation-warning fix evidence.
+- `manual/2026-05-07_0.129.0_termux_ai_guided_surface.md`: 0.129.0
+  Termux command surface, runtime exec, read/write, network, and first-launch
+  TUI evidence with operator-scoped limitations.
 
 ## Report Rules
 
