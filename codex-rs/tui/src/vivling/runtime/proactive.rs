@@ -54,6 +54,106 @@ pub(crate) fn evaluate_after_loop_event(
     ProactiveOutcome { message: None }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vivling::model::ADULT_LEVEL;
+    use crate::vivling::model::SeedIdentity;
+    use crate::vivling::model::VivlingDistilledSummary;
+    use crate::vivling::model::WORK_XP_PER_LEVEL;
+
+    fn adult_state() -> VivlingState {
+        let mut state = VivlingState::new(SeedIdentity {
+            value: "install:proactive-test".to_string(),
+            install_id: Some("proactive-test".to_string()),
+        });
+        state.active_work_days = 90;
+        state.work_xp = WORK_XP_PER_LEVEL.saturating_mul(ADULT_LEVEL.saturating_sub(1));
+        state.recompute_level();
+        state
+    }
+
+    #[test]
+    fn loop_proactive_triggers_only_on_exact_blocked_threshold() {
+        let now = chrono::Utc::now();
+        let mut state = adult_state();
+        state.loop_runtime_blocks = 2;
+        assert!(evaluate_after_loop_event(&state, now).message.is_none());
+
+        state.loop_runtime_blocks = 3;
+        assert_eq!(
+            evaluate_after_loop_event(&state, now).message.as_deref(),
+            Some("loops blocked. want me to check?")
+        );
+
+        state.loop_runtime_blocks = 4;
+        assert!(evaluate_after_loop_event(&state, now).message.is_none());
+    }
+
+    #[test]
+    fn loop_proactive_churn_and_clean_rhythm_do_not_repeat_off_threshold() {
+        let now = chrono::Utc::now();
+        let mut churn = adult_state();
+        churn.loop_admin_churn = 5;
+        assert_eq!(
+            evaluate_after_loop_event(&churn, now).message.as_deref(),
+            Some("too much churn. stop touching loops")
+        );
+        churn.loop_admin_churn = 6;
+        assert!(evaluate_after_loop_event(&churn, now).message.is_none());
+
+        let mut clean = adult_state();
+        clean.loop_runtime_submissions = 5;
+        assert_eq!(
+            evaluate_after_loop_event(&clean, now).message.as_deref(),
+            Some("loop rhythm clean. keep going")
+        );
+        clean.loop_runtime_submissions = 6;
+        assert!(evaluate_after_loop_event(&clean, now).message.is_none());
+    }
+
+    #[test]
+    fn turn_proactive_prefers_periodic_recap_over_pattern_noise() {
+        let now = chrono::Utc::now();
+        let mut state = adult_state();
+        state.turns_observed = 10;
+        state.work_affinities.builder = 10;
+
+        assert_eq!(
+            evaluate_after_turn(&state, now).message.as_deref(),
+            Some("10 turns. want a recap?")
+        );
+
+        state.turns_observed = 11;
+        assert!(evaluate_after_turn(&state, now).message.is_none());
+    }
+
+    #[test]
+    fn turn_proactive_release_and_verification_only_fire_on_six_turn_cadence() {
+        let now = chrono::Utc::now();
+        let mut state = adult_state();
+        state.turns_observed = 6;
+        state.distilled_summaries.push(VivlingDistilledSummary {
+            topic: "release".to_string(),
+            summary: "release checklist landed".to_string(),
+            kind: "turn".to_string(),
+            archetype: WorkArchetype::Operator,
+            total_weight: 10,
+            observations: 1,
+            first_seen_at: now,
+            last_seen_at: now,
+        });
+        assert_eq!(
+            evaluate_after_turn(&state, now).message.as_deref(),
+            Some("release pattern seen. checklist loop?")
+        );
+
+        state.turns_observed = 7;
+        state.identity_profile.verification_bias = 5;
+        assert!(evaluate_after_turn(&state, now).message.is_none());
+    }
+}
+
 /// Evaluate proactive triggers after a turn completes.
 pub(crate) fn evaluate_after_turn(
     state: &VivlingState,

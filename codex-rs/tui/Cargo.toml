@@ -17,6 +17,9 @@ path = "src/bin/md-events.rs"
 name = "codex_tui"
 path = "src/lib.rs"
 
+[features]
+legacy_tui_tests = []
+
 [lints]
 workspace = true
 
@@ -43,6 +46,8 @@ codex-feedback = { workspace = true }
 codex-file-search = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-login = { workspace = true }
+codex-message-history = { workspace = true }
+codex-model-provider = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
@@ -74,6 +79,7 @@ dunce = { workspace = true }
 image = { workspace = true, features = ["jpeg", "png", "gif", "webp"] }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
+msa-core = { workspace = true, default-features = false }
 pathdiff = { workspace = true }
 pulldown-cmark = { workspace = true }
 rand = { workspace = true }

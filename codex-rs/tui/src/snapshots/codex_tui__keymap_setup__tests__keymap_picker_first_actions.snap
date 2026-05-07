@@ -1,5 +1,6 @@
 ---
 source: tui/src/keymap_setup.rs
+assertion_line: 951
 expression: snapshot
 ---
 tab: All (50 selectable)

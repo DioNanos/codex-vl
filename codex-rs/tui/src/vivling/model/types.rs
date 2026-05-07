@@ -96,35 +96,6 @@ impl WorkAffinitySet {
             WorkArchetype::Operator => self.operator = self.operator.saturating_add(weight),
         }
     }
-
-    pub(crate) fn totals_with_bias(&self, bias: &WorkAffinitySet) -> [(WorkArchetype, u64); 4] {
-        [
-            (
-                WorkArchetype::Builder,
-                self.builder.saturating_add(bias.builder),
-            ),
-            (
-                WorkArchetype::Reviewer,
-                self.reviewer.saturating_add(bias.reviewer),
-            ),
-            (
-                WorkArchetype::Researcher,
-                self.researcher.saturating_add(bias.researcher),
-            ),
-            (
-                WorkArchetype::Operator,
-                self.operator.saturating_add(bias.operator),
-            ),
-        ]
-    }
-
-    pub(crate) fn dominant_with_bias(&self, bias: &WorkAffinitySet) -> WorkArchetype {
-        self.totals_with_bias(bias)
-            .into_iter()
-            .max_by_key(|(_, value)| *value)
-            .map(|(kind, _)| kind)
-            .unwrap_or(WorkArchetype::Builder)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

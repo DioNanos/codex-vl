@@ -197,7 +197,7 @@ impl BottomPane {
     }
 
     pub(crate) fn set_vivling_animation_text(&self, text: String) {
-        *self.vivling.animation_text.borrow_mut() = Some(text);
+        self.vivling.set_animation_text(text);
     }
 
     pub(crate) fn set_vivling_activity(&self, activity: crate::vl::VivlingActivity) {

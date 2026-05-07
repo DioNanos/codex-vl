@@ -14,8 +14,10 @@ impl Vivling {
             active_started_at: Cell::new(None),
             next_scheduled_frame_at: RefCell::new(None),
             animation_text: RefCell::new(None),
+            animation_text_expires_at: Cell::new(None),
             activity: RefCell::new(None),
             live_context: RefCell::new(None),
+            msa: None,
         }
     }
 
@@ -33,6 +35,9 @@ impl Vivling {
         let needs_reload = self.codex_home.as_ref() != Some(&codex_home);
         self.codex_home = Some(codex_home);
         self.auth_mode = auth_mode;
+        if self.msa.is_none() {
+            self.msa = VivlingMsa::open().map(std::sync::Arc::new);
+        }
         if needs_reload {
             let migrated = self.migrate_legacy_state_if_needed().ok().flatten();
             self.state = if migrated.is_some() {
@@ -41,6 +46,25 @@ impl Vivling {
                 self.load_state().ok().flatten()
             };
             self.active_vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
+            self.maybe_backfill_msa_index();
+        }
+    }
+
+    fn maybe_backfill_msa_index(&self) {
+        let Some(msa) = self.msa.as_deref() else {
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(idx) = msa.collection_for(&state.vivling_id) else {
+            return;
+        };
+        if idx.stats().map(|stats| stats.num_chunks).unwrap_or(0) > 0 {
+            return;
+        }
+        for capsule in &state.work_memory {
+            msa.index_capsule(&state.vivling_id, capsule);
         }
     }
 
@@ -62,6 +86,40 @@ impl Vivling {
             return;
         }
         *self.live_context.borrow_mut() = context;
+        self.request_frame();
+    }
+
+    pub(crate) fn set_animation_text(&self, text: String) {
+        self.set_animation_text_at(text, Instant::now());
+    }
+
+    pub(crate) fn set_animation_text_at(&self, text: String, now: Instant) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.clear_animation_text();
+            return;
+        }
+        *self.animation_text.borrow_mut() = Some(text);
+        self.animation_text_expires_at
+            .set(Some(now + ANIMATION_TEXT_TTL));
+        self.request_frame();
+    }
+
+    pub(crate) fn current_animation_text_at(&self, now: Instant) -> Option<String> {
+        let expired = self
+            .animation_text_expires_at
+            .get()
+            .is_some_and(|deadline| deadline <= now);
+        if expired {
+            self.clear_animation_text();
+            return None;
+        }
+        self.animation_text.borrow().clone()
+    }
+
+    fn clear_animation_text(&self) {
+        *self.animation_text.borrow_mut() = None;
+        self.animation_text_expires_at.set(None);
         self.request_frame();
     }
 
@@ -159,6 +217,7 @@ impl Vivling {
                 .map(VivlingCommandOutcome::DispatchAssist)
         } else {
             self.update_existing_result(|state| state.direct_chat_reply(text))
+                .map(|reply| format!("Local fallback: {reply}"))
                 .map(VivlingCommandOutcome::Message)
         }
     }
@@ -422,7 +481,11 @@ impl Vivling {
         let target_id = self
             .resolve_vivling_target(target)
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| format!("No Vivling matches `{target}`."))?;
+            .ok_or_else(|| {
+                format!(
+                    "No Vivling matches `{target}`. Use /vivling roster to see available Vivlings."
+                )
+            })?;
         let mut state = self
             .load_state_for_id(&target_id)
             .map_err(|err| err.to_string())?
@@ -561,8 +624,18 @@ impl Vivling {
                 "All top-level Vivling slots are full ({EXTERNAL_SLOT_LIMIT}/{EXTERNAL_SLOT_LIMIT})."
             ));
         }
-        let file = fs::File::open(&import_path).map_err(|err| err.to_string())?;
-        let mut archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+        let file = fs::File::open(&import_path).map_err(|err| {
+            format!(
+                "Failed to open Vivling package {}: {err}. Use /vivling import <path.vivegg>.",
+                import_path.display()
+            )
+        })?;
+        let mut archive = ZipArchive::new(file).map_err(|err| {
+            format!(
+                "Invalid Vivling package {}: {err}. Use a .vivegg file exported with /vivling export.",
+                import_path.display()
+            )
+        })?;
         let manifest: VivlingPackageManifest =
             read_zip_json(&mut archive, "manifest.json").map_err(|err| err.to_string())?;
         let mut state: VivlingState =

@@ -32,7 +32,6 @@ use crate::context::PersonalitySpecInstructions;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::ResolvedTurnEnvironments;
 use crate::exec_policy::ExecPolicyManager;
-use crate::installation_id::resolve_installation_id;
 use crate::parse_turn_item;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::realtime_conversation::RealtimeConversationManager;
@@ -41,6 +40,7 @@ use crate::session_prefix::format_subagent_notification_message;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
 use crate::turn_metadata::TurnMetadataState;
+use crate::turn_timing::now_unix_timestamp_ms;
 use async_channel::Receiver;
 use async_channel::Sender;
 use chrono::Local;
@@ -109,6 +109,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnContextNetworkItem;
@@ -189,11 +190,11 @@ mod mcp;
 mod multi_agents;
 mod review;
 mod rollout_reconstruction;
-mod vl_loop_awareness;
 #[allow(clippy::module_inception)]
 pub(crate) mod session;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
+mod vl_loop_awareness;
 use self::config_lock::export_config_lock_if_configured;
 use self::config_lock::validate_config_lock_if_configured;
 #[cfg(test)]
@@ -267,8 +268,9 @@ pub(crate) struct PreviousTurnSettings {
     pub(crate) realtime_active: Option<bool>,
 }
 
-use crate::SkillError;
+#[cfg(test)]
 use crate::SkillLoadOutcome;
+#[cfg(test)]
 use crate::SkillMetadata;
 use crate::SkillsManager;
 use crate::agents_md::AgentsMdManager;
@@ -306,7 +308,8 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_core_plugins::PluginsManager;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
-use codex_mcp::with_codex_apps_mcp;
+use codex_mcp::effective_mcp_servers_from_configured;
+use codex_mcp::host_owned_codex_apps_enabled;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
 use codex_otel::TelemetryAuthMode;
@@ -343,11 +346,6 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionNetworkProxyRuntime;
-use codex_protocol::protocol::SkillDependencies as ProtocolSkillDependencies;
-use codex_protocol::protocol::SkillErrorInfo;
-use codex_protocol::protocol::SkillInterface as ProtocolSkillInterface;
-use codex_protocol::protocol::SkillMetadata as ProtocolSkillMetadata;
-use codex_protocol::protocol::SkillToolDependency as ProtocolSkillToolDependency;
 use codex_protocol::protocol::StreamErrorEvent;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::ThreadMemoryMode;
@@ -356,6 +354,7 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
+use codex_tools::ToolEnvironmentMode;
 use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -387,6 +386,7 @@ pub struct CodexSpawnOk {
 
 pub(crate) struct CodexSpawnArgs {
     pub(crate) config: Config,
+    pub(crate) installation_id: String,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
@@ -396,6 +396,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) skills_watcher: Arc<SkillsWatcher>,
     pub(crate) conversation_history: InitialHistory,
     pub(crate) session_source: SessionSource,
+    pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) agent_control: AgentControl,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
     pub(crate) persist_extended_history: bool,
@@ -448,6 +449,7 @@ impl Codex {
     async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
         let CodexSpawnArgs {
             mut config,
+            installation_id,
             auth_manager,
             models_manager,
             environment_manager,
@@ -457,6 +459,7 @@ impl Codex {
             skills_watcher,
             conversation_history,
             session_source,
+            thread_source,
             agent_control,
             dynamic_tools,
             persist_extended_history,
@@ -475,7 +478,7 @@ impl Codex {
         let fs = environment_selections.primary_filesystem();
         let plugins_input = config.plugins_config_input();
         let plugin_outcome = plugins_manager.plugins_for_config(&plugins_input).await;
-        let effective_skill_roots = plugin_outcome.effective_skill_roots();
+        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
         let skills_input = skills_load_input_from_config(&config, effective_skill_roots);
         let loaded_skills = skills_manager.skills_for_config(&skills_input, fs).await;
 
@@ -556,7 +559,15 @@ impl Codex {
             };
             match thread_id {
                 Some(thread_id) => {
-                    let state_db_ctx = state_db::get_state_db(&config).await;
+                    let state_db_ctx = if config.ephemeral {
+                        None
+                    } else if let Some(local_store) =
+                        thread_store.as_any().downcast_ref::<LocalThreadStore>()
+                    {
+                        local_store.state_db().await
+                    } else {
+                        None
+                    };
                     state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
                         .await
                 }
@@ -586,7 +597,7 @@ impl Codex {
             .auth_cached()
             .and_then(|auth| auth.account_plan_type());
         let service_tier = get_service_tier(
-            config.service_tier,
+            config.service_tier.clone(),
             config.notices.fast_default_opt_out.unwrap_or(false),
             account_plan_type,
             config.features.enabled(Feature::FastMode),
@@ -615,6 +626,7 @@ impl Codex {
             app_server_client_name: None,
             app_server_client_version: None,
             session_source,
+            thread_source,
             dynamic_tools,
             persist_extended_history,
             inherited_shell_snapshot,
@@ -628,6 +640,7 @@ impl Codex {
         let session = Session::new(
             session_configuration,
             config.clone(),
+            installation_id,
             auth_manager.clone(),
             models_manager.clone(),
             exec_policy,
@@ -749,6 +762,7 @@ impl Codex {
         &self,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        mcp_elicitations_auto_deny: bool,
     ) -> ConstraintResult<()> {
         self.session
             .update_settings(SessionSettingsUpdate {
@@ -756,7 +770,10 @@ impl Codex {
                 app_server_client_version,
                 ..Default::default()
             })
-            .await
+            .await?;
+        let mcp_connection_manager = self.session.services.mcp_connection_manager.read().await;
+        mcp_connection_manager.set_elicitations_auto_deny(mcp_elicitations_auto_deny);
+        Ok(())
     }
 
     pub(crate) async fn agent_status(&self) -> AgentStatus {
@@ -778,18 +795,18 @@ impl Codex {
 }
 
 fn get_service_tier(
-    configured_service_tier: Option<ServiceTier>,
+    configured_service_tier: Option<String>,
     fast_default_opt_out: bool,
     account_plan_type: Option<AccountPlanType>,
     fast_mode_enabled: bool,
-) -> Option<ServiceTier> {
+) -> Option<String> {
     if configured_service_tier.is_some() || fast_default_opt_out || !fast_mode_enabled {
         return configured_service_tier;
     }
 
     account_plan_type
         .is_some_and(is_enterprise_default_service_tier_plan)
-        .then_some(ServiceTier::Fast)
+        .then_some(ServiceTier::Fast.request_value().to_string())
 }
 
 fn is_enterprise_default_service_tier_plan(plan_type: AccountPlanType) -> bool {
@@ -876,9 +893,10 @@ impl Session {
         let beta_features_header = FEATURES
             .iter()
             .filter_map(|spec| {
-                if spec.stage.experimental_menu_description().is_some()
-                    && config.features.enabled(spec.id)
-                {
+                let advertise_in_model_client_header =
+                    spec.stage.experimental_menu_description().is_some()
+                        || spec.id == Feature::RemoteCompactionV2;
+                if advertise_in_model_client_header && config.features.enabled(spec.id) {
                     Some(spec.key)
                 } else {
                     None
@@ -977,6 +995,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn codex_home(&self) -> AbsolutePathBuf {
         let state = self.state.lock().await;
         state.session_configuration.codex_home().clone()
@@ -1297,6 +1316,7 @@ impl Session {
             self.services.user_shell.as_ref().clone(),
             self.services.shell_snapshot_tx.clone(),
             self.services.session_telemetry.clone(),
+            self.services.state_db.clone(),
         );
     }
 
@@ -1642,6 +1662,7 @@ impl Session {
                 thread_id: self.conversation_id,
                 turn_id: turn_context.sub_id.clone(),
                 item: item.clone(),
+                started_at_ms: now_unix_timestamp_ms(),
             }),
         )
         .await;
@@ -1659,6 +1680,7 @@ impl Session {
                 thread_id: self.conversation_id,
                 turn_id: turn_context.sub_id.clone(),
                 item,
+                completed_at_ms: now_unix_timestamp_ms(),
             }),
         )
         .await;
@@ -2689,13 +2711,14 @@ impl Session {
             );
         }
         if turn_context.config.include_environment_context {
+            let shell = self.user_shell();
             let subagents = self
                 .services
                 .agent_control
                 .format_environment_context_subagents(self.conversation_id)
                 .await;
             contextual_user_sections.push(
-                crate::context::EnvironmentContext::from_turn_context(turn_context)
+                crate::context::EnvironmentContext::from_turn_context(turn_context, shell.as_ref())
                     .with_subagents(subagents)
                     .render(),
             );
@@ -3281,60 +3304,6 @@ pub(crate) fn emit_subagent_session_started(
         subagent_source,
         created_at,
     });
-}
-
-fn skills_to_info(
-    skills: &[SkillMetadata],
-    disabled_paths: &HashSet<AbsolutePathBuf>,
-) -> Vec<ProtocolSkillMetadata> {
-    skills
-        .iter()
-        .map(|skill| ProtocolSkillMetadata {
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            short_description: skill.short_description.clone(),
-            interface: skill
-                .interface
-                .clone()
-                .map(|interface| ProtocolSkillInterface {
-                    display_name: interface.display_name,
-                    short_description: interface.short_description,
-                    icon_small: interface.icon_small,
-                    icon_large: interface.icon_large,
-                    brand_color: interface.brand_color,
-                    default_prompt: interface.default_prompt,
-                }),
-            dependencies: skill.dependencies.clone().map(|dependencies| {
-                ProtocolSkillDependencies {
-                    tools: dependencies
-                        .tools
-                        .into_iter()
-                        .map(|tool| ProtocolSkillToolDependency {
-                            r#type: tool.r#type,
-                            value: tool.value,
-                            description: tool.description,
-                            transport: tool.transport,
-                            command: tool.command,
-                            url: tool.url,
-                        })
-                        .collect(),
-                }
-            }),
-            path: skill.path_to_skills_md.clone(),
-            scope: skill.scope,
-            enabled: !disabled_paths.contains(&skill.path_to_skills_md),
-        })
-        .collect()
-}
-
-fn errors_to_info(errors: &[SkillError]) -> Vec<SkillErrorInfo> {
-    errors
-        .iter()
-        .map(|err| SkillErrorInfo {
-            path: err.path.to_path_buf(),
-            message: err.message.clone(),
-        })
-        .collect()
 }
 
 use codex_memories_read::build_memory_tool_developer_instructions;

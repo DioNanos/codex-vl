@@ -4,6 +4,7 @@
 //! catalog state into one-time TUI prompts or warning cells without owning the main event loop.
 
 use super::*;
+use codex_app_server_protocol::SkillErrorInfo;
 
 pub(super) fn emit_skill_load_warnings(app_event_tx: &AppEventSender, errors: &[SkillErrorInfo]) {
     if errors.is_empty() {
@@ -75,6 +76,16 @@ pub(super) fn emit_system_bwrap_warning(app_event_tx: &AppEventSender, config: &
     app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
         history_cell::new_warning_event(message),
     )));
+}
+
+pub(super) fn hooks_needing_review_warning(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 hook needs review before it can run. Open /hooks to review it.".to_string()),
+        count => Some(format!(
+            "{count} hooks need review before they can run. Open /hooks to review them."
+        )),
+    }
 }
 
 pub(super) fn should_show_model_migration_prompt(

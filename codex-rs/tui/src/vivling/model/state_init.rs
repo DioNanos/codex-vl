@@ -98,6 +98,7 @@ impl VivlingState {
             last_work_summary: None,
             last_live_context_summary: None,
             work_affinities: WorkAffinitySet::default(),
+            gene_vector: VivlingGeneVector::generate(&format!("{hash:016x}")),
             work_memory: Vec::new(),
             distilled_summaries: Vec::new(),
             mental_paths: Vec::new(),
@@ -160,6 +161,9 @@ impl VivlingState {
         }
         self.normalize_species();
         self.normalize_unlocked_species();
+        if self.gene_vector.is_neutral() && !self.seed_hash.trim().is_empty() {
+            self.gene_vector = VivlingGeneVector::generate(&self.seed_hash);
+        }
         self.backfill_capsule_metadata();
         if !self.work_memory.is_empty() {
             self.recompute_progress_from_memory();

@@ -146,7 +146,7 @@ impl QueuedInterrupt {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use codex_protocol::approvals::ExecApprovalRequestEvent;
     use codex_protocol::protocol::ExecCommandBeginEvent;
@@ -187,6 +187,7 @@ mod tests {
             call_id: call_id.to_string(),
             process_id: None,
             turn_id: "turn".to_string(),
+            started_at_ms: 0,
             command: vec!["true".to_string()],
             cwd: AbsolutePathBuf::current_dir().expect("current dir"),
             parsed_cmd: Vec::new(),

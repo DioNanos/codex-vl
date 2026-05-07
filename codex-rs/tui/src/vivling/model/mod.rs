@@ -1,4 +1,5 @@
 pub(crate) mod constants;
+pub(crate) mod gene;
 pub(crate) mod state_chat;
 pub(crate) mod state_init;
 pub(crate) mod state_memory;
@@ -8,6 +9,7 @@ pub(crate) mod text_utils;
 pub(crate) mod types;
 
 pub(crate) use constants::*;
+pub(crate) use gene::*;
 pub(crate) use text_utils::classify_work_archetype;
 pub(crate) use text_utils::contains_any;
 pub(crate) use text_utils::truncate_summary;
@@ -143,6 +145,8 @@ pub(crate) struct VivlingState {
     pub(crate) last_live_context_summary: Option<String>,
     #[serde(default)]
     pub(crate) work_affinities: WorkAffinitySet,
+    #[serde(default)]
+    pub(crate) gene_vector: VivlingGeneVector,
     #[serde(default)]
     pub(crate) work_memory: Vec<VivlingWorkMemoryEntry>,
     #[serde(default)]

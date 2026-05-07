@@ -269,6 +269,7 @@ mod background_events;
 mod composer_submission;
 mod exec_flow;
 mod goal_menu;
+mod goal_validation;
 mod guardian;
 mod helpers;
 mod history_replay;

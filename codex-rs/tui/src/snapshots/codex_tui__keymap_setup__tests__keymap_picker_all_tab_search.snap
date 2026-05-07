@@ -1,5 +1,6 @@
 ---
 source: tui/src/keymap_setup.rs
+assertion_line: 1029
 expression: snapshot
 ---
 Open Transcript | ctrl-t | Global open_transcript Open Transcript Open the transcript overlay. ctrl-t Default

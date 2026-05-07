@@ -60,6 +60,7 @@ pub(crate) fn compose_brain_prompt(
     kind: BrainPromptKind<'_>,
     payload: &str,
     live: Option<&VivlingLiveContext>,
+    msa: Option<&super::msa::VivlingMsa>,
 ) -> Result<String, String> {
     if matches!(kind, BrainPromptKind::Assist) && state.stage() != Stage::Adult {
         return Err("`/vivling assist ...` unlocks only at level 60.".to_string());
@@ -82,7 +83,10 @@ pub(crate) fn compose_brain_prompt(
     let mut sections: Vec<String> = Vec::new();
     sections.push(identity_section(state, profile));
     sections.push(stable_memory_section(state));
-    sections.push(recent_observed_work_section(state));
+    sections.push(match msa {
+        Some(msa) => retrieved_relevant_capsules_section(state, payload, msa),
+        None => recent_observed_work_section(state),
+    });
     sections.push(legacy_learned_memory_section(state));
     sections.push(live_state_section(live));
     if let Some(stale) = stale_signals_section(state) {
@@ -110,12 +114,14 @@ pub(crate) fn compose_brain_prompt(
 
 fn identity_section(state: &VivlingState, profile: &str) -> String {
     format!(
-        "Vivling identity:\n- id: {}\n- name: {}\n- profile: {}\n- stage: {}\n- dominant role: {}\n- tone: {}\n- verification bias: {}\n- caution bias: {}\n- question bias: {}",
+        "Vivling identity:\n- id: {}\n- name: {}\n- profile: {}\n- stage: {}\n- dominant role: {}\n- temperament: {}\n- brain potential: {}\n- tone: {}\n- verification bias: {}\n- caution bias: {}\n- question bias: {}",
         state.vivling_id,
         state.name,
         profile,
         state.stage().label(),
         state.dominant_archetype().label(),
+        state.gene_vector.temperament_summary(),
+        state.gene_vector.brain_potential_label(),
         state.identity_profile.tone,
         state.identity_profile.verification_bias,
         state.identity_profile.caution_bias,
@@ -159,6 +165,41 @@ fn recent_observed_work_section(state: &VivlingState) -> String {
             entry.kind,
             entry.archetype.label(),
             truncate_summary(&entry.summary, 96),
+        ));
+    }
+    lines.join("\n")
+}
+
+fn retrieved_relevant_capsules_section(
+    state: &VivlingState,
+    payload: &str,
+    msa: &super::msa::VivlingMsa,
+) -> String {
+    let Some(idx) = msa.collection_for(&state.vivling_id) else {
+        return recent_observed_work_section(state);
+    };
+    let hits = idx.search(payload, 5, None).unwrap_or_default();
+    if hits.is_empty() {
+        return recent_observed_work_section(state);
+    }
+    let mut lines = vec!["Relevant memory:".to_string()];
+    for hit in hits {
+        let kind = hit
+            .metadata
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("?");
+        let archetype = hit
+            .metadata
+            .get("archetype")
+            .and_then(|value| value.as_str())
+            .unwrap_or("?");
+        lines.push(format!(
+            "- {} [{}] (rel {:.2}): {}",
+            kind,
+            archetype,
+            hit.score,
+            truncate_summary(&hit.snippet, 96),
         ));
     }
     lines.join("\n")
@@ -267,6 +308,7 @@ fn stale_signals_section(state: &VivlingState) -> Option<String> {
 mod tests {
     use super::super::super::model::VivlingWorkMemoryEntry;
     use super::super::super::model::WorkArchetype;
+    use super::super::VivlingMsa;
     use super::*;
     use chrono::Utc;
 
@@ -284,8 +326,14 @@ mod tests {
     #[test]
     fn live_state_unknown_when_context_missing() {
         let state = adult_state_with_profile();
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "review blocker", None)
-            .expect("prompt");
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+        )
+        .expect("prompt");
         assert!(prompt.contains("Live state (now):"));
         assert!(prompt.contains("unknown — only the payload below reflects current state"));
         assert!(prompt.contains("Live state contract:"));
@@ -301,10 +349,10 @@ mod tests {
             active_agent_label: Some("worker".to_string()),
             task_progress: Some("12% (3/25)".to_string()),
             git_branch: Some("develop".to_string()),
-            cwd: Some("/home/dag/Dev/60_toolchains/codex-vl".to_string()),
+            cwd: Some("/workspace/codex-vl".to_string()),
             ..Default::default()
         };
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", Some(&live))
+        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", Some(&live), None)
             .expect("prompt");
         assert!(prompt.contains("- run state: Working"));
         assert!(prompt.contains("- active agent: worker"));
@@ -334,7 +382,7 @@ mod tests {
             created_at: now,
         });
 
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None)
+        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None, None)
             .expect("prompt");
         // The volatile live capsule must not pretend to be observed work.
         assert!(!prompt.contains("- live_context ["));
@@ -344,14 +392,14 @@ mod tests {
     #[test]
     fn stale_signals_section_appears_only_with_history() {
         let state = adult_state_with_profile();
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None)
+        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None, None)
             .expect("prompt");
         assert!(!prompt.contains("Stale signals"));
 
         let mut noisy = adult_state_with_profile();
         noisy.loop_runtime_blocks = 3;
         noisy.loop_blocked_review = 2;
-        let prompt = compose_brain_prompt(&noisy, BrainPromptKind::Assist, "next step", None)
+        let prompt = compose_brain_prompt(&noisy, BrainPromptKind::Assist, "next step", None, None)
             .expect("prompt");
         assert!(prompt.contains("Stale signals (history, not proof of current state):"));
         assert!(prompt.contains("loop_runtime_blocks: 3"));
@@ -375,6 +423,7 @@ mod tests {
             },
             "check the PR queue",
             Some(&live),
+            None,
         )
         .expect("prompt");
         assert!(prompt.contains("Loop:\n- label: babysit-pr"));
@@ -388,7 +437,7 @@ mod tests {
     fn assist_requires_adult_brain() {
         let mut state = adult_state_with_profile();
         state.level = 30;
-        let err = compose_brain_prompt(&state, BrainPromptKind::Assist, "task", None)
+        let err = compose_brain_prompt(&state, BrainPromptKind::Assist, "task", None, None)
             .expect_err("must error");
         assert!(err.contains("level 60"));
     }
@@ -398,8 +447,44 @@ mod tests {
         let mut state = adult_state_with_profile();
         state.level = 30;
         state.brain_enabled = false;
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", None)
+        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", None, None)
             .expect("chat prompt should be allowed without adult brain");
         assert!(prompt.contains("User message:\nciao"));
+    }
+
+    #[test]
+    fn relevant_memory_can_recall_aged_out_capsule() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let msa = VivlingMsa::open_for_tests(temp.path());
+        let mut state = adult_state_with_profile();
+        state.vivling_id = "viv-msa-recall".to_string();
+        for index in 0..60 {
+            let summary = if index == 50 {
+                "blocco review build durante il merge".to_string()
+            } else {
+                format!("loop tick generico {index}")
+            };
+            state.work_memory.push(VivlingWorkMemoryEntry {
+                kind: "loop_runtime".to_string(),
+                summary,
+                archetype: WorkArchetype::Operator,
+                weight: 5,
+                created_at: Utc::now() + chrono::Duration::seconds(index),
+            });
+        }
+        for capsule in &state.work_memory {
+            msa.index_capsule(&state.vivling_id, capsule);
+        }
+
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Chat,
+            "blocco build",
+            None,
+            Some(&msa),
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Relevant memory:"));
+        assert!(prompt.contains("blocco review build"));
     }
 }

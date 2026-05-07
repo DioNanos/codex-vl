@@ -4,6 +4,7 @@ pub(crate) mod brain_context;
 pub(crate) mod command;
 pub(crate) mod crt_insight;
 pub(crate) mod live_context;
+pub(crate) mod msa;
 pub(crate) mod panel;
 pub(crate) mod path_utils;
 pub(crate) mod proactive;
@@ -16,6 +17,7 @@ mod tests;
 pub(crate) use action::VivlingAction;
 pub(crate) use live_context::VivlingLiveContext;
 pub(crate) use live_context::VivlingLiveStatusItem;
+pub(crate) use msa::VivlingMsa;
 pub(crate) use panel::VivlingPanelData;
 pub(crate) use panel::render_upgrade_card;
 pub(crate) use panel::render_vivling_card;
@@ -35,6 +37,7 @@ pub(crate) use super::model::VivlingAiMode;
 pub(crate) use super::model::VivlingLoopEvent;
 pub(crate) use super::model::VivlingState;
 pub(crate) use super::model::hatch_species_from_unlocked;
+pub(crate) use super::model::modulated_totals;
 pub(crate) use super::model::truncate_summary;
 pub(crate) use super::registry::active_footer_sprites_for_species;
 pub(crate) use super::registry::card_art_for_species;
@@ -76,6 +79,7 @@ pub(crate) const VIVEGG_EXT: &str = "vivegg";
 pub(crate) const EXTERNAL_SLOT_LIMIT: usize = 3;
 pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(140);
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
+pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Vivling {
@@ -91,6 +95,8 @@ pub(crate) struct Vivling {
     pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
     pub(crate) animation_text: RefCell<Option<String>>,
+    pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
     pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
     pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
+    pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
 }

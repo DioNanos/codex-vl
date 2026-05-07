@@ -304,9 +304,13 @@ impl VivlingState {
 
     pub(crate) fn status_summary(&self) -> String {
         let species = species_for_id(&self.species);
-        let displayed = self.work_affinities.totals_with_bias(self.species_bias());
+        let displayed = modulated_totals(
+            &self.work_affinities,
+            self.species_bias(),
+            &self.gene_vector,
+        );
         format!(
-            "{} the {} {} {} - {} - Lv {} - active_days {} - mode {} - {} - dna {} - tone {} - stats {}/{}/{}/{} - recent {} - distilled {} - paths {}{}",
+            "{} the {} {} {} - {} - Lv {} - active_days {} - mode {} - {} - dna {} - genes {} - temperament {} - brain potential {} - tone {} - stats {}/{}/{}/{} - recent {} - distilled {} - paths {}{}",
             self.name,
             self.stage().label(),
             self.rarity,
@@ -317,6 +321,9 @@ impl VivlingState {
             self.ai_mode.label(),
             self.brain_summary(),
             self.dominant_archetype().label(),
+            self.gene_vector.gene_stripe(),
+            self.gene_vector.temperament_summary(),
+            self.gene_vector.brain_potential_label(),
             self.identity_profile.tone,
             displayed[0].1,
             displayed[1].1,

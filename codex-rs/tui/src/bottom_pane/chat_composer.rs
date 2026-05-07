@@ -59,6 +59,17 @@
 //! Slash commands with arguments (like `/plan` and `/review`) reuse the same preparation path so
 //! pasted content and text elements are preserved when extracting args.
 //!
+//! # Large Paste Placeholders
+//!
+//! Large pastes insert an element placeholder in the buffer and store the full text in
+//! `pending_pastes`. The placeholder label is derived from the pasted character count:
+//!
+//! - First paste of a given size uses `[Pasted Content N chars]`.
+//! - Additional pending pastes of the same size add a numeric suffix (`#2`, `#3`, ...), where the
+//!   next suffix is computed from the placeholders that still exist in `pending_pastes`.
+//! - When all placeholders for a size are cleared or deleted, the next paste of that size reuses
+//!   the base label without a suffix.
+//!
 //! # Remote Image Rows (Up/Down/Delete)
 //!
 //! Remote image URLs are rendered as non-editable `[Image #N]` rows above the textarea (inside the
@@ -190,11 +201,13 @@ use crate::key_hint::KeyBindingListExt;
 use crate::keymap::EditorKeymap;
 use crate::keymap::RuntimeKeymap;
 use crate::keymap::primary_binding;
+use crate::onboarding::mark_underlined_hyperlink;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
+use codex_protocol::ThreadId;
 use codex_protocol::models::local_image_label_text;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -337,7 +350,6 @@ pub(crate) struct ChatComposer {
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
     pending_pastes: Vec<(String, String)>,
-    large_paste_counters: HashMap<usize, usize>,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
     /// Invariant: attached images are labeled in vec order as
@@ -395,6 +407,7 @@ pub(crate) struct ChatComposer {
     side_conversation_active: bool,
     is_zellij: bool,
     status_line_value: Option<Line<'static>>,
+    status_line_hyperlink_url: Option<String>,
     status_line_enabled: bool,
     side_conversation_context_label: Option<String>,
     loop_context_label: Option<String>,
@@ -541,7 +554,6 @@ impl ChatComposer {
             dismissed_file_popup_token: None,
             current_file_query: None,
             pending_pastes: Vec::new(),
-            large_paste_counters: HashMap::new(),
             has_focus: has_input_focus,
             frame_requester: None,
             attached_images: Vec::new(),
@@ -586,6 +598,7 @@ impl ChatComposer {
                 Some(codex_terminal_detection::Multiplexer::Zellij {})
             ),
             status_line_value: None,
+            status_line_hyperlink_url: None,
             status_line_enabled: false,
             side_conversation_context_label: None,
             loop_context_label: None,
@@ -838,10 +851,15 @@ impl ChatComposer {
             && self.remote_image_urls.is_empty()
     }
 
-    /// Record the history metadata advertised by `SessionConfiguredEvent` so
-    /// that the composer can navigate cross-session history.
-    pub(crate) fn set_history_metadata(&mut self, log_id: u64, entry_count: usize) {
-        self.history.set_metadata(log_id, entry_count);
+    /// Record local persistent-history metadata so the composer can navigate
+    /// cross-session history.
+    pub(crate) fn set_history_metadata(
+        &mut self,
+        thread_id: ThreadId,
+        log_id: u64,
+        entry_count: usize,
+    ) {
+        self.history.set_metadata(thread_id, log_id, entry_count);
     }
 
     /// Integrate an asynchronous response to an on-demand history lookup.
@@ -1039,12 +1057,13 @@ impl ChatComposer {
     }
 
     pub(crate) fn current_text_with_pending(&self) -> String {
-        let mut text = self.current_text();
-        for (placeholder, actual) in &self.pending_pastes {
-            if text.contains(placeholder) {
-                text = text.replace(placeholder, actual);
-            }
+        let text = self.current_text();
+        if self.pending_pastes.is_empty() {
+            return text;
         }
+
+        let (text, _) =
+            Self::expand_pending_pastes(&text, self.current_text_elements(), &self.pending_pastes);
         text
     }
 
@@ -1529,14 +1548,27 @@ impl ChatComposer {
             .is_some_and(|expires_at| Instant::now() < expires_at)
     }
 
-    fn next_large_paste_placeholder(&mut self, char_count: usize) -> String {
+    fn next_large_paste_placeholder(&self, char_count: usize) -> String {
         let base = format!("[Pasted Content {char_count} chars]");
-        let next_suffix = self.large_paste_counters.entry(char_count).or_insert(0);
-        *next_suffix += 1;
-        if *next_suffix == 1 {
+        let prefix = format!("{base} #");
+        let mut max_suffix = 0usize;
+
+        for (placeholder, _) in &self.pending_pastes {
+            if placeholder == &base {
+                max_suffix = max_suffix.max(1);
+                continue;
+            }
+            if let Some(suffix) = placeholder.strip_prefix(&prefix)
+                && let Ok(value) = suffix.parse::<usize>()
+            {
+                max_suffix = max_suffix.max(value);
+            }
+        }
+
+        if max_suffix == 0 {
             base
         } else {
-            format!("{base} #{next_suffix}")
+            format!("{base} #{}", max_suffix + 1)
         }
     }
 
@@ -2699,24 +2731,27 @@ impl ChatComposer {
         if !self.slash_commands_enabled() || self.is_bash_mode {
             return None;
         }
-        let first_line = self.textarea.text().lines().next().unwrap_or("");
-        if let Some((name, rest, _rest_offset)) = parse_slash_name(first_line)
-            && rest.is_empty()
-            && let Some(cmd) =
-                slash_commands::find_builtin_command(name, self.builtin_command_flags())
-        {
-            if self.reject_slash_command_if_unavailable(cmd) {
-                self.stage_slash_command_history();
-                self.record_pending_slash_command_history();
-                return Some(InputResult::None);
-            }
-            self.stage_slash_command_history();
-            self.textarea.set_text_clearing_elements("");
-            self.is_bash_mode = false;
-            Some(InputResult::Command(cmd))
-        } else {
-            None
+        let text = self.textarea.text();
+        let first_line = text.lines().next().unwrap_or("");
+        let (name, rest, _rest_offset) = parse_slash_name(first_line)?;
+        if !rest.is_empty() {
+            return None;
         }
+        let cmd = slash_commands::find_builtin_command(name, self.builtin_command_flags())?;
+        if cmd.supports_inline_args()
+            && parse_slash_name(text).is_some_and(|(_, full_rest, _)| !full_rest.is_empty())
+        {
+            return None;
+        }
+        if self.reject_slash_command_if_unavailable(cmd) {
+            self.stage_slash_command_history(cmd);
+            self.record_pending_slash_command_history();
+            return Some(InputResult::None);
+        }
+        self.stage_slash_command_history(cmd);
+        self.textarea.set_text_clearing_elements("");
+        self.is_bash_mode = false;
+        Some(InputResult::Command(cmd))
     }
 
     /// Check if the input is a slash command with args (e.g., /review args) and dispatch it.
@@ -2741,12 +2776,12 @@ impl ChatComposer {
             return None;
         }
         if self.reject_slash_command_if_unavailable(cmd) {
-            self.stage_slash_command_history();
+            self.stage_slash_command_history(cmd);
             self.record_pending_slash_command_history();
             return Some(InputResult::None);
         }
 
-        self.stage_slash_command_history();
+        self.stage_slash_command_history(cmd);
 
         let mut args_elements =
             Self::slash_command_args_elements(rest, rest_offset, &self.textarea.text_elements());
@@ -2822,7 +2857,10 @@ impl ChatComposer {
     /// Staging snapshots the rich composer state before the textarea is cleared. `ChatWidget`
     /// commits the staged entry after dispatch so command recall follows the submitted text, not
     /// the command outcome.
-    fn stage_slash_command_history(&mut self) {
+    fn stage_slash_command_history(&mut self, cmd: SlashCommand) {
+        if cmd == SlashCommand::Clear {
+            return;
+        }
         self.stage_slash_command_history_text(self.textarea.text().trim().to_string());
     }
 
@@ -2831,6 +2869,9 @@ impl ChatComposer {
     /// Popup filtering text can be partial, so recording the selected command avoids recalling
     /// `/di` after the user actually accepted `/diff`.
     fn stage_selected_slash_command_history(&mut self, cmd: SlashCommand) {
+        if cmd == SlashCommand::Clear {
+            return;
+        }
         self.stage_slash_command_history_text(format!("/{}", cmd.command()));
     }
 
@@ -3888,6 +3929,14 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) -> bool {
+        if self.status_line_hyperlink_url == url {
+            return false;
+        }
+        self.status_line_hyperlink_url = url;
+        true
+    }
+
     pub(crate) fn set_status_line_enabled(&mut self, enabled: bool) -> bool {
         if self.status_line_enabled == enabled {
             return false;
@@ -4308,6 +4357,11 @@ impl ChatComposer {
                     if show_right && let Some(line) = &right_line {
                         render_context_right(hint_rect, buf, line);
                     }
+                    if status_line_active
+                        && let Some(url) = self.status_line_hyperlink_url.as_deref()
+                    {
+                        mark_underlined_hyperlink(buf, hint_rect, url);
+                    }
                 }
             }
         }
@@ -4455,7 +4509,7 @@ impl ChatComposer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use super::*;
     use crate::test_support::PathBufExt;
@@ -4886,6 +4940,39 @@ mod tests {
         assert_eq!(
             buf[(shell_label_x as u16, footer_y)].style().fg,
             Some(Color::LightRed)
+        );
+    }
+
+    #[test]
+    fn status_line_hyperlink_marks_pr_number_cells() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let url = "https://github.com/openai/codex/pull/20252";
+        composer.set_status_line_enabled(/*enabled*/ true);
+        composer.set_status_line(Some(Line::from(Span::styled(
+            "PR #20252",
+            Style::default().cyan().underlined(),
+        ))));
+        composer.set_status_line_hyperlink(Some(url.to_string()));
+
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        let marked_cells = (area.top()..area.bottom())
+            .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol().contains(url))
+            .count();
+        assert_eq!(
+            marked_cells,
+            "PR #20252".chars().filter(|ch| !ch.is_whitespace()).count()
         );
     }
 
@@ -5336,6 +5423,220 @@ mod tests {
     }
 
     #[test]
+    fn large_paste_numbering_reuses_after_ctrl_c_clear() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let base = format!("[Pasted Content {} chars]", paste.chars().count());
+
+        composer.handle_paste(paste.clone());
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+
+        assert_eq!(composer.clear_for_ctrl_c(), Some(base.clone()));
+        assert!(composer.textarea.text().is_empty());
+        assert!(composer.pending_pastes.is_empty());
+
+        composer.handle_paste(paste);
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+        assert_eq!(composer.pending_pastes[0].0, base);
+    }
+
+    #[cfg(any())]
+    #[test]
+    fn vim_mode_resets_to_normal_after_submission() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_steer_enabled(/*enabled*/ true);
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        assert!(composer.textarea.is_vim_enabled());
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Normal".magenta())
+        );
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("h".to_string(), Vec::new(), Vec::new());
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(composer.textarea.is_vim_enabled());
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Normal".magenta())
+        );
+        assert!(composer.is_empty());
+        match result {
+            InputResult::Submitted { text, .. } => assert_eq!(text, "h"),
+            _ => panic!("expected Submitted"),
+        }
+    }
+
+    #[cfg(any())]
+    #[test]
+    fn vim_mode_resets_to_normal_after_queued_submission() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_steer_enabled(/*enabled*/ true);
+        composer.set_task_running(/*running*/ true);
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("queued".to_string(), Vec::new(), Vec::new());
+        let (result, _) = composer.handle_submission(/*should_queue*/ true);
+
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Normal".magenta())
+        );
+        assert!(composer.is_empty());
+        match result {
+            InputResult::Queued { text, .. } => assert_eq!(text, "queued"),
+            _ => panic!("expected Queued"),
+        }
+    }
+
+    #[cfg(any())]
+    #[test]
+    fn vim_mode_stays_insert_after_suppressed_submission() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_steer_enabled(/*enabled*/ true);
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("/not-a-command".to_string(), Vec::new(), Vec::new());
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(result, InputResult::None));
+        assert_eq!(composer.textarea.text(), "/not-a-command");
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Insert".green())
+        );
+    }
+
+    #[cfg(any())]
+    #[test]
+    fn esc_switches_vim_insert_to_normal() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_vim_enabled(/*enabled*/ true);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("hey".to_string(), Vec::new(), Vec::new());
+        composer.textarea.set_cursor(composer.textarea.text().len());
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Insert".green())
+        );
+        assert_eq!(composer.textarea.cursor(), "hey".len());
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            composer.vim_mode_indicator_span(),
+            Some("Vim: Normal".magenta())
+        );
+        assert_eq!(composer.textarea.cursor(), "he".len());
+    }
+
+    #[cfg(any())]
+    #[test]
+    fn vim_insert_uses_bar_cursor_style() {
+        use crate::render::renderable::Renderable;
+        use crossterm::cursor::SetCursorStyle;
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+        use crossterm::queue;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        let area = Rect::new(0, 0, 80, 10);
+        let style_output = |style| {
+            let mut output = Vec::new();
+            queue!(output, style).expect("queue cursor style");
+            output
+        };
+        let default = style_output(SetCursorStyle::DefaultUserShape);
+        let steady_bar = style_output(SetCursorStyle::SteadyBar);
+
+        assert_eq!(style_output(composer.cursor_style(area)), default,);
+
+        composer.set_vim_enabled(/*enabled*/ true);
+        assert_eq!(style_output(composer.cursor_style(area)), default,);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.set_text_content("hey".to_string(), Vec::new(), Vec::new());
+        assert_eq!(style_output(composer.cursor_style(area)), steady_bar);
+
+        composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(style_output(composer.cursor_style(area)), default,);
+    }
+
+    #[test]
     fn clear_for_ctrl_c_preserves_image_draft_state() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -5694,7 +5995,8 @@ mod tests {
             dependencies: None,
             policy: None,
             path_to_skills_md: skill_path.clone(),
-            scope: codex_protocol::protocol::SkillScope::User,
+            scope: crate::test_support::skill_scope_user(),
+            plugin_id: None,
         }]));
 
         let ActivePopup::Skill(popup) = &composer.active_popup else {
@@ -5736,7 +6038,8 @@ mod tests {
             dependencies: None,
             policy: None,
             path_to_skills_md: skill_path.clone(),
-            scope: codex_protocol::protocol::SkillScope::Repo,
+            scope: crate::test_support::skill_scope_repo(),
+            plugin_id: None,
         }]));
         composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
             config_name: "google-calendar@debug".to_string(),
@@ -5827,7 +6130,8 @@ mod tests {
                     dependencies: None,
                     policy: None,
                     path_to_skills_md: test_path_buf("/tmp/repo/google-calendar/SKILL.md").abs(),
-                    scope: codex_protocol::protocol::SkillScope::Repo,
+                    scope: crate::test_support::skill_scope_repo(),
+                    plugin_id: None,
                 }]));
                 composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
                 config_name: "google-calendar@debug".to_string(),
@@ -7970,10 +8274,10 @@ mod tests {
         assert_eq!(composer.pending_pastes[0].1, paste);
     }
 
-    /// Behavior: large-paste placeholder numbering does not get reused after deletion, so a new
-    /// paste of the same length gets a new unique placeholder label.
+    /// Behavior: large-paste placeholder numbering continues when another placeholder of the
+    /// same length still exists, so a new paste gets a new unique placeholder label.
     #[test]
-    fn large_paste_numbering_does_not_reuse_after_deletion() {
+    fn large_paste_numbering_continues_with_same_length_placeholder() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -8010,6 +8314,42 @@ mod tests {
         assert_eq!(composer.pending_pastes.len(), 2);
         assert_eq!(composer.pending_pastes[0].0, second);
         assert_eq!(composer.pending_pastes[1].0, third);
+    }
+
+    /// Behavior: if all placeholders of a given length are removed, numbering resets to the
+    /// base placeholder on the next paste.
+    #[test]
+    fn large_paste_numbering_reuses_after_all_deleted() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let paste = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let base = format!("[Pasted Content {} chars]", paste.chars().count());
+
+        composer.handle_paste(paste.clone());
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+
+        composer.textarea.set_cursor(composer.textarea.text().len());
+        composer.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(composer.textarea.text().is_empty());
+        assert!(composer.pending_pastes.is_empty());
+
+        composer.handle_paste(paste);
+        assert_eq!(composer.textarea.text(), base);
+        assert_eq!(composer.pending_pastes.len(), 1);
+        assert_eq!(composer.pending_pastes[0].0, base);
     }
 
     #[test]
@@ -9335,6 +9675,33 @@ mod tests {
             composer.current_text_with_pending(),
             "hello".to_string(),
             "placeholder should expand to actual text"
+        );
+    }
+
+    #[test]
+    fn current_text_with_pending_expands_overlapping_placeholders() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+
+        let first_paste = "a".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let second_paste = "b".repeat(LARGE_PASTE_CHAR_THRESHOLD + 4);
+        let base = format!("[Pasted Content {} chars]", first_paste.chars().count());
+        let second = format!("{base} #2");
+
+        composer.handle_paste(first_paste.clone());
+        composer.handle_paste(second_paste.clone());
+
+        assert_eq!(composer.current_text(), format!("{base}{second}"));
+        assert_eq!(
+            composer.current_text_with_pending(),
+            format!("{first_paste}{second_paste}")
         );
     }
 

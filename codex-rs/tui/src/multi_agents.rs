@@ -215,6 +215,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         receiver_agent_role,
         prompt,
         status: _,
+        ..
     } = ev;
 
     let title = title_with_agent(
@@ -240,6 +241,7 @@ pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
         receiver_thread_ids,
         receiver_agents,
         call_id: _,
+        ..
     } = ev;
     let receiver_agents = merge_wait_receivers(&receiver_thread_ids, receiver_agents);
 
@@ -271,6 +273,7 @@ pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         agent_statuses,
         statuses,
+        ..
     } = ev;
     let details = wait_complete_lines(&statuses, &agent_statuses);
     collab_event(title_text("Finished waiting"), details)
@@ -284,6 +287,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
         receiver_agent_nickname,
         receiver_agent_role,
         status: _,
+        ..
     } = ev;
 
     collab_event(
@@ -307,6 +311,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        ..
     } = ev;
 
     collab_event(
@@ -331,6 +336,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
         receiver_agent_nickname,
         receiver_agent_role,
         status,
+        ..
     } = ev;
 
     collab_event(
@@ -604,6 +610,7 @@ mod tests {
         let spawn = spawn_end(
             CollabAgentSpawnEndEvent {
                 call_id: "call-spawn".to_string(),
+                completed_at_ms: 0,
                 sender_thread_id,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
@@ -621,6 +628,7 @@ mod tests {
 
         let send = interaction_end(CollabAgentInteractionEndEvent {
             call_id: "call-send".to_string(),
+            completed_at_ms: 0,
             sender_thread_id,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
@@ -630,6 +638,7 @@ mod tests {
         });
 
         let waiting = waiting_begin(CollabWaitingBeginEvent {
+            started_at_ms: 0,
             sender_thread_id,
             receiver_thread_ids: vec![robie_id],
             receiver_agents: vec![CollabAgentRef {
@@ -649,6 +658,7 @@ mod tests {
         let finished = waiting_end(CollabWaitingEndEvent {
             sender_thread_id,
             call_id: "call-wait".to_string(),
+            completed_at_ms: 0,
             agent_statuses: vec![
                 CollabAgentStatusEntry {
                     thread_id: robie_id,
@@ -668,6 +678,7 @@ mod tests {
 
         let close = close_end(CollabCloseEndEvent {
             call_id: "call-close".to_string(),
+            completed_at_ms: 0,
             sender_thread_id,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
@@ -742,6 +753,7 @@ mod tests {
         let cell = spawn_end(
             CollabAgentSpawnEndEvent {
                 call_id: "call-spawn".to_string(),
+                completed_at_ms: 0,
                 sender_thread_id,
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
@@ -778,6 +790,7 @@ mod tests {
 
         let cell = resume_end(CollabResumeEndEvent {
             call_id: "call-resume".to_string(),
+            completed_at_ms: 0,
             sender_thread_id,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),

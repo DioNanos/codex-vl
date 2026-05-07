@@ -51,6 +51,10 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::RawOutputModeChanged { enabled } => {
+                self.chat_widget.set_raw_output_mode_and_notify(enabled);
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::OpenResumePicker => {
                 let picker_app_server = match crate::start_app_server_for_picker(
                     &self.config,
@@ -61,6 +65,7 @@ impl App {
                         },
                         None => crate::AppServerTarget::Embedded,
                     },
+                    self.state_db.clone(),
                     self.environment_manager.clone(),
                 )
                 .await
@@ -73,7 +78,7 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                 };
-                match crate::resume_picker::run_resume_picker_with_app_server(
+                match crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
                     tui,
                     &self.config,
                     /*show_all*/ false,
@@ -93,9 +98,13 @@ impl App {
                             }
                         }
                     }
-                    SessionSelection::Exit
-                    | SessionSelection::StartFresh
-                    | SessionSelection::Fork(_) => {}
+                    SessionSelection::Exit | SessionSelection::StartFresh => {
+                        self.refresh_in_memory_config_from_disk_best_effort(
+                            "closing the session picker",
+                        )
+                        .await;
+                    }
+                    SessionSelection::Fork(_) => {}
                 }
 
                 // Leaving alt-screen may blank the inline viewport; force a redraw either way.
@@ -182,7 +191,8 @@ impl App {
 
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::BeginInitialHistoryReplayBuffer => {
+            AppEvent::BeginInitialHistoryReplayBuffer
+            | AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
                 self.begin_initial_history_replay_buffer();
             }
             AppEvent::InsertHistoryCell(cell) => {
@@ -317,6 +327,17 @@ impl App {
             }
             AppEvent::CodexOp(op) => {
                 self.submit_active_thread_op(app_server, op).await?;
+            }
+            AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
+                self.append_message_history_entry(thread_id, text);
+            }
+            AppEvent::LookupMessageHistoryEntry {
+                thread_id,
+                offset,
+                log_id,
+            } => {
+                self.lookup_message_history_entry(thread_id, offset, log_id)
+                    .await?;
             }
             AppEvent::ApproveRecentAutoReviewDenial { thread_id, id } => {
                 self.chat_widget
@@ -1166,7 +1187,8 @@ impl App {
             AppEvent::PersistServiceTierSelection { service_tier } => {
                 self.refresh_status_line();
                 let profile = self.active_profile.as_deref();
-                self.config.service_tier = service_tier;
+                self.config.service_tier =
+                    service_tier.map(|service_tier| service_tier.request_value().to_string());
                 let mut edits = ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_profile(profile)
                     .set_service_tier(service_tier);
@@ -1606,6 +1628,12 @@ impl App {
             AppEvent::OpenPermissionsPopup => {
                 self.chat_widget.open_permissions_popup();
             }
+            AppEvent::SetHookEnabled { .. } | AppEvent::TrustHook { .. } => {}
+            AppEvent::HookEnabledSet { result, .. } | AppEvent::HookTrusted { result } => {
+                if let Err(err) = result {
+                    self.chat_widget.add_error_message(err);
+                }
+            }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
             }
@@ -1722,6 +1750,10 @@ impl App {
             }
             AppEvent::StatusLineBranchUpdated { cwd, branch } => {
                 self.chat_widget.set_status_line_branch(cwd, branch);
+                self.refresh_status_line();
+            }
+            AppEvent::StatusLineGitSummaryUpdated { cwd, summary } => {
+                self.chat_widget.set_status_line_git_summary(cwd, summary);
                 self.refresh_status_line();
             }
             AppEvent::StatusLineSetupCancelled => {

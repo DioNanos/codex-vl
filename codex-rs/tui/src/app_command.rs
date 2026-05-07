@@ -6,7 +6,6 @@ use codex_protocol::approvals::GuardianAssessmentEvent;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::mcp::RequestId as McpRequestId;
 use codex_protocol::models::PermissionProfile;
@@ -47,7 +46,7 @@ pub(crate) enum AppCommand {
         model: String,
         effort: Option<ReasoningEffortConfig>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
@@ -61,7 +60,7 @@ pub(crate) enum AppCommand {
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     },
@@ -132,7 +131,7 @@ pub(crate) enum AppCommandView<'a> {
         model: &'a str,
         effort: Option<ReasoningEffortConfig>,
         summary: &'a Option<ReasoningSummaryConfig>,
-        service_tier: &'a Option<Option<ServiceTier>>,
+        service_tier: &'a Option<Option<String>>,
         final_output_json_schema: &'a Option<Value>,
         collaboration_mode: &'a Option<CollaborationMode>,
         personality: &'a Option<Personality>,
@@ -146,7 +145,7 @@ pub(crate) enum AppCommandView<'a> {
         model: &'a Option<String>,
         effort: &'a Option<Option<ReasoningEffortConfig>>,
         summary: &'a Option<ReasoningSummaryConfig>,
-        service_tier: &'a Option<Option<ServiceTier>>,
+        service_tier: &'a Option<Option<String>>,
         collaboration_mode: &'a Option<CollaborationMode>,
         personality: &'a Option<Personality>,
     },
@@ -231,7 +230,7 @@ impl AppCommand {
         model: String,
         effort: Option<ReasoningEffortConfig>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         final_output_json_schema: Option<Value>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
@@ -262,7 +261,7 @@ impl AppCommand {
         model: Option<String>,
         effort: Option<Option<ReasoningEffortConfig>>,
         summary: Option<ReasoningSummaryConfig>,
-        service_tier: Option<Option<ServiceTier>>,
+        service_tier: Option<Option<String>>,
         collaboration_mode: Option<CollaborationMode>,
         personality: Option<Personality>,
     ) -> Self {
@@ -462,6 +461,10 @@ impl AppCommand {
             }
             Self::Other(op) => op,
         }
+    }
+
+    pub(crate) fn approve_guardian_denied_action(event: GuardianAssessmentEvent) -> Self {
+        Self::ApproveGuardianDeniedAction { event }
     }
 
     pub(crate) fn is_review(&self) -> bool {

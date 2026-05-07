@@ -3,8 +3,8 @@
 This directory wires the `v8` crate to exact-version Bazel inputs.
 Bazel consumer builds use:
 
-- upstream `denoland/rusty_v8` release archives on Windows
-- source-built V8 archives on Darwin, GNU Linux, and musl Linux
+- upstream `denoland/rusty_v8` release archives on Windows MSVC
+- source-built V8 archives on Darwin, GNU Linux, musl Linux, and Windows GNU
 - `openai/codex` release assets for published musl release pairs
 
 Cargo builds still use prebuilt `rusty_v8` archives by default. Only Bazel
@@ -17,6 +17,13 @@ Android/Termux Cargo builds are intentionally custom. They resolve
 `third_party/v8/android-artifacts.toml`. The canonical artifact lineage for
 Android stays in `codex-termux`; `codex-vl` consumes that mirror for Termux
 builds.
+
+Source-built Bazel V8 artifacts enable V8's in-process sandbox by default, and
+the Bazel `v8` crate feature selection tracks those targets. A full consumer
+rollout still needs matching sandbox-enabled archives for every non-source-built
+target. Until that artifact migration lands, the rusty_v8 publishing workflows
+use `--config=v8-release-compat` to preserve the current non-sandboxed release
+artifact contract.
 
 Current pinned versions:
 

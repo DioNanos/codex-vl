@@ -1,5 +1,6 @@
 ---
 source: tui/src/keymap_setup.rs
+assertion_line: 1045
 expression: "render_picker(params, 78)"
 ---
 

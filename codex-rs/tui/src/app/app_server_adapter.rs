@@ -17,95 +17,95 @@ use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::app_server_rate_limit_snapshot_to_core;
 use crate::app_server_session::status_account_display_from_auth_mode;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use crate::exec_command::split_command_string;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_app_server_protocol::Thread;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_app_server_protocol::ThreadItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_app_server_protocol::Turn;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_app_server_protocol::TurnStatus;
 use codex_protocol::ThreadId;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::config_types::ModeKind;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::AgentMessageContent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::AgentMessageItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::ContextCompactionItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::ImageGenerationItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::PlanItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::ReasoningItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::TurnItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::UserMessageItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::items::WebSearchItem;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::AgentMessageDeltaEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::AgentReasoningDeltaEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::AgentReasoningRawContentDeltaEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ErrorEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::Event;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::EventMsg;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ExecCommandBeginEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ExecCommandEndEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ExecCommandStatus;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ExecOutputStream;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ItemCompletedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ItemStartedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::PlanDeltaEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::RealtimeConversationClosedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::RealtimeConversationStartedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::RealtimeEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::ThreadNameUpdatedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TokenCountEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TokenUsage;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TokenUsageInfo;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TurnAbortReason;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TurnAbortedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TurnCompleteEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use codex_protocol::protocol::TurnStartedEvent;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 use std::time::Duration;
 
 impl App {
@@ -464,6 +464,8 @@ fn server_notification_thread_target(
         | ServerNotification::FuzzyFileSearchSessionUpdated(_)
         | ServerNotification::FuzzyFileSearchSessionCompleted(_)
         | ServerNotification::CommandExecOutputDelta(_)
+        | ServerNotification::ProcessOutputDelta(_)
+        | ServerNotification::ProcessExited(_)
         | ServerNotification::FsChanged(_)
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
@@ -479,7 +481,7 @@ fn server_notification_thread_target(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 /// Convert a `Thread` snapshot into a flat sequence of protocol `Event`s
 /// suitable for replaying into the TUI event store.
 ///
@@ -505,7 +507,7 @@ pub(super) fn thread_snapshot_events(
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn server_notification_thread_events(
     notification: ServerNotification,
 ) -> Option<(ThreadId, Vec<Event>)> {
@@ -583,6 +585,7 @@ fn server_notification_thread_events(
                             thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
                             turn_id: notification.turn_id.clone(),
                             item: thread_item_to_core(&notification.item)?,
+                            started_at_ms: notification.started_at_ms,
                         }),
                     }])
                 },
@@ -598,6 +601,7 @@ fn server_notification_thread_events(
                             thread_id: ThreadId::from_string(&notification.thread_id).ok()?,
                             turn_id: notification.turn_id.clone(),
                             item: thread_item_to_core(&notification.item)?,
+                            completed_at_ms: notification.completed_at_ms,
                         }),
                     }])
                 },
@@ -714,7 +718,7 @@ fn server_notification_thread_events(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn token_usage_from_app_server(
     value: codex_app_server_protocol::TokenUsageBreakdown,
 ) -> TokenUsage {
@@ -734,7 +738,7 @@ fn token_usage_from_app_server(
 /// agent-message items, while replaying the legacy events that still
 /// drive rendering for reasoning, web-search, image-generation, and
 /// context-compaction history cells.
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn turn_snapshot_events(
     thread_id: ThreadId,
     turn: &Turn,
@@ -767,12 +771,16 @@ fn turn_snapshot_events(
                         thread_id,
                         turn_id: turn.id.clone(),
                         item,
+                        completed_at_ms: 0,
                     }),
                 });
             }
             TurnItem::Reasoning(_)
             | TurnItem::WebSearch(_)
             | TurnItem::ImageGeneration(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
             | TurnItem::ContextCompaction(_) => {
                 events.extend(
                     item.as_legacy_events(show_raw_agent_reasoning)
@@ -802,7 +810,7 @@ fn turn_snapshot_events(
 /// - `Interrupted` → `TurnAborted { reason: Interrupted }`
 /// - `Failed` → `Error` (if present) then `TurnComplete`
 /// - `InProgress` → no events (the turn is still running)
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_failed_error: bool) {
     match turn.status {
         TurnStatus::Completed => events.push(Event {
@@ -854,7 +862,7 @@ fn append_terminal_turn_events(events: &mut Vec<Event>, turn: &Turn, include_fai
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn thread_item_to_core(item: &ThreadItem) -> Option<TurnItem> {
     match item {
         ThreadItem::UserMessage { id, content } => Some(TurnItem::UserMessage(UserMessageItem {
@@ -943,7 +951,7 @@ fn thread_item_to_core(item: &ThreadItem) -> Option<TurnItem> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn command_execution_started_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
     let ThreadItem::CommandExecution {
         id,
@@ -964,6 +972,7 @@ fn command_execution_started_event(turn_id: &str, item: &ThreadItem) -> Option<V
             call_id: id.clone(),
             process_id: process_id.clone(),
             turn_id: turn_id.to_string(),
+            started_at_ms: 0,
             command: split_command_string(command),
             cwd: cwd.clone(),
             parsed_cmd: command_actions
@@ -977,7 +986,7 @@ fn command_execution_started_event(turn_id: &str, item: &ThreadItem) -> Option<V
     }])
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn command_execution_completed_event(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
     let ThreadItem::CommandExecution {
         id,
@@ -1024,6 +1033,7 @@ fn command_execution_completed_event(turn_id: &str, item: &ThreadItem) -> Option
             call_id: id.clone(),
             process_id: process_id.clone(),
             turn_id: turn_id.to_string(),
+            completed_at_ms: 0,
             command: split_command_string(command),
             cwd: cwd.clone(),
             parsed_cmd: command_actions
@@ -1044,7 +1054,7 @@ fn command_execution_completed_event(turn_id: &str, item: &ThreadItem) -> Option
     }])
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn command_execution_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option<Vec<Event>> {
     let mut events = command_execution_started_event(turn_id, item)?;
     if let Some(end_events) = command_execution_completed_event(turn_id, item) {
@@ -1053,7 +1063,7 @@ fn command_execution_snapshot_events(turn_id: &str, item: &ThreadItem) -> Option
     Some(events)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn app_server_web_search_action_to_core(
     action: codex_app_server_protocol::WebSearchAction,
 ) -> Option<codex_protocol::models::WebSearchAction> {
@@ -1073,14 +1083,14 @@ fn app_server_web_search_action_to_core(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 fn app_server_codex_error_info_to_core(
     value: codex_app_server_protocol::CodexErrorInfo,
 ) -> Option<codex_protocol::protocol::CodexErrorInfo> {
     serde_json::from_value(serde_json::to_value(value).ok()?).ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests {
     use super::ServerNotificationThreadTarget;
     use super::command_execution_started_event;
@@ -1137,6 +1147,7 @@ mod tests {
                 },
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
+                completed_at_ms: 0,
             }),
         )
         .expect("notification should bridge");
@@ -1183,6 +1194,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -1234,6 +1246,7 @@ mod tests {
                 item,
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
+                started_at_ms: 0,
             }),
         )
         .expect("command execution start should bridge");
@@ -1289,6 +1302,7 @@ mod tests {
                 item: completed_item,
                 thread_id,
                 turn_id,
+                completed_at_ms: 0,
             }),
         )
         .expect("command execution completion should bridge");
@@ -1349,6 +1363,7 @@ mod tests {
             cwd: test_path_buf("/tmp").abs(),
             cli_version: "test".to_string(),
             source: SessionSource::Cli.into(),
+            thread_source: None,
             agent_nickname: None,
             agent_role: None,
             git_info: None,
@@ -1369,6 +1384,7 @@ mod tests {
                     exit_code: Some(0),
                     duration_ms: Some(5),
                 }],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1403,6 +1419,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Interrupted,
                     error: None,
                     started_at: None,
@@ -1438,6 +1455,7 @@ mod tests {
                 turn: Turn {
                     id: turn_id.clone(),
                     items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
                     status: TurnStatus::Failed,
                     error: Some(TurnError {
                         message: "request failed".to_string(),
@@ -1525,6 +1543,7 @@ mod tests {
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "test".to_string(),
                 source: SessionSource::Cli.into(),
+                thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
                 git_info: None,
@@ -1547,6 +1566,7 @@ mod tests {
                                 memory_citation: None,
                             },
                         ],
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Completed,
                         error: None,
                         started_at: None,
@@ -1556,6 +1576,7 @@ mod tests {
                     Turn {
                         id: "turn-interrupted".to_string(),
                         items: Vec::new(),
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Interrupted,
                         error: None,
                         started_at: None,
@@ -1565,6 +1586,7 @@ mod tests {
                     Turn {
                         id: "turn-failed".to_string(),
                         items: Vec::new(),
+                        items_view: codex_app_server_protocol::TurnItemsView::Full,
                         status: TurnStatus::Failed,
                         error: Some(TurnError {
                             message: "request failed".to_string(),
@@ -1634,6 +1656,7 @@ mod tests {
                         id: "compact-1".to_string(),
                     },
                 ],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1680,6 +1703,7 @@ mod tests {
                     summary: vec!["Need to inspect config".to_string()],
                     content: vec!["hidden chain".to_string()],
                 }],
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,

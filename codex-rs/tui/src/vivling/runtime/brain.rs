@@ -1,3 +1,4 @@
+use super::super::model::VivlingWorkMemoryEntry;
 use super::brain_context::BrainPromptKind;
 use super::brain_context::compose_brain_prompt;
 use super::*;
@@ -12,8 +13,13 @@ impl Vivling {
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             state.apply_decay(Utc::now());
-            let prompt_context =
-                compose_brain_prompt(state, BrainPromptKind::Assist, task, live_snapshot.as_ref())?;
+            let prompt_context = compose_brain_prompt(
+                state,
+                BrainPromptKind::Assist,
+                task,
+                live_snapshot.as_ref(),
+                self.msa.as_deref(),
+            )?;
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
@@ -45,8 +51,13 @@ impl Vivling {
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             state.apply_decay(Utc::now());
-            let prompt_context =
-                compose_brain_prompt(state, BrainPromptKind::Chat, text, live_snapshot.as_ref())?;
+            let prompt_context = compose_brain_prompt(
+                state,
+                BrainPromptKind::Chat,
+                text,
+                live_snapshot.as_ref(),
+                self.msa.as_deref(),
+            )?;
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
@@ -126,6 +137,7 @@ impl Vivling {
             },
             &job.prompt_text,
             live_snapshot.as_ref(),
+            self.msa.as_deref(),
         )?;
         Ok(VivlingLoopTickRequest {
             vivling_id: state.vivling_id.clone(),
@@ -230,11 +242,16 @@ impl Vivling {
             .borrow()
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
+        let msa = self.msa.clone();
+        let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
+        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
+            let before = state.work_memory.len();
             state.record_loop_event(&event);
             if let Some(summary) = live_summary.as_deref() {
                 state.record_live_context_summary(summary);
             }
+            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);
@@ -245,6 +262,11 @@ impl Vivling {
                 .unwrap_or_else(|| format!("loop {} `{}` noted", event.action, event.label))
         })
         .map(|_| {
+            if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
+                for capsule in new_capsules.borrow().iter() {
+                    msa.index_capsule(id, capsule);
+                }
+            }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         })
     }
@@ -255,11 +277,16 @@ impl Vivling {
             .borrow()
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
+        let msa = self.msa.clone();
+        let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
+        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
+            let before = state.work_memory.len();
             state.record_turn_completed(summary);
             if let Some(summary) = live_summary.as_deref() {
                 state.record_live_context_summary(summary);
             }
+            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_turn(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);
@@ -270,6 +297,11 @@ impl Vivling {
                 .unwrap_or_else(|| "is learning from completed work".to_string())
         })
         .map(|_| {
+            if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
+                for capsule in new_capsules.borrow().iter() {
+                    msa.index_capsule(id, capsule);
+                }
+            }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         })
     }

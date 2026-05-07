@@ -26,7 +26,6 @@ use codex_app_server_protocol::ThreadGoalStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::protocol::GetHistoryEntryResponseEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
@@ -63,6 +62,13 @@ pub(crate) enum RealtimeAudioDeviceKind {
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
     ReplaceExisting,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HistoryLookupResponse {
+    pub(crate) offset: usize,
+    pub(crate) log_id: u64,
+    pub(crate) entry: Option<String>,
 }
 
 impl RealtimeAudioDeviceKind {
@@ -141,7 +147,20 @@ pub(crate) enum AppEvent {
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
-        event: GetHistoryEntryResponseEvent,
+        event: HistoryLookupResponse,
+    },
+
+    /// Persist a submitted prompt in the cross-session message history.
+    AppendMessageHistoryEntry {
+        thread_id: ThreadId,
+        text: String,
+    },
+
+    /// Fetch a persistent cross-session message history entry by offset.
+    LookupMessageHistoryEntry {
+        thread_id: ThreadId,
+        offset: usize,
+        log_id: u64,
     },
 
     /// Start a new session.
@@ -157,6 +176,9 @@ pub(crate) enum AppEvent {
     /// sees only the explicit prompt carried in `text` once the new session is configured.
     ClearUiAndSubmitUserMessage {
         text: String,
+    },
+    RawOutputModeChanged {
+        enabled: bool,
     },
 
     /// Open the resume picker inside the running TUI session.
@@ -429,6 +451,7 @@ pub(crate) enum AppEvent {
 
     /// Begin buffering initial resume replay rows before they are written to scrollback.
     BeginInitialHistoryReplayBuffer,
+    BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
@@ -688,6 +711,30 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    /// Enable or disable a hook by stable hook key.
+    SetHookEnabled {
+        key: String,
+        enabled: bool,
+    },
+
+    /// Trust the current definition for a hook by stable hook key.
+    TrustHook {
+        key: String,
+        current_hash: String,
+    },
+
+    /// Result of persisting hook enabled state.
+    HookEnabledSet {
+        key: String,
+        enabled: bool,
+        result: Result<(), String>,
+    },
+
+    /// Result of persisting hook trust state.
+    HookTrusted {
+        result: Result<(), String>,
+    },
+
     /// Notify that the manage skills popup was closed.
     ManageSkillsClosed,
 
@@ -754,6 +801,11 @@ pub(crate) enum AppEvent {
     StatusLineBranchUpdated {
         cwd: PathBuf,
         branch: Option<String>,
+    },
+    /// Async update of PR and branch-change metadata for status line rendering.
+    StatusLineGitSummaryUpdated {
+        cwd: PathBuf,
+        summary: crate::branch_summary::StatusLineGitSummary,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {

@@ -5,6 +5,8 @@ members = [
     "agent-graph-store",
     "agent-identity",
     "backend-client",
+    "builtin-mcps",
+    "bwrap",
     "ansi-escape",
     "async-utils",
     "app-server",
@@ -52,6 +54,7 @@ members = [
     "login",
     "codex-mcp",
     "mcp-server",
+    "memories/mcp",
     "memories/read",
     "memories/write",
     "model-provider-info",
@@ -95,6 +98,7 @@ members = [
     "utils/fuzzy-match",
     "utils/stream-parser",
     "utils/template",
+    "vendor/msa-core",
     "codex-client",
     "codex-api",
     "state",
@@ -110,7 +114,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.128.3"
+version = "0.129.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -136,6 +140,7 @@ codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
+codex-builtin-mcps = { path = "builtin-mcps" }
 codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
@@ -168,6 +173,8 @@ codex-keyring-store = { path = "keyring-store" }
 codex-linux-sandbox = { path = "linux-sandbox" }
 codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
+codex-message-history = { path = "message-history" }
+codex-memories-mcp = { path = "memories/mcp" }
 codex-memories-read = { path = "memories/read" }
 codex-memories-write = { path = "memories/write" }
 codex-mcp = { path = "codex-mcp" }
@@ -226,6 +233,7 @@ codex-v8-poc = { path = "v8-poc" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
+msa-core = { path = "vendor/msa-core", default-features = false }
 
 # External
 age = "0.11.1"
@@ -340,7 +348,7 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 rustls-native-certs = "0.8.3"
 rustls-pki-types = "1.14.0"
-schemars = "0.8.22"
+schemars = { version = "0.8.22", features = ["chrono"] }
 seccompiler = "0.5.0"
 semver = "1.0"
 sentry = { version = "0.46.0", default-features = false, features = [
@@ -472,6 +480,7 @@ unwrap_used = "deny"
 [workspace.metadata.cargo-shear]
 ignored = [
     "codex-agent-graph-store",
+    "codex-memories-mcp",
     "icu_provider",
     "openssl-sys",
     "codex-utils-readiness",

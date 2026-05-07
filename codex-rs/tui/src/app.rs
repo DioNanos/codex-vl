@@ -5,7 +5,6 @@
 
 use crate::app_backtrack::BacktrackState;
 use crate::app_command::AppCommand;
-use crate::app_command::AppCommandView;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::FeedbackCategory;
@@ -17,8 +16,8 @@ use crate::app_event_sender::AppEventSender;
 use crate::app_server_approval_conversions::network_approval_context_to_core;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
-use crate::app_server_session::ThreadSessionState;
-use crate::app_server_session::app_server_rate_limit_snapshots_to_core;
+use crate::app_server_session::app_server_rate_limit_snapshots;
+use crate::bottom_pane::AppLinkViewParams;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
@@ -39,17 +38,16 @@ use crate::external_editor;
 use crate::file_search::FileSearchManager;
 use crate::history_cell;
 use crate::history_cell::HistoryCell;
+use crate::session_state::ThreadSessionState;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::RuntimeKeymap;
-use crate::legacy_core::append_message_history_entry;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
-use crate::legacy_core::lookup_message_history_entry;
 #[cfg(target_os = "windows")]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::model_catalog::ModelCatalog;
@@ -61,7 +59,6 @@ use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
-use crate::read_session_model;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
@@ -77,6 +74,8 @@ use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use crate::version::CODEX_CLI_VERSION;
+use crate::workspace_command::AppServerWorkspaceCommandRunner;
+use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
@@ -109,7 +108,6 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadItem;
-use codex_core_plugins::PluginsManager;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadRollbackResponse;
@@ -120,6 +118,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::ModelAvailabilityNuxConfig;
+use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
@@ -135,19 +134,16 @@ use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-use codex_protocol::protocol::AskForApproval;
 #[cfg(target_os = "windows")]
-use codex_protocol::protocol::FileSystemSandboxKind;
+use codex_protocol::permissions::FileSystemSandboxKind;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FinalOutput;
-use codex_protocol::protocol::GetHistoryEntryResponseEvent;
-use codex_protocol::protocol::ListSkillsResponseEvent;
 #[cfg(test)]
 use codex_protocol::protocol::McpAuthStatus;
-use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SkillErrorInfo;
 use codex_protocol::protocol::TokenUsage;
+use codex_rollout::StateDbHandle;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
@@ -221,50 +217,9 @@ const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue."
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 
 enum ThreadInteractiveRequest {
+    AppLink(AppLinkViewParams),
     Approval(ApprovalRequest),
     McpServerElicitation(McpServerElicitationFormRequest),
-}
-
-fn app_server_request_id_to_mcp_request_id(
-    request_id: &codex_app_server_protocol::RequestId,
-) -> codex_protocol::mcp::RequestId {
-    match request_id {
-        codex_app_server_protocol::RequestId::String(value) => {
-            codex_protocol::mcp::RequestId::String(value.clone())
-        }
-        codex_app_server_protocol::RequestId::Integer(value) => {
-            codex_protocol::mcp::RequestId::Integer(*value)
-        }
-    }
-}
-
-fn command_execution_decision_to_review_decision(
-    decision: codex_app_server_protocol::CommandExecutionApprovalDecision,
-) -> codex_protocol::protocol::ReviewDecision {
-    match decision {
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Accept => {
-            codex_protocol::protocol::ReviewDecision::Approved
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptForSession => {
-            codex_protocol::protocol::ReviewDecision::ApprovedForSession
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
-            execpolicy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::ApprovedExecpolicyAmendment {
-            proposed_execpolicy_amendment: execpolicy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
-            network_policy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::NetworkPolicyAmendment {
-            network_policy_amendment: network_policy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Decline => {
-            codex_protocol::protocol::ReviewDecision::Denied
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Cancel => {
-            codex_protocol::protocol::ReviewDecision::Abort
-        }
-    }
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
@@ -315,8 +270,8 @@ struct AutoReviewMode {
 }
 
 /// Enabling the Auto-review experiment in the TUI should also switch the
-/// current `/approvals` settings to the matching Auto-review mode. Users
-/// can still change `/approvals` afterward; this just assumes that opting into
+/// current `/permissions` settings to the matching Auto-review mode. Users
+/// can still change `/permissions` afterward; this just assumes that opting into
 /// the experiment means they want Auto-review enabled immediately.
 fn auto_review_mode() -> AutoReviewMode {
     AutoReviewMode {
@@ -418,84 +373,16 @@ fn rollout_path_is_resumable(rollout_path: &Path) -> bool {
     std::fs::metadata(rollout_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
-fn errors_for_cwd(cwd: &Path, response: &ListSkillsResponseEvent) -> Vec<SkillErrorInfo> {
+fn errors_for_cwd(
+    cwd: &Path,
+    response: &SkillsListResponse,
+) -> Vec<codex_app_server_protocol::SkillErrorInfo> {
     response
-        .skills
+        .data
         .iter()
         .find(|entry| entry.cwd.as_path() == cwd)
         .map(|entry| entry.errors.clone())
         .unwrap_or_default()
-}
-
-fn list_skills_response_to_core(response: SkillsListResponse) -> ListSkillsResponseEvent {
-    ListSkillsResponseEvent {
-        skills: response
-            .data
-            .into_iter()
-            .map(|entry| codex_protocol::protocol::SkillsListEntry {
-                cwd: entry.cwd,
-                skills: entry
-                    .skills
-                    .into_iter()
-                    .map(|skill| codex_protocol::protocol::SkillMetadata {
-                        name: skill.name,
-                        description: skill.description,
-                        short_description: skill.short_description,
-                        interface: skill.interface.map(|interface| {
-                            codex_protocol::protocol::SkillInterface {
-                                display_name: interface.display_name,
-                                short_description: interface.short_description,
-                                icon_small: interface.icon_small,
-                                icon_large: interface.icon_large,
-                                brand_color: interface.brand_color,
-                                default_prompt: interface.default_prompt,
-                            }
-                        }),
-                        dependencies: skill.dependencies.map(|dependencies| {
-                            codex_protocol::protocol::SkillDependencies {
-                                tools: dependencies
-                                    .tools
-                                    .into_iter()
-                                    .map(|tool| codex_protocol::protocol::SkillToolDependency {
-                                        r#type: tool.r#type,
-                                        value: tool.value,
-                                        description: tool.description,
-                                        transport: tool.transport,
-                                        command: tool.command,
-                                        url: tool.url,
-                                    })
-                                    .collect(),
-                            }
-                        }),
-                        path: skill.path,
-                        scope: match skill.scope {
-                            codex_app_server_protocol::SkillScope::User => {
-                                codex_protocol::protocol::SkillScope::User
-                            }
-                            codex_app_server_protocol::SkillScope::Repo => {
-                                codex_protocol::protocol::SkillScope::Repo
-                            }
-                            codex_app_server_protocol::SkillScope::System => {
-                                codex_protocol::protocol::SkillScope::System
-                            }
-                            codex_app_server_protocol::SkillScope::Admin => {
-                                codex_protocol::protocol::SkillScope::Admin
-                            }
-                        },
-                        enabled: skill.enabled,
-                    })
-                    .collect(),
-                errors: entry
-                    .errors
-                    .into_iter()
-                    .map(|error| codex_protocol::protocol::SkillErrorInfo {
-                        path: error.path,
-                        message: error.message,
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -507,6 +394,7 @@ struct SessionSummary {
 #[derive(Debug, Default)]
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<Line<'static>>,
+    render_from_transcript_tail: bool,
 }
 
 pub(crate) struct App {
@@ -514,8 +402,10 @@ pub(crate) struct App {
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
+    workspace_command_runner: Option<WorkspaceCommandRunner>,
     /// Config is stored here so we can recreate ChatWidgets as needed.
     pub(crate) config: Config,
+    pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) active_profile: Option<String>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
@@ -641,6 +531,7 @@ impl App {
             config: cfg,
             frame_requester: tui.frame_requester(),
             app_event_tx: self.app_event_tx.clone(),
+            workspace_command_runner: self.workspace_command_runner.clone(),
             initial_user_message,
             enhanced_keys_supported: self.enhanced_keys_supported,
             has_chatgpt_account: self.chat_widget.has_chatgpt_account(),
@@ -674,6 +565,7 @@ impl App {
         should_prompt_windows_sandbox_nux_at_startup: bool,
         remote_app_server_url: Option<String>,
         remote_app_server_auth_token: Option<String>,
+        state_db: Option<StateDbHandle>,
         environment_manager: Arc<EnvironmentManager>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
@@ -773,10 +665,19 @@ impl App {
 
         let status_line_invalid_items_warned = Arc::new(AtomicBool::new(false));
         let terminal_title_invalid_items_warned = Arc::new(AtomicBool::new(false));
+        let workspace_command_runner: WorkspaceCommandRunner = Arc::new(
+            AppServerWorkspaceCommandRunner::new(app_server.request_handle()),
+        );
 
         let enhanced_keys_supported = tui.enhanced_keys_supported();
         let wait_for_initial_session_configured =
             Self::should_wait_for_initial_session(&session_selection);
+        let should_prompt_for_paused_goal_after_startup_resume =
+            Self::should_prompt_for_paused_goal_after_startup_resume(
+                &session_selection,
+                &initial_prompt,
+                &initial_images,
+            );
         let (mut chat_widget, initial_started_thread) = match session_selection {
             SessionSelection::StartFresh | SessionSelection::Exit => {
                 let started = app_server.start_thread(&config).await?;
@@ -787,6 +688,7 @@ impl App {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
+                    workspace_command_runner: Some(workspace_command_runner.clone()),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
                         initial_prompt.clone(),
                         initial_images.clone(),
@@ -821,6 +723,7 @@ impl App {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
+                    workspace_command_runner: Some(workspace_command_runner.clone()),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
                         initial_prompt.clone(),
                         initial_images.clone(),
@@ -860,6 +763,7 @@ impl App {
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
+                    workspace_command_runner: Some(workspace_command_runner.clone()),
                     initial_user_message: crate::chatwidget::create_initial_user_message(
                         initial_prompt.clone(),
                         initial_images.clone(),
@@ -906,7 +810,9 @@ See the Codex keymap documentation for supported actions and examples."
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
             chat_widget,
+            workspace_command_runner: Some(workspace_command_runner),
             config,
+            state_db,
             active_profile,
             cli_kv_overrides,
             harness_overrides,
@@ -948,8 +854,13 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
         };
         if let Some(started) = initial_started_thread {
+            let thread_id = started.session.thread_id;
             app.enqueue_primary_thread_session(started.session, started.turns)
                 .await?;
+            if should_prompt_for_paused_goal_after_startup_resume {
+                app.maybe_prompt_resume_paused_goal_after_resume(&mut app_server, thread_id)
+                    .await;
+            }
         }
 
         // On startup, if a managed filesystem sandbox is active, warn about
@@ -1192,7 +1103,7 @@ impl Drop for App {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 pub(super) mod test_support;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_tui_tests"))]
 mod tests;

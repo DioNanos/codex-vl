@@ -17,6 +17,7 @@ use crate::tools::filter_tools;
 use crate::tools::qualify_tools;
 use crate::tools::tool_with_model_visible_input_schema;
 use codex_config::Constrained;
+use codex_config::McpServerConfig;
 use codex_protocol::ToolName;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::GranularApprovalConfig;
@@ -40,7 +41,7 @@ fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
         server_name: server_name.to_string(),
         callable_name: tool_name.to_string(),
         callable_namespace: tool_namespace,
-        server_instructions: None,
+        namespace_description: None,
         tool: Tool {
             name: tool_name.to_string().into(),
             title: None,
@@ -55,7 +56,6 @@ fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
         connector_id: None,
         connector_name: None,
         plugin_display_names: Vec::new(),
-        connector_description: None,
     }
 }
 
@@ -204,8 +204,11 @@ fn elicitation_granular_policy_respects_never_and_config() {
 
 #[tokio::test]
 async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
-    let manager =
-        ElicitationRequestManager::new(AskForApproval::Never, PermissionProfile::Disabled);
+    let manager = ElicitationRequestManager::new(
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+        /*reviewer*/ None,
+    );
     let (tx_event, _rx_event) = async_channel::bounded(1);
     let sender = manager.make_sender("server".to_string(), tx_event);
 
@@ -234,8 +237,11 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
 
 #[tokio::test]
 async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fields() {
-    let manager =
-        ElicitationRequestManager::new(AskForApproval::Never, PermissionProfile::Disabled);
+    let manager = ElicitationRequestManager::new(
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+        /*reviewer*/ None,
+    );
     let (tx_event, _rx_event) = async_channel::bounded(1);
     let sender = manager.make_sender("server".to_string(), tx_event);
 
@@ -879,7 +885,7 @@ fn elicitation_capability_uses_2025_06_18_shape_for_all_servers() {
 fn mcp_init_error_display_prompts_for_github_pat() {
     let server_name = "github";
     let entry = McpAuthStatusEntry {
-        config: McpServerConfig {
+        config: Some(McpServerConfig {
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://api.githubcopilot.com/mcp/".to_string(),
                 bearer_token_env_var: None,
@@ -899,7 +905,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
             scopes: None,
             oauth_resource: None,
             tools: HashMap::new(),
-        },
+        }),
         auth_status: McpAuthStatus::Unsupported,
     };
     let err: StartupOutcomeError = anyhow::anyhow!("OAuth is unsupported").into();
@@ -931,7 +937,7 @@ fn mcp_init_error_display_prompts_for_login_when_auth_required() {
 fn mcp_init_error_display_reports_generic_errors() {
     let server_name = "custom";
     let entry = McpAuthStatusEntry {
-        config: McpServerConfig {
+        config: Some(McpServerConfig {
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com".to_string(),
                 bearer_token_env_var: Some("TOKEN".to_string()),
@@ -951,7 +957,7 @@ fn mcp_init_error_display_reports_generic_errors() {
             scopes: None,
             oauth_resource: None,
             tools: HashMap::new(),
-        },
+        }),
         auth_status: McpAuthStatus::Unsupported,
     };
     let err: StartupOutcomeError = anyhow::anyhow!("boom").into();
@@ -974,32 +980,4 @@ fn mcp_init_error_display_includes_startup_timeout_hint() {
         "MCP client for `slow` timed out after 30 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",
         display
     );
-}
-
-#[test]
-fn transport_origin_extracts_http_origin() {
-    let transport = McpServerTransportConfig::StreamableHttp {
-        url: "https://example.com:8443/path?query=1".to_string(),
-        bearer_token_env_var: None,
-        http_headers: None,
-        env_http_headers: None,
-    };
-
-    assert_eq!(
-        transport_origin(&transport),
-        Some("https://example.com:8443".to_string())
-    );
-}
-
-#[test]
-fn transport_origin_is_stdio_for_stdio_transport() {
-    let transport = McpServerTransportConfig::Stdio {
-        command: "server".to_string(),
-        args: Vec::new(),
-        env: None,
-        env_vars: Vec::new(),
-        cwd: None,
-    };
-
-    assert_eq!(transport_origin(&transport), Some("stdio".to_string()));
 }

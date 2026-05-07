@@ -9,6 +9,7 @@ use codex_protocol::ThreadId;
 use super::sidebar::VivlingLogKind;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainProfileRequest;
+use crate::vivling::VivlingBrainRequestKind;
 use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
 
@@ -69,9 +70,10 @@ pub(crate) enum VlEvent {
     PersistVivlingBrainProfile { request: VivlingBrainProfileRequest },
     /// Start a background one-shot assist request for the active Vivling brain.
     RunVivlingAssist { request: VivlingAssistRequest },
-    /// Result of a Vivling brain assist request.
+    /// Result of a Vivling brain request.
     VivlingAssistFinished {
         vivling_id: String,
+        kind: VivlingBrainRequestKind,
         result: Result<String, String>,
     },
     /// Start a background one-shot loop tick request for the current Vivling loop owner.

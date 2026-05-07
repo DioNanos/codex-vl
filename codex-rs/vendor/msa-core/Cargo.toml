@@ -1,0 +1,26 @@
+[package]
+name = "msa-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MSA-flavor retrieval engine library: chunking, tantivy BM25, and optional dense rerank"
+
+[features]
+default = []
+embeddings = ["dep:reqwest"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tantivy = "0.22"
+unicode-segmentation = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls", "blocking"] }
+
+[dev-dependencies]
+tempfile = "3"

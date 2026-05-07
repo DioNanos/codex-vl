@@ -6,6 +6,7 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
+use crate::app_event::HistoryLookupResponse;
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
@@ -19,7 +20,7 @@ pub(super) struct ThreadEventSnapshot {
 pub(super) enum ThreadBufferedEvent {
     Notification(ServerNotification),
     Request(ServerRequest),
-    HistoryEntryResponse(GetHistoryEntryResponseEvent),
+    HistoryEntryResponse(HistoryLookupResponse),
     FeedbackSubmission(FeedbackThreadEvent),
 }
 
@@ -347,16 +348,14 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
-            dynamic_tools: Vec::new(),
-            approval_policy: AskForApproval::Never,
+            approval_policy: AskForApproval::Never.into(),
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: cwd.abs(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
-            history_log_id: 0,
-            history_entry_count: 0,
+            message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
         }
@@ -365,6 +364,7 @@ mod tests {
     fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
         Turn {
             id: turn_id.to_string(),
+            items_view: codex_app_server_protocol::TurnItemsView::Full,
             items,
             status,
             error: None,

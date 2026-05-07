@@ -321,7 +321,7 @@ async fn run_codex_tool_session_inner(
                     EventMsg::ThreadNameUpdated(_) => {
                         // Ignore session metadata updates in MCP tool runner.
                     }
-                    EventMsg::ThreadGoalUpdated(_) => {
+                    EventMsg::ThreadGoalUpdated(_) | EventMsg::ThreadGoalCleared(_) => {
                         // Ignore thread goal metadata updates in MCP tool runner.
                     }
                     EventMsg::McpStartupUpdate(_) | EventMsg::McpStartupComplete(_) => {
@@ -331,14 +331,15 @@ async fn run_codex_tool_session_inner(
                         // TODO: think how we want to support this in the MCP
                     }
                     EventMsg::AgentReasoningRawContent(_)
+                    | EventMsg::AgentMessageDelta(_)
+                    | EventMsg::AgentReasoningDelta(_)
+                    | EventMsg::AgentReasoningRawContentDelta(_)
                     | EventMsg::TurnStarted(_)
                     | EventMsg::TokenCount(_)
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::AgentReasoningSectionBreak(_)
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
-                    | EventMsg::McpListToolsResponse(_)
-                    | EventMsg::ListSkillsResponse(_)
                     | EventMsg::RealtimeConversationListVoicesResponse(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::TerminalInteraction(_)
@@ -351,7 +352,6 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TurnDiff(_)
                     | EventMsg::WebSearchBegin(_)
                     | EventMsg::WebSearchEnd(_)
-                    | EventMsg::GetHistoryEntryResponse(_)
                     | EventMsg::PlanUpdate(_)
                     | EventMsg::TurnAborted(_)
                     | EventMsg::UserMessage(_)
@@ -376,6 +376,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::DynamicToolCallResponse(_)
                     | EventMsg::ContextCompacted(_)
                     | EventMsg::ModelReroute(_)
+                    | EventMsg::BackgroundEvent(_)
+                    | EventMsg::UndoStarted(_)
+                    | EventMsg::UndoCompleted(_)
                     | EventMsg::ThreadRolledBack(_)
                     | EventMsg::CollabAgentSpawnBegin(_)
                     | EventMsg::CollabAgentSpawnEnd(_)
