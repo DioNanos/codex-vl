@@ -6,7 +6,7 @@
 //! - [`index`] — `MsaIndex` wrapping tantivy per collection
 //! - [`config`] — runtime configuration loader
 //!
-//! See `README.md` and `~/.docs/projects/mcp-msa-rs/` for design.
+//! See the upstream MSA project documentation for design details.
 
 pub mod chunker;
 pub mod config;
