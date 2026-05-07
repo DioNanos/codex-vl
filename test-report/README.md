@@ -17,6 +17,8 @@ blind runner unless a maintainer explicitly asks for that.
 - `AI_GUIDED_TEST_SUITE.md`: reusable guide for future validating AIs.
 - `automated/2026-05-06_0.128.4_next_build_publish.md`: 0.128.4 build,
   package, publish, and Forge push evidence.
+- `automated/2026-05-07_0.128.5_merge_build_publish.md`: 0.128.5 upstream
+  merge, Linux optimized build evidence, and remaining release gates.
 - `manual/2026-05-06_0.128.4_ai_guided_surface.md`: 0.128.4 AI-guided
   command, tool, TUI, read/write, patch, and runtime smoke report.
 - `manual/2026-05-06_termux_persist_extended_history_warning.md`: Termux

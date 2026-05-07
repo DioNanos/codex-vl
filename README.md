@@ -42,7 +42,7 @@ npm install -g @mmmbuto/codex-vl
 
 ## Current Release Focus
 
-The `0.128.4` line focuses on keeping the fork close to upstream while
+The `0.128.5` line focuses on keeping the fork close to upstream while
 stabilizing the first useful Codex VL layers:
 
 - loop management as a conservative, user-controlled local feature
@@ -106,7 +106,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.128.4` npm `next` publish includes Linux x64 and Termux Android arm64 native
+`0.128.5` npm `next` publish includes Linux x64 and Termux Android arm64 native
 packages plus the macOS arm64 source-build package.
 
 ## Status
