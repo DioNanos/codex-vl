@@ -19,6 +19,9 @@ blind runner unless a maintainer explicitly asks for that.
   package, publish, and Forge push evidence.
 - `automated/2026-05-07_0.128.5_merge_build_publish.md`: 0.128.5 upstream
   merge, Linux optimized build evidence, and remaining release gates.
+- `automated/2026-05-07_0.129.0_linux_post_install_suite.md`: 0.129.0 Linux
+  post-install command surface, focused Rust tests, npm dist-tag, read/write,
+  and sanitized report evidence.
 - `manual/2026-05-06_0.128.4_ai_guided_surface.md`: 0.128.4 AI-guided
   command, tool, TUI, read/write, patch, and runtime smoke report.
 - `manual/2026-05-06_termux_persist_extended_history_warning.md`: Termux
