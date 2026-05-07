@@ -1985,7 +1985,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "similar",
+ "similar 3.1.0",
  "strum_macros 0.28.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -2065,7 +2065,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "pretty_assertions",
- "similar",
+ "similar 3.1.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2531,7 +2531,7 @@ dependencies = [
  "serial_test",
  "sha1",
  "shlex",
- "similar",
+ "similar 3.1.0",
  "tempfile",
  "test-case",
  "test-log",
@@ -2890,7 +2890,7 @@ dependencies = [
  "regex",
  "schemars 0.8.22",
  "serde",
- "similar",
+ "similar 3.1.0",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4296,7 +4296,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "shlex",
- "similar",
+ "similar 3.1.0",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -7748,7 +7748,7 @@ checksum = "e82db8c87c7f1ccecb34ce0c24399b8a73081427f3c7c50a5d597925356115e4"
 dependencies = [
  "console",
  "once_cell",
- "similar",
+ "similar 2.7.0",
  "tempfile",
 ]
 
@@ -10001,7 +10001,7 @@ checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
  "heck 0.5.0",
- "itertools 0.11.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -10040,7 +10040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.11.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -11876,6 +11876,15 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "similar"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d93e861ede2e497b47833469b8ec9d5c07fa4c78ce7a00f6eb7dd8168b4b3f"
+dependencies = [
+ "bstr",
+]
 
 [[package]]
 name = "simple_asn1"
