@@ -397,6 +397,7 @@ fn assist_prompt_context_declares_memory_and_live_state_boundary() {
         BrainPromptKind::Assist,
         "review this blocker",
         None,
+        None,
     )
     .expect("prompt");
 

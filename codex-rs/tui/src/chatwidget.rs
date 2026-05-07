@@ -7655,6 +7655,9 @@ impl ChatWidget {
             }
             EventMsg::McpStartupUpdate(ev) => self.on_mcp_startup_update(ev),
             EventMsg::McpStartupComplete(ev) => self.on_mcp_startup_complete(ev),
+            EventMsg::SkillsUpdateAvailable => {
+                self.refresh_skills_for_current_cwd(/*force_reload*/ true);
+            }
             EventMsg::TurnAborted(ev) => match ev.reason {
                 TurnAbortReason::Interrupted => {
                     let reason = if ev

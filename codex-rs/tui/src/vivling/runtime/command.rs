@@ -17,6 +17,7 @@ impl Vivling {
             animation_text_expires_at: Cell::new(None),
             activity: RefCell::new(None),
             live_context: RefCell::new(None),
+            msa: None,
         }
     }
 
@@ -34,6 +35,9 @@ impl Vivling {
         let needs_reload = self.codex_home.as_ref() != Some(&codex_home);
         self.codex_home = Some(codex_home);
         self.auth_mode = auth_mode;
+        if self.msa.is_none() {
+            self.msa = VivlingMsa::open().map(std::sync::Arc::new);
+        }
         if needs_reload {
             let migrated = self.migrate_legacy_state_if_needed().ok().flatten();
             self.state = if migrated.is_some() {
@@ -42,6 +46,25 @@ impl Vivling {
                 self.load_state().ok().flatten()
             };
             self.active_vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
+            self.maybe_backfill_msa_index();
+        }
+    }
+
+    fn maybe_backfill_msa_index(&self) {
+        let Some(msa) = self.msa.as_deref() else {
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(idx) = msa.collection_for(&state.vivling_id) else {
+            return;
+        };
+        if idx.stats().map(|stats| stats.num_chunks).unwrap_or(0) > 0 {
+            return;
+        }
+        for capsule in &state.work_memory {
+            msa.index_capsule(&state.vivling_id, capsule);
         }
     }
 

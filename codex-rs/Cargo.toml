@@ -98,6 +98,7 @@ members = [
     "utils/fuzzy-match",
     "utils/stream-parser",
     "utils/template",
+    "vendor/msa-core",
     "codex-client",
     "codex-api",
     "state",
@@ -232,6 +233,7 @@ codex-v8-poc = { path = "v8-poc" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
+msa-core = { path = "vendor/msa-core", default-features = false }
 
 # External
 age = "0.11.1"
@@ -346,7 +348,7 @@ rustls = { version = "0.23", default-features = false, features = [
 ] }
 rustls-native-certs = "0.8.3"
 rustls-pki-types = "1.14.0"
-schemars = "0.8.22"
+schemars = { version = "0.8.22", features = ["chrono"] }
 seccompiler = "0.5.0"
 semver = "1.0"
 sentry = { version = "0.46.0", default-features = false, features = [

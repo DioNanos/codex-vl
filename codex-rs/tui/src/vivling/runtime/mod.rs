@@ -4,6 +4,7 @@ pub(crate) mod brain_context;
 pub(crate) mod command;
 pub(crate) mod crt_insight;
 pub(crate) mod live_context;
+pub(crate) mod msa;
 pub(crate) mod panel;
 pub(crate) mod path_utils;
 pub(crate) mod proactive;
@@ -16,6 +17,7 @@ mod tests;
 pub(crate) use action::VivlingAction;
 pub(crate) use live_context::VivlingLiveContext;
 pub(crate) use live_context::VivlingLiveStatusItem;
+pub(crate) use msa::VivlingMsa;
 pub(crate) use panel::VivlingPanelData;
 pub(crate) use panel::render_upgrade_card;
 pub(crate) use panel::render_vivling_card;
@@ -96,4 +98,5 @@ pub(crate) struct Vivling {
     pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
     pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
     pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
+    pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
 }
