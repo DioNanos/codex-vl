@@ -63,6 +63,21 @@ async fn apply_patch_harness_with(
 }
 
 async fn submit_without_wait(harness: &TestCodexHarness, prompt: &str) -> Result<()> {
+    submit_without_wait_with_turn_permissions(
+        harness,
+        prompt,
+        SandboxPolicy::DangerFullAccess,
+        /*permission_profile*/ None,
+    )
+    .await
+}
+
+async fn submit_without_wait_with_turn_permissions(
+    harness: &TestCodexHarness,
+    prompt: &str,
+    sandbox_policy: SandboxPolicy,
+    permission_profile: Option<PermissionProfile>,
+) -> Result<()> {
     let test = harness.test();
     let session_model = test.session_configured.model.clone();
     test.codex
@@ -76,8 +91,8 @@ async fn submit_without_wait(harness: &TestCodexHarness, prompt: &str) -> Result
             cwd: harness.cwd().to_path_buf(),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
+            sandbox_policy,
+            permission_profile,
             model: session_model,
             effort: None,
             summary: None,

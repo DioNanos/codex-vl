@@ -56,7 +56,6 @@ pub use model::ThreadLoopJobCreateParams;
 pub use model::ThreadLoopJobRuntimeUpdate;
 pub use model::ThreadLoopOwner;
 
-pub use runtime::DeviceKeyBindingRecord;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::ThreadGoalAccountingMode;

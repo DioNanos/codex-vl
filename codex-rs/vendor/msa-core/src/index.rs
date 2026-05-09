@@ -22,10 +22,10 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, OwnedValue, Schema, STORED, STRING, TEXT};
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
+use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
 
-use crate::embeddings::{cosine_unit, pack_f32, unpack_f32, EmbeddingScorer};
+use crate::embeddings::{EmbeddingScorer, cosine_unit, pack_f32, unpack_f32};
 
 use crate::chunker::chunk_text;
 use crate::error::{MsaError, Result};

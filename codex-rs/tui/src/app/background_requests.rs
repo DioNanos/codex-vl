@@ -767,7 +767,6 @@ pub(super) async fn fetch_skills_list(
             params: SkillsListParams {
                 cwds: vec![cwd],
                 force_reload: true,
-                per_cwd_extra_user_roots: None,
             },
         })
         .await

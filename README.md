@@ -42,12 +42,16 @@ npm install -g @mmmbuto/codex-vl
 
 ## Current Release Focus
 
-The `0.129.1` line focuses on keeping the fork close to upstream while
-stabilizing the first useful Codex VL layers:
+The `0.130.0` line merges upstream Codex `rust-v0.130.0` while preserving the
+Codex VL workflow layer:
 
 - loop management as a conservative, user-controlled local feature
 - Vivling identity, persistence, lifecycle state, and model profile routing
 - an early terminal CRT strip that can show compact Vivling state and speech
+- upstream plugin sharing, remote-control, thread pagination, Bedrock auth, and
+  environment-aware image handling improvements from the 0.130.0 release
+- SQLite contention hardening for multi-session local use
+- MCP startup retry hardening for stdio servers that are slow to expose tools
 - maintainable integration points so upstream merges stay practical
 - optimized Linux x64 and Termux Android arm64 npm packages under the `latest`
   release lane
@@ -106,7 +110,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.129.1` npm `latest` publish includes Linux x64 and Termux Android arm64 native
+`0.130.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
 packages plus the macOS arm64 source-build package.
 
 ## Status

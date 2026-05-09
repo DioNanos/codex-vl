@@ -447,6 +447,7 @@ impl ChatWidget {
                     ApplyPatchApprovalRequestEvent {
                         call_id: "1".to_string(),
                         turn_id: "turn-1".to_string(),
+                        started_at_ms: 0,
                         changes: HashMap::from([
                             (
                                 PathBuf::from("/tmp/test.txt"),
