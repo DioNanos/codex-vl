@@ -12,6 +12,15 @@ The suite is AI-guided by design: the AI runs commands, inspects outputs,
 classifies PASS/FAIL, and writes a sanitized report. Do not replace this with a
 blind runner unless a maintainer explicitly asks for that.
 
+The manual AI validation itself is part of the release test. Reports in this
+directory must not take their verdict from shell runner scripts, bulk `sh`
+pipelines, TSV summaries, or aggregate exit codes. The validating AI must run
+checks one by one, inspect the output, and explain each PASS/FAIL call.
+
+Do not run Rust builds or `cargo test` from the post-install `test-report/`
+flow. Compile-time checks belong to the build/merge phase; this directory
+validates the installed CLI and the AI-operated runtime surface.
+
 ## Current Files
 
 - `AI_GUIDED_TEST_SUITE.md`: reusable guide for future validating AIs.

@@ -4,6 +4,23 @@ This suite is intentionally AI-guided. Do not turn it into a blind automation
 runner. The validating AI should drive the same checks a human operator would
 expect, inspect outputs, decide PASS/FAIL, and write a sanitized report.
 
+## Non-Negotiable Manual Validation Rule
+
+The AI doing the validation is part of the test. It must perform the checks
+manually, one command or interaction at a time, inspect the actual output, and
+record its own PASS/FAIL judgement for each surface.
+
+Do not use shell runner scripts, bulk `sh` pipelines, generated TSV summaries,
+or aggregate script exit codes as the source of truth for `test-report/`
+validation. A helper command may be used only as raw evidence when the AI
+independently inspects and explains the output it produced.
+
+Do not run compile-time validation here. In particular, do not run `cargo test`,
+Rust build commands, release builds, or any other command that turns a
+post-install test report into a rebuild. Build and merge validation belongs to
+the build phase; `test-report/` validates the installed package and the AI's
+manual operating surface.
+
 All reports produced from this guide must be safe to publish. Do not include
 private hostnames, absolute local paths, tokens, usernames, internal service
 addresses, raw environment dumps, or full command transcripts containing local
@@ -15,11 +32,10 @@ secrets. Use placeholders such as `<repo>`, `<tmp-workspace>`, and
 1. Confirm repo and release state.
 2. Check package and command surface.
 3. Check tool surface visible to the AI.
-4. Run focused Rust tests for fork logic.
-5. Run installed runtime smoke tests.
-6. Run manual TUI checks.
-7. Verify read, write, and patch behavior.
-8. Write the sanitized report.
+4. Run installed runtime smoke tests manually.
+5. Run manual TUI checks.
+6. Verify read, write, and patch behavior.
+7. Write the sanitized report.
 
 Stop and report immediately if a core build, package install, or version check
 fails. Non-core environment failures, such as DNS being unavailable during the
@@ -96,28 +112,11 @@ If a tool is expected but unavailable, record the fallback and why it was used.
 Do not read private MCP state files directly unless the MCP tool is unavailable
 or the task is explicitly an MCP debug audit.
 
-## 4. Focused Rust Tests
+## 4. Installed Runtime Smoke
 
-These tests cover fork-specific logic that must survive upstream merges:
-
-```sh
-cargo test --manifest-path codex-rs/Cargo.toml -p codex-tools dynamic_tools -- --nocapture
-cargo test --manifest-path codex-rs/Cargo.toml -p codex-tools goal_tools -- --nocapture
-cargo test --manifest-path codex-rs/Cargo.toml -p codex-app-server dynamic_tools -- --nocapture
-cargo test --manifest-path codex-rs/Cargo.toml -p codex-state goals -- --nocapture
-```
-
-Expected evidence:
-
-- dynamic `manage_loops` registration passes
-- app-server dynamic tool validation and round trip passes
-- goal tool feature gating passes
-- goal persistence, budgeting, pause, clear, completion, and accounting pass
-
-If the full TUI test harness is blocked by upstream test-only drift, record it
-separately from runtime compile success.
-
-## 5. Installed Runtime Smoke
+Use the installed package. Run each check manually and inspect its output before
+marking PASS/FAIL. Do not delegate this section to `qa/runtime-suite/*.sh` or
+any other runner.
 
 Use a temporary workspace. Do not run these in the repo root.
 
@@ -144,7 +143,7 @@ Expected evidence:
 - network smoke either returns an HTTP status line or a clear environment-level
   failure such as DNS unavailable
 
-## 6. Manual TUI Checks
+## 5. Manual TUI Checks
 
 Launch an interactive TUI in a disposable or normal test thread:
 
@@ -167,7 +166,7 @@ Check:
 
 Do not leave loop jobs or active goals behind after the test.
 
-## 7. Read, Write, And Patch Behavior
+## 6. Read, Write, And Patch Behavior
 
 Cover three different surfaces:
 
@@ -182,7 +181,7 @@ PASS means file reads are correct, writes are scoped to temporary or intended
 report files, and the patch creates reviewable git changes without whitespace
 errors.
 
-## 8. Report Format
+## 7. Report Format
 
 Create one report per release candidate under `test-report/manual/` or
 `test-report/automated/`. For AI-guided suites, prefer:
@@ -195,9 +194,9 @@ The report must include:
 
 - version and commit under test
 - sanitized environment summary
+- explicit confirmation that validation was AI-manual, not runner-driven
 - command surface results
 - tool surface results
-- focused Rust test results
 - runtime smoke results
 - manual TUI results
 - read/write/patch results
@@ -218,7 +217,7 @@ A release candidate is acceptable only when:
 
 - installed package version is correct
 - core command surface works
-- focused fork tests pass
+- validation was performed manually by the AI and not accepted from a runner
 - runtime read/write smoke passes
 - manual TUI first launch, `/loop`, `/goal`, and Vivling checks are sane
 - every failure is either fixed or explicitly classified as environmental
