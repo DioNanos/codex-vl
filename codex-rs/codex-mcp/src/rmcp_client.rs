@@ -76,6 +76,8 @@ pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
     "codex.mcp.tools.fetch_uncached.duration_ms";
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+const MCP_STARTUP_TOOLS_LIST_ATTEMPTS: usize = 3;
+const MCP_STARTUP_TOOLS_LIST_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -515,14 +517,39 @@ async fn start_server_task(
         .is_some();
     let list_start = Instant::now();
     let fetch_start = Instant::now();
-    let tools = list_tools_for_client_uncached(
-        &server_name,
-        &client,
-        startup_timeout,
-        initialize_result.instructions.as_deref(),
-    )
-    .await
-    .map_err(StartupOutcomeError::from)?;
+    let mut tools_result = None;
+    for attempt in 1..=MCP_STARTUP_TOOLS_LIST_ATTEMPTS {
+        match list_tools_for_client_uncached(
+            &server_name,
+            &client,
+            startup_timeout,
+            initialize_result.instructions.as_deref(),
+        )
+        .await
+        {
+            Ok(tools) => {
+                tools_result = Some(Ok(tools));
+                break;
+            }
+            Err(error) if attempt < MCP_STARTUP_TOOLS_LIST_ATTEMPTS => {
+                warn!(
+                    "MCP tools/list attempt {attempt}/{MCP_STARTUP_TOOLS_LIST_ATTEMPTS} failed for `{server_name}`; retrying: {error:#}"
+                );
+                tokio::time::sleep(MCP_STARTUP_TOOLS_LIST_RETRY_DELAY * attempt as u32).await;
+            }
+            Err(error) => {
+                tools_result = Some(Err(error));
+                break;
+            }
+        }
+    }
+    let tools = tools_result
+        .unwrap_or_else(|| {
+            Err(anyhow!(
+                "tools/list did not run for MCP server `{server_name}`"
+            ))
+        })
+        .map_err(StartupOutcomeError::from)?;
     emit_duration(
         MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
         fetch_start.elapsed(),

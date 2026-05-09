@@ -83,6 +83,8 @@ pub use threads::ThreadFilterOptions;
 // metadata, rather than the exact sum of all persisted SQLite column bytes.
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(60);
+const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct StateRuntime {
@@ -103,7 +105,7 @@ impl SqliteRuntimeMode {
     fn default() -> Self {
         Self {
             journal_mode: SqliteJournalMode::Wal,
-            max_connections: 5,
+            max_connections: 1,
         }
     }
 
@@ -219,7 +221,7 @@ fn base_sqlite_options(path: &Path, mode: SqliteRuntimeMode) -> SqliteConnectOpt
         .create_if_missing(true)
         .journal_mode(mode.journal_mode)
         .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5))
+        .busy_timeout(SQLITE_BUSY_TIMEOUT)
         .log_statements(LevelFilter::Off)
 }
 
@@ -234,6 +236,7 @@ async fn open_state_sqlite(
     let options = base_sqlite_options(path, mode).auto_vacuum(SqliteAutoVacuum::Incremental);
     let pool = SqlitePoolOptions::new()
         .max_connections(mode.max_connections)
+        .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
         .connect_with(options)
         .await?;
     reconcile_vl_legacy_state_migrations(&pool, migrator).await?;
@@ -395,7 +398,8 @@ async fn open_logs_sqlite(path: &Path, migrator: &Migrator) -> anyhow::Result<Sq
     let options = base_sqlite_options(path, SqliteRuntimeMode::default())
         .auto_vacuum(SqliteAutoVacuum::Incremental);
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(1)
+        .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
         .connect_with(options)
         .await?;
     migrator.run(&pool).await?;

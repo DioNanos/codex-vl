@@ -225,6 +225,9 @@ enum ClientOperationError {
 
 pub type Elicitation = CreateElicitationRequestParams;
 
+const MCP_INITIALIZE_ATTEMPTS: usize = 3;
+const MCP_INITIALIZE_RETRY_DELAY: Duration = Duration::from_millis(250);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElicitationResponse {
@@ -383,54 +386,71 @@ impl RmcpClient {
             send_elicitation,
             self.elicitation_pause_state.clone(),
         );
-        let pending_transport = {
-            let mut guard = self.state.lock().await;
-            match &mut *guard {
-                ClientState::Connecting { transport } => match transport.take() {
-                    Some(transport) => transport,
-                    None => return Err(anyhow!("client already initializing")),
-                },
-                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
-                ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
-            }
-        };
+        let mut last_error = None;
 
-        let (service, oauth_persistor) =
-            Self::connect_pending_transport(pending_transport, client_service.clone(), timeout)
-                .await?;
-
-        let initialize_result_rmcp = service
-            .peer()
-            .peer_info()
-            .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = initialize_result_rmcp.clone();
-
-        {
-            let mut initialize_context = self.initialize_context.lock().await;
-            *initialize_context = Some(InitializeContext {
-                timeout,
-                client_service,
-            });
-        }
-
-        {
-            let mut guard = self.state.lock().await;
-            if matches!(*guard, ClientState::Closed) {
-                return Err(anyhow!("MCP client is shut down"));
-            }
-            *guard = ClientState::Ready {
-                service,
-                oauth: oauth_persistor.clone(),
+        for attempt in 1..=MCP_INITIALIZE_ATTEMPTS {
+            let pending_transport = match self.take_or_recreate_pending_transport().await {
+                Ok(transport) => transport,
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
             };
+
+            let connect_result =
+                Self::connect_pending_transport(pending_transport, client_service.clone(), timeout)
+                    .await;
+
+            let (service, oauth_persistor) = match connect_result {
+                Ok(result) => result,
+                Err(error) => {
+                    if attempt == MCP_INITIALIZE_ATTEMPTS {
+                        last_error = Some(error);
+                        break;
+                    }
+                    warn!(
+                        "MCP initialize attempt {attempt}/{MCP_INITIALIZE_ATTEMPTS} failed; retrying: {error:#}"
+                    );
+                    tokio::time::sleep(MCP_INITIALIZE_RETRY_DELAY * attempt as u32).await;
+                    continue;
+                }
+            };
+
+            let initialize_result_rmcp = service
+                .peer()
+                .peer_info()
+                .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
+            let initialize_result = initialize_result_rmcp.clone();
+
+            {
+                let mut initialize_context = self.initialize_context.lock().await;
+                *initialize_context = Some(InitializeContext {
+                    timeout,
+                    client_service,
+                });
+            }
+
+            {
+                let mut guard = self.state.lock().await;
+                if matches!(*guard, ClientState::Closed) {
+                    return Err(anyhow!("MCP client is shut down"));
+                }
+                *guard = ClientState::Ready {
+                    service,
+                    oauth: oauth_persistor.clone(),
+                };
+            }
+
+            if let Some(runtime) = oauth_persistor
+                && let Err(error) = runtime.persist_if_needed().await
+            {
+                warn!("failed to persist OAuth tokens after initialize: {error}");
+            }
+
+            return Ok(initialize_result);
         }
 
-        if let Some(runtime) = oauth_persistor
-            && let Err(error) = runtime.persist_if_needed().await
-        {
-            warn!("failed to persist OAuth tokens after initialize: {error}");
-        }
-
-        Ok(initialize_result)
+        Err(last_error.unwrap_or_else(|| anyhow!("MCP initialize failed")))
     }
 
     pub async fn list_tools(
@@ -666,6 +686,26 @@ impl RmcpClient {
             ClientState::Ready { service, .. } => Ok(Arc::clone(service)),
             ClientState::Connecting { .. } => Err(anyhow!("MCP client not initialized")),
             ClientState::Closed => Err(anyhow!("MCP client is shut down")),
+        }
+    }
+
+    async fn take_or_recreate_pending_transport(&self) -> Result<PendingTransport> {
+        let should_recreate = {
+            let mut guard = self.state.lock().await;
+            match &mut *guard {
+                ClientState::Connecting { transport } => match transport.take() {
+                    Some(transport) => return Ok(transport),
+                    None => true,
+                },
+                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
+                ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
+            }
+        };
+
+        if should_recreate {
+            Self::create_pending_transport(&self.transport_recipe).await
+        } else {
+            Err(anyhow!("client already initializing"))
         }
     }
 
