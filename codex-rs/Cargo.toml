@@ -386,7 +386,7 @@ syntect = "5"
 sys-locale = "0.3.2"
 tar = { version = "=0.4.45", default-features = false }
 tempfile = "3.23.0"
-test-log = "0.2.19"
+test-log = "0.2.20"
 textwrap = "0.16.2"
 thiserror = "2.0.17"
 time = "0.3.47"
