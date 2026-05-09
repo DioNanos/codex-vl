@@ -26,8 +26,9 @@ codex-vl login
 ```
 
 Linux x64 and Termux Android arm64 installs use packaged native binaries. On
-macOS, npm install builds the local native binaries with Cargo; install Rust if
-Cargo is not already available.
+macOS, npm install uses a source-build package that builds the local native
+binaries with Cargo during installation; install Rust if Cargo is not already
+available.
 
 Codex VL uses the normal Codex configuration and runtime state in `~/.codex/`.
 Installing it does not replace the official `codex` binary.
@@ -59,7 +60,8 @@ Codex VL workflow layer:
   Cargo during npm postinstall
 
 For this line, macOS is shipped as a source-build payload instead of a prebuilt
-native binary. The local install path still requires Rust/Cargo on the Mac.
+native binary. The install path is expected to build locally with Cargo during
+npm installation; final Mac validation is still pending.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -108,10 +110,12 @@ cd codex-rs
 cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 ```
 
-For a local macOS install, build from source with Cargo, then point your local
-wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.130.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
-packages plus the macOS arm64 source-build package.
+For a local macOS install, npm should build from source with Cargo during
+postinstall. Manual source builds can also point a local wrapper or npm prefix at
+the produced `codex` and `codex-exec` binaries. The `0.130.0` npm `latest`
+publish includes Linux x64 and Termux Android arm64 native packages plus the
+macOS arm64 source-build package; the Mac install path is marked as pending
+validation until the Mac test report is complete.
 
 ## Status
 

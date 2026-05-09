@@ -72,11 +72,11 @@ This example is intentionally generic and does not include real secrets.
 model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "medium"
-model_catalog_json = "/Users/you/.config/codex/model_catalog.json"
+model_catalog_json = "<model-catalog-path>"
 
 [model_providers.ollama]
 name = "Ollama"
-base_url = "http://127.0.0.1:11434/v1"
+base_url = "<ollama-compatible-base-url>"
 wire_api = "responses"
 api_key = "ollama"
 
