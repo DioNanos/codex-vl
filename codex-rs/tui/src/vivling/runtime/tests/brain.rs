@@ -411,3 +411,72 @@ fn assist_prompt_context_declares_memory_and_live_state_boundary() {
     assert!(prompt.contains("Live state (now):"));
     assert!(prompt.contains("Recent observed work:"));
 }
+
+/// Smoke test for the production hot path that broke in 0.130.0:
+/// a `Vivling::record_turn_completed` call must indicize the new capsule into
+/// the per-Vivling MSA collection on disk. The earlier `relevant_memory_*`
+/// test bypasses the wrapper and calls `MsaIndex` directly, so it cannot
+/// catch a regression where `self.msa` is `None` or the closure-snapshot of
+/// `msa`/`vivling_id` becomes stale.
+///
+/// We override `vivling.msa` to point at an isolated tempdir so the test
+/// does not pollute the user's `~/.local/state/mcp-msa-rs/`.
+#[test]
+fn record_turn_completed_indexes_into_msa() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    // Replace the default-storage MSA with an isolated one so the test does
+    // not depend on (or write to) the user's HOME.
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+
+    let before = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    vivling
+        .record_turn_completed(Some("smoke turn for msa indexing"))
+        .expect("record_turn_completed should succeed");
+    let after = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    assert!(
+        after > before,
+        "work_memory should grow after record_turn_completed (before={before}, after={after})"
+    );
+
+    let collection_dir = msa_storage.path().join(format!("vivling::{vivling_id}"));
+    assert!(
+        collection_dir.is_dir(),
+        "MSA collection directory should exist at {}",
+        collection_dir.display()
+    );
+    let entries: Vec<String> = std::fs::read_dir(&collection_dir)
+        .expect("list collection dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let has_tantivy_shard = entries.iter().any(|name| {
+        name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx")
+    });
+    assert!(
+        has_tantivy_shard,
+        "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
+        collection_dir.display()
+    );
+}
