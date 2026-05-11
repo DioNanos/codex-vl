@@ -1387,17 +1387,53 @@ impl App {
         Ok(())
     }
 
-    /// codex-vl: stub per `RunVivlingAssist` — il porting completo del runtime
-    /// brain assist asincrono va riportato in una sessione dedicata.
-    pub(super) fn run_vivling_assist(&mut self, _request: crate::vivling::VivlingAssistRequest) {}
+    /// codex-vl: dispatch a Vivling brain assist request.
+    ///
+    /// Spawns a background task that talks to the configured Vivling brain
+    /// model and surfaces the reply via `VlEvent::VivlingAssistFinished`.
+    /// The async pipeline is currently a transparent placeholder until the
+    /// full brain client is re-wired against the new upstream model client
+    /// API; it returns an explanatory error so the UI flow stays
+    /// observable end-to-end (`thinking…` → reported error).
+    pub(super) fn run_vivling_assist(&mut self, request: crate::vivling::VivlingAssistRequest) {
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let vivling_id = request.vivling_id.clone();
+            let kind = request.kind.clone();
+            let result: Result<String, String> = Err(
+                "Vivling brain pipeline is temporarily offline after the upstream merge; \
+                 it will be re-wired against the new model client in a follow-up."
+                    .to_string(),
+            );
+            app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished {
+                vivling_id,
+                kind,
+                result,
+            });
+        });
+    }
 
-    /// codex-vl: stub per `RunVivlingLoopTick` — analogo a sopra.
+    /// codex-vl: dispatch a Vivling-managed loop tick (analogous to
+    /// `run_vivling_assist`). Same temporary placeholder applies.
     pub(super) fn run_vivling_loop_tick(
         &mut self,
-        _thread_id: ThreadId,
-        _job_id: String,
+        thread_id: ThreadId,
+        job_id: String,
         _request: crate::vivling::VivlingLoopTickRequest,
     ) {
+        let app_event_tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let result: Result<crate::vivling::VivlingLoopTickResult, String> = Err(
+                "Vivling loop-tick pipeline is temporarily offline after the upstream merge; \
+                 it will be re-wired against the new model client in a follow-up."
+                    .to_string(),
+            );
+            app_event_tx.send_vl(crate::vl::VlEvent::VivlingLoopTickFinished {
+                thread_id,
+                job_id,
+                result,
+            });
+        });
     }
 }
 
