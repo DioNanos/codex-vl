@@ -89,6 +89,7 @@ mod app_event;
 mod app_event_sender;
 mod app_server_approval_conversions;
 mod app_server_session;
+mod approval_events;
 mod ascii_animation;
 #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
 mod audio_device;
@@ -119,6 +120,7 @@ pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
 mod debug_config;
+mod diff_model;
 mod diff_render;
 mod exec_cell;
 mod exec_command;
@@ -147,6 +149,7 @@ mod markdown_stream;
 mod mention_codec;
 mod model_catalog;
 mod model_migration;
+mod motion;
 mod multi_agents;
 mod notifications;
 #[cfg(any(not(debug_assertions), test))]
@@ -172,9 +175,11 @@ mod status_indicator_widget;
 mod streaming;
 mod style;
 mod terminal_palette;
+mod terminal_probe;
 mod terminal_title;
 mod text_formatting;
 mod theme_picker;
+mod token_usage;
 mod tooltips;
 mod transcript_reflow;
 mod tui;
@@ -1146,7 +1151,7 @@ async fn run_ratatui_app(
                 UpdatePromptOutcome::RunUpdate(action) => {
                     terminal_restore_guard.restore()?;
                     return Ok(AppExitInfo {
-                        token_usage: codex_protocol::protocol::TokenUsage::default(),
+                        token_usage: crate::token_usage::TokenUsage::default(),
                         thread_id: None,
                         thread_name: None,
                         update_action: Some(action),
@@ -1224,7 +1229,7 @@ async fn run_ratatui_app(
             session_log::log_session_end();
             let _ = tui.terminal.clear();
             return Ok(AppExitInfo {
-                token_usage: codex_protocol::protocol::TokenUsage::default(),
+                token_usage: crate::token_usage::TokenUsage::default(),
                 thread_id: None,
                 thread_name: None,
                 update_action: None,
@@ -1269,7 +1274,7 @@ async fn run_ratatui_app(
         session_log::log_session_end();
         let _ = tui.terminal.clear();
         Ok(AppExitInfo {
-            token_usage: codex_protocol::protocol::TokenUsage::default(),
+            token_usage: crate::token_usage::TokenUsage::default(),
             thread_id: None,
             thread_name: None,
             update_action: None,
@@ -1326,7 +1331,7 @@ async fn run_ratatui_app(
                     terminal_restore_guard.restore_silently();
                     session_log::log_session_end();
                     return Ok(AppExitInfo {
-                        token_usage: codex_protocol::protocol::TokenUsage::default(),
+                        token_usage: crate::token_usage::TokenUsage::default(),
                         thread_id: None,
                         thread_name: None,
                         update_action: None,
@@ -1387,7 +1392,7 @@ async fn run_ratatui_app(
                 terminal_restore_guard.restore_silently();
                 session_log::log_session_end();
                 return Ok(AppExitInfo {
-                    token_usage: codex_protocol::protocol::TokenUsage::default(),
+                    token_usage: crate::token_usage::TokenUsage::default(),
                     thread_id: None,
                     thread_name: None,
                     update_action: None,
@@ -1432,7 +1437,7 @@ async fn run_ratatui_app(
                         terminal_restore_guard.restore_silently();
                         session_log::log_session_end();
                         return Ok(AppExitInfo {
-                            token_usage: codex_protocol::protocol::TokenUsage::default(),
+                            token_usage: crate::token_usage::TokenUsage::default(),
                             thread_id: None,
                             thread_name: None,
                             update_action: None,

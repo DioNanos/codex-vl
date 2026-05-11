@@ -140,6 +140,8 @@ mod selection_popup_common;
 mod selection_tabs;
 mod textarea;
 mod unified_exec_footer;
+mod vivling_view;
+mod vl_ext;
 pub(crate) use feedback_view::FeedbackNoteView;
 pub(crate) use hooks_browser_view::HooksBrowserView;
 pub(crate) use selection_tabs::SelectionTab;
@@ -226,6 +228,12 @@ pub(crate) struct BottomPane {
     unified_exec_footer: UnifiedExecFooter,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
+    /// codex-vl: Local terminal companion (Vivling).
+    vivling: crate::vivling::Vivling,
+    /// codex-vl: Dedicated sidebar for Vivling chat/assist messages.
+    vl_sidebar: crate::vl::VivlingSidebar,
+    /// codex-vl: Lifecycle state for Vivling activity (sleeping, eating, etc.).
+    vl_lifecycle: Option<crate::vl::LifecycleState>,
     /// Inactive threads with pending approval requests.
     pending_thread_approvals: PendingThreadApprovals,
     context_window_percent: Option<i64>,
@@ -267,6 +275,8 @@ impl BottomPane {
         let keymap = RuntimeKeymap::defaults();
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
+        let mut vivling = crate::vivling::Vivling::unavailable();
+        vivling.configure_runtime(frame_requester.clone(), animations_enabled);
         Self {
             composer,
             view_stack: Vec::new(),
@@ -282,6 +292,9 @@ impl BottomPane {
             status: None,
             unified_exec_footer: UnifiedExecFooter::new(),
             pending_input_preview: PendingInputPreview::new(),
+            vivling,
+            vl_sidebar: crate::vl::VivlingSidebar::new(),
+            vl_lifecycle: None,
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
             animations_enabled,

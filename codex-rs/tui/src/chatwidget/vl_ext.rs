@@ -103,4 +103,16 @@ impl ChatWidget {
     pub(crate) fn vl_lifecycle_observe_worker_turn(&mut self) {
         self.bottom_pane.vl_lifecycle_observe_worker_turn();
     }
+
+    /// codex-vl: render a Vivling-originated chat/assist message in the main history.
+    pub(crate) fn add_vivling_message(&mut self, text: String, _kind: crate::vl::VivlingLogKind) {
+        self.add_info_message(text, None);
+    }
+
+    /// codex-vl: refresh the Vivling live-context summary from the current chat state.
+    pub(crate) fn sync_vivling_live_context(&mut self) {
+        // The full live-context refresh sends summaries to the Vivling brain; that
+        // pipeline will be re-ported on top of the new upstream APIs in a follow-up
+        // session. The compile-clean stub keeps the call sites valid.
+    }
 }

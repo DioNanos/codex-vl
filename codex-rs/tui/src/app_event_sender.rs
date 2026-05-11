@@ -43,6 +43,11 @@ impl AppEventSender {
         }
     }
 
+    /// codex-vl: dispatch a vl-specific event through the upstream event bus.
+    pub(crate) fn send_vl(&self, event: crate::vl::VlEvent) {
+        self.send(AppEvent::Vl(event));
+    }
+
     pub(crate) fn interrupt(&self) {
         self.send(AppEvent::CodexOp(AppCommand::interrupt()));
     }

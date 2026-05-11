@@ -469,6 +469,18 @@ impl ChatWidget {
                     },
                 );
             }
+            SlashCommand::Loop => {
+                self.add_info_message(
+                    "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]".to_string(),
+                    None,
+                );
+            }
+            SlashCommand::Vivling => {
+                self.add_info_message("Usage: /vivling <subcommand>".to_string(), None);
+            }
+            SlashCommand::VivlingAlias => {
+                self.add_error_message("Usage: /vl <message>".to_string());
+            }
         }
     }
 
@@ -959,6 +971,9 @@ impl ChatWidget {
             | SlashCommand::Title
             | SlashCommand::Statusline
             | SlashCommand::Theme => QueueDrain::Stop,
+            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => {
+                QueueDrain::Continue
+            }
         }
     }
 

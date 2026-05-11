@@ -336,8 +336,10 @@ use self::mcp_startup::McpStartupStatus;
 mod session_header;
 use self::session_header::SessionHeader;
 mod hooks;
+pub(crate) mod loop_jobs;
 mod skills;
 mod slash_dispatch;
+mod vl_ext;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
@@ -751,6 +753,10 @@ pub(crate) struct ChatWidget {
     thread_name: Option<String>,
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
+    /// codex-vl: indicates the chat widget is in review-mode (used by /loop tick to skip submissions during review).
+    is_review_mode: bool,
+    /// codex-vl: in-flight loop job runtimes keyed by job id.
+    loop_jobs: BTreeMap<String, loop_jobs::LoopJobRuntime>,
     normal_placeholder_text: String,
     side_placeholder_text: String,
     forked_from: Option<ThreadId>,
@@ -4828,6 +4834,8 @@ impl ChatWidget {
             thread_name: None,
             thread_rename_block_message: None,
             active_side_conversation: false,
+            is_review_mode: false,
+            loop_jobs: BTreeMap::new(),
             normal_placeholder_text: placeholder,
             side_placeholder_text: side_placeholder,
             forked_from: None,

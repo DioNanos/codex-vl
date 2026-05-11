@@ -114,6 +114,9 @@ pub(crate) fn commands_for_input(
 /// Side-conversation gating is intentionally enforced by dispatch rather than exact lookup so a
 /// typed command can produce a side-specific unavailable message while the popup still hides it.
 pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Option<SlashCommand> {
+    if name == "vl" {
+        return Some(SlashCommand::VivlingAlias);
+    }
     let cmd = SlashCommand::from_str(name).ok()?;
     builtins_for_input(BuiltinCommandFlags {
         side_conversation_active: false,

@@ -1,9 +1,9 @@
 use super::*;
-use crate::app_event::LoopCommandRequest;
-use crate::chatwidget::LoopPromptSubmissionOutcome;
+use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
 use crate::vl::VlEvent;
+use crate::vl::events::LoopCommandRequest;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCallResponse;
 
@@ -1385,6 +1385,19 @@ impl App {
             )
             .await?;
         Ok(())
+    }
+
+    /// codex-vl: stub per `RunVivlingAssist` — il porting completo del runtime
+    /// brain assist asincrono va riportato in una sessione dedicata.
+    pub(super) fn run_vivling_assist(&mut self, _request: crate::vivling::VivlingAssistRequest) {}
+
+    /// codex-vl: stub per `RunVivlingLoopTick` — analogo a sopra.
+    pub(super) fn run_vivling_loop_tick(
+        &mut self,
+        _thread_id: ThreadId,
+        _job_id: String,
+        _request: crate::vivling::VivlingLoopTickRequest,
+    ) {
     }
 }
 

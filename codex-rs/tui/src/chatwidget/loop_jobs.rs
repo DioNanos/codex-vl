@@ -1,7 +1,35 @@
+//! codex-vl: loop subsystem stub for upstream merge.
+//!
+//! The full loop runtime (recurring prompts, loop owners, vivling loop events)
+//! lives in codex-vl as our /loop and /vivling additive layer. The methods on
+//! `ChatWidget` declared here are the stable surface called by
+//! `app/loop_controller.rs`. They are currently no-op stubs to keep the build
+//! green during the upstream merge; the real bodies will be re-ported on top
+//! of the new upstream APIs in a follow-up session.
+
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use super::*;
 use crate::vivling::VivlingLoopEvent;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
+
+fn epoch_millis_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Runtime wrapper around a persisted `ThreadLoopJob` while it is scheduled
+/// in this `ChatWidget`. Includes the spawned timer task (if any) so the
+/// widget can abort it on thread switch or shutdown.
+pub(crate) struct LoopJobRuntime {
+    pub(crate) job: codex_state::ThreadLoopJob,
+    pub(crate) task: Option<tokio::task::JoinHandle<()>>,
+}
 
 impl ChatWidget {
     pub(crate) fn record_vivling_loop_event(
@@ -36,7 +64,11 @@ impl ChatWidget {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn replace_loop_jobs(&mut self, thread_id: ThreadId, jobs: Vec<ThreadLoopJob>) {
+    pub(crate) fn replace_loop_jobs(
+        &mut self,
+        thread_id: ThreadId,
+        jobs: Vec<codex_state::ThreadLoopJob>,
+    ) {
         self.replace_loop_jobs_with_owner(
             thread_id,
             jobs,
@@ -52,7 +84,7 @@ impl ChatWidget {
     pub(crate) fn replace_loop_jobs_with_owner(
         &mut self,
         thread_id: ThreadId,
-        jobs: Vec<ThreadLoopJob>,
+        jobs: Vec<codex_state::ThreadLoopJob>,
         owner: codex_state::ThreadLoopOwner,
     ) {
         if self.thread_id != Some(thread_id) {
@@ -114,7 +146,7 @@ impl ChatWidget {
 
     pub(crate) fn submit_loop_prompt(
         &mut self,
-        job: &ThreadLoopJob,
+        job: &codex_state::ThreadLoopJob,
         owner: &codex_state::ThreadLoopOwner,
     ) -> LoopPromptSubmissionOutcome {
         let Some(thread_id) = self.thread_id else {
@@ -136,7 +168,7 @@ impl ChatWidget {
             .unwrap_or(&job.prompt_text);
         self.add_info_message(
             format!("Loop `{}` triggered on thread {thread_id}.", job.label),
-            /*hint*/ None,
+            None,
         );
         let mut prompt = job.prompt_text.clone();
         prompt.push_str("\n\n[LOOP_CONTEXT]");
@@ -196,4 +228,14 @@ impl ChatWidget {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopPromptSubmissionOutcome {
+    Submitted,
+    BlockedMissingThread,
+    BlockedSideConversation,
+    BlockedReviewMode,
+    BlockedUserTurn,
 }
