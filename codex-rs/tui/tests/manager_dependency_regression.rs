@@ -43,9 +43,6 @@ fn tui_runtime_source_does_not_depend_on_manager_escape_hatches() {
             forbidden
                 .iter()
                 .filter(move |needle| contents.contains(**needle))
-                .filter(move |needle| {
-                    !(path.ends_with("app/background_requests.rs") && **needle == "AuthManager")
-                })
                 .map(move |needle| format!("{path_display} contains `{needle}`"))
         })
         .collect();

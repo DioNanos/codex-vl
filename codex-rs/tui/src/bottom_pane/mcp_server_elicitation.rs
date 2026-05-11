@@ -12,7 +12,6 @@ use codex_app_server_protocol::McpServerElicitationRequest;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_protocol::ThreadId;
-use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY as APPROVAL_META_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL as APPROVAL_META_KIND_MCP_TOOL_CALL;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_TOOL_SUGGESTION as APPROVAL_META_KIND_TOOL_SUGGESTION;
@@ -203,29 +202,6 @@ impl FooterTip {
 }
 
 impl McpServerElicitationFormRequest {
-    pub(crate) fn from_event(thread_id: ThreadId, event: ElicitationRequestEvent) -> Option<Self> {
-        let request_id = match event.id {
-            codex_protocol::mcp::RequestId::String(value) => AppServerRequestId::String(value),
-            codex_protocol::mcp::RequestId::Integer(value) => AppServerRequestId::Integer(value),
-        };
-        let codex_protocol::approvals::ElicitationRequest::Form {
-            meta,
-            message,
-            requested_schema,
-        } = event.request
-        else {
-            return None;
-        };
-        Self::from_parts(
-            thread_id,
-            event.server_name,
-            request_id,
-            meta,
-            message,
-            requested_schema,
-        )
-    }
-
     pub(crate) fn from_app_server_request(
         thread_id: ThreadId,
         request_id: AppServerRequestId,
@@ -1135,7 +1111,7 @@ impl McpServerElicitationOverlay {
     }
 
     fn dispatch_cancel(&self) {
-        self.app_event_tx.resolve_app_server_elicitation(
+        self.app_event_tx.resolve_elicitation(
             self.request.thread_id,
             self.request.server_name.clone(),
             self.request.request_id.clone(),
@@ -1183,7 +1159,7 @@ impl McpServerElicitationOverlay {
                     Some(APPROVAL_CANCEL_VALUE) => (McpServerElicitationAction::Cancel, None),
                     _ => (McpServerElicitationAction::Cancel, None),
                 };
-            self.app_event_tx.resolve_app_server_elicitation(
+            self.app_event_tx.resolve_elicitation(
                 self.request.thread_id,
                 self.request.server_name.clone(),
                 self.request.request_id.clone(),
@@ -1201,7 +1177,7 @@ impl McpServerElicitationOverlay {
             .enumerate()
             .filter_map(|(idx, field)| self.field_value(idx).map(|value| (field.id.clone(), value)))
             .collect::<serde_json::Map<_, _>>();
-        self.app_event_tx.resolve_app_server_elicitation(
+        self.app_event_tx.resolve_elicitation(
             self.request.thread_id,
             self.request.server_name.clone(),
             self.request.request_id.clone(),
@@ -1223,12 +1199,9 @@ impl McpServerElicitationOverlay {
 
         let queue_len = self.queue.len();
         self.queue.retain(|queued_request| {
-            queued_request.server_name != *server_name
-                || queued_request.request_id.to_string() != request_id.to_string()
+            queued_request.server_name != *server_name || queued_request.request_id != *request_id
         });
-        if self.request.server_name == *server_name
-            && self.request.request_id.to_string() == request_id.to_string()
-        {
+        if self.request.server_name == *server_name && self.request.request_id == *request_id {
             self.advance_queue_or_complete();
             return true;
         }
@@ -2172,8 +2145,8 @@ mod tests {
             op,
             Op::ResolveElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                decision: codex_protocol::approvals::ElicitationAction::Accept,
+                request_id: request_id("request-1"),
+                decision: McpServerElicitationAction::Accept,
                 content: Some(serde_json::json!({
                     "confirmed": true,
                 })),
@@ -2226,8 +2199,8 @@ mod tests {
             op,
             Op::ResolveElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                decision: codex_protocol::approvals::ElicitationAction::Accept,
+                request_id: request_id("request-1"),
+                decision: McpServerElicitationAction::Accept,
                 content: None,
                 meta: Some(serde_json::json!({
                     APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_SESSION_VALUE,
@@ -2280,8 +2253,8 @@ mod tests {
             op,
             Op::ResolveElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                decision: codex_protocol::approvals::ElicitationAction::Accept,
+                request_id: request_id("request-1"),
+                decision: McpServerElicitationAction::Accept,
                 content: None,
                 meta: Some(serde_json::json!({
                     APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_ALWAYS_VALUE,
@@ -2333,8 +2306,8 @@ mod tests {
             op,
             Op::ResolveElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                decision: codex_protocol::approvals::ElicitationAction::Cancel,
+                request_id: request_id("request-1"),
+                decision: McpServerElicitationAction::Cancel,
                 content: None,
                 meta: None,
             }
@@ -2459,7 +2432,7 @@ mod tests {
         assert!(
             overlay.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
+                request_id: request_id("request-1"),
             })
         );
         assert_eq!(overlay.request.message, "Second");
@@ -2471,7 +2444,7 @@ mod tests {
         assert!(
             overlay.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
                 server_name: "server-1".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-2".to_string()),
+                request_id: request_id("request-2"),
             })
         );
         assert!(overlay.is_complete());

@@ -1098,11 +1098,8 @@ impl PickerState {
                         Some(thread_id) => Some(thread_id),
                         None => match path.as_ref() {
                             Some(path) => {
-                                crate::resolve_session_thread_id(
-                                    path.as_path(),
-                                    /*id_str_if_uuid*/ None,
-                                )
-                                .await
+                                resolve_session_thread_id(path.as_path(), /*id_str_if_uuid*/ None)
+                                    .await
                             }
                             None => None,
                         },

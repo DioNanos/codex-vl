@@ -335,7 +335,7 @@ impl AppLinkView {
         let Some(target) = self.elicitation_target.as_ref() else {
             return;
         };
-        self.app_event_tx.resolve_app_server_elicitation(
+        self.app_event_tx.resolve_elicitation(
             target.thread_id,
             target.server_name.clone(),
             target.request_id.clone(),
@@ -765,9 +765,7 @@ impl BottomPaneView for AppLinkView {
         let Some(target) = self.elicitation_target.as_ref() else {
             return false;
         };
-        if target.server_name != *server_name
-            || target.request_id.to_string() != request_id.to_string()
-        {
+        if target.server_name != *server_name || target.request_id != *request_id {
             return false;
         }
 
@@ -1164,8 +1162,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "payments".to_string(),
-                        request_id: codex_protocol::mcp::RequestId::String("request-2".to_string()),
-                        decision: codex_protocol::approvals::ElicitationAction::Accept,
+                        request_id: AppServerRequestId::String("request-2".to_string()),
+                        decision: McpServerElicitationAction::Accept,
                         content: None,
                         meta: None,
                     }
@@ -1317,8 +1315,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                        decision: codex_protocol::approvals::ElicitationAction::Accept,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Accept,
                         content: None,
                         meta: None,
                     }
@@ -1359,8 +1357,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                        decision: codex_protocol::approvals::ElicitationAction::Decline,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Decline,
                         content: None,
                         meta: None,
                     }
@@ -1409,8 +1407,8 @@ mod tests {
                     op,
                     Op::ResolveElicitation {
                         server_name: "codex_apps".to_string(),
-                        request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
-                        decision: codex_protocol::approvals::ElicitationAction::Accept,
+                        request_id: AppServerRequestId::String("request-1".to_string()),
+                        decision: McpServerElicitationAction::Accept,
                         content: None,
                         meta: None,
                     }
@@ -1445,7 +1443,7 @@ mod tests {
         assert!(
             view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
                 server_name: "codex_apps".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
+                request_id: AppServerRequestId::String("request-1".to_string()),
             })
         );
         assert!(view.is_complete());
@@ -1474,7 +1472,7 @@ mod tests {
         assert!(
             !view.dismiss_app_server_request(&ResolvedAppServerRequest::McpElicitation {
                 server_name: "other_server".to_string(),
-                request_id: codex_protocol::mcp::RequestId::String("request-1".to_string()),
+                request_id: AppServerRequestId::String("request-1".to_string()),
             })
         );
         assert!(!view.is_complete());

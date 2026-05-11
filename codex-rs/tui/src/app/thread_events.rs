@@ -6,7 +6,6 @@
 //! together with the replay behavior that consumes them.
 
 use super::*;
-use crate::app_event::HistoryLookupResponse;
 
 #[derive(Debug, Clone)]
 pub(super) struct ThreadEventSnapshot {
@@ -319,6 +318,7 @@ mod tests {
     use super::*;
     use crate::test_support::PathBufExt;
     use crate::test_support::test_path_buf;
+    use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::HookCompletedNotification;
     use codex_app_server_protocol::HookEventName as AppServerHookEventName;
@@ -335,7 +335,6 @@ mod tests {
     use codex_app_server_protocol::TurnStartedNotification;
     use codex_config::types::ApprovalsReviewer;
     use codex_protocol::models::PermissionProfile;
-    use codex_protocol::protocol::AskForApproval;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -348,7 +347,7 @@ mod tests {
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,
-            approval_policy: AskForApproval::Never.into(),
+            approval_policy: AskForApproval::Never,
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,

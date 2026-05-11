@@ -224,8 +224,27 @@ mod tests {
     fn shifted_letter_binding_matches_uppercase_char_events() {
         let binding = shift(KeyCode::Char('a'));
 
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)));
+    }
+
+    #[test]
+    fn shift_letter_binding_preserves_other_modifiers_with_uppercase_compat() {
+        let binding = KeyBinding::new(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn shift_letter_binding_does_not_match_plain_lowercase_or_other_uppercase() {
+        let binding = shift(KeyCode::Char('o'));
+
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE)));
     }
 
     #[test]

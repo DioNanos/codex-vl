@@ -1910,11 +1910,14 @@ dependencies = [
  "codex-core",
  "codex-core-plugins",
  "codex-exec-server",
+ "codex-extension-api",
  "codex-external-agent-migration",
  "codex-external-agent-sessions",
  "codex-features",
  "codex-feedback",
  "codex-file-search",
+ "codex-file-watcher",
+ "codex-git-attribution",
  "codex-git-utils",
  "codex-hooks",
  "codex-login",
@@ -1992,6 +1995,26 @@ dependencies = [
  "toml 0.9.11+spec-1.1.0",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "codex-app-server-daemon"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-app-server-protocol",
+ "codex-app-server-transport",
+ "codex-core",
+ "codex-uds",
+ "futures",
+ "libc",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -2222,6 +2245,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "codex-app-server",
+ "codex-app-server-daemon",
  "codex-app-server-protocol",
  "codex-app-server-test-client",
  "codex-arg0",
@@ -2457,7 +2481,11 @@ dependencies = [
  "codex-app-server-protocol",
  "pretty_assertions",
  "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
  "tokio",
+ "tracing",
  "urlencoding",
 ]
 
@@ -2487,6 +2515,7 @@ dependencies = [
  "codex-core-skills",
  "codex-exec-server",
  "codex-execpolicy",
+ "codex-extension-api",
  "codex-features",
  "codex-feedback",
  "codex-git-utils",
@@ -2542,7 +2571,6 @@ dependencies = [
  "insta",
  "libc",
  "maplit",
- "notify",
  "once_cell",
  "openssl-sys",
  "opentelemetry",
@@ -2591,6 +2619,7 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-exec-server",
+ "codex-extension-api",
  "codex-features",
  "codex-login",
  "codex-model-provider-info",
@@ -2749,7 +2778,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "sha2",
  "tempfile",
  "test-case",
  "thiserror 2.0.18",
@@ -2806,6 +2834,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "codex-extension-api"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "codex-tools",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2884,6 +2922,27 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "serde",
+]
+
+[[package]]
+name = "codex-file-watcher"
+version = "0.0.0"
+dependencies = [
+ "notify",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "codex-git-attribution"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+ "codex-extension-api",
+ "codex-features",
+ "pretty_assertions",
 ]
 
 [[package]]
@@ -3071,6 +3130,7 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-exec-server",
+ "codex-extension-api",
  "codex-login",
  "codex-protocol",
  "codex-shell-command",
@@ -3348,7 +3408,6 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-image",
  "codex-utils-string",
- "codex-utils-template",
  "encoding_rs",
  "globset",
  "http 1.4.0",
@@ -3662,6 +3721,18 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "codex-tool-api"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "codex-tools",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4285,6 +4356,7 @@ dependencies = [
  "codex-config",
  "codex-core",
  "codex-exec-server",
+ "codex-extension-api",
  "codex-features",
  "codex-hooks",
  "codex-login",

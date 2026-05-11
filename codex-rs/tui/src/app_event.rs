@@ -14,6 +14,8 @@ use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::MarketplaceAddResponse;
+use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::PluginInstallResponse;
@@ -21,12 +23,12 @@ use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
-use codex_protocol::protocol::RateLimitSnapshot;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
@@ -35,18 +37,14 @@ use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
-use crate::vl::VlEvent;
-// Re-export so existing `crate::app_event::LoopCommandRequest` imports keep working.
-pub(crate) use crate::vl::LoopCommandRequest;
+use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::Personality;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_realtime_webrtc::RealtimeWebrtcEvent;
 use codex_realtime_webrtc::RealtimeWebrtcSessionHandle;
 
@@ -85,6 +83,12 @@ impl RealtimeAudioDeviceKind {
             Self::Speaker => "speaker",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsolidationScrollbackReflow {
+    IfResizeReflowRan,
+    Required,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,15 +174,17 @@ pub(crate) enum AppEvent {
     /// previous chat resumable.
     ClearUi,
 
+    /// Re-render the transcript using the selected scrollback rendering mode.
+    RawOutputModeChanged {
+        enabled: bool,
+    },
+
     /// Clear the current context, start a fresh session, and submit an initial user message.
     ///
     /// This is the Plan Mode handoff path: the previous thread remains resumable, but the model
     /// sees only the explicit prompt carried in `text` once the new session is configured.
     ClearUiAndSubmitUserMessage {
         text: String,
-    },
-    RawOutputModeChanged {
-        enabled: bool,
     },
 
     /// Open the resume picker inside the running TUI session.
@@ -205,7 +211,7 @@ pub(crate) enum AppEvent {
     #[allow(dead_code)]
     FatalExitRequest(String),
 
-    /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
+    /// Forward a command to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(AppCommand),
 
@@ -262,11 +268,6 @@ pub(crate) enum AppEvent {
         result: Result<Vec<RateLimitSnapshot>, String>,
     },
 
-    /// codex-vl: all custom events (loop jobs, Vivling brain assist, etc.)
-    /// live inside a single variant to keep the upstream enum minimally
-    /// patched.
-    Vl(VlEvent),
-
     /// Send a user-confirmed request to notify the workspace owner.
     SendAddCreditsNudgeEmail {
         credit_type: AddCreditsNudgeCreditType,
@@ -312,10 +313,21 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
     },
 
+    /// Fetch lifecycle hook inventory for the provided working directory.
+    FetchHooksList {
+        cwd: PathBuf,
+    },
+
     /// Result of fetching plugin marketplace state.
     PluginsLoaded {
         cwd: PathBuf,
         result: Result<PluginListResponse, String>,
+    },
+
+    /// Result of fetching lifecycle hook inventory.
+    HooksLoaded {
+        cwd: PathBuf,
+        result: Result<codex_app_server_protocol::HooksListResponse, String>,
     },
 
     /// Open the prompt for adding a marketplace source.
@@ -337,6 +349,49 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         source: String,
         result: Result<MarketplaceAddResponse, String>,
+    },
+
+    /// Open the confirmation prompt for removing a marketplace.
+    OpenMarketplaceRemoveConfirm {
+        marketplace_name: String,
+        marketplace_display_name: String,
+    },
+
+    /// Replace the plugins popup with a marketplace-remove loading state.
+    OpenMarketplaceRemoveLoading {
+        marketplace_display_name: String,
+    },
+
+    /// Remove a marketplace by name.
+    FetchMarketplaceRemove {
+        cwd: PathBuf,
+        marketplace_name: String,
+        marketplace_display_name: String,
+    },
+
+    /// Result of removing a marketplace.
+    MarketplaceRemoveLoaded {
+        cwd: PathBuf,
+        marketplace_name: String,
+        marketplace_display_name: String,
+        result: Result<MarketplaceRemoveResponse, String>,
+    },
+
+    /// Replace the plugins popup with a marketplace-upgrade loading state.
+    OpenMarketplaceUpgradeLoading {
+        marketplace_name: Option<String>,
+    },
+
+    /// Upgrade configured Git marketplaces.
+    FetchMarketplaceUpgrade {
+        cwd: PathBuf,
+        marketplace_name: Option<String>,
+    },
+
+    /// Result of upgrading configured Git marketplaces.
+    MarketplaceUpgradeLoaded {
+        cwd: PathBuf,
+        result: Result<MarketplaceUpgradeResponse, String>,
     },
 
     /// Replace the plugins popup with a plugin-detail loading state.
@@ -451,6 +506,9 @@ pub(crate) enum AppEvent {
 
     /// Begin buffering initial resume replay rows before they are written to scrollback.
     BeginInitialHistoryReplayBuffer,
+
+    /// Begin buffering thread-switch replay cells so the final scrollback write can reuse the
+    /// resize-reflow tail renderer.
     BeginThreadSwitchHistoryReplayBuffer,
 
     InsertHistoryCell(Box<dyn HistoryCell>),
@@ -466,9 +524,15 @@ pub(crate) enum AppEvent {
     /// finalization. The `App` handler walks backward through `transcript_cells`
     /// to find the `AgentMessageCell` run and splices in the consolidated cell.
     /// The `cwd` keeps local file-link display stable across the final re-render.
+    /// `scrollback_reflow` lets table-tail finalization force the already-emitted
+    /// terminal scrollback to be rebuilt from the consolidated source-backed cell.
+    /// `deferred_history_cell` lets callers add the final stream tail to the
+    /// transcript without first writing its provisional render to scrollback.
     ConsolidateAgentMessage {
         source: String,
         cwd: PathBuf,
+        scrollback_reflow: ConsolidationScrollbackReflow,
+        deferred_history_cell: Option<Box<dyn HistoryCell>>,
     },
 
     /// Replace the contiguous run of streaming `ProposedPlanStreamCell`s at the
@@ -516,7 +580,7 @@ pub(crate) enum AppEvent {
 
     /// Persist the selected service tier to the appropriate config.
     PersistServiceTierSelection {
-        service_tier: Option<ServiceTier>,
+        service_tier: Option<String>,
     },
 
     /// Open the device picker for a realtime microphone or speaker.
@@ -723,6 +787,11 @@ pub(crate) enum AppEvent {
         current_hash: String,
     },
 
+    /// Trust the current definitions for one or more hooks by stable hook key.
+    TrustHooks {
+        updates: Vec<crate::hooks_rpc::HookTrustUpdate>,
+    },
+
     /// Result of persisting hook enabled state.
     HookEnabledSet {
         key: String,
@@ -802,14 +871,15 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
         branch: Option<String>,
     },
-    /// Async update of PR and branch-change metadata for status line rendering.
+    /// Async update of Git summary fields for status line rendering.
     StatusLineGitSummaryUpdated {
         cwd: PathBuf,
-        summary: crate::branch_summary::StatusLineGitSummary,
+        summary: crate::chatwidget::StatusLineGitSummary,
     },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,
+        use_theme_colors: bool,
     },
     /// Dismiss the status-line setup UI without changing config.
     StatusLineSetupCancelled,
@@ -830,6 +900,9 @@ pub(crate) enum AppEvent {
         name: String,
     },
 
+    /// Runtime syntax theme preview changed; refresh theme-derived UI colors.
+    SyntaxThemePreviewed,
+
     /// Open set/remove actions for the selected keymap action.
     OpenKeymapActionMenu {
         context: String,
@@ -848,6 +921,9 @@ pub(crate) enum AppEvent {
         action: String,
         intent: KeymapEditIntent,
     },
+
+    /// Open the keymap keypress inspector.
+    OpenKeymapDebug,
 
     /// Apply a captured key to the selected keymap action.
     KeymapCaptured {

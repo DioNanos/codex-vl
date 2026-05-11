@@ -387,6 +387,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) thread_goal_processor: ThreadGoalRequestProcessor,
     pub(super) state_db: Option<StateDbHandle>,
     pub(super) background_tasks: TaskTracker,
+    pub(super) skills_watcher: Arc<SkillsWatcher>,
 }
 
 impl ThreadRequestProcessor {
@@ -405,6 +406,7 @@ impl ThreadRequestProcessor {
         thread_list_state_permit: Arc<Semaphore>,
         thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
+        skills_watcher: Arc<SkillsWatcher>,
     ) -> Self {
         Self {
             auth_manager,
@@ -421,6 +423,7 @@ impl ThreadRequestProcessor {
             thread_goal_processor,
             state_db,
             background_tasks: TaskTracker::new(),
+            skills_watcher,
         }
     }
 
@@ -822,6 +825,7 @@ impl ThreadRequestProcessor {
             thread_list_state_permit: self.thread_list_state_permit.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
+            skills_watcher: Arc::clone(&self.skills_watcher),
         }
     }
 
@@ -919,6 +923,7 @@ impl ThreadRequestProcessor {
             thread_list_state_permit: self.thread_list_state_permit.clone(),
             fallback_model_provider: self.config.model_provider_id.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
+            skills_watcher: Arc::clone(&self.skills_watcher),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
@@ -1115,7 +1120,6 @@ impl ThreadRequestProcessor {
             })
             .collect::<Vec<_>>();
         let core_dynamic_tool_count = core_dynamic_tools.len();
-
         let NewThread {
             thread_id,
             thread,
@@ -2296,9 +2300,13 @@ impl ThreadRequestProcessor {
         self.thread_manager.subscribe_thread_created()
     }
 
-    pub(crate) async fn connection_initialized(&self, connection_id: ConnectionId) {
+    pub(crate) async fn connection_initialized(
+        &self,
+        connection_id: ConnectionId,
+        capabilities: ConnectionCapabilities,
+    ) {
         self.thread_state_manager
-            .connection_initialized(connection_id)
+            .connection_initialized(connection_id, capabilities)
             .await;
     }
 

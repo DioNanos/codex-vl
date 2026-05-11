@@ -36,7 +36,7 @@ use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::PermissionProfileModificationParams;
 use codex_app_server_protocol::PermissionProfileSelectionParams;
-use codex_app_server_protocol::RateLimitSnapshot as AppServerRateLimitSnapshot;
+use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
@@ -73,6 +73,7 @@ use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioResponse;
+use codex_app_server_protocol::ThreadRealtimeAudioChunk;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStartResponse;
 use codex_app_server_protocol::ThreadRealtimeStartTransport;
@@ -99,6 +100,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
+use codex_app_server_protocol::UserInput;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -519,9 +521,9 @@ impl AppServerSession {
     pub(crate) async fn turn_start(
         &mut self,
         thread_id: ThreadId,
-        items: Vec<codex_protocol::user_input::UserInput>,
+        items: Vec<UserInput>,
         cwd: PathBuf,
-        approval_policy: codex_protocol::protocol::AskForApproval,
+        approval_policy: AskForApproval,
         approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
         permission_profile: PermissionProfile,
         active_permission_profile: Option<ActivePermissionProfile>,
@@ -545,11 +547,11 @@ impl AppServerSession {
                 request_id,
                 params: TurnStartParams {
                     thread_id: thread_id.to_string(),
-                    input: items.into_iter().map(Into::into).collect(),
+                    input: items,
                     responsesapi_client_metadata: None,
                     environments: None,
                     cwd: Some(cwd),
-                    approval_policy: Some(approval_policy.into()),
+                    approval_policy: Some(approval_policy),
                     approvals_reviewer: Some(approvals_reviewer.into()),
                     sandbox_policy,
                     permissions,
@@ -594,7 +596,7 @@ impl AppServerSession {
         &mut self,
         thread_id: ThreadId,
         turn_id: String,
-        items: Vec<codex_protocol::user_input::UserInput>,
+        items: Vec<UserInput>,
     ) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
         let request_id = self.next_request_id();
         self.client
@@ -602,7 +604,7 @@ impl AppServerSession {
                 request_id,
                 params: TurnSteerParams {
                     thread_id: thread_id.to_string(),
-                    input: items.into_iter().map(Into::into).collect(),
+                    input: items,
                     responsesapi_client_metadata: None,
                     expected_turn_id: turn_id,
                 },
@@ -840,7 +842,7 @@ impl AppServerSession {
     pub(crate) async fn review_start(
         &mut self,
         thread_id: ThreadId,
-        review_request: codex_protocol::protocol::ReviewRequest,
+        target: ReviewTarget,
     ) -> Result<ReviewStartResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -848,7 +850,7 @@ impl AppServerSession {
                 request_id,
                 params: ReviewStartParams {
                     thread_id: thread_id.to_string(),
-                    target: review_target_to_app_server(review_request.target),
+                    target,
                     delivery: Some(ReviewDelivery::Inline),
                 },
             })
@@ -888,10 +890,11 @@ impl AppServerSession {
     pub(crate) async fn thread_realtime_start(
         &mut self,
         thread_id: ThreadId,
-        params: codex_protocol::protocol::ConversationStartParams,
+        transport: Option<ThreadRealtimeStartTransport>,
+        voice: Option<serde_json::Value>,
     ) -> Result<()> {
         let request_id = self.next_request_id();
-        let params = thread_realtime_start_params(thread_id, params)?;
+        let params = thread_realtime_start_params(thread_id, transport, voice)?;
         let _: ThreadRealtimeStartResponse = self
             .client
             .request_typed(ClientRequest::ThreadRealtimeStart { request_id, params })
@@ -903,7 +906,7 @@ impl AppServerSession {
     pub(crate) async fn thread_realtime_audio(
         &mut self,
         thread_id: ThreadId,
-        params: codex_protocol::protocol::ConversationAudioParams,
+        frame: ThreadRealtimeAudioChunk,
     ) -> Result<()> {
         let request_id = self.next_request_id();
         let _: ThreadRealtimeAppendAudioResponse = self
@@ -912,7 +915,7 @@ impl AppServerSession {
                 request_id,
                 params: ThreadRealtimeAppendAudioParams {
                     thread_id: thread_id.to_string(),
-                    audio: params.frame.into(),
+                    audio: frame,
                 },
             })
             .await
@@ -966,26 +969,10 @@ impl AppServerSession {
     }
 }
 
-fn review_target_to_app_server(target: codex_protocol::protocol::ReviewTarget) -> ReviewTarget {
-    match target {
-        codex_protocol::protocol::ReviewTarget::UncommittedChanges => {
-            ReviewTarget::UncommittedChanges
-        }
-        codex_protocol::protocol::ReviewTarget::BaseBranch { branch } => {
-            ReviewTarget::BaseBranch { branch }
-        }
-        codex_protocol::protocol::ReviewTarget::Commit { sha, title } => {
-            ReviewTarget::Commit { sha, title }
-        }
-        codex_protocol::protocol::ReviewTarget::Custom { instructions } => {
-            ReviewTarget::Custom { instructions }
-        }
-    }
-}
-
 fn thread_realtime_start_params(
     thread_id: ThreadId,
-    params: codex_protocol::protocol::ConversationStartParams,
+    transport: Option<ThreadRealtimeStartTransport>,
+    voice: Option<serde_json::Value>,
 ) -> Result<ThreadRealtimeStartParams> {
     let mut value = serde_json::Map::new();
     value.insert(
@@ -994,33 +981,16 @@ fn thread_realtime_start_params(
     );
     value.insert(
         "outputModality".to_string(),
-        serde_json::to_value(params.output_modality).wrap_err("serializing realtime modality")?,
+        serde_json::Value::String("audio".to_string()),
     );
-    if let Some(prompt) = params.prompt {
-        value.insert("prompt".to_string(), serde_json::to_value(prompt)?);
-    }
-    if let Some(realtime_session_id) = params.realtime_session_id {
-        value.insert(
-            "realtimeSessionId".to_string(),
-            serde_json::Value::String(realtime_session_id),
-        );
-    }
-    if let Some(transport) = params.transport {
-        let transport = match transport {
-            codex_protocol::protocol::ConversationStartTransport::Websocket => {
-                ThreadRealtimeStartTransport::Websocket
-            }
-            codex_protocol::protocol::ConversationStartTransport::Webrtc { sdp } => {
-                ThreadRealtimeStartTransport::Webrtc { sdp }
-            }
-        };
+    if let Some(transport) = transport {
         value.insert(
             "transport".to_string(),
             serde_json::to_value(transport).wrap_err("serializing realtime transport")?,
         );
     }
-    if let Some(voice) = params.voice {
-        value.insert("voice".to_string(), serde_json::to_value(voice)?);
+    if let Some(voice) = voice {
+        value.insert("voice".to_string(), voice);
     }
 
     serde_json::from_value(serde_json::Value::Object(value))
@@ -1527,49 +1497,13 @@ async fn thread_session_state_from_thread_response(
 
 pub(crate) fn app_server_rate_limit_snapshots(
     response: GetAccountRateLimitsResponse,
-) -> Vec<codex_protocol::protocol::RateLimitSnapshot> {
+) -> Vec<RateLimitSnapshot> {
     let mut snapshots = Vec::new();
-    snapshots.push(app_server_rate_limit_snapshot_to_core(response.rate_limits));
+    snapshots.push(response.rate_limits);
     if let Some(by_limit_id) = response.rate_limits_by_limit_id {
-        snapshots.extend(
-            by_limit_id
-                .into_values()
-                .map(app_server_rate_limit_snapshot_to_core),
-        );
+        snapshots.extend(by_limit_id.into_values());
     }
     snapshots
-}
-
-pub(crate) fn app_server_rate_limit_snapshot_to_core(
-    snapshot: AppServerRateLimitSnapshot,
-) -> codex_protocol::protocol::RateLimitSnapshot {
-    codex_protocol::protocol::RateLimitSnapshot {
-        limit_id: snapshot.limit_id,
-        limit_name: snapshot.limit_name,
-        primary: snapshot
-            .primary
-            .map(|window| codex_protocol::protocol::RateLimitWindow {
-                used_percent: f64::from(window.used_percent),
-                window_minutes: window.window_duration_mins,
-                resets_at: window.resets_at,
-            }),
-        secondary: snapshot
-            .secondary
-            .map(|window| codex_protocol::protocol::RateLimitWindow {
-                used_percent: f64::from(window.used_percent),
-                window_minutes: window.window_duration_mins,
-                resets_at: window.resets_at,
-            }),
-        credits: snapshot
-            .credits
-            .map(|credits| codex_protocol::protocol::CreditsSnapshot {
-                has_credits: credits.has_credits,
-                unlimited: credits.unlimited,
-                balance: credits.balance,
-            }),
-        plan_type: snapshot.plan_type,
-        rate_limit_reached_type: snapshot.rate_limit_reached_type.map(Into::into),
-    }
 }
 
 #[cfg(test)]

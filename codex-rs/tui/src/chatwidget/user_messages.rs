@@ -21,6 +21,12 @@ pub(super) struct UserMessageDisplay {
     pub(super) text_elements: Vec<TextElement>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PendingSteerCompareKey {
+    pub(super) message: String,
+    pub(super) image_count: usize,
+}
+
 impl ChatWidget {
     pub(super) fn user_message_display_from_parts(
         message: String,
@@ -55,6 +61,30 @@ impl ChatWidget {
             remote_image_urls,
             local_images,
             text_elements,
+        }
+    }
+
+    /// Build the compare key for a submitted pending steer without invoking the
+    /// expensive request-serialization path. Pending steers only need to match the
+    /// committed app-server `UserMessage` item emitted after input drains, which
+    /// preserves flattened text and total image count.
+    pub(super) fn pending_steer_compare_key_from_items(
+        items: &[UserInput],
+    ) -> PendingSteerCompareKey {
+        let mut message = String::new();
+        let mut image_count = 0;
+
+        for item in items {
+            match item {
+                UserInput::Text { text, .. } => message.push_str(text),
+                UserInput::Image { .. } | UserInput::LocalImage { .. } => image_count += 1,
+                UserInput::Skill { .. } | UserInput::Mention { .. } => {}
+            }
+        }
+
+        PendingSteerCompareKey {
+            message,
+            image_count,
         }
     }
 

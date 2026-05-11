@@ -35,6 +35,9 @@ impl App {
                 )
                 .await;
             }
+            AppEvent::RawOutputModeChanged { enabled } => {
+                self.apply_raw_output_mode(tui, enabled, /*notify*/ false);
+            }
             AppEvent::ClearUiAndSubmitUserMessage { text } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
@@ -50,10 +53,6 @@ impl App {
                     ),
                 )
                 .await;
-            }
-            AppEvent::RawOutputModeChanged { enabled } => {
-                self.chat_widget.set_raw_output_mode_and_notify(enabled);
-                tui.frame_requester().schedule_frame();
             }
             AppEvent::OpenResumePicker => {
                 let picker_app_server = match crate::start_app_server_for_picker(
@@ -124,9 +123,6 @@ impl App {
                     }
                 }
             }
-            AppEvent::Vl(vl_event) => {
-                self.handle_vl_event(vl_event).await?;
-            }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
                     "codex.thread.fork",
@@ -191,9 +187,11 @@ impl App {
 
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::BeginInitialHistoryReplayBuffer
-            | AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
+            AppEvent::BeginInitialHistoryReplayBuffer => {
                 self.begin_initial_history_replay_buffer();
+            }
+            AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
+                self.begin_thread_switch_history_replay_buffer();
             }
             AppEvent::InsertHistoryCell(cell) => {
                 let cell: Arc<dyn HistoryCell> = cell.into();
@@ -219,29 +217,19 @@ impl App {
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.finish_initial_history_replay_buffer(tui);
             }
-            AppEvent::ConsolidateAgentMessage { source, cwd } => {
-                if !self.terminal_resize_reflow_enabled() {
-                    self.transcript_reflow.clear();
-                    return Ok(AppRunControl::Continue);
-                }
-                let end = self.transcript_cells.len();
-                let start =
-                    trailing_run_start::<history_cell::AgentMessageCell>(&self.transcript_cells);
-                if start < end {
-                    let consolidated: Arc<dyn HistoryCell> =
-                        Arc::new(history_cell::AgentMarkdownCell::new(source, &cwd));
-                    self.transcript_cells
-                        .splice(start..end, std::iter::once(consolidated.clone()));
-
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.consolidate_cells(start..end, consolidated.clone());
-                        tui.frame_requester().schedule_frame();
-                    }
-
-                    self.maybe_finish_stream_reflow(tui)?;
-                } else {
-                    self.maybe_finish_stream_reflow(tui)?;
-                }
+            AppEvent::ConsolidateAgentMessage {
+                source,
+                cwd,
+                scrollback_reflow,
+                deferred_history_cell,
+            } => {
+                self.handle_consolidate_agent_message(
+                    tui,
+                    source,
+                    cwd,
+                    scrollback_reflow,
+                    deferred_history_cell,
+                )?;
             }
             AppEvent::ConsolidateProposedPlan(source) => {
                 if !self.terminal_resize_reflow_enabled() {
@@ -408,11 +396,33 @@ impl App {
             AppEvent::FetchPluginsList { cwd } => {
                 self.fetch_plugins_list(app_server, cwd);
             }
+            AppEvent::FetchHooksList { cwd } => {
+                self.fetch_hooks_list(app_server, cwd);
+            }
             AppEvent::OpenMarketplaceAddPrompt => {
                 self.chat_widget.open_marketplace_add_prompt();
             }
             AppEvent::OpenMarketplaceAddLoading { source } => {
                 self.chat_widget.open_marketplace_add_loading_popup(&source);
+            }
+            AppEvent::OpenMarketplaceRemoveConfirm {
+                marketplace_name,
+                marketplace_display_name,
+            } => {
+                self.chat_widget.open_marketplace_remove_confirmation(
+                    marketplace_name,
+                    marketplace_display_name,
+                );
+            }
+            AppEvent::OpenMarketplaceRemoveLoading {
+                marketplace_display_name,
+            } => {
+                self.chat_widget
+                    .open_marketplace_remove_loading_popup(&marketplace_display_name);
+            }
+            AppEvent::OpenMarketplaceUpgradeLoading { marketplace_name } => {
+                self.chat_widget
+                    .open_marketplace_upgrade_loading_popup(marketplace_name.as_deref());
             }
             AppEvent::OpenPluginDetailLoading {
                 plugin_display_name,
@@ -435,8 +445,17 @@ impl App {
             AppEvent::PluginsLoaded { cwd, result } => {
                 self.chat_widget.on_plugins_loaded(cwd, result);
             }
+            AppEvent::HooksLoaded { cwd, result } => {
+                self.chat_widget.on_hooks_loaded(cwd, result);
+            }
             AppEvent::FetchMarketplaceAdd { cwd, source } => {
                 self.fetch_marketplace_add(app_server, cwd, source);
+            }
+            AppEvent::FetchMarketplaceUpgrade {
+                cwd,
+                marketplace_name,
+            } => {
+                self.fetch_marketplace_upgrade(app_server, cwd, marketplace_name);
             }
             AppEvent::MarketplaceAddLoaded {
                 cwd,
@@ -447,6 +466,63 @@ impl App {
                 self.chat_widget
                     .on_marketplace_add_loaded(cwd.clone(), source, result);
                 if add_succeeded && self.chat_widget.config_ref().cwd.as_path() == cwd.as_path() {
+                    if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+                        tracing::warn!(error = %err, "failed to refresh config after marketplace add");
+                    }
+                    self.fetch_plugins_list(app_server, cwd);
+                }
+            }
+            AppEvent::MarketplaceUpgradeLoaded { cwd, result } => {
+                let marketplace_contents_changed =
+                    matches!(&result, Ok(response) if !response.upgraded_roots.is_empty());
+                if marketplace_contents_changed {
+                    if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to refresh config after marketplace upgrade"
+                        );
+                    }
+                    self.chat_widget.refresh_plugin_mentions();
+                    self.chat_widget.submit_op(AppCommand::reload_user_config());
+                }
+                self.chat_widget
+                    .on_marketplace_upgrade_loaded(cwd.clone(), result);
+                if self.chat_widget.config_ref().cwd.as_path() == cwd.as_path() {
+                    self.fetch_plugins_list(app_server, cwd);
+                }
+            }
+            AppEvent::FetchMarketplaceRemove {
+                cwd,
+                marketplace_name,
+                marketplace_display_name,
+            } => {
+                self.fetch_marketplace_remove(
+                    app_server,
+                    cwd,
+                    marketplace_name,
+                    marketplace_display_name,
+                );
+            }
+            AppEvent::MarketplaceRemoveLoaded {
+                cwd,
+                marketplace_name,
+                marketplace_display_name,
+                result,
+            } => {
+                let remove_succeeded = result.is_ok();
+                self.chat_widget.on_marketplace_remove_loaded(
+                    cwd.clone(),
+                    marketplace_name,
+                    marketplace_display_name,
+                    result,
+                );
+                if remove_succeeded && self.chat_widget.config_ref().cwd.as_path() == cwd.as_path()
+                {
+                    if let Err(err) = self.refresh_in_memory_config_from_disk().await {
+                        tracing::warn!(error = %err, "failed to refresh config after marketplace remove");
+                    }
+                    self.chat_widget.refresh_plugin_mentions();
+                    self.chat_widget.submit_op(AppCommand::reload_user_config());
                     self.fetch_plugins_list(app_server, cwd);
                 }
             }
@@ -1026,7 +1102,7 @@ impl App {
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     AppCommand::override_turn_context(
                                         /*cwd*/ None,
-                                        Some(preset.approval),
+                                        Some(AskForApproval::from(preset.approval)),
                                         Some(self.config.approvals_reviewer),
                                         Some(preset.permission_profile.clone()),
                                         #[cfg(target_os = "windows")]
@@ -1039,8 +1115,9 @@ impl App {
                                         /*personality*/ None,
                                     ),
                                 ));
-                                self.app_event_tx
-                                    .send(AppEvent::UpdateAskForApprovalPolicy(preset.approval));
+                                self.app_event_tx.send(AppEvent::UpdateAskForApprovalPolicy(
+                                    AskForApproval::from(preset.approval),
+                                ));
                                 self.app_event_tx.send(AppEvent::UpdatePermissionProfile(
                                     preset.permission_profile.clone(),
                                 ));
@@ -1187,26 +1264,21 @@ impl App {
             AppEvent::PersistServiceTierSelection { service_tier } => {
                 self.refresh_status_line();
                 let profile = self.active_profile.as_deref();
-                self.config.service_tier =
-                    service_tier.map(|service_tier| service_tier.request_value().to_string());
+                self.config.service_tier = service_tier.clone();
                 let mut edits = ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_profile(profile)
-                    .set_service_tier(service_tier);
+                    .set_service_tier(service_tier.clone());
                 if service_tier.is_none() {
                     self.config.notices.fast_default_opt_out = Some(true);
                     edits = edits.set_fast_default_opt_out(/*opted_out*/ true);
                 }
                 match edits.apply().await {
                     Ok(()) => {
-                        let status = if matches!(
-                            service_tier,
-                            Some(codex_protocol::config_types::ServiceTier::Fast)
-                        ) {
-                            "on"
+                        let mut message = if let Some(service_tier) = service_tier {
+                            format!("Service tier set to {service_tier}")
                         } else {
-                            "off"
+                            "Service tier cleared".to_string()
                         };
-                        let mut message = format!("Fast mode set to {status}");
                         if let Some(profile) = profile {
                             message.push_str(" for ");
                             message.push_str(profile);
@@ -1215,14 +1287,14 @@ impl App {
                         self.chat_widget.add_info_message(message, /*hint*/ None);
                     }
                     Err(err) => {
-                        tracing::error!(error = %err, "failed to persist fast mode selection");
+                        tracing::error!(error = %err, "failed to persist service tier selection");
                         if let Some(profile) = profile {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save Fast mode for profile `{profile}`: {err}"
+                                "Failed to save service tier for profile `{profile}`: {err}"
                             ));
                         } else {
                             self.chat_widget.add_error_message(format!(
-                                "Failed to save default Fast mode: {err}"
+                                "Failed to save default service tier: {err}"
                             ));
                         }
                     }
@@ -1289,10 +1361,10 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 self.config = config;
-                self.runtime_approval_policy_override =
-                    Some(self.config.permissions.approval_policy.value());
-                self.chat_widget
-                    .set_approval_policy(self.config.permissions.approval_policy.value());
+                let approval_policy =
+                    AskForApproval::from(self.config.permissions.approval_policy.value());
+                self.runtime_approval_policy_override = Some(approval_policy);
+                self.chat_widget.set_approval_policy(approval_policy);
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
             }
@@ -1625,14 +1697,46 @@ impl App {
                     }
                 }
             }
-            AppEvent::OpenPermissionsPopup => {
-                self.chat_widget.open_permissions_popup();
+            AppEvent::SetHookEnabled { key, enabled } => {
+                self.set_hook_enabled(app_server, key, enabled);
             }
-            AppEvent::SetHookEnabled { .. } | AppEvent::TrustHook { .. } => {}
-            AppEvent::HookEnabledSet { result, .. } | AppEvent::HookTrusted { result } => {
+            AppEvent::TrustHook { key, current_hash } => {
+                self.trust_hook(app_server, key, current_hash);
+            }
+            AppEvent::TrustHooks { updates } => {
+                self.trust_hooks(app_server, updates);
+            }
+            AppEvent::HookEnabledSet {
+                key,
+                enabled,
+                result,
+            } => {
+                let queued_enabled = self
+                    .pending_hook_enabled_writes
+                    .get_mut(&key)
+                    .and_then(Option::take);
+                let should_apply_result = if let Some(queued_enabled) = queued_enabled
+                    && (result.is_err() || queued_enabled != enabled)
+                {
+                    self.spawn_hook_enabled_write(app_server, key.clone(), queued_enabled);
+                    false
+                } else {
+                    true
+                };
+                if should_apply_result {
+                    self.pending_hook_enabled_writes.remove(&key);
+                    if let Err(err) = result {
+                        self.chat_widget.add_error_message(err);
+                    }
+                }
+            }
+            AppEvent::HookTrusted { result } => {
                 if let Err(err) = result {
                     self.chat_widget.add_error_message(err);
                 }
+            }
+            AppEvent::OpenPermissionsPopup => {
+                self.chat_widget.open_permissions_popup();
             }
             AppEvent::OpenReviewBranchPicker(cwd) => {
                 self.chat_widget.show_review_branch_picker(&cwd).await;
@@ -1729,22 +1833,29 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
-            AppEvent::StatusLineSetup { items } => {
+            AppEvent::StatusLineSetup {
+                items,
+                use_theme_colors,
+            } => {
                 let ids = items.iter().map(ToString::to_string).collect::<Vec<_>>();
-                let edit = crate::legacy_core::config::edit::status_line_items_edit(&ids);
+                let items_edit = crate::legacy_core::config::edit::status_line_items_edit(&ids);
+                let colors_edit =
+                    crate::legacy_core::config::edit::status_line_use_colors_edit(use_theme_colors);
                 let apply_result = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_edits([edit])
+                    .with_edits([items_edit, colors_edit])
                     .apply()
                     .await;
                 match apply_result {
                     Ok(()) => {
                         self.config.tui_status_line = Some(ids.clone());
-                        self.chat_widget.setup_status_line(items);
+                        self.config.tui_status_line_use_colors = use_theme_colors;
+                        self.chat_widget.setup_status_line(items, use_theme_colors);
                     }
                     Err(err) => {
-                        tracing::error!(error = %err, "failed to persist status line items; keeping previous selection");
-                        self.chat_widget
-                            .add_error_message(format!("Failed to save status line items: {err}"));
+                        tracing::error!(error = %err, "failed to persist status line settings; keeping previous selection");
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save status line settings: {err}"
+                        ));
                     }
                 }
             }
@@ -1805,14 +1916,19 @@ impl App {
                             crate::render::highlight::set_syntax_theme(theme);
                         }
                         self.sync_tui_theme_selection(name);
+                        self.refresh_status_line();
                     }
                     Err(err) => {
                         self.restore_runtime_theme_from_config();
+                        self.refresh_status_line();
                         tracing::error!(error = %err, "failed to persist theme selection");
                         self.chat_widget
                             .add_error_message(format!("Failed to save theme: {err}"));
                     }
                 }
+            }
+            AppEvent::SyntaxThemePreviewed => {
+                self.refresh_status_line();
             }
             AppEvent::OpenKeymapActionMenu { context, action } => {
                 self.chat_widget
@@ -1829,6 +1945,9 @@ impl App {
             } => {
                 self.chat_widget
                     .open_keymap_capture(context, action, intent, &self.keymap);
+            }
+            AppEvent::OpenKeymapDebug => {
+                self.chat_widget.open_keymap_debug(&self.keymap);
             }
             AppEvent::KeymapCaptured {
                 context,

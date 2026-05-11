@@ -7,11 +7,12 @@
 
 use super::goal_validation::GoalObjectiveValidationSource;
 use super::*;
-use crate::app_event::LoopCommandRequest;
 use crate::app_event::ThreadGoalSetMode;
 use crate::bottom_pane::prompt_args::parse_slash_name;
-use crate::bottom_pane::slash_commands;
-use crate::vivling::VivlingAction;
+use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
+use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::bottom_pane::slash_commands::SlashCommandItem;
+use crate::bottom_pane::slash_commands::find_slash_command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -32,7 +33,6 @@ const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_REVIEW_UNAVAILABLE_MESSAGE: &str =
     "'/side' is unavailable while code review is running.";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str = "Press Esc to return to the main thread first.";
-const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
@@ -48,6 +48,20 @@ impl ChatWidget {
         if cmd == SlashCommand::Goal {
             self.bottom_pane.drain_pending_submission_state();
         }
+        self.bottom_pane.record_pending_slash_command_history();
+    }
+
+    pub(super) fn handle_service_tier_command_dispatch(&mut self, command: ServiceTierCommand) {
+        if self.active_side_conversation {
+            self.add_error_message(format!(
+                "'/{}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}",
+                command.name
+            ));
+            self.bottom_pane.drain_pending_submission_state();
+            self.bottom_pane.record_pending_slash_command_history();
+            return;
+        }
+        self.toggle_service_tier_from_ui(command);
         self.bottom_pane.record_pending_slash_command_history();
     }
 
@@ -187,9 +201,6 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
-            SlashCommand::Fast => {
-                self.toggle_fast_mode_from_ui();
-            }
             SlashCommand::Realtime => {
                 if !self.realtime_conversation_enabled() {
                     return;
@@ -239,26 +250,14 @@ impl ChatWidget {
             SlashCommand::Side => {
                 self.request_empty_side_conversation();
             }
-            SlashCommand::Loop => {
-                self.add_info_message(LOOP_USAGE.to_string(), /*hint*/ None);
-            }
-            SlashCommand::Vivling => {
-                self.dispatch_vivling_command("");
-            }
-            SlashCommand::VivlingAlias => {
-                self.add_error_message("Usage: /vl <message>".to_string());
-            }
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
-            SlashCommand::Approvals | SlashCommand::Permissions => {
+            SlashCommand::Permissions => {
                 self.open_permissions_popup();
             }
-            SlashCommand::Ide => {
-                self.add_info_message(
-                    "IDE context is not available in this build.".to_string(),
-                    None,
-                );
+            SlashCommand::Vim => {
+                self.toggle_vim_mode_and_notify();
             }
             SlashCommand::Keymap => {
                 self.open_keymap_picker();
@@ -333,9 +332,6 @@ impl ChatWidget {
             SlashCommand::Logout => {
                 self.app_event_tx.send(AppEvent::Logout);
             }
-            // SlashCommand::Undo => {
-            //     self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
-            // }
             SlashCommand::Copy => {
                 self.copy_last_agent_markdown();
             }
@@ -375,6 +371,9 @@ impl ChatWidget {
             SlashCommand::Skills => {
                 self.open_skills_menu();
             }
+            SlashCommand::Hooks => {
+                self.add_hooks_output();
+            }
             SlashCommand::Status => {
                 if self.should_prefetch_rate_limits() {
                     let request_id = self.next_status_refresh_request_id;
@@ -389,6 +388,9 @@ impl ChatWidget {
                         /*refreshing_rate_limits*/ false, /*request_id*/ None,
                     );
                 }
+            }
+            SlashCommand::Ide => {
+                self.handle_ide_command();
             }
             SlashCommand::DebugConfig => {
                 self.add_debug_config_output();
@@ -439,15 +441,14 @@ impl ChatWidget {
             SlashCommand::TestApproval => {
                 use std::collections::HashMap;
 
-                use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
-                use codex_protocol::protocol::FileChange;
+                use crate::approval_events::ApplyPatchApprovalRequestEvent;
+                use crate::diff_model::FileChange;
 
                 self.on_apply_patch_approval_request(
                     "1".to_string(),
                     ApplyPatchApprovalRequestEvent {
                         call_id: "1".to_string(),
                         turn_id: "turn-1".to_string(),
-                        started_at_ms: 0,
                         changes: HashMap::from([
                             (
                                 PathBuf::from("/tmp/test.txt"),
@@ -585,26 +586,8 @@ impl ChatWidget {
         } = prepared;
         let trimmed = args.trim();
         match cmd {
-            SlashCommand::Fast => {
-                match trimmed.to_ascii_lowercase().as_str() {
-                    "on" => self.set_service_tier_selection(Some(ServiceTier::Fast)),
-                    "off" => self.set_service_tier_selection(/*service_tier*/ None),
-                    "status" => {
-                        let status =
-                            if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
-                                "on"
-                            } else {
-                                "off"
-                            };
-                        self.add_info_message(
-                            format!("Fast mode is {status}."),
-                            /*hint*/ None,
-                        );
-                    }
-                    _ => {
-                        self.add_error_message("Usage: /fast [on|off|status]".to_string());
-                    }
-                }
+            SlashCommand::Ide => {
+                self.handle_ide_command_args(trimmed);
             }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
                 "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
@@ -613,10 +596,14 @@ impl ChatWidget {
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),
                 "debug" => {
-                    self.add_info_message(
-                        "Keymap debug is not available in this build.".to_string(),
-                        /*hint*/ None,
-                    );
+                    match crate::keymap::RuntimeKeymap::from_config(&self.config.tui_keymap) {
+                        Ok(runtime_keymap) => self.open_keymap_debug(&runtime_keymap),
+                        Err(err) => {
+                            self.add_error_message(format!(
+                                "Invalid `tui.keymap` configuration: {err}"
+                            ));
+                        }
+                    }
                 }
                 _ => self.add_error_message("Usage: /keymap [debug]".to_string()),
             },
@@ -769,30 +756,9 @@ impl ChatWidget {
                 );
                 self.request_side_conversation(parent_thread_id, Some(user_message));
             }
-            SlashCommand::Loop => {
-                let Some(thread_id) = self.thread_id else {
-                    self.add_error_message(
-                        "'/loop' is unavailable before the session starts.".to_string(),
-                    );
-                    return;
-                };
-                let Some(request) = parse_loop_command(trimmed) else {
-                    self.add_error_message(LOOP_USAGE.to_string());
-                    return;
-                };
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::LoopCommand { thread_id, request });
-            }
-            SlashCommand::Vivling => {
-                self.dispatch_vivling_command(trimmed);
-            }
-            SlashCommand::VivlingAlias => {
-                self.dispatch_vivling_direct_alias(trimmed);
-            }
             SlashCommand::Review if !trimmed.is_empty() => {
-                self.submit_op(AppCommand::review(ReviewRequest {
-                    target: ReviewTarget::Custom { instructions: args },
-                    user_facing_hint: None,
+                self.submit_op(AppCommand::review(ReviewTarget::Custom {
+                    instructions: args,
                 }));
             }
             SlashCommand::Resume if !trimmed.is_empty() => {
@@ -840,7 +806,9 @@ impl ChatWidget {
             return QueueDrain::Stop;
         }
 
-        let Some(cmd) = slash_commands::find_builtin_command(name, self.builtin_command_flags())
+        let service_tier_commands = self.current_model_service_tier_commands();
+        let Some(command) =
+            find_slash_command(name, self.builtin_command_flags(), &service_tier_commands)
         else {
             self.add_info_message(
                 format!(
@@ -852,11 +820,19 @@ impl ChatWidget {
         };
 
         if rest.is_empty() {
-            self.dispatch_command(cmd);
-            return self.queued_command_drain_result(cmd);
+            return match command {
+                SlashCommandItem::Builtin(cmd) => {
+                    self.dispatch_command(cmd);
+                    self.queued_command_drain_result(cmd)
+                }
+                SlashCommandItem::ServiceTier(command) => {
+                    self.handle_service_tier_command_dispatch(command);
+                    QueueDrain::Continue
+                }
+            };
         }
 
-        if !cmd.supports_inline_args() {
+        if !command.supports_inline_args() {
             self.submit_user_message(UserMessage {
                 text,
                 local_images,
@@ -866,6 +842,16 @@ impl ChatWidget {
             });
             return QueueDrain::Stop;
         }
+        let SlashCommandItem::Builtin(cmd) = command else {
+            self.submit_user_message(UserMessage {
+                text,
+                local_images,
+                remote_image_urls,
+                text_elements,
+                mention_bindings,
+            });
+            return QueueDrain::Stop;
+        };
 
         let trimmed_start = rest.trim_start();
         let leading_trimmed = rest.len().saturating_sub(trimmed_start.len());
@@ -894,7 +880,7 @@ impl ChatWidget {
         self.queued_command_drain_result(cmd)
     }
 
-    fn builtin_command_flags(&self) -> slash_commands::BuiltinCommandFlags {
+    fn builtin_command_flags(&self) -> BuiltinCommandFlags {
         #[cfg(target_os = "windows")]
         let allow_elevate_sandbox = {
             let windows_sandbox_level = WindowsSandboxLevel::from_config(&self.config);
@@ -903,12 +889,12 @@ impl ChatWidget {
         #[cfg(not(target_os = "windows"))]
         let allow_elevate_sandbox = false;
 
-        slash_commands::BuiltinCommandFlags {
+        BuiltinCommandFlags {
             collaboration_modes_enabled: self.collaboration_modes_enabled(),
             connectors_enabled: self.connectors_enabled(),
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
-            fast_command_enabled: self.fast_mode_enabled(),
+            service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
             realtime_conversation_enabled: self.realtime_conversation_enabled(),
             audio_device_selection_enabled: self.realtime_audio_device_selection_enabled(),
@@ -922,7 +908,7 @@ impl ChatWidget {
             return QueueDrain::Stop;
         }
         match cmd {
-            SlashCommand::Fast
+            SlashCommand::Ide
             | SlashCommand::Status
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
@@ -933,11 +919,9 @@ impl ChatWidget {
             | SlashCommand::Apps
             | SlashCommand::Plugins
             | SlashCommand::Rollout
-            | SlashCommand::Loop
-            | SlashCommand::Vivling
-            | SlashCommand::VivlingAlias
             | SlashCommand::Copy
             | SlashCommand::Raw
+            | SlashCommand::Vim
             | SlashCommand::Diff
             | SlashCommand::Rename
             | SlashCommand::TestApproval => QueueDrain::Continue,
@@ -960,8 +944,6 @@ impl ChatWidget {
             | SlashCommand::Keymap
             | SlashCommand::Agent
             | SlashCommand::MultiAgents
-            | SlashCommand::Approvals
-            | SlashCommand::Ide
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
             | SlashCommand::SandboxReadRoot
@@ -973,117 +955,11 @@ impl ChatWidget {
             | SlashCommand::Logout
             | SlashCommand::Mention
             | SlashCommand::Skills
+            | SlashCommand::Hooks
             | SlashCommand::Title
             | SlashCommand::Statusline
             | SlashCommand::Theme => QueueDrain::Stop,
         }
-    }
-
-    fn dispatch_vivling_command(&mut self, args: &str) {
-        self.sync_vivling_live_context();
-        match VivlingAction::parse(args)
-            .and_then(|action| self.bottom_pane.run_vivling_command(&self.config, action))
-        {
-            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
-                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat)
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
-                let view = crate::bottom_pane::VivlingCardView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
-                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
-                let log_kind = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => {
-                        crate::vl::VivlingLogKind::Chat
-                    }
-                    crate::vivling::VivlingBrainRequestKind::Assist => {
-                        crate::vl::VivlingLogKind::Assist
-                    }
-                };
-                let pending_message = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => {
-                        "Vivling brain chat is thinking...".to_string()
-                    }
-                    crate::vivling::VivlingBrainRequestKind::Assist => {
-                        "Vivling brain assist is thinking...".to_string()
-                    }
-                };
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(pending_message, log_kind);
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
-            }
-            Err(message) => self.add_error_message(message),
-        }
-    }
-
-    fn dispatch_vivling_direct_alias(&mut self, args: &str) {
-        self.sync_vivling_live_context();
-        let trimmed = args.trim();
-        if trimmed.is_empty() {
-            self.add_error_message("Usage: /vl <message>".to_string());
-            return;
-        }
-        let action = if trimmed.eq_ignore_ascii_case("status") {
-            VivlingAction::Status
-        } else {
-            VivlingAction::Chat(trimmed.to_string())
-        };
-        match self.bottom_pane.run_vivling_command(&self.config, action) {
-            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
-                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat)
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
-                let view = crate::bottom_pane::VivlingCardView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
-                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
-                self.bottom_pane.show_view(Box::new(view));
-                self.request_redraw();
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
-                let log_kind = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => {
-                        crate::vl::VivlingLogKind::Chat
-                    }
-                    crate::vivling::VivlingBrainRequestKind::Assist => {
-                        crate::vl::VivlingLogKind::Assist
-                    }
-                };
-                let pending_message = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => {
-                        "Vivling brain chat is thinking...".to_string()
-                    }
-                    crate::vivling::VivlingBrainRequestKind::Assist => {
-                        "Vivling brain assist is thinking...".to_string()
-                    }
-                };
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
-                self.add_vivling_message(pending_message, log_kind);
-            }
-            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
-                self.app_event_tx
-                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
-            }
-            Err(message) => self.add_error_message(message),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn dispatch_vivling_command_for_test(&mut self, args: &str) {
-        self.dispatch_vivling_command(args);
     }
 
     fn slash_command_args_elements(
@@ -1124,100 +1000,12 @@ impl ChatWidget {
     }
 
     fn ensure_side_command_allowed_outside_review(&mut self, cmd: SlashCommand) -> bool {
-        if cmd != SlashCommand::Side || !self.is_review_mode {
+        if cmd != SlashCommand::Side || !self.review.is_review_mode {
             return true;
         }
 
         self.add_error_message(SIDE_REVIEW_UNAVAILABLE_MESSAGE.to_string());
         self.bottom_pane.drain_pending_submission_state();
         false
-    }
-}
-
-fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
-    let trimmed = args.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let subcommand = parts.next()?;
-    match subcommand {
-        "ls" => Some(LoopCommandRequest::List),
-        "show" => Some(LoopCommandRequest::Show {
-            label: parts.next()?.to_string(),
-        }),
-        "on" => Some(LoopCommandRequest::Enable {
-            label: parts.next()?.to_string(),
-        }),
-        "off" => Some(LoopCommandRequest::Disable {
-            label: parts.next()?.to_string(),
-        }),
-        "rm" => Some(LoopCommandRequest::Remove {
-            label: parts.next()?.to_string(),
-        }),
-        "owner" => match parts.next() {
-            None => Some(LoopCommandRequest::OwnerShow),
-            Some("main") => Some(LoopCommandRequest::OwnerSetMain),
-            Some("vivling") => Some(LoopCommandRequest::OwnerSetVivling),
-            Some(_) => None,
-        },
-        "add" => {
-            let label = parts.next()?.to_string();
-            let interval_token = parts.next()?;
-            let prompt_text = parts.collect::<Vec<_>>().join(" ");
-            let interval_seconds = parse_loop_interval_seconds(interval_token)?;
-            if prompt_text.trim().is_empty() {
-                return None;
-            }
-            Some(LoopCommandRequest::Add {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text: None,
-                auto_remove_on_completion: None,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn parse_loop_interval_seconds(token: &str) -> Option<i64> {
-    if token.len() < 2 {
-        return None;
-    }
-    let (value, unit) = token.split_at(token.len() - 1);
-    let value = value.parse::<i64>().ok()?;
-    let interval_seconds = match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3600,
-        _ => return None,
-    };
-    ((30..=86_400).contains(&interval_seconds)).then_some(interval_seconds)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_loop_add_accepts_valid_interval() {
-        let command = parse_loop_command("add ci 5m check forge").expect("valid loop command");
-        assert_eq!(
-            command,
-            LoopCommandRequest::Add {
-                label: "ci".to_string(),
-                interval_seconds: 300,
-                prompt_text: "check forge".to_string(),
-                goal_text: None,
-                auto_remove_on_completion: None,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_loop_rejects_short_interval() {
-        assert_eq!(parse_loop_command("add ci 5s nope"), None);
     }
 }
