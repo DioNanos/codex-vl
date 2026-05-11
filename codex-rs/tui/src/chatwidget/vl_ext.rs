@@ -111,6 +111,11 @@ impl ChatWidget {
 
     /// codex-vl: refresh the Vivling live-context summary from the current chat state.
     pub(crate) fn sync_vivling_live_context(&mut self) {
+        let run_state = if self.bottom_pane.is_task_running() {
+            "running"
+        } else {
+            "idle"
+        };
         let mut context = crate::vivling::VivlingLiveContext::default();
         context.thread_title = self.thread_name.clone();
         context.cwd = self
@@ -120,6 +125,11 @@ impl ChatWidget {
             .map(std::string::ToString::to_string);
         context.model = self.config.model.clone();
         context.session_id = self.thread_id.map(|id| id.to_string());
+        context.run_state = Some(run_state.to_string());
+        context.active_agent_label = self
+            .bottom_pane
+            .active_agent_label()
+            .map(std::string::ToString::to_string);
         self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }

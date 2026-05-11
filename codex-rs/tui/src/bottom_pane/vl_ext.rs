@@ -211,6 +211,12 @@ impl BottomPane {
         self.loop_context_label.as_deref()
     }
 
+    /// codex-vl: getter for the composer's active agent label, used by
+    /// `ChatWidget::sync_vivling_live_context`.
+    pub(crate) fn active_agent_label(&self) -> Option<&str> {
+        self.composer.active_agent_label()
+    }
+
     pub(crate) fn set_vivling_animation_text(&self, text: String) {
         self.vivling.set_animation_text(text);
     }

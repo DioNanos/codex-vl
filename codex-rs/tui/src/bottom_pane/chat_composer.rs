@@ -4157,6 +4157,11 @@ impl ChatComposer {
         self.active_agent_label = active_agent_label;
         true
     }
+
+    /// codex-vl: read-only accessor used by Vivling live-context sync.
+    pub(crate) fn active_agent_label(&self) -> Option<&str> {
+        self.active_agent_label.as_deref()
+    }
 }
 
 fn footer_insert_newline_key(
