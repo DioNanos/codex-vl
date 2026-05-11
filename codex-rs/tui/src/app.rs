@@ -203,6 +203,7 @@ mod thread_goal_actions;
 mod thread_routing;
 mod thread_session_state;
 mod loop_controller;
+mod vivling_background;
 mod vl_handler;
 
 use self::agent_navigation::AgentNavigationDirection;
