@@ -111,8 +111,13 @@ impl ChatWidget {
 
     /// codex-vl: refresh the Vivling live-context summary from the current chat state.
     pub(crate) fn sync_vivling_live_context(&mut self) {
-        // The full live-context refresh sends summaries to the Vivling brain; that
-        // pipeline will be re-ported on top of the new upstream APIs in a follow-up
-        // session. The compile-clean stub keeps the call sites valid.
+        let mut context = crate::vivling::VivlingLiveContext::default();
+        context.thread_title = self.thread_name.clone();
+        context.cwd = self
+            .config
+            .cwd
+            .to_str()
+            .map(std::string::ToString::to_string);
+        self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }

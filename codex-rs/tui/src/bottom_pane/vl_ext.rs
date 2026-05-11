@@ -197,10 +197,19 @@ impl BottomPane {
     }
 
     /// codex-vl: surface for `ChatWidget::replace_loop_jobs_with_owner` to
-    /// publish the current loop summary. The new upstream footer doesn't expose
-    /// a stable label hook yet, so this is a no-op in the merged build; the
-    /// visual surface will be re-wired in a follow-up.
-    pub(crate) fn set_loop_context_label(&mut self, _label: Option<String>) {}
+    /// publish the current loop summary. The label is stored on the bottom
+    /// pane and exposed through `loop_context_label()`; the visual rendering
+    /// in the new upstream footer will be re-wired in a follow-up commit.
+    pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) {
+        if self.loop_context_label != label {
+            self.loop_context_label = label;
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn loop_context_label(&self) -> Option<&str> {
+        self.loop_context_label.as_deref()
+    }
 
     pub(crate) fn set_vivling_animation_text(&self, text: String) {
         self.vivling.set_animation_text(text);

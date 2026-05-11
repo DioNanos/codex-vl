@@ -236,6 +236,8 @@ pub(crate) struct BottomPane {
     vl_sidebar: crate::vl::VivlingSidebar,
     /// codex-vl: Lifecycle state for Vivling activity (sleeping, eating, etc.).
     vl_lifecycle: Option<crate::vl::LifecycleState>,
+    /// codex-vl: optional textual summary of active loop jobs for footer display.
+    loop_context_label: Option<String>,
     /// Inactive threads with pending approval requests.
     pending_thread_approvals: PendingThreadApprovals,
     context_window_percent: Option<i64>,
@@ -297,6 +299,7 @@ impl BottomPane {
             vivling,
             vl_sidebar: crate::vl::VivlingSidebar::new(),
             vl_lifecycle: None,
+            loop_context_label: None,
             pending_thread_approvals: PendingThreadApprovals::new(),
             esc_backtrack_hint: false,
             animations_enabled,
