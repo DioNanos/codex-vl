@@ -104,9 +104,36 @@ impl ChatWidget {
         self.bottom_pane.vl_lifecycle_observe_worker_turn();
     }
 
-    /// codex-vl: render a Vivling-originated chat/assist message in the main history.
-    pub(crate) fn add_vivling_message(&mut self, text: String, _kind: crate::vl::VivlingLogKind) {
-        self.add_info_message(text, None);
+    /// codex-vl: render a Vivling-originated chat/assist message in the main history
+    /// and also push it onto the dedicated Vivling sidebar log.
+    pub(crate) fn add_vivling_message(&mut self, text: String, kind: crate::vl::VivlingLogKind) {
+        use ratatui::style::Stylize;
+        use ratatui::text::Line;
+        let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
+        let is_life = kind == crate::vl::VivlingLogKind::Life;
+        self.app_event_tx
+            .send_vl(crate::vl::VlEvent::SidebarPushMessage {
+                kind,
+                text: text.clone(),
+                vivling_id,
+            });
+        if is_life {
+            self.request_redraw();
+            return;
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if index == 0 {
+                lines.push(vec!["Vivling: ".dim(), line.to_string().into()].into());
+            } else {
+                lines.push(vec!["          ".dim(), line.to_string().into()].into());
+            }
+        }
+        if lines.is_empty() {
+            lines.push("Vivling".dim().into());
+        }
+        self.add_plain_history_lines(lines);
+        self.request_redraw();
     }
 
     /// codex-vl: refresh the Vivling live-context summary from the current chat state.

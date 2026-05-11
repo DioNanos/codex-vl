@@ -1695,6 +1695,7 @@ impl ChatWidget {
     /// user actually looking at?" and the footer stack remains a pure renderer of that decision.
     pub(crate) fn set_active_agent_label(&mut self, active_agent_label: Option<String>) {
         self.bottom_pane.set_active_agent_label(active_agent_label);
+        self.sync_vivling_live_context();
     }
 
     /// Recomputes footer status-line content from config and current runtime state.
@@ -2372,6 +2373,10 @@ impl ChatWidget {
         if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
         }
+        if !from_replay {
+            self.record_vivling_turn_completed(last_agent_message.as_deref());
+            self.vl_lifecycle_observe_worker_turn();
+        }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
         // still show the prompt once after thread switch replay.
         if !from_replay {
@@ -2379,6 +2384,15 @@ impl ChatWidget {
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         let follow_up_started = self.maybe_send_next_queued_input();
+        // codex-vl: reload loop jobs after turn completes
+        if !from_replay
+            && !self.is_user_turn_pending_or_running()
+            && let Some(thread_id) = self.thread_id
+            && !self.active_side_conversation
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::ReloadLoopJobs { thread_id });
+        }
         let active_goal_continuing = self
             .current_goal_status
             .as_ref()
@@ -4052,6 +4066,11 @@ impl ChatWidget {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
+        self.vl_lifecycle_tick(
+            self.is_vivling_baby_or_juvenile(),
+            !self.is_vl_sidebar_expanded(),
+            false,
+        );
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
         if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
@@ -4920,6 +4939,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
+        widget.bottom_pane.configure_vivling(&widget.config);
         widget.refresh_status_surfaces();
 
         widget
