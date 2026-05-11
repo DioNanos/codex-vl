@@ -118,6 +118,8 @@ impl ChatWidget {
             .cwd
             .to_str()
             .map(std::string::ToString::to_string);
+        context.model = self.config.model.clone();
+        context.session_id = self.thread_id.map(|id| id.to_string());
         self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }
