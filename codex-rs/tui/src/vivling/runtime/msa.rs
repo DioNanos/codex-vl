@@ -117,12 +117,22 @@ impl VivlingMsa {
             metadata,
             created_at: capsule.created_at,
         };
-        if let Err(err) = idx.index_document(&doc, None) {
-            tracing::warn!(
-                target: "vivling::msa",
-                "index_capsule failed for vivling::{vivling_id} (kind={}): {err}",
-                capsule.kind
-            );
+        match idx.index_document(&doc, None) {
+            Ok(_) => {
+                tracing::info!(
+                    target: "vivling::msa",
+                    "indexed capsule for vivling::{vivling_id} (kind={}, weight={})",
+                    capsule.kind,
+                    capsule.weight
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "vivling::msa",
+                    "index_capsule failed for vivling::{vivling_id} (kind={}): {err}",
+                    capsule.kind
+                );
+            }
         }
     }
 }
