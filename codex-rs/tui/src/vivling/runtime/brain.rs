@@ -246,12 +246,14 @@ impl Vivling {
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
         let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
-            let before = state.work_memory.len();
-            state.record_loop_event(&event);
+            new_capsules
+                .borrow_mut()
+                .extend(state.record_loop_event(&event));
             if let Some(summary) = live_summary.as_deref() {
-                state.record_live_context_summary(summary);
+                new_capsules
+                    .borrow_mut()
+                    .extend(state.record_live_context_summary(summary));
             }
-            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);
@@ -281,12 +283,14 @@ impl Vivling {
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
         let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
-            let before = state.work_memory.len();
-            state.record_turn_completed(summary);
+            new_capsules
+                .borrow_mut()
+                .extend(state.record_turn_completed(summary));
             if let Some(summary) = live_summary.as_deref() {
-                state.record_live_context_summary(summary);
+                new_capsules
+                    .borrow_mut()
+                    .extend(state.record_live_context_summary(summary));
             }
-            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_turn(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);

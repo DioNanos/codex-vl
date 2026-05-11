@@ -173,19 +173,21 @@ impl VivlingState {
         archetype: WorkArchetype,
         weight: u64,
         created_at: DateTime<Utc>,
-    ) {
-        self.work_memory.push(VivlingWorkMemoryEntry {
+    ) -> VivlingWorkMemoryEntry {
+        let entry = VivlingWorkMemoryEntry {
             kind: kind.to_string(),
             summary,
             archetype,
             weight,
             created_at,
-        });
+        };
+        self.work_memory.push(entry.clone());
         self.capsules_since_distill = self.capsules_since_distill.saturating_add(1);
         if self.work_memory.len() > MAX_WORK_MEMORY_ENTRIES {
             let overflow = self.work_memory.len() - MAX_WORK_MEMORY_ENTRIES;
             self.work_memory.drain(0..overflow);
         }
+        entry
     }
 
     fn record_work_capsule(
@@ -194,14 +196,14 @@ impl VivlingState {
         summary: String,
         archetype: WorkArchetype,
         weight: u64,
-    ) -> Option<Stage> {
+    ) -> (Option<Stage>, VivlingWorkMemoryEntry) {
         let now = Utc::now();
         self.note_active_work_day(now);
         let granted_xp = self.grant_work_xp(weight);
         let stored_weight = granted_xp.max(weight.min(12));
         self.work_affinities.add(archetype, stored_weight);
         self.last_work_summary = Some(summary.clone());
-        self.push_memory(kind, summary, archetype, stored_weight, now);
+        let entry = self.push_memory(kind, summary, archetype, stored_weight, now);
         self.record_semantic_signal(Self::infer_semantic_topic(
             kind,
             self.last_work_summary.as_deref().unwrap_or(""),
@@ -214,7 +216,7 @@ impl VivlingState {
         );
         self.maybe_distill_memory();
         self.rebuild_learning_profiles();
-        self.recompute_level()
+        (self.recompute_level(), entry)
     }
 
     fn record_memory_only_capsule(
@@ -222,11 +224,11 @@ impl VivlingState {
         kind: &str,
         summary: String,
         archetype: WorkArchetype,
-    ) -> Option<Stage> {
+    ) -> (Option<Stage>, VivlingWorkMemoryEntry) {
         let now = Utc::now();
         self.note_active_work_day(now);
         self.last_work_summary = Some(summary.clone());
-        self.push_memory(kind, summary, archetype, 0, now);
+        let entry = self.push_memory(kind, summary, archetype, 0, now);
         self.record_semantic_signal(Self::infer_semantic_topic(
             kind,
             self.last_work_summary.as_deref().unwrap_or(""),
@@ -239,7 +241,7 @@ impl VivlingState {
         );
         self.maybe_distill_memory();
         self.rebuild_learning_profiles();
-        self.recompute_level()
+        (self.recompute_level(), entry)
     }
 
     pub(crate) fn species_bias(&self) -> &WorkAffinitySet {
@@ -273,7 +275,10 @@ impl VivlingState {
         }
     }
 
-    pub(crate) fn record_loop_event(&mut self, event: &VivlingLoopEvent) {
+    pub(crate) fn record_loop_event(
+        &mut self,
+        event: &VivlingLoopEvent,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         self.loop_exposure = self.loop_exposure.saturating_add(1);
         let source = match event.source {
             VivlingLoopEventSource::User => "user",
@@ -318,7 +323,7 @@ impl VivlingState {
             ),
             (None, None, None) => format!("loop {} `{}` ({source})", event.action, event.label),
         };
-        let gained_stage = match event.kind {
+        let (gained_stage, entry) = match event.kind {
             VivlingLoopEventKind::Config => {
                 self.loop_admin_churn = self.loop_admin_churn.saturating_add(1);
                 let weight = match event.action.as_str() {
@@ -426,9 +431,13 @@ impl VivlingState {
             }
             None => format!("loop {} `{}` noted", event.action, event.label),
         });
+        vec![entry]
     }
 
-    pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) {
+    pub(crate) fn record_turn_completed(
+        &mut self,
+        summary: Option<&str>,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         self.turns_observed = self.turns_observed.saturating_add(1);
         let digest = summary
             .map(str::trim)
@@ -437,7 +446,7 @@ impl VivlingState {
             .unwrap_or_else(|| "completed a codex turn".to_string());
         let archetype = classify_work_archetype(&digest);
         let memory_summary = format!("turn completed: {digest}");
-        let gained_stage = self.record_work_capsule("turn", memory_summary, archetype, 14);
+        let (gained_stage, entry) = self.record_work_capsule("turn", memory_summary, archetype, 14);
         self.last_message = Some(match gained_stage {
             Some(_stage) => self
                 .pending_upgrade
@@ -460,17 +469,21 @@ impl VivlingState {
                 WorkArchetype::Operator => "done. loop ok?".to_string(),
             },
         });
+        vec![entry]
     }
 
-    pub(crate) fn record_live_context_summary(&mut self, summary: &str) {
+    pub(crate) fn record_live_context_summary(
+        &mut self,
+        summary: &str,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         let summary = truncate_summary(summary.trim(), 160);
         if summary.is_empty() || self.last_live_context_summary.as_deref() == Some(summary.as_str())
         {
-            return;
+            return Vec::new();
         }
 
         self.last_live_context_summary = Some(summary.clone());
-        self.record_memory_only_capsule(
+        let (_gained_stage, entry) = self.record_memory_only_capsule(
             "live_context",
             format!("live context: {summary}"),
             WorkArchetype::Operator,
@@ -480,6 +493,7 @@ impl VivlingState {
         } else if self.stage() == Stage::Juvenile {
             self.last_message = Some(format!("tracking {summary}"));
         }
+        vec![entry]
     }
 
     pub(crate) fn memory_digest(&self) -> String {
