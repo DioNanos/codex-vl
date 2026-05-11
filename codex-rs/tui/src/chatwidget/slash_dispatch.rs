@@ -13,6 +13,8 @@ use crate::bottom_pane::slash_commands::BuiltinCommandFlags;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
 use crate::bottom_pane::slash_commands::SlashCommandItem;
 use crate::bottom_pane::slash_commands::find_slash_command;
+use crate::vivling::VivlingAction;
+use crate::vl::events::LoopCommandRequest;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlashCommandDispatchSource {
@@ -33,6 +35,7 @@ const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
 const SIDE_REVIEW_UNAVAILABLE_MESSAGE: &str =
     "'/side' is unavailable while code review is running.";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str = "Press Esc to return to the main thread first.";
+const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
 const GOAL_USAGE_HINT: &str = "Example: /goal improve benchmark coverage";
 const RAW_USAGE: &str = "Usage: /raw [on|off]";
@@ -470,17 +473,112 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Loop => {
-                self.add_info_message(
-                    "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]".to_string(),
-                    None,
-                );
+                self.add_info_message(LOOP_USAGE.to_string(), None);
             }
             SlashCommand::Vivling => {
-                self.add_info_message("Usage: /vivling <subcommand>".to_string(), None);
+                self.dispatch_vivling_command("");
             }
             SlashCommand::VivlingAlias => {
                 self.add_error_message("Usage: /vl <message>".to_string());
             }
+        }
+    }
+
+    fn dispatch_vivling_command(&mut self, args: &str) {
+        self.sync_vivling_live_context();
+        match VivlingAction::parse(args)
+            .and_then(|action| self.bottom_pane.run_vivling_command(&self.config, action))
+        {
+            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
+                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat);
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
+                let view = crate::bottom_pane::VivlingCardView::new(data);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
+                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
+                let log_kind = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => crate::vl::VivlingLogKind::Chat,
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        crate::vl::VivlingLogKind::Assist
+                    }
+                };
+                let pending_message = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        "Vivling brain chat is thinking...".to_string()
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        "Vivling brain assist is thinking...".to_string()
+                    }
+                };
+                self.app_event_tx
+                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
+                self.add_vivling_message(pending_message, log_kind);
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
+                self.app_event_tx
+                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
+            }
+            Err(message) => self.add_error_message(message),
+        }
+    }
+
+    fn dispatch_vivling_direct_alias(&mut self, args: &str) {
+        self.sync_vivling_live_context();
+        let trimmed = args.trim();
+        if trimmed.is_empty() {
+            self.add_error_message("Usage: /vl <message>".to_string());
+            return;
+        }
+        let action = if trimmed.eq_ignore_ascii_case("status") {
+            VivlingAction::Status
+        } else {
+            VivlingAction::Chat(trimmed.to_string())
+        };
+        match self.bottom_pane.run_vivling_command(&self.config, action) {
+            Ok(crate::vivling::VivlingCommandOutcome::Message(message)) => {
+                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat);
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::OpenCard(data)) => {
+                let view = crate::bottom_pane::VivlingCardView::new(data);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
+                let view = crate::bottom_pane::VivlingUpgradeView::new(data);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
+                let log_kind = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => crate::vl::VivlingLogKind::Chat,
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        crate::vl::VivlingLogKind::Assist
+                    }
+                };
+                let pending_message = match &request.kind {
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        "Vivling brain chat is thinking...".to_string()
+                    }
+                    crate::vivling::VivlingBrainRequestKind::Assist => {
+                        "Vivling brain assist is thinking...".to_string()
+                    }
+                };
+                self.app_event_tx
+                    .send_vl(crate::vl::VlEvent::RunVivlingAssist { request });
+                self.add_vivling_message(pending_message, log_kind);
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::PersistBrainProfile(request)) => {
+                self.app_event_tx
+                    .send_vl(crate::vl::VlEvent::PersistVivlingBrainProfile { request });
+            }
+            Err(message) => self.add_error_message(message),
         }
     }
 
@@ -781,6 +879,26 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot { path: args });
             }
+            SlashCommand::Loop => {
+                let Some(thread_id) = self.thread_id else {
+                    self.add_error_message(
+                        "'/loop' is unavailable before the session starts.".to_string(),
+                    );
+                    return;
+                };
+                let Some(request) = parse_loop_command(trimmed) else {
+                    self.add_error_message(LOOP_USAGE.to_string());
+                    return;
+                };
+                self.app_event_tx
+                    .send_vl(crate::vl::VlEvent::LoopCommand { thread_id, request });
+            }
+            SlashCommand::Vivling => {
+                self.dispatch_vivling_command(trimmed);
+            }
+            SlashCommand::VivlingAlias => {
+                self.dispatch_vivling_direct_alias(trimmed);
+            }
             _ => self.dispatch_command(cmd),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
@@ -1023,4 +1141,67 @@ impl ChatWidget {
         self.bottom_pane.drain_pending_submission_state();
         false
     }
+}
+
+fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let subcommand = parts.next()?;
+    match subcommand {
+        "ls" => Some(LoopCommandRequest::List),
+        "show" => Some(LoopCommandRequest::Show {
+            label: parts.next()?.to_string(),
+        }),
+        "on" => Some(LoopCommandRequest::Enable {
+            label: parts.next()?.to_string(),
+        }),
+        "off" => Some(LoopCommandRequest::Disable {
+            label: parts.next()?.to_string(),
+        }),
+        "rm" => Some(LoopCommandRequest::Remove {
+            label: parts.next()?.to_string(),
+        }),
+        "owner" => match parts.next() {
+            None => Some(LoopCommandRequest::OwnerShow),
+            Some("main") => Some(LoopCommandRequest::OwnerSetMain),
+            Some("vivling") => Some(LoopCommandRequest::OwnerSetVivling),
+            Some(_) => None,
+        },
+        "add" => {
+            let label = parts.next()?.to_string();
+            let interval_token = parts.next()?;
+            let prompt_text = parts.collect::<Vec<_>>().join(" ");
+            let interval_seconds = parse_loop_interval_seconds(interval_token)?;
+            if prompt_text.trim().is_empty() {
+                return None;
+            }
+            Some(LoopCommandRequest::Add {
+                label,
+                interval_seconds,
+                prompt_text,
+                goal_text: None,
+                auto_remove_on_completion: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_loop_interval_seconds(token: &str) -> Option<i64> {
+    if token.len() < 2 {
+        return None;
+    }
+    let (value, unit) = token.split_at(token.len() - 1);
+    let value = value.parse::<i64>().ok()?;
+    let interval_seconds = match unit {
+        "s" => value,
+        "m" => value * 60,
+        "h" => value * 3600,
+        _ => return None,
+    };
+    ((30..=86_400).contains(&interval_seconds)).then_some(interval_seconds)
 }

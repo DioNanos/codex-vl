@@ -187,6 +187,8 @@ pub(crate) use experimental_features_view::ExperimentalFeatureItem;
 pub(crate) use experimental_features_view::ExperimentalFeaturesView;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
+pub(crate) use vivling_view::VivlingCardView;
+pub(crate) use vivling_view::VivlingUpgradeView;
 
 struct DelayedApprovalRequest {
     request: ApprovalRequest,
