@@ -42,6 +42,7 @@ use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -647,6 +648,20 @@ impl BottomPane {
             {
                 // Send Op::Interrupt
                 status.interrupt();
+                self.request_redraw();
+                return InputResult::None;
+            }
+            // codex-vl: Ctrl+J toggles the Vivling sidebar (open/close).
+            // Intercepted here so the editor keymap (which binds Ctrl+J to
+            // insert_newline) does not consume it first.
+            if matches!(key_event.kind, KeyEventKind::Press)
+                && key_event.code == KeyCode::Char('j')
+                && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                && !key_event
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+            {
+                self.vl_sidebar.toggle();
                 self.request_redraw();
                 return InputResult::None;
             }
@@ -1588,6 +1603,10 @@ impl BottomPane {
             }
             let mut flex2 = FlexRenderable::new();
             flex2.push(/*flex*/ 1, RenderableItem::Owned(flex.into()));
+            // codex-vl: Vivling chat sidebar opens above the strip when
+            // Ctrl+J expands it. desired_height returns 0 while collapsed,
+            // so this is a no-op when the panel is closed.
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
             // codex-vl: Vivling strip sits between the inline previews/status
             // area and the composer. The Vivling renderer self-reports
             // desired_height = 0 when no visible Vivling is hatched, so this
