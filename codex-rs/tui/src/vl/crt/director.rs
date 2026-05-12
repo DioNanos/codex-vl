@@ -60,6 +60,11 @@ mod tests {
     }
 
     fn sample_scene() -> CrtScene<'static> {
+        use super::super::animation::TransitionPhases;
+        use super::super::animation::VivlingCrtConfig;
+        // Test-only: leak a default config so the borrow has 'static lifetime.
+        // Cheap and self-contained; only used in this unit test.
+        let cfg: &'static VivlingCrtConfig = Box::leak(Box::new(VivlingCrtConfig::default()));
         CrtScene {
             species_id: "syllo",
             stage: crate::vivling::Stage::Baby,
@@ -76,6 +81,12 @@ mod tests {
             last_message: None,
             activity: None,
             tier: super::super::tier::CrtTier::Safe,
+            crt_config: cfg,
+            transitions: TransitionPhases {
+                mode_fade: 1.0,
+                message_reveal_chars: usize::MAX,
+                insight_slide: 1.0,
+            },
         }
     }
 }

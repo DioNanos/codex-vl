@@ -1,9 +1,33 @@
+use ratatui::style::Modifier;
+
 use super::palette::Palette;
 use super::surface::CrtSurface;
 
 pub(crate) const PANEL_MIN_WIDTH: u16 = 6;
 const BUBBLE_PREFIX: &str = "< ";
 const BUBBLE_MAX_CHARS: usize = 18;
+
+/// Animation hints for bubble rendering. Lets the renderer reveal the
+/// message progressively (typewriter) and add a brief glow during the
+/// initial frames after the message changed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BubbleAnim {
+    /// Maximum number of characters to reveal from the prepared bubble
+    /// text. `usize::MAX` means "show everything" (no typewriter).
+    pub reveal_chars: usize,
+    /// When true, the bubble row gets a `BOLD` accent for the brief glow
+    /// effect that follows an insight change.
+    pub glow: bool,
+}
+
+impl BubbleAnim {
+    pub(crate) fn settled() -> Self {
+        Self {
+            reveal_chars: usize::MAX,
+            glow: false,
+        }
+    }
+}
 
 pub(crate) fn draw_bubble(
     surface: &mut CrtSurface,
@@ -12,12 +36,40 @@ pub(crate) fn draw_bubble(
     last_message: Option<&str>,
     palette: &Palette,
 ) -> Option<u16> {
+    draw_bubble_animated(
+        surface,
+        panel_x,
+        panel_w,
+        last_message,
+        palette,
+        BubbleAnim::settled(),
+    )
+}
+
+pub(crate) fn draw_bubble_animated(
+    surface: &mut CrtSurface,
+    panel_x: u16,
+    panel_w: u16,
+    last_message: Option<&str>,
+    palette: &Palette,
+    anim: BubbleAnim,
+) -> Option<u16> {
     if panel_w < PANEL_MIN_WIDTH || surface.height() < 3 {
         return None;
     }
-    let text = last_message.and_then(prepare_bubble)?;
-    let used = text.chars().count().min(panel_w as usize) as u16;
-    if write_line(surface, panel_x, 1, panel_w, &text, palette.signal) {
+    let full_text = last_message.and_then(prepare_bubble)?;
+    let revealed: String = full_text.chars().take(anim.reveal_chars).collect();
+    if revealed.is_empty() {
+        return None;
+    }
+    let mut style = palette.signal;
+    if anim.glow {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    // Reserve the full text width so neighbouring widgets don't reflow as
+    // characters get revealed by the typewriter.
+    let used = full_text.chars().count().min(panel_w as usize) as u16;
+    if write_line(surface, panel_x, 1, panel_w, &revealed, style) {
         Some(used)
     } else {
         None
@@ -183,5 +235,63 @@ mod tests {
         let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(rendered.contains("< watching"));
         assert!(!rendered.contains("completed turns"));
+    }
+
+    #[test]
+    fn typewriter_reveals_partial_message() {
+        let palette = Palette::codex();
+        let mut surface = CrtSurface::new(40, 3, Style::default());
+        surface.fill(0, 1, 40, ' ', palette.dim);
+        let _ = draw_bubble_animated(
+            &mut surface,
+            0,
+            40,
+            Some("greets the operator"),
+            &palette,
+            BubbleAnim {
+                reveal_chars: 5,
+                glow: false,
+            },
+        );
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        surface.render(Rect::new(0, 0, 40, 3), &mut buf);
+        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        // "< gre" (prefix + first 3 chars of message → 5 total)
+        assert!(rendered.contains("< gre"));
+        assert!(!rendered.contains("greets"));
+    }
+
+    #[test]
+    fn typewriter_with_zero_reveal_skips_render() {
+        let palette = Palette::codex();
+        let mut surface = CrtSurface::new(40, 3, Style::default());
+        let drew = draw_bubble_animated(
+            &mut surface,
+            0,
+            40,
+            Some("hello"),
+            &palette,
+            BubbleAnim {
+                reveal_chars: 0,
+                glow: false,
+            },
+        );
+        assert!(drew.is_none());
+    }
+
+    #[test]
+    fn settled_anim_matches_classic_draw_bubble() {
+        let palette = Palette::codex();
+        let mut a = CrtSurface::new(40, 3, Style::default());
+        let mut b = CrtSurface::new(40, 3, Style::default());
+        let _ = draw_bubble(&mut a, 0, 40, Some("hi"), &palette);
+        let _ = draw_bubble_animated(&mut b, 0, 40, Some("hi"), &palette, BubbleAnim::settled());
+        let mut buf_a = Buffer::empty(Rect::new(0, 0, 40, 3));
+        let mut buf_b = Buffer::empty(Rect::new(0, 0, 40, 3));
+        a.render(Rect::new(0, 0, 40, 3), &mut buf_a);
+        b.render(Rect::new(0, 0, 40, 3), &mut buf_b);
+        let ra: String = buf_a.content.iter().map(|c| c.symbol()).collect();
+        let rb: String = buf_b.content.iter().map(|c| c.symbol()).collect();
+        assert_eq!(ra, rb);
     }
 }
