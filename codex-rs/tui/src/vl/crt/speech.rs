@@ -78,7 +78,20 @@ pub(crate) fn draw_bubble_animated(
     if total_chars == 0 {
         return None;
     }
-    let revealed = anim.reveal_chars.min(total_chars);
+    // The ledger counts reveal_chars over the message body the caller knows
+    // about, not over our internal `< ` prefix. Compensate so the
+    // typewriter still ends on the last real character of the message
+    // rather than stopping two characters short.
+    let prefix_len = BUBBLE_PREFIX.chars().count();
+    let adjusted_reveal = anim
+        .reveal_chars
+        .saturating_add(prefix_len)
+        .min(total_chars);
+    let revealed = if anim.reveal_chars == 0 {
+        0
+    } else {
+        adjusted_reveal
+    };
     if revealed == 0 {
         return None;
     }
@@ -304,6 +317,9 @@ mod tests {
             Some("greets the operator"),
             &palette,
             BubbleAnim {
+                // The reveal counter is over the message body. The bubble
+                // adds its own `< ` prefix on top, so revealing 5 chars of
+                // the message means the user sees "< greet" (prefix + 5).
                 reveal_chars: 5,
                 glow: false,
             },
@@ -311,9 +327,33 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         surface.render(Rect::new(0, 0, 40, 3), &mut buf);
         let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
-        // "< gre" (prefix + first 3 chars of message → 5 total)
-        assert!(rendered.contains("< gre"));
+        assert!(rendered.contains("< greet"));
         assert!(!rendered.contains("greets"));
+    }
+
+    #[test]
+    fn typewriter_completes_short_message_without_clipping_tail() {
+        // Regression test: with prefix `< `, a 4-char message like "idle"
+        // used to stop at "< id" because the reveal counter capped at the
+        // message-body length (4) rather than the full bubble (6).
+        let palette = Palette::codex();
+        let mut surface = CrtSurface::new(40, 3, Style::default());
+        surface.fill(0, 1, 40, ' ', palette.dim);
+        let _ = draw_bubble_animated(
+            &mut surface,
+            0,
+            40,
+            Some("idle"),
+            &palette,
+            BubbleAnim {
+                reveal_chars: 4, // == full message body length
+                glow: false,
+            },
+        );
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        surface.render(Rect::new(0, 0, 40, 3), &mut buf);
+        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(rendered.contains("< idle"), "rendered: {rendered:?}");
     }
 
     #[test]
