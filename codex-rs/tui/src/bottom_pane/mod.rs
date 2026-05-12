@@ -1588,6 +1588,11 @@ impl BottomPane {
             }
             let mut flex2 = FlexRenderable::new();
             flex2.push(/*flex*/ 1, RenderableItem::Owned(flex.into()));
+            // codex-vl: Vivling strip sits between the inline previews/status
+            // area and the composer. The Vivling renderer self-reports
+            // desired_height = 0 when no visible Vivling is hatched, so this
+            // is a no-op for users who never spawned one.
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
             flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.composer));
             RenderableItem::Owned(Box::new(flex2))
         }
