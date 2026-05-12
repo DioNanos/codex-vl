@@ -206,7 +206,7 @@ mod workspace_command;
 mod voice {
     use crate::app_event_sender::AppEventSender;
     use crate::legacy_core::config::Config;
-    use codex_protocol::protocol::RealtimeAudioFrame;
+    use codex_app_server_protocol::ThreadRealtimeAudioChunk;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU16;
@@ -248,7 +248,7 @@ mod voice {
             Err("voice output is unavailable in this build".to_string())
         }
 
-        pub(crate) fn enqueue_frame(&self, _frame: &RealtimeAudioFrame) -> Result<(), String> {
+        pub(crate) fn enqueue_frame(&self, _frame: &ThreadRealtimeAudioChunk) -> Result<(), String> {
             Err("voice output is unavailable in this build".to_string())
         }
 
