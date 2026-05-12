@@ -11,7 +11,10 @@ const MANAGE_LOOPS_TOOL_NAMESPACE: &str = "codex_app";
 const MANAGE_LOOPS_TOOL_NAME: &str = "manage_loops";
 
 fn is_manage_loops_dynamic_tool(namespace: Option<&str>, tool: &str) -> bool {
-    matches!(namespace, None | Some(MANAGE_LOOPS_TOOL_NAMESPACE)) && tool == MANAGE_LOOPS_TOOL_NAME
+    matches!(
+        namespace,
+        None | Some(MANAGE_LOOPS_TOOL_NAMESPACE) | Some("functions")
+    ) && tool == MANAGE_LOOPS_TOOL_NAME
 }
 
 const LOOP_STATUS_SUBMITTED: &str = "submitted";
@@ -1492,6 +1495,10 @@ mod tests {
         assert!(is_manage_loops_dynamic_tool(None, "manage_loops"));
         assert!(is_manage_loops_dynamic_tool(
             Some("codex_app"),
+            "manage_loops"
+        ));
+        assert!(is_manage_loops_dynamic_tool(
+            Some("functions"),
             "manage_loops"
         ));
         assert!(!is_manage_loops_dynamic_tool(
