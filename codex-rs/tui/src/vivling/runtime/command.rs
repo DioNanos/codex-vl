@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::vl::crt::CrtAnimationLedger;
+use crate::vl::crt::FrameTarget;
+use crate::vl::crt::PacingProbe;
+use crate::vl::crt::VivlingCrtConfig;
+
 impl Vivling {
     pub(crate) fn unavailable() -> Self {
         Self {
@@ -18,6 +23,9 @@ impl Vivling {
             activity: RefCell::new(None),
             live_context: RefCell::new(None),
             msa: None,
+            crt_config: VivlingCrtConfig::default(),
+            crt_animation_ledger: CrtAnimationLedger::new(),
+            crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
         }
     }
 
@@ -28,11 +36,16 @@ impl Vivling {
     ) {
         self.frame_requester = Some(frame_requester);
         self.animations_enabled = animations_enabled;
+        // Re-detect frame pacing once we know the runtime is wired; the
+        // probe is cheap enough to redo here.
+        self.crt_frame_target
+            .set(FrameTarget::detect(PacingProbe::from_std_env()));
     }
 
     pub(crate) fn configure(&mut self, codex_home: &Path, auth_mode: AuthCredentialsStoreMode) {
         let codex_home = codex_home.to_path_buf();
         let needs_reload = self.codex_home.as_ref() != Some(&codex_home);
+        self.crt_config = VivlingCrtConfig::load_from_codex_home(&codex_home);
         self.codex_home = Some(codex_home);
         self.auth_mode = auth_mode;
         if self.msa.is_none() {

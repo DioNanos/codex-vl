@@ -384,11 +384,19 @@ mod tests {
         use crate::vl::crt::CrtScene;
         use crate::vl::crt::CrtSurface;
         use crate::vl::crt::CrtTier;
+        use crate::vl::crt::VivlingCrtConfig;
+        use crate::vl::crt::animation::TransitionPhases;
         use crate::vl::crt::render_crt_scene;
 
         let mut state = state_with_message("watching upstream");
         state.loop_blocked_busy = 2;
         let phrase = compute_insight(&state, None).expect("insight");
+        let cfg = VivlingCrtConfig::default();
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            message_reveal_chars: usize::MAX,
+            insight_slide: 1.0,
+        };
 
         for width in [24u16, 40, 80] {
             let mut surface = CrtSurface::new(width, 3, ratatui::style::Style::default());
@@ -408,6 +416,8 @@ mod tests {
                 last_message: Some(phrase.as_str()),
                 activity: None,
                 tier: CrtTier::Safe,
+                crt_config: &cfg,
+                transitions: trans,
             };
             render_crt_scene(&mut surface, &scene);
             let mut buf =

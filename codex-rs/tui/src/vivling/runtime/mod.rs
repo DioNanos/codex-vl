@@ -81,7 +81,7 @@ pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
 pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Vivling {
     pub(crate) codex_home: Option<PathBuf>,
     pub(crate) auth_mode: AuthCredentialsStoreMode,
@@ -99,4 +99,39 @@ pub(crate) struct Vivling {
     pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
     pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
     pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
+    /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
+    /// when `configure()` is called with a new home.
+    pub(crate) crt_config: crate::vl::crt::VivlingCrtConfig,
+    /// Per-render transition snapshot generator. Mutated inside `render()`.
+    pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
+    /// Frame pacing target detected from the runtime environment.
+    pub(crate) crt_frame_target: Cell<crate::vl::crt::FrameTarget>,
+}
+
+impl Clone for Vivling {
+    /// Custom clone: `crt_animation_ledger` is intentionally reset (not
+    /// shared) so that derived clones do not carry transition state from
+    /// another renderer. All other fields clone through their defaults.
+    fn clone(&self) -> Self {
+        Self {
+            codex_home: self.codex_home.clone(),
+            auth_mode: self.auth_mode,
+            state: self.state.clone(),
+            active_vivling_id: self.active_vivling_id.clone(),
+            frame_requester: self.frame_requester.clone(),
+            animations_enabled: self.animations_enabled,
+            task_running: self.task_running.clone(),
+            active_until: self.active_until.clone(),
+            active_started_at: self.active_started_at.clone(),
+            next_scheduled_frame_at: self.next_scheduled_frame_at.clone(),
+            animation_text: self.animation_text.clone(),
+            animation_text_expires_at: self.animation_text_expires_at.clone(),
+            activity: self.activity.clone(),
+            live_context: self.live_context.clone(),
+            msa: self.msa.clone(),
+            crt_config: self.crt_config.clone(),
+            crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
+            crt_frame_target: self.crt_frame_target.clone(),
+        }
+    }
 }

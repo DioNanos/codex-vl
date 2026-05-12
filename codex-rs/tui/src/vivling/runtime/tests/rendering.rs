@@ -44,6 +44,11 @@ fn render_keeps_vivling_line_shape() {
     vivling.state = Some(seeded_state());
     vivling.configure_runtime(FrameRequester::test_dummy(), true);
     vivling.set_task_running(true);
+    // Skip the CRT boot animation so this test exercises the steady-state
+    // 3-row strip (the boot animation temporarily expands the strip to
+    // BOOT_STRIP_HEIGHT and renders a per-species sprite instead of the
+    // regular face).
+    vivling.skip_crt_boot();
 
     let area = Rect::new(0, 0, 80, 3);
     let mut buf = Buffer::empty(area);
