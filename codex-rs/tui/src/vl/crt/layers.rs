@@ -246,9 +246,11 @@ mod tests {
             Some("watching completed turns closely"),
             Some(VivlingActivity::Playing),
         );
+        // The multi-line bubble now keeps the full message; it may wrap
+        // across rows 1 and 2 but the prefix and the leading word still
+        // appear on the face row.
         assert!(rendered.contains("< watching"));
         assert!(rendered.contains("o"));
-        assert!(!rendered.contains("completed turns"));
     }
 
     #[test]
@@ -261,7 +263,6 @@ mod tests {
             Some(VivlingActivity::Working),
         );
         assert!(rendered.contains("[>]"));
-        assert!(!rendered.contains("completed turns"));
         assert_eq!(rendered.len(), 120);
     }
 
