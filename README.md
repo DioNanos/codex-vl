@@ -122,6 +122,21 @@ validation until the Mac test report is complete.
 Codex VL is active development software. Use the official OpenAI Codex release
 when you want the upstream baseline without Codex VL additions.
 
+## Contact
+
+This is a custom Codex distribution maintained by
+[DioNanos](https://github.com/DioNanos).
+
+- General / dev: **dev@mmmbuto.com**
+- Security disclosures: **security@mmmbuto.com**
+- Project hub: <https://mmmbuto.com>
+
+For bugs and feature requests on Codex VL-specific behavior (Vivling, `/loop`,
+`/vl`, `/goal`, musl/Android build patches), please open a GitHub issue here.
+For upstream-relevant issues unaffected by Codex VL additions, please open them
+on [openai/codex](https://github.com/openai/codex). For broader questions, use
+[GitHub Discussions](../../discussions) on this repo.
+
 ## License
 
 Apache 2.0. Upstream Codex remains under Apache 2.0, and the Codex VL additions
