@@ -828,6 +828,7 @@ async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Resul
     builder.cwd = home.path().to_path_buf();
     let mut metadata = builder.build(config.model_provider_id.as_str());
     metadata.first_user_message = Some("Hello from user".to_string());
+    metadata.preview = metadata.first_user_message.clone();
     runtime
         .upsert_thread(&metadata)
         .await
@@ -893,6 +894,7 @@ async fn list_threads_db_enabled_repairs_stale_rollout_paths() -> std::io::Resul
     builder.cwd = home.path().to_path_buf();
     let mut metadata = builder.build(config.model_provider_id.as_str());
     metadata.first_user_message = Some("Hello from user".to_string());
+    metadata.preview = metadata.first_user_message.clone();
     runtime
         .upsert_thread(&metadata)
         .await
@@ -1056,6 +1058,7 @@ async fn list_threads_default_filter_returns_filesystem_scan_results() -> std::i
     builder.cwd = stale_cwd.clone();
     let mut metadata = builder.build(config.model_provider_id.as_str());
     metadata.first_user_message = Some("Hello from user".to_string());
+    metadata.preview = metadata.first_user_message.clone();
     runtime
         .upsert_thread(&metadata)
         .await
@@ -1148,6 +1151,7 @@ async fn list_threads_metadata_filter_overlays_state_db_list_metadata() -> std::
     builder.git_origin_url = Some("https://example.com/repo.git".to_string());
     let mut metadata = builder.build(config.model_provider_id.as_str());
     metadata.first_user_message = Some("Hello from user".to_string());
+    metadata.preview = metadata.first_user_message.clone();
     runtime
         .upsert_thread(&metadata)
         .await
@@ -1188,6 +1192,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         path: filesystem_path.clone(),
         thread_id: Some(filesystem_thread_id),
         first_user_message: Some("filesystem message".to_string()),
+        preview: Some("filesystem preview".to_string()),
         cwd: None,
         git_branch: Some("filesystem-branch".to_string()),
         git_sha: Some("filesystem-sha".to_string()),
@@ -1204,6 +1209,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         path: state_path,
         thread_id: Some(state_thread_id),
         first_user_message: Some("state message".to_string()),
+        preview: Some("state preview".to_string()),
         cwd: Some(PathBuf::from("/tmp/state-cwd")),
         git_branch: Some("state-branch".to_string()),
         git_sha: Some("state-sha".to_string()),
@@ -1225,6 +1231,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         item.first_user_message.as_deref(),
         Some("filesystem message")
     );
+    assert_eq!(item.preview.as_deref(), Some("filesystem preview"));
     assert_eq!(item.cwd.as_deref(), Some(Path::new("/tmp/state-cwd")));
     assert_eq!(item.git_branch.as_deref(), Some("state-branch"));
     assert_eq!(item.git_sha.as_deref(), Some("state-sha"));
@@ -1275,6 +1282,7 @@ async fn list_threads_search_repairs_stale_state_db_hits_before_returning() -> s
     let mut metadata = builder.build(config.model_provider_id.as_str());
     metadata.title = "needle stale title".to_string();
     metadata.first_user_message = Some("stale first user".to_string());
+    metadata.preview = metadata.first_user_message.clone();
     runtime
         .upsert_thread(&metadata)
         .await
