@@ -1399,9 +1399,12 @@ impl App {
         tokio::spawn(async move {
             let vivling_id = request.vivling_id.clone();
             let kind = request.kind.clone();
-            let result =
-                super::vivling_background::run_vivling_assist_request(config, session_telemetry, request)
-                    .await;
+            let result = super::vivling_background::run_vivling_assist_request(
+                config,
+                session_telemetry,
+                request,
+            )
+            .await;
             app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished {
                 vivling_id,
                 kind,

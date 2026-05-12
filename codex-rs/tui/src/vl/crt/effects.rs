@@ -87,11 +87,7 @@ pub(crate) fn apply_breathing_pulse(surface: &mut CrtSurface, elapsed_ms: u64) {
     let phase = (elapsed_ms % period_ms) as f32 / period_ms as f32;
     // Window where we add an extra emphasis modifier (front-quarter of period).
     let activated = phase < 0.18;
-    let intensity = ease_in_out_cubic(if activated {
-        1.0 - (phase / 0.18)
-    } else {
-        0.0
-    });
+    let intensity = ease_in_out_cubic(if activated { 1.0 - (phase / 0.18) } else { 0.0 });
     if intensity > 0.55 {
         surface.add_row_modifier(FACE_ROW, Modifier::BOLD);
     }
@@ -168,7 +164,10 @@ mod tests {
     fn effects_preserve_dimensions_across_widths() {
         let palette = Palette::codex();
         let cfg = VivlingCrtConfig::default();
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         for width in [10u16, 14, 18, 24, 40, 80] {
             let mut surface = CrtSurface::new(width, 3, Style::default());
             surface.fill(0, 0, width, ' ', palette.dim);
@@ -184,7 +183,10 @@ mod tests {
     fn phosphor_is_deterministic_for_same_seed_and_tick() {
         let palette = Palette::codex();
         let cfg = VivlingCrtConfig::default();
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         let mut a = CrtSurface::new(40, 3, Style::default());
         let mut b = CrtSurface::new(40, 3, Style::default());
         for s in [&mut a, &mut b] {
@@ -200,7 +202,10 @@ mod tests {
     fn effects_do_not_erase_face_row() {
         let palette = Palette::codex();
         let cfg = VivlingCrtConfig::default();
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         let mut surface = CrtSurface::new(40, 3, Style::default());
         surface.fill(0, 0, 40, ' ', palette.dim);
         surface.fill(0, 2, 40, ' ', palette.dim);
@@ -221,7 +226,10 @@ mod tests {
             transitions: false,
             ..VivlingCrtConfig::default()
         };
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         let mut surface = CrtSurface::new(20, 3, Style::default());
         surface.fill(0, 0, 20, '#', palette.signal);
         surface.fill(0, 2, 20, '#', palette.signal);
@@ -238,7 +246,10 @@ mod tests {
     fn effects_safe_on_narrow_surface() {
         let palette = Palette::codex();
         let cfg = VivlingCrtConfig::default();
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         let mut surface = CrtSurface::new(3, 3, Style::default());
         surface.fill(0, 0, 3, ' ', palette.dim);
         surface.fill(0, 1, 3, ' ', palette.face);
@@ -275,7 +286,10 @@ mod tests {
     fn flicker_is_bounded_in_time() {
         let palette = Palette::codex();
         let cfg = VivlingCrtConfig::default();
-        let trans = TransitionPhases { mode_fade: 1.0, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 1.0,
+            ..Default::default()
+        };
         // Sample many timestamps and ensure flicker logic does not panic
         // and remains stable.
         for t_ms in (0u64..6000).step_by(37) {
@@ -299,7 +313,10 @@ mod tests {
             idle_microanim: false,
             ..VivlingCrtConfig::default()
         };
-        let trans = TransitionPhases { mode_fade: 0.2, ..Default::default() };
+        let trans = TransitionPhases {
+            mode_fade: 0.2,
+            ..Default::default()
+        };
         let mut surface = CrtSurface::new(40, 3, Style::default());
         surface.fill(0, 0, 40, ' ', palette.dim);
         surface.fill(0, 2, 40, ' ', palette.dim);

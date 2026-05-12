@@ -66,7 +66,10 @@ mod tests {
 
     #[test]
     fn non_tty_disables_scheduling() {
-        let target = FrameTarget::detect(PacingProbe { is_non_tty: true, is_remote_session: false });
+        let target = FrameTarget::detect(PacingProbe {
+            is_non_tty: true,
+            is_remote_session: false,
+        });
         assert_eq!(target, FrameTarget::None);
         assert!(target.tick().is_none());
         assert!(!target.schedules_frames());
@@ -74,21 +77,30 @@ mod tests {
 
     #[test]
     fn ssh_uses_reduced_cadence() {
-        let target = FrameTarget::detect(PacingProbe { is_non_tty: false, is_remote_session: true });
+        let target = FrameTarget::detect(PacingProbe {
+            is_non_tty: false,
+            is_remote_session: true,
+        });
         assert_eq!(target, FrameTarget::Reduced);
         assert_eq!(target.tick(), Some(Duration::from_millis(50)));
     }
 
     #[test]
     fn local_tty_uses_smooth_cadence() {
-        let target = FrameTarget::detect(PacingProbe { is_non_tty: false, is_remote_session: false });
+        let target = FrameTarget::detect(PacingProbe {
+            is_non_tty: false,
+            is_remote_session: false,
+        });
         assert_eq!(target, FrameTarget::Smooth);
         assert_eq!(target.tick(), Some(Duration::from_millis(32)));
     }
 
     #[test]
     fn non_tty_takes_priority_over_ssh() {
-        let target = FrameTarget::detect(PacingProbe { is_non_tty: true, is_remote_session: true });
+        let target = FrameTarget::detect(PacingProbe {
+            is_non_tty: true,
+            is_remote_session: true,
+        });
         assert_eq!(target, FrameTarget::None);
     }
 }

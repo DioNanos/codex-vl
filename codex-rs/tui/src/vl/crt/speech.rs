@@ -88,13 +88,10 @@ pub(crate) fn draw_bubble_animated(
         .saturating_add(prefix_len)
         .min(total_chars);
     let revealed = if anim.reveal_chars == 0 {
-        0
+        prefix_len.min(total_chars)
     } else {
         adjusted_reveal
     };
-    if revealed == 0 {
-        return None;
-    }
 
     let widest = lines
         .iter()
@@ -273,10 +270,7 @@ mod tests {
 
     #[test]
     fn wraps_long_messages_onto_a_second_line() {
-        let (drew, rendered) = render(
-            20,
-            Some("greets the operator and waits for the next move"),
-        );
+        let (drew, rendered) = render(20, Some("greets the operator and waits for the next move"));
         assert!(drew);
         // Row 1 ("face row") and row 2 are written by the bubble.
         // First line should end at or before the wrap point.
@@ -357,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn typewriter_with_zero_reveal_skips_render() {
+    fn typewriter_with_zero_reveal_keeps_bubble_visible() {
         let palette = Palette::codex();
         let mut surface = CrtSurface::new(40, 3, Style::default());
         let drew = draw_bubble_animated(
@@ -371,7 +365,12 @@ mod tests {
                 glow: false,
             },
         );
-        assert!(drew.is_none());
+        assert!(drew.is_some());
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
+        surface.render(Rect::new(0, 0, 40, 3), &mut buf);
+        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(rendered.contains("< "));
+        assert!(!rendered.contains("hello"));
     }
 
     #[test]
@@ -426,9 +425,7 @@ mod tests {
             &mut surface,
             0,
             40,
-            Some(
-                "tracking a long-running pattern and watching the work flow across many turns",
-            ),
+            Some("tracking a long-running pattern and watching the work flow across many turns"),
             &palette,
             BubbleAnim::settled(),
         );

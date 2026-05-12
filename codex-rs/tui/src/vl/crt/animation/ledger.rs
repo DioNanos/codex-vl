@@ -186,7 +186,12 @@ mod tests {
         let l = CrtAnimationLedger::new();
         let t = now0();
         l.observe(t, CrtMode::Idle, Some("hi"), Some("focus"));
-        let d = l.observe(t + Duration::from_millis(5), CrtMode::Idle, Some("hi"), Some("focus"));
+        let d = l.observe(
+            t + Duration::from_millis(5),
+            CrtMode::Idle,
+            Some("hi"),
+            Some("focus"),
+        );
         assert!(!d.mode_changed);
         assert!(!d.message_changed);
         assert!(!d.insight_changed);
@@ -200,7 +205,8 @@ mod tests {
         l.observe(t + Duration::from_millis(10), CrtMode::Working, None, None);
         let p_early = l.phases(t + Duration::from_millis(10));
         let p_mid = l.phases(t + Duration::from_millis(10) + MODE_FADE_DURATION / 2);
-        let p_done = l.phases(t + Duration::from_millis(10) + MODE_FADE_DURATION + Duration::from_millis(50));
+        let p_done = l
+            .phases(t + Duration::from_millis(10) + MODE_FADE_DURATION + Duration::from_millis(50));
         assert!(p_early.mode_fade < 0.1);
         assert!(p_mid.mode_fade > 0.4 && p_mid.mode_fade < 1.0);
         assert!((p_done.mode_fade - 1.0).abs() < 1e-6);
@@ -225,7 +231,12 @@ mod tests {
         let t = now0();
         l.observe(t, CrtMode::Idle, Some("first"), None);
         let _ = l.phases(t + TYPEWRITER_CHAR_INTERVAL * 5);
-        l.observe(t + TYPEWRITER_CHAR_INTERVAL * 5, CrtMode::Idle, Some("new!"), None);
+        l.observe(
+            t + TYPEWRITER_CHAR_INTERVAL * 5,
+            CrtMode::Idle,
+            Some("new!"),
+            None,
+        );
         let p = l.phases(t + TYPEWRITER_CHAR_INTERVAL * 5);
         assert_eq!(p.message_reveal_chars, 0);
     }

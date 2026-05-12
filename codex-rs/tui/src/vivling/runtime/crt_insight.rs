@@ -22,16 +22,19 @@ pub(crate) fn compute_insight(
     if let Some(phrase) = brain_error_phrase(state) {
         return Some(phrase);
     }
-    if let Some(phrase) = live_context.and_then(VivlingLiveContext::crt_phrase) {
-        return Some(phrase);
-    }
     if let Some(phrase) = active_loop_phrase(state) {
         return Some(phrase);
     }
     if let Some(phrase) = blocked_loop_phrase(state) {
         return Some(phrase);
     }
+    if let Some(phrase) = proactive_next_phrase(state) {
+        return Some(phrase);
+    }
     if let Some(phrase) = last_work_summary_phrase(state) {
+        return Some(phrase);
+    }
+    if let Some(phrase) = live_context.and_then(VivlingLiveContext::crt_phrase) {
         return Some(phrase);
     }
     if let Some(phrase) = focus_phrase(state) {
@@ -85,9 +88,47 @@ fn active_loop_phrase(state: &VivlingState) -> Option<String> {
     if state.loop_runtime_submissions > 0
         && state.loop_runtime_submissions > state.loop_runtime_blocks
     {
-        return Some("loop work landing".to_string());
+        return Some("loop landed - verify next".to_string());
     }
     None
+}
+
+fn proactive_next_phrase(state: &VivlingState) -> Option<String> {
+    let raw = state.last_work_summary.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("merge") || lower.contains("rebase") || lower.contains("conflict") {
+        return Some("merge: protect vl hooks".to_string());
+    }
+    if lower.contains("plan") && (lower.contains("approved") || lower.contains("accepted")) {
+        return Some("plan set - do one slice".to_string());
+    }
+    if lower.contains("review") || lower.contains("audit") {
+        return Some("review: name the risk".to_string());
+    }
+    if lower.contains("test") || lower.contains("check") {
+        return Some("tests: isolate failure".to_string());
+    }
+    if lower.contains("install") || lower.contains("release") || lower.contains("publish") {
+        return Some("release: verify path".to_string());
+    }
+    match state.dominant_archetype() {
+        WorkArchetype::Builder if state.work_affinities.builder > 0 => {
+            Some("build one narrow change".to_string())
+        }
+        WorkArchetype::Reviewer if state.work_affinities.reviewer > 0 => {
+            Some("prove the blocker".to_string())
+        }
+        WorkArchetype::Researcher if state.work_affinities.researcher > 0 => {
+            Some("clarify one unknown".to_string())
+        }
+        WorkArchetype::Operator if state.work_affinities.operator > 0 => {
+            Some("check state, then act".to_string())
+        }
+        _ => None,
+    }
 }
 
 fn last_work_summary_phrase(state: &VivlingState) -> Option<String> {
@@ -133,25 +174,25 @@ fn compact_summary(raw: &str) -> Option<String> {
     let lower = raw.to_ascii_lowercase();
     let phrase =
         if lower.contains("plan") && (lower.contains("approved") || lower.contains("accepted")) {
-            "plan approved"
+            "plan set - do one slice"
         } else if lower.contains("plan") && lower.contains("proposed") {
             "plan ready"
         } else if lower.contains("test") {
-            "tests checked"
+            "tests: isolate failure"
         } else if lower.contains("review") {
-            "review work"
+            "review: name the risk"
         } else if lower.contains("release") {
-            "release flow"
+            "release: verify path"
         } else if lower.contains("doc") {
-            "docs work"
+            "docs: keep source tight"
         } else if lower.contains("merge") || lower.contains("rebase") {
-            "merge work"
+            "merge: protect vl hooks"
         } else if lower.contains("verif") || lower.contains("verified") {
-            "verify next step"
+            "verify before widening"
         } else if lower.contains("complet") || lower.contains("done") {
-            "tests passed"
+            "done - check fallout"
         } else if lower.contains("loop") {
-            "watching upstream"
+            "loop: verify next wake"
         } else {
             return compact_freeform(raw);
         };
@@ -229,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn live_context_beats_stale_blocked_signal() {
+    fn blocked_signal_beats_live_context_for_actionability() {
         let mut state = state_with_message("greets the operator");
         state.loop_blocked_review = 2;
         state.loop_runtime_submissions = 0;
@@ -240,7 +281,7 @@ mod tests {
         };
 
         let phrase = compute_insight(&state, Some(&context)).expect("insight");
-        assert_eq!(phrase, "active: main");
+        assert_eq!(phrase, "review gate blocking");
     }
 
     #[test]
@@ -274,7 +315,7 @@ mod tests {
         state.loop_runtime_submissions = 3;
         state.loop_runtime_blocks = 0;
         let phrase = compute_insight(&state, None).expect("insight");
-        assert_eq!(phrase, "loop work landing");
+        assert_eq!(phrase, "loop landed - verify next");
     }
 
     #[test]
@@ -285,7 +326,7 @@ mod tests {
                 .to_string(),
         );
         let phrase = compute_insight(&state, None).expect("insight");
-        assert_eq!(phrase, "review work");
+        assert_eq!(phrase, "review: name the risk");
         assert!(phrase.chars().count() <= INSIGHT_MAX_CHARS);
     }
 
@@ -294,7 +335,7 @@ mod tests {
         let mut state = state_with_message("greets");
         state.last_work_summary = Some("plan approved: implement the selected fix".to_string());
         let phrase = compute_insight(&state, None).expect("insight");
-        assert_eq!(phrase, "plan approved");
+        assert_eq!(phrase, "plan set - do one slice");
     }
 
     #[test]
@@ -322,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn live_active_agent_context_beats_generic_work_summary() {
+    fn proactive_work_summary_beats_live_context_echo() {
         let mut state = state_with_message("watching completed turns closely");
         state.last_work_summary = Some("turn completed: tests passed".to_string());
         let context = VivlingLiveContext {
@@ -332,7 +373,7 @@ mod tests {
         };
 
         let phrase = compute_insight(&state, Some(&context)).expect("insight");
-        assert_eq!(phrase, "active: Robie [worker]");
+        assert_eq!(phrase, "tests: isolate failure");
     }
 
     #[test]

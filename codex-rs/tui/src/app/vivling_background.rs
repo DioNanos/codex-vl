@@ -110,7 +110,12 @@ pub(super) async fn run_vivling_assist_request(
         })?;
 
     let mut result = String::new();
-    while let Some(event) = stream.next().await.transpose().map_err(|err| err.to_string())? {
+    while let Some(event) = stream
+        .next()
+        .await
+        .transpose()
+        .map_err(|err| err.to_string())?
+    {
         match event {
             ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
             ResponseEvent::OutputItemDone(item) => {
@@ -204,7 +209,12 @@ pub(super) async fn run_vivling_loop_tick_request(
         .map_err(|err| format!("Vivling loop tick failed: {err}"))?;
 
     let mut result = String::new();
-    while let Some(event) = stream.next().await.transpose().map_err(|err| err.to_string())? {
+    while let Some(event) = stream
+        .next()
+        .await
+        .transpose()
+        .map_err(|err| err.to_string())?
+    {
         match event {
             ResponseEvent::OutputTextDelta(delta) => result.push_str(&delta),
             ResponseEvent::OutputItemDone(item) => {

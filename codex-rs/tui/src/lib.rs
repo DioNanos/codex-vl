@@ -117,6 +117,7 @@ mod clipboard_paste;
 mod collaboration_modes;
 mod color;
 pub(crate) mod custom_terminal;
+mod pets;
 pub use custom_terminal::Terminal;
 mod auto_review_denials;
 mod cwd_prompt;
@@ -248,7 +249,10 @@ mod voice {
             Err("voice output is unavailable in this build".to_string())
         }
 
-        pub(crate) fn enqueue_frame(&self, _frame: &ThreadRealtimeAudioChunk) -> Result<(), String> {
+        pub(crate) fn enqueue_frame(
+            &self,
+            _frame: &ThreadRealtimeAudioChunk,
+        ) -> Result<(), String> {
             Err("voice output is unavailable in this build".to_string())
         }
 

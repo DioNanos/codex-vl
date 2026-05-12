@@ -70,10 +70,22 @@ mod tests {
 
     #[test]
     fn linear_progress_clamps_to_unit_interval() {
-        assert_eq!(linear_progress(Duration::ZERO, Duration::from_millis(100)), 0.0);
-        assert!((linear_progress(Duration::from_millis(50), Duration::from_millis(100)) - 0.5).abs() < 1e-6);
-        assert_eq!(linear_progress(Duration::from_millis(200), Duration::from_millis(100)), 1.0);
-        assert_eq!(linear_progress(Duration::from_millis(50), Duration::ZERO), 1.0);
+        assert_eq!(
+            linear_progress(Duration::ZERO, Duration::from_millis(100)),
+            0.0
+        );
+        assert!(
+            (linear_progress(Duration::from_millis(50), Duration::from_millis(100)) - 0.5).abs()
+                < 1e-6
+        );
+        assert_eq!(
+            linear_progress(Duration::from_millis(200), Duration::from_millis(100)),
+            1.0
+        );
+        assert_eq!(
+            linear_progress(Duration::from_millis(50), Duration::ZERO),
+            1.0
+        );
     }
 
     #[test]

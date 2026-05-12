@@ -103,13 +103,21 @@ impl Renderable for Vivling {
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
         let activity = *self.activity.borrow();
-        let mode_for_observe = derive_mode(state, activity);
+        let mode_for_observe = derive_mode(state, activity, area.width);
 
         // Update the animation ledger before rendering so transition
         // phases reflect the new inputs.
         self.crt_animation_ledger
             .observe(now, mode_for_observe, last_message, insight.as_deref());
-        let transitions = self.crt_animation_ledger.phases(now);
+        let mut transitions = self.crt_animation_ledger.phases(now);
+        if !self.animations_enabled
+            || !self.crt_config.transitions
+            || !self.crt_frame_target.get().schedules_frames()
+        {
+            transitions.mode_fade = 1.0;
+            transitions.message_reveal_chars = usize::MAX;
+            transitions.insight_slide = 1.0;
+        }
 
         let mut surface = crate::vl::crt::CrtSurface::new(
             area.width,
@@ -161,6 +169,9 @@ impl Vivling {
         let Some(frame_requester) = &self.frame_requester else {
             return;
         };
+        if !self.animations_enabled || !self.crt_config.any_animation_active() {
+            return;
+        }
         let target = self.crt_frame_target.get();
         if !target.schedules_frames() {
             return;
@@ -186,6 +197,7 @@ impl Vivling {
 fn derive_mode(
     state: &VivlingState,
     activity: Option<crate::vl::VivlingActivity>,
+    width: u16,
 ) -> crate::vl::crt::director::CrtMode {
     use crate::vl::crt::director::CrtMode;
     match activity {
@@ -204,7 +216,7 @@ fn derive_mode(
     if state.energy <= 28 {
         return CrtMode::Tired;
     }
-    if state.mood().eq_ignore_ascii_case("curious") {
+    if width >= 24 && state.mood().eq_ignore_ascii_case("curious") {
         return CrtMode::Thinking;
     }
     CrtMode::Idle

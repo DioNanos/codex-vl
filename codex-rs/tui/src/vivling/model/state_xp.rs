@@ -453,9 +453,12 @@ impl VivlingState {
                 .map(VivlingUpgrade::prompt)
                 .unwrap_or("grew from completed work")
                 .to_string(),
-            None if self.stage() == Stage::Adult => {
-                "tracking work rhythm for the current goal".to_string()
-            }
+            None if self.stage() == Stage::Adult => match archetype {
+                WorkArchetype::Builder => "build landed. keep the diff narrow".to_string(),
+                WorkArchetype::Reviewer => "review moved. name remaining risk".to_string(),
+                WorkArchetype::Researcher => "learned enough. choose one unknown".to_string(),
+                WorkArchetype::Operator => "state changed. verify before next wake".to_string(),
+            },
             None if self.stage() == Stage::Juvenile => match archetype {
                 WorkArchetype::Builder => "built. test it now?".to_string(),
                 WorkArchetype::Reviewer => "reviewed. risk moved?".to_string(),
