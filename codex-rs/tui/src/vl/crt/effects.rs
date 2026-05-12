@@ -256,7 +256,6 @@ mod tests {
             phosphor_glow: false,
             flicker: false,
             transitions: false,
-            boot_animation: false,
             idle_microanim: false,
         };
         let trans = TransitionPhases::default();

@@ -1,19 +1,16 @@
 //! Vivling CRT animation ledger.
 //!
-//! Tracks the four discrete state changes (mode, message, insight, boot)
-//! that drive event-based transitions, and produces a `TransitionPhases`
-//! snapshot per render. All other animations remain pure functions of
-//! `(elapsed_ms, seed)` and stay in `effects.rs`.
+//! Tracks the three discrete state changes (mode, message, insight) that
+//! drive event-based transitions, and produces a `TransitionPhases`
+//! snapshot per render. Cyclic animations (flicker, breathing pulse,
+//! scanline, phosphor) stay pure functions of `(elapsed_ms, seed)` and
+//! live in `effects.rs`.
 
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::transitions::BOOT_BLINK_DURATION;
-use super::transitions::BOOT_EYES_CLOSED_DURATION;
-use super::transitions::BOOT_SCANLINE_DURATION;
-use super::transitions::BOOT_TOTAL_DURATION;
 use super::transitions::INSIGHT_SLIDE_DURATION;
 use super::transitions::MODE_FADE_DURATION;
 use super::transitions::TYPEWRITER_CHAR_INTERVAL;
@@ -33,9 +30,6 @@ pub(crate) struct CrtAnimationLedger {
 
     last_insight: RefCell<Option<String>>,
     insight_changed_at: Cell<Option<Instant>>,
-
-    boot_started_at: Cell<Option<Instant>>,
-    boot_skipped: Cell<bool>,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -43,18 +37,6 @@ pub(crate) struct ObservedDeltas {
     pub mode_changed: bool,
     pub message_changed: bool,
     pub insight_changed: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum BootPhase {
-    /// Top→bottom scanline reveal of the boot strip area.
-    ScanLineWipe { progress: f32 },
-    /// Sprite shown with closed eyes; holding before blink.
-    EyesClosed { progress: f32 },
-    /// Eyes opening (blink reverse).
-    Blink { progress: f32 },
-    /// Greeting typewriter.
-    Greeting { chars_revealed: usize },
 }
 
 impl CrtAnimationLedger {
@@ -142,66 +124,6 @@ impl CrtAnimationLedger {
         }
     }
 
-    /// Boot starts the first time this is called (idempotent thereafter).
-    pub(crate) fn ensure_boot_started(&self, now: Instant) {
-        if self.boot_started_at.get().is_none() {
-            self.boot_started_at.set(Some(now));
-        }
-    }
-
-    /// User keypress to skip boot. Idempotent.
-    pub(crate) fn skip_boot(&self) {
-        self.boot_skipped.set(true);
-    }
-
-    pub(crate) fn boot_skipped(&self) -> bool {
-        self.boot_skipped.get()
-    }
-
-    /// Current boot phase, or None if boot is finished/skipped/disabled.
-    pub(crate) fn boot_phase(&self, now: Instant) -> Option<BootPhase> {
-        if self.boot_skipped.get() {
-            return None;
-        }
-        let started = self.boot_started_at.get()?;
-        let elapsed = now.saturating_duration_since(started);
-        if elapsed >= BOOT_TOTAL_DURATION {
-            return None;
-        }
-
-        let mut cursor = Duration::ZERO;
-        let scan_end = cursor + BOOT_SCANLINE_DURATION;
-        if elapsed < scan_end {
-            return Some(BootPhase::ScanLineWipe {
-                progress: linear_progress(elapsed - cursor, BOOT_SCANLINE_DURATION),
-            });
-        }
-        cursor = scan_end;
-
-        let eyes_end = cursor + BOOT_EYES_CLOSED_DURATION;
-        if elapsed < eyes_end {
-            return Some(BootPhase::EyesClosed {
-                progress: linear_progress(elapsed - cursor, BOOT_EYES_CLOSED_DURATION),
-            });
-        }
-        cursor = eyes_end;
-
-        let blink_end = cursor + BOOT_BLINK_DURATION;
-        if elapsed < blink_end {
-            return Some(BootPhase::Blink {
-                progress: ease_out_cubic(linear_progress(elapsed - cursor, BOOT_BLINK_DURATION)),
-            });
-        }
-        cursor = blink_end;
-
-        let greeting_phase = elapsed - cursor;
-        let interval = TYPEWRITER_CHAR_INTERVAL.as_millis() as u64;
-        let revealed = (greeting_phase.as_millis() as u64 / interval) as usize;
-        Some(BootPhase::Greeting {
-            chars_revealed: revealed,
-        })
-    }
-
     /// Hint when next render frame should fire. None = no animation in
     /// flight; caller may schedule a long lazy pulse instead.
     pub(crate) fn next_wake(&self, now: Instant) -> Option<Duration> {
@@ -213,15 +135,6 @@ impl CrtAnimationLedger {
                 *wake = Some(d);
             }
         };
-
-        if self.boot_phase(now).is_some()
-            && let Some(start) = self.boot_started_at.get()
-        {
-            let elapsed = now.saturating_duration_since(start);
-            if elapsed < BOOT_TOTAL_DURATION {
-                push(&mut wake, Duration::from_millis(50));
-            }
-        }
 
         if let Some(t) = self.mode_changed_at.get() {
             let elapsed = now.saturating_duration_since(t);
@@ -315,37 +228,6 @@ mod tests {
         l.observe(t + TYPEWRITER_CHAR_INTERVAL * 5, CrtMode::Idle, Some("new!"), None);
         let p = l.phases(t + TYPEWRITER_CHAR_INTERVAL * 5);
         assert_eq!(p.message_reveal_chars, 0);
-    }
-
-    #[test]
-    fn boot_phase_progresses_through_stages() {
-        let l = CrtAnimationLedger::new();
-        let t = now0();
-        l.ensure_boot_started(t);
-        assert!(matches!(l.boot_phase(t), Some(BootPhase::ScanLineWipe { .. })));
-        assert!(matches!(
-            l.boot_phase(t + BOOT_SCANLINE_DURATION + Duration::from_millis(10)),
-            Some(BootPhase::EyesClosed { .. })
-        ));
-        assert!(matches!(
-            l.boot_phase(t + BOOT_SCANLINE_DURATION + BOOT_EYES_CLOSED_DURATION + Duration::from_millis(10)),
-            Some(BootPhase::Blink { .. })
-        ));
-        assert!(matches!(
-            l.boot_phase(t + BOOT_SCANLINE_DURATION + BOOT_EYES_CLOSED_DURATION + BOOT_BLINK_DURATION + Duration::from_millis(10)),
-            Some(BootPhase::Greeting { .. })
-        ));
-        assert!(l.boot_phase(t + BOOT_TOTAL_DURATION + Duration::from_millis(10)).is_none());
-    }
-
-    #[test]
-    fn boot_skip_terminates_phases_immediately() {
-        let l = CrtAnimationLedger::new();
-        let t = now0();
-        l.ensure_boot_started(t);
-        l.skip_boot();
-        assert!(l.boot_phase(t + Duration::from_millis(10)).is_none());
-        assert!(l.boot_skipped());
     }
 
     #[test]

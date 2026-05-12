@@ -17,7 +17,6 @@ pub(crate) struct VivlingCrtConfig {
     pub phosphor_glow: bool,
     pub flicker: bool,
     pub transitions: bool,
-    pub boot_animation: bool,
     pub idle_microanim: bool,
 }
 
@@ -28,7 +27,6 @@ impl Default for VivlingCrtConfig {
             phosphor_glow: true,
             flicker: true,
             transitions: true,
-            boot_animation: true,
             idle_microanim: true,
         }
     }
@@ -55,14 +53,13 @@ impl VivlingCrtConfig {
             phosphor_glow: crt.phosphor_glow.unwrap_or(defaults.phosphor_glow),
             flicker: crt.flicker.unwrap_or(defaults.flicker),
             transitions: crt.transitions.unwrap_or(defaults.transitions),
-            boot_animation: crt.boot_animation.unwrap_or(defaults.boot_animation),
             idle_microanim: crt.idle_microanim.unwrap_or(defaults.idle_microanim),
         })
     }
 
     /// Convenience: at least one stateful animation effect is enabled.
     pub(crate) fn any_animation_active(&self) -> bool {
-        self.flicker || self.transitions || self.boot_animation || self.idle_microanim
+        self.flicker || self.transitions || self.idle_microanim
     }
 }
 
@@ -84,7 +81,6 @@ struct CrtTable {
     phosphor_glow: Option<bool>,
     flicker: Option<bool>,
     transitions: Option<bool>,
-    boot_animation: Option<bool>,
     idle_microanim: Option<bool>,
 }
 
@@ -99,7 +95,6 @@ mod tests {
         assert!(c.phosphor_glow);
         assert!(c.flicker);
         assert!(c.transitions);
-        assert!(c.boot_animation);
         assert!(c.idle_microanim);
     }
 
@@ -119,14 +114,13 @@ mod tests {
 
     #[test]
     fn partial_overrides_are_respected() {
-        let raw = "[vivling.crt]\nflicker = false\nboot_animation = false\n";
+        let raw = "[vivling.crt]\nflicker = false\nidle_microanim = false\n";
         let c = VivlingCrtConfig::from_toml_str(raw).unwrap();
         assert!(c.scanlines);
         assert!(c.phosphor_glow);
         assert!(!c.flicker);
         assert!(c.transitions);
-        assert!(!c.boot_animation);
-        assert!(c.idle_microanim);
+        assert!(!c.idle_microanim);
     }
 
     #[test]
@@ -141,7 +135,6 @@ mod tests {
         assert!(c.any_animation_active());
         c.flicker = false;
         c.transitions = false;
-        c.boot_animation = false;
         c.idle_microanim = false;
         assert!(!c.any_animation_active());
     }

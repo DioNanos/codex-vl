@@ -1,8 +1,5 @@
 use super::*;
 
-use crate::vl::crt::BOOT_STRIP_HEIGHT;
-use crate::vl::crt::sprites::boot::BOOT_SPRITE_WIDTH;
-
 const VIVLING_STRIP_HEIGHT: u16 = 3;
 const VIVLING_STRIP_MIN_WIDTH: u16 = 12;
 
@@ -81,40 +78,6 @@ impl Vivling {
         let started = self.active_started_at.get().unwrap_or(now);
         now.saturating_duration_since(started).as_millis() as u64
     }
-
-    /// Skip the boot animation. Idempotent. Triggered by any keypress
-    /// observed while boot is still in progress.
-    pub(crate) fn skip_crt_boot(&self) {
-        self.crt_animation_ledger.skip_boot();
-        self.request_frame();
-    }
-
-    /// Whether the boot animation is currently active for the active
-    /// Vivling. Used by callers (BottomPane, etc.) to decide whether a
-    /// keypress should be treated as a skip.
-    pub(crate) fn crt_boot_in_progress(&self) -> bool {
-        self.crt_animation_ledger
-            .boot_phase(Instant::now())
-            .is_some()
-    }
-
-    /// Whether the boot animation needs the strip to be tall enough for
-    /// the per-species sprite. False once boot has completed or is
-    /// disabled by config.
-    fn boot_needs_expanded_strip(&self, area_width: u16) -> bool {
-        if !self.crt_config.boot_animation || !self.animations_enabled {
-            return false;
-        }
-        if area_width < BOOT_SPRITE_WIDTH {
-            return false;
-        }
-        if self.crt_animation_ledger.boot_skipped() {
-            return false;
-        }
-        self.crt_animation_ledger
-            .boot_phase(Instant::now())
-            .is_some()
-    }
 }
 
 impl Renderable for Vivling {
@@ -126,40 +89,6 @@ impl Renderable for Vivling {
             return;
         }
         let now = Instant::now();
-
-        // Decide whether to render the boot strip first. Boot starts on
-        // the first render of an app run and is skippable.
-        if self.crt_config.boot_animation
-            && self.animations_enabled
-            && area.width >= BOOT_SPRITE_WIDTH
-        {
-            self.crt_animation_ledger.ensure_boot_started(now);
-        }
-        if let Some(boot_phase) = self.crt_animation_ledger.boot_phase(now)
-            && area.height >= BOOT_STRIP_HEIGHT
-            && area.width >= BOOT_SPRITE_WIDTH
-            && self.crt_config.boot_animation
-            && self.animations_enabled
-        {
-            let palette = crate::vl::crt::palette::Palette::codex();
-            let mut surface = crate::vl::crt::CrtSurface::new(
-                area.width,
-                BOOT_STRIP_HEIGHT,
-                ratatui::style::Style::default(),
-            );
-            crate::vl::crt::render_boot_strip(&mut surface, &palette, &state.species, boot_phase);
-            let render_h = area.height.min(BOOT_STRIP_HEIGHT);
-            let render_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width,
-                height: render_h,
-            };
-            surface.render(render_area, buf);
-            self.schedule_animation_wake(now);
-            return;
-        }
-
         let sprite = self.current_sprite(state, now);
         let live_context = self.live_context.borrow();
         let insight = super::crt_insight::compute_insight(state, live_context.as_ref());
@@ -222,9 +151,6 @@ impl Renderable for Vivling {
     fn desired_height(&self, width: u16) -> u16 {
         if self.visible_state().is_none() || width < VIVLING_STRIP_MIN_WIDTH {
             return 0;
-        }
-        if self.boot_needs_expanded_strip(width) {
-            return BOOT_STRIP_HEIGHT;
         }
         VIVLING_STRIP_HEIGHT
     }

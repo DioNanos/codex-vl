@@ -1,4 +1,3 @@
-pub(crate) mod boot;
 mod fallback;
 mod sheet;
 mod species;

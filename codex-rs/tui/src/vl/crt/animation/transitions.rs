@@ -14,25 +14,7 @@ pub(crate) const TYPEWRITER_CHAR_INTERVAL: Duration = Duration::from_millis(45);
 /// Insight slide-in (vertical offset → settled).
 pub(crate) const INSIGHT_SLIDE_DURATION: Duration = Duration::from_millis(280);
 
-/// Boot phase 1: scanline wipe top→bottom over the boot strip.
-pub(crate) const BOOT_SCANLINE_DURATION: Duration = Duration::from_millis(450);
-/// Boot phase 2: sprite shown with eyes closed, holding before blink.
-pub(crate) const BOOT_EYES_CLOSED_DURATION: Duration = Duration::from_millis(350);
-/// Boot phase 3: blink animation (open).
-pub(crate) const BOOT_BLINK_DURATION: Duration = Duration::from_millis(220);
-/// Boot phase 4: greeting typewriter ("vivling online").
-pub(crate) const BOOT_GREETING_DURATION: Duration = Duration::from_millis(620);
-
-/// Total nominal boot duration. Skippable.
-pub(crate) const BOOT_TOTAL_DURATION: Duration = Duration::from_millis(
-    BOOT_SCANLINE_DURATION.as_millis() as u64
-        + BOOT_EYES_CLOSED_DURATION.as_millis() as u64
-        + BOOT_BLINK_DURATION.as_millis() as u64
-        + BOOT_GREETING_DURATION.as_millis() as u64,
-);
-
 /// Idle micro-animation periods.
-pub(crate) const BREATHING_PULSE_PERIOD: Duration = Duration::from_millis(9_500);
 pub(crate) const FLICKER_PERIOD_MS: u64 = 2_700;
 pub(crate) const FLICKER_BURST_MS: u64 = 110;
 
@@ -107,15 +89,6 @@ mod tests {
         assert!((m - 0.5).abs() < 1e-3);
         assert!((ease_in_out_cubic(0.0)).abs() < 1e-6);
         assert!((ease_in_out_cubic(1.0) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn boot_total_duration_is_sum_of_phases() {
-        let expected = BOOT_SCANLINE_DURATION
-            + BOOT_EYES_CLOSED_DURATION
-            + BOOT_BLINK_DURATION
-            + BOOT_GREETING_DURATION;
-        assert_eq!(BOOT_TOTAL_DURATION, expected);
     }
 
     #[test]
