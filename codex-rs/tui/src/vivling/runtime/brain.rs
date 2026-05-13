@@ -389,4 +389,28 @@ impl Vivling {
         self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         Ok(())
     }
+
+    /// codex-vl bond: record the supplementary success bonus on the active
+    /// Vivling when a Chat or Assist brain request returned a reply.
+    /// Counters stay tied to dispatch — this only modifies `bond.value`.
+    /// Called from `vl_handler.rs` `VivlingAssistFinished::Ok(reply)` arm
+    /// AFTER `mark_brain_reply`; a failed `mark_brain_reply` must NOT
+    /// prevent this call (Codex design review iter 4 §7).
+    pub(crate) fn record_brain_success(
+        &mut self,
+        kind: VivlingBrainRequestKind,
+    ) -> Result<(), String> {
+        self.ensure_hatched()?;
+        let bond_kind = match kind {
+            VivlingBrainRequestKind::Chat => {
+                crate::vivling::VivlingInteractionKind::BrainChatSucceeded
+            }
+            VivlingBrainRequestKind::Assist => {
+                crate::vivling::VivlingInteractionKind::BrainAssistSucceeded
+            }
+        };
+        let state = self.state.as_mut().expect("state checked");
+        state.bond.record_interaction(bond_kind, Utc::now());
+        self.save_state().map_err(|err| err.to_string())
+    }
 }

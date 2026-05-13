@@ -418,3 +418,75 @@ fn card_includes_bond_row() {
         card.wide_lines
     );
 }
+
+#[test]
+fn vivling_record_brain_success_chat_adds_bond_chat_succeeded() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+
+    let before_value = vivling.state.as_ref().expect("state").bond.value;
+    let before_chat_count = vivling.state.as_ref().expect("state").bond.chat_count;
+
+    vivling
+        .record_brain_success(crate::vivling::VivlingBrainRequestKind::Chat)
+        .expect("record brain chat success");
+
+    let after = &vivling.state.as_ref().expect("state").bond;
+    // value +2, chat_count unchanged (counters are dispatch-only)
+    assert_eq!(
+        after.value,
+        before_value + 2,
+        "bond value should grow by 2 on BrainChatSucceeded"
+    );
+    assert_eq!(
+        after.chat_count, before_chat_count,
+        "chat_count must stay tied to dispatch, not success"
+    );
+    assert!(after.last_interaction.is_some());
+}
+
+#[test]
+fn vivling_record_brain_success_assist_adds_bond_assist_succeeded() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+
+    let before_value = vivling.state.as_ref().expect("state").bond.value;
+    let before_assist_count = vivling.state.as_ref().expect("state").bond.assist_count;
+
+    vivling
+        .record_brain_success(crate::vivling::VivlingBrainRequestKind::Assist)
+        .expect("record brain assist success");
+
+    let after = &vivling.state.as_ref().expect("state").bond;
+    // value +3, assist_count unchanged (counters are dispatch-only)
+    assert_eq!(
+        after.value,
+        before_value + 3,
+        "bond value should grow by 3 on BrainAssistSucceeded"
+    );
+    assert_eq!(
+        after.assist_count, before_assist_count,
+        "assist_count must stay tied to dispatch, not success"
+    );
+}
+
+#[test]
+fn record_brain_success_without_hatch_fails_without_touching_bond() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = configured_vivling(temp.path());
+    // Not hatched yet — ensure_hatched must reject.
+    let result = vivling.record_brain_success(crate::vivling::VivlingBrainRequestKind::Chat);
+    assert!(result.is_err(), "expected hatch precondition error");
+}

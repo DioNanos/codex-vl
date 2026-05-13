@@ -91,6 +91,17 @@ impl BottomPane {
         result
     }
 
+    pub(crate) fn record_vivling_brain_success(
+        &mut self,
+        config: &Config,
+        kind: crate::vivling::VivlingBrainRequestKind,
+    ) -> Result<(), String> {
+        self.configure_vivling(config);
+        let result = self.vivling.record_brain_success(kind);
+        self.request_redraw();
+        result
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

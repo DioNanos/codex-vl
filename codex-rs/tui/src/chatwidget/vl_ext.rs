@@ -46,6 +46,14 @@ impl ChatWidget {
             .mark_vivling_brain_reply_for(&self.config, vivling_id, reply)
     }
 
+    pub(crate) fn record_vivling_brain_success(
+        &mut self,
+        kind: crate::vivling::VivlingBrainRequestKind,
+    ) -> Result<(), String> {
+        self.bottom_pane
+            .record_vivling_brain_success(&self.config, kind)
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

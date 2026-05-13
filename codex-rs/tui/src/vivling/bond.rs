@@ -15,9 +15,16 @@ const STREAK_BONUS_CAP: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VivlingInteractionKind {
+    /// `/vl` dispatch reached the runtime (foundation).
     Chat,
+    /// `/vivling assist` dispatch reached the runtime (foundation).
     Assist,
+    /// Loop tick completed successfully through `mark_brain_reply_for`.
     LoopTick,
+    /// `/vl` brain returned a successful reply (supplementary to `Chat`).
+    BrainChatSucceeded,
+    /// `/vivling assist` brain returned a successful reply (supplementary to `Assist`).
+    BrainAssistSucceeded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +149,8 @@ impl VivlingBond {
             VivlingInteractionKind::Chat => 1,
             VivlingInteractionKind::Assist => 2,
             VivlingInteractionKind::LoopTick => 1,
+            VivlingInteractionKind::BrainChatSucceeded => 2,
+            VivlingInteractionKind::BrainAssistSucceeded => 3,
         };
 
         let today = day_key(now);
@@ -180,6 +189,11 @@ impl VivlingBond {
             VivlingInteractionKind::LoopTick => {
                 self.loop_ticks_count = self.loop_ticks_count.saturating_add(1);
             }
+            // Success bonuses modify bond.value only — counters stay tied to dispatch
+            // so they keep their "how many times you reached out" semantics. See
+            // DocsHub design § 1 (counter policy).
+            VivlingInteractionKind::BrainChatSucceeded
+            | VivlingInteractionKind::BrainAssistSucceeded => {}
         }
     }
 
@@ -551,5 +565,61 @@ mod tests {
         let mut bond = VivlingBond::default();
         bond.value = 200;
         assert_eq!(bond.display_label(), "Bonded 100/100");
+    }
+
+    #[test]
+    fn record_brain_chat_succeeded_adds_2_value_only() {
+        let mut bond = VivlingBond::default();
+        bond.record_interaction(
+            VivlingInteractionKind::BrainChatSucceeded,
+            ts(2026, 5, 14, 10),
+        );
+        // 20 + 2 = 22
+        assert_eq!(bond.value, 22);
+        // counters tied to dispatch, NOT to success
+        assert_eq!(bond.chat_count, 0);
+        assert_eq!(bond.assist_count, 0);
+        assert_eq!(bond.loop_ticks_count, 0);
+        assert_eq!(bond.last_interaction, Some(ts(2026, 5, 14, 10)));
+    }
+
+    #[test]
+    fn record_brain_assist_succeeded_adds_3_value_only() {
+        let mut bond = VivlingBond::default();
+        bond.record_interaction(
+            VivlingInteractionKind::BrainAssistSucceeded,
+            ts(2026, 5, 14, 10),
+        );
+        // 20 + 3 = 23
+        assert_eq!(bond.value, 23);
+        assert_eq!(bond.chat_count, 0);
+        assert_eq!(bond.assist_count, 0);
+        assert_eq!(bond.loop_ticks_count, 0);
+    }
+
+    #[test]
+    fn brain_chat_succeeded_value_clamps_at_100() {
+        let mut bond = VivlingBond::default();
+        bond.value = 99;
+        bond.record_interaction(
+            VivlingInteractionKind::BrainChatSucceeded,
+            ts(2026, 5, 14, 10),
+        );
+        assert_eq!(bond.value, 100);
+    }
+
+    #[test]
+    fn dispatch_plus_success_same_day_no_double_streak() {
+        let mut bond = VivlingBond::default();
+        bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 14, 10));
+        bond.record_interaction(
+            VivlingInteractionKind::BrainChatSucceeded,
+            ts(2026, 5, 14, 11),
+        );
+        // dispatch +1 = 21; success +2 = 23; both same-day so streak stays at 1
+        assert_eq!(bond.value, 23);
+        assert_eq!(bond.streak_days, 1);
+        // Only the dispatch increments the chat_count.
+        assert_eq!(bond.chat_count, 1);
     }
 }
