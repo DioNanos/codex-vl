@@ -349,28 +349,6 @@ fn with_builtin_dynamic_tools(mut tools: Vec<ApiDynamicToolSpec>) -> Vec<ApiDyna
     tools
 }
 
-pub(super) fn with_builtin_core_dynamic_tools(
-    mut tools: Vec<CoreDynamicToolSpec>,
-) -> Vec<CoreDynamicToolSpec> {
-    tools.retain(|tool| {
-        !(tool.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
-            && matches!(
-                tool.namespace.as_deref(),
-                None | Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE)
-            ))
-    });
-    tools.extend(
-        builtin_manage_loops_api_tools().map(|tool| CoreDynamicToolSpec {
-            namespace: tool.namespace,
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            defer_loading: tool.defer_loading,
-        }),
-    );
-    tools
-}
-
 #[derive(Clone)]
 pub(crate) struct ThreadRequestProcessor {
     pub(super) auth_manager: Arc<AuthManager>,
@@ -2821,7 +2799,6 @@ impl ThreadRequestProcessor {
                     config_snapshot,
                     instruction_sources,
                     thread_summary,
-                    state_db: self.state_db.clone(),
                     emit_thread_goal_update,
                     thread_goal_state_db,
                     include_turns: !params.exclude_turns,

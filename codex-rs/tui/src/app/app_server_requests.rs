@@ -127,12 +127,7 @@ impl PendingAppServerRequests {
                 );
                 None
             }
-            ServerRequest::DynamicToolCall { request_id, .. } => {
-                Some(UnsupportedAppServerRequest {
-                    request_id: request_id.clone(),
-                    message: "Dynamic tool calls are not available in TUI yet.".to_string(),
-                })
-            }
+            ServerRequest::DynamicToolCall { .. } => None,
             ServerRequest::ChatgptAuthTokensRefresh { .. } => None,
             ServerRequest::AttestationGenerate { request_id, .. } => {
                 Some(UnsupportedAppServerRequest {
@@ -646,27 +641,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dynamic_tool_calls_as_unsupported() {
+    fn dynamic_tool_calls_are_resolved_by_dedicated_handler() {
         let mut pending = PendingAppServerRequests::default();
-        let unsupported = pending
-            .note_server_request(&ServerRequest::DynamicToolCall {
-                request_id: AppServerRequestId::Integer(99),
-                params: codex_app_server_protocol::DynamicToolCallParams {
-                    thread_id: "thread-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    call_id: "tool-1".to_string(),
-                    namespace: None,
-                    tool: "tool".to_string(),
-                    arguments: json!({}),
-                },
-            })
-            .expect("dynamic tool calls should be rejected");
+        let unsupported = pending.note_server_request(&ServerRequest::DynamicToolCall {
+            request_id: AppServerRequestId::Integer(99),
+            params: codex_app_server_protocol::DynamicToolCallParams {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "tool-1".to_string(),
+                namespace: None,
+                tool: "tool".to_string(),
+                arguments: json!({}),
+            },
+        });
 
-        assert_eq!(unsupported.request_id, AppServerRequestId::Integer(99));
-        assert_eq!(
-            unsupported.message,
-            "Dynamic tool calls are not available in TUI yet."
-        );
+        assert_eq!(unsupported, None);
     }
 
     #[test]

@@ -408,6 +408,9 @@ impl ChatWidget {
             SlashCommand::Theme => {
                 self.open_theme_picker();
             }
+            SlashCommand::Pets => {
+                self.open_pets_picker();
+            }
             SlashCommand::Ps => {
                 self.add_ps_output();
             }
@@ -505,7 +508,9 @@ impl ChatWidget {
             }
             Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
                 let log_kind = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => crate::vl::VivlingLogKind::Chat,
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        crate::vl::VivlingLogKind::Chat
+                    }
                     crate::vivling::VivlingBrainRequestKind::Assist => {
                         crate::vl::VivlingLogKind::Assist
                     }
@@ -558,7 +563,9 @@ impl ChatWidget {
             }
             Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
                 let log_kind = match &request.kind {
-                    crate::vivling::VivlingBrainRequestKind::Chat => crate::vl::VivlingLogKind::Chat,
+                    crate::vivling::VivlingBrainRequestKind::Chat => {
+                        crate::vl::VivlingLogKind::Chat
+                    }
                     crate::vivling::VivlingBrainRequestKind::Assist => {
                         crate::vl::VivlingLogKind::Assist
                     }
@@ -911,6 +918,17 @@ impl ChatWidget {
             SlashCommand::VivlingAlias => {
                 self.dispatch_vivling_direct_alias(trimmed);
             }
+            SlashCommand::Pets
+                if matches!(
+                    args.trim().to_ascii_lowercase().as_str(),
+                    "disable" | "disabled" | "hide" | "hidden" | "off" | "none"
+                ) =>
+            {
+                self.app_event_tx.send(AppEvent::PetDisabled);
+            }
+            SlashCommand::Pets if !trimmed.is_empty() => {
+                self.select_pet_by_id(args);
+            }
             _ => self.dispatch_command(cmd),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
@@ -1100,7 +1118,8 @@ impl ChatWidget {
             | SlashCommand::Hooks
             | SlashCommand::Title
             | SlashCommand::Statusline
-            | SlashCommand::Theme => QueueDrain::Stop,
+            | SlashCommand::Theme
+            | SlashCommand::Pets => QueueDrain::Stop,
             SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => {
                 QueueDrain::Continue
             }

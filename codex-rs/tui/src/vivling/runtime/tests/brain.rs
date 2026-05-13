@@ -634,9 +634,9 @@ fn assert_msa_collection_has_tantivy_shard(msa_storage: &std::path::Path, vivlin
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    let has_tantivy_shard = entries.iter().any(|name| {
-        name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx")
-    });
+    let has_tantivy_shard = entries
+        .iter()
+        .any(|name| name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx"));
     assert!(
         has_tantivy_shard,
         "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",

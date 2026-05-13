@@ -1,3 +1,5 @@
+use super::animation::TransitionPhases;
+use super::animation::VivlingCrtConfig;
 use super::director::CrtDirector;
 use super::effects;
 use super::palette::Palette;
@@ -23,6 +25,11 @@ pub(crate) struct CrtScene<'a> {
     pub(crate) last_message: Option<&'a str>,
     pub(crate) activity: Option<VivlingActivity>,
     pub(crate) tier: CrtTier,
+    /// CRT effect toggles. Borrowed from Vivling so the renderer doesn't
+    /// have to re-parse config each frame.
+    pub(crate) crt_config: &'a VivlingCrtConfig,
+    /// Per-frame transition snapshot from `CrtAnimationLedger`.
+    pub(crate) transitions: TransitionPhases,
 }
 
 pub(crate) fn render_crt_scene(surface: &mut CrtSurface, scene: &CrtScene<'_>) {
@@ -39,7 +46,14 @@ pub(crate) fn render_crt_scene(surface: &mut CrtSurface, scene: &CrtScene<'_>) {
 
     let mode = CrtDirector::select(scene, width);
     render_scene(surface, scene, mode, &palette);
-    effects::apply_all(surface, &palette, scene.seed, scene.elapsed_ms);
+    effects::apply_all(
+        surface,
+        &palette,
+        scene.seed,
+        scene.elapsed_ms,
+        scene.crt_config,
+        scene.transitions,
+    );
 }
 
 #[cfg(test)]
@@ -49,9 +63,22 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Style;
 
+    fn default_config() -> VivlingCrtConfig {
+        VivlingCrtConfig::default()
+    }
+
+    fn settled_phases() -> TransitionPhases {
+        TransitionPhases {
+            mode_fade: 1.0,
+            message_reveal_chars: usize::MAX,
+            insight_slide: 1.0,
+        }
+    }
+
     #[test]
     fn scene_uses_three_fixed_rows_without_dashboard_numbers() {
         let mut surface = CrtSurface::new(40, 3, Style::default());
+        let cfg = default_config();
         let scene = CrtScene {
             species_id: "syllo",
             stage: Stage::Baby,
@@ -68,6 +95,8 @@ mod tests {
             last_message: None,
             activity: None,
             tier: CrtTier::Safe,
+            crt_config: &cfg,
+            transitions: settled_phases(),
         };
         render_crt_scene(&mut surface, &scene);
 
@@ -85,6 +114,7 @@ mod tests {
 
     #[test]
     fn scene_keeps_fixed_shape_across_terminal_widths() {
+        let cfg = default_config();
         for width in [8, 12, 18, 24, 40, 80] {
             let mut surface = CrtSurface::new(width, 3, Style::default());
             let scene = CrtScene {
@@ -103,6 +133,8 @@ mod tests {
                 last_message: None,
                 activity: None,
                 tier: CrtTier::Safe,
+                crt_config: &cfg,
+                transitions: settled_phases(),
             };
             render_crt_scene(&mut surface, &scene);
 
@@ -128,6 +160,7 @@ mod tests {
     }
 
     fn render_row_at(width: u16, row: u16, elapsed_ms: u64) -> String {
+        let cfg = default_config();
         let mut surface = CrtSurface::new(width, 3, Style::default());
         let scene = CrtScene {
             species_id: "syllo",
@@ -145,6 +178,8 @@ mod tests {
             last_message: None,
             activity: None,
             tier: CrtTier::Safe,
+            crt_config: &cfg,
+            transitions: settled_phases(),
         };
         render_crt_scene(&mut surface, &scene);
 

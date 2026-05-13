@@ -42,6 +42,7 @@ use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -106,6 +107,7 @@ pub(crate) use footer::GoalStatusIndicator;
 pub(crate) use footer::goal_status_indicator_line;
 pub(crate) use list_selection_view::ColumnWidthMode;
 pub(crate) use list_selection_view::ListSelectionView;
+pub(crate) use list_selection_view::OnSelectionChangedCallback;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -650,6 +652,35 @@ impl BottomPane {
                 self.request_redraw();
                 return InputResult::None;
             }
+            // codex-vl: Ctrl+J toggles the Vivling sidebar (open/close).
+            // Intercepted here so the editor keymap (which binds Ctrl+J to
+            // insert_newline) does not consume it first.
+            if matches!(key_event.kind, KeyEventKind::Press)
+                && key_event.code == KeyCode::Char('j')
+                && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                && !key_event
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+                && self.composer_is_empty()
+            {
+                self.toggle_vl_sidebar();
+                return InputResult::None;
+            }
+            if self.vl_sidebar.is_expanded()
+                && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            {
+                let scroll_delta = match key_event.code {
+                    KeyCode::PageUp if key_event.modifiers.is_empty() => Some(-5),
+                    KeyCode::PageDown if key_event.modifiers.is_empty() => Some(5),
+                    KeyCode::Up if key_event.modifiers == KeyModifiers::CONTROL => Some(-1),
+                    KeyCode::Down if key_event.modifiers == KeyModifiers::CONTROL => Some(1),
+                    _ => None,
+                };
+                if let Some(delta) = scroll_delta {
+                    self.scroll_vl_sidebar(delta);
+                    return InputResult::None;
+                }
+            }
             let records_composer_activity =
                 matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                     && !key_hint::has_ctrl_or_alt(key_event.modifiers)
@@ -987,6 +1018,7 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
+        self.vivling.set_task_running(running);
 
         if running {
             if !was_running {
@@ -1145,6 +1177,20 @@ impl BottomPane {
             .last()
             .filter(|view| view.view_id() == Some(view_id))
             .and_then(|view| view.active_tab_id())
+    }
+
+    pub(crate) fn dismiss_active_view_if_id(&mut self, view_id: &'static str) -> bool {
+        let is_match = self
+            .view_stack
+            .last()
+            .is_some_and(|view| view.view_id() == Some(view_id));
+        if !is_match {
+            return false;
+        }
+
+        self.view_stack.pop();
+        self.request_redraw();
+        true
     }
 
     /// Update the pending-input preview shown above the composer.
@@ -1547,6 +1593,13 @@ impl BottomPane {
     }
 
     fn as_renderable(&'_ self) -> RenderableItem<'_> {
+        self.as_renderable_with_composer_right_reserve(/*composer_right_reserve*/ 0)
+    }
+
+    fn as_renderable_with_composer_right_reserve(
+        &'_ self,
+        composer_right_reserve: u16,
+    ) -> RenderableItem<'_> {
         if let Some(view) = self.active_view() {
             RenderableItem::Borrowed(view)
         } else {
@@ -1588,9 +1641,67 @@ impl BottomPane {
             }
             let mut flex2 = FlexRenderable::new();
             flex2.push(/*flex*/ 1, RenderableItem::Owned(flex.into()));
-            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.composer));
+            // codex-vl: Vivling chat sidebar opens above the strip when
+            // Ctrl+J expands it. desired_height returns 0 while collapsed,
+            // so this is a no-op when the panel is closed.
+            if self.vl_sidebar.should_render() {
+                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+            }
+            // codex-vl: Vivling strip sits between the inline previews/status
+            // area and the composer. The Vivling renderer self-reports
+            // desired_height = 0 when no visible Vivling is hatched, so this
+            // is a no-op for users who never spawned one.
+            if self.vivling.should_render() {
+                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+            }
+            let composer: RenderableItem<'_> = if composer_right_reserve == 0 {
+                RenderableItem::Borrowed(&self.composer)
+            } else {
+                RenderableItem::Owned(Box::new(ChatComposerRightReserveRenderable {
+                    composer: &self.composer,
+                    right_reserve: composer_right_reserve,
+                }))
+            };
+            flex2.push(/*flex*/ 0, composer);
             RenderableItem::Owned(Box::new(flex2))
         }
+    }
+
+    pub(crate) fn render_with_composer_right_reserve(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        composer_right_reserve: u16,
+    ) {
+        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
+            .render(area, buf);
+    }
+
+    pub(crate) fn desired_height_with_composer_right_reserve(
+        &self,
+        width: u16,
+        composer_right_reserve: u16,
+    ) -> u16 {
+        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
+            .desired_height(width)
+    }
+
+    pub(crate) fn cursor_pos_with_composer_right_reserve(
+        &self,
+        area: Rect,
+        composer_right_reserve: u16,
+    ) -> Option<(u16, u16)> {
+        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
+            .cursor_pos(area)
+    }
+
+    pub(crate) fn cursor_style_with_composer_right_reserve(
+        &self,
+        area: Rect,
+        composer_right_reserve: u16,
+    ) -> crossterm::cursor::SetCursorStyle {
+        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
+            .cursor_style(area)
     }
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
@@ -1625,6 +1736,36 @@ impl BottomPane {
         if self.composer.set_side_conversation_context_label(label) {
             self.request_redraw();
         }
+    }
+}
+
+struct ChatComposerRightReserveRenderable<'a> {
+    composer: &'a chat_composer::ChatComposer,
+    right_reserve: u16,
+}
+
+impl Renderable for ChatComposerRightReserveRenderable<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.composer.render_with_mask_and_textarea_right_reserve(
+            area,
+            buf,
+            /*mask_char*/ None,
+            self.right_reserve,
+        );
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.composer
+            .desired_height_with_textarea_right_reserve(width, self.right_reserve)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        self.composer
+            .cursor_pos_with_textarea_right_reserve(area, self.right_reserve)
+    }
+
+    fn cursor_style(&self, area: Rect) -> crossterm::cursor::SetCursorStyle {
+        self.composer.cursor_style(area)
     }
 }
 

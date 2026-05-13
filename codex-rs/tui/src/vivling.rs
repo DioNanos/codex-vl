@@ -17,7 +17,6 @@ pub(crate) use runtime::VivlingBrainProfileRequestKind;
 pub(crate) use runtime::VivlingBrainRequestKind;
 pub(crate) use runtime::VivlingCommandOutcome;
 pub(crate) use runtime::VivlingLiveContext;
-pub(crate) use runtime::VivlingLiveStatusItem;
 pub(crate) use runtime::VivlingLoopTickRequest;
 pub(crate) use runtime::VivlingLoopTickResult;
 pub(crate) use runtime::VivlingPanelData;
