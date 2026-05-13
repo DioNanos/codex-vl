@@ -393,7 +393,7 @@ fn status_includes_bond_segment() {
 #[test]
 fn card_includes_bond_row() {
     let temp = TempDir::new().expect("tempdir");
-    let mut vivling = hatched_vivling(temp.path());
+    let vivling = hatched_vivling(temp.path());
     let mut state = vivling.state.clone().expect("state");
 
     let card = crate::vivling::runtime::render_vivling_card(&mut state);
