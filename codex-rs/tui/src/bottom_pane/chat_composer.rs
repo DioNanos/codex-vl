@@ -420,6 +420,7 @@ pub(crate) struct ChatComposer {
     status_line_hyperlink_url: Option<String>,
     status_line_enabled: bool,
     side_conversation_context_label: Option<String>,
+    loop_context_label: Option<String>,
     // Agent label injected into the footer's contextual row when multi-agent mode is active.
     active_agent_label: Option<String>,
     history_search: Option<HistorySearchSession>,
@@ -607,6 +608,7 @@ impl ChatComposer {
             status_line_hyperlink_url: None,
             status_line_enabled: false,
             side_conversation_context_label: None,
+            loop_context_label: None,
             active_agent_label: None,
             history_search: None,
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
@@ -4375,6 +4377,14 @@ impl ChatComposer {
         true
     }
 
+    pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) -> bool {
+        if self.loop_context_label == label {
+            return false;
+        }
+        self.loop_context_label = label;
+        true
+    }
+
     /// Replaces the contextual footer label for the currently viewed agent.
     ///
     /// Returning `false` means the value was unchanged, so callers can skip redraw work. This
@@ -4658,6 +4668,8 @@ impl ChatComposer {
                     let right_line =
                         if let Some(label) = self.side_conversation_context_label.as_ref() {
                             Some(side_conversation_context_line(label))
+                        } else if let Some(label) = self.loop_context_label.as_ref() {
+                            Some(Line::from(label.clone()).dim())
                         } else if let Some(line) = self.shell_mode_footer_line() {
                             Some(line)
                         } else if status_line_active {
@@ -5107,6 +5119,42 @@ mod tests {
         assert!(
             !bottom_row.contains("FLASH"),
             "expected expired flash to be hidden, saw: {bottom_row:?}",
+        );
+    }
+
+    #[test]
+    fn loop_context_label_renders_as_passive_footer_context() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ false,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_status_line_enabled(/*enabled*/ true);
+        composer.set_status_line(Some(Line::from("model · cwd · Context 0% used")));
+        assert!(
+            composer.set_loop_context_label(Some(
+                "loops: 1 · owner: main · next: codex-vl".to_string(),
+            ))
+        );
+
+        let area = Rect::new(0, 0, 100, 6);
+        let mut buf = Buffer::empty(area);
+        composer.render(area, &mut buf);
+
+        let mut rendered = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                rendered.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            rendered.push('\n');
+        }
+        assert!(
+            rendered.contains("loops: 1"),
+            "expected loop context in footer, saw:\n{rendered}",
         );
     }
 

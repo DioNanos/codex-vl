@@ -1575,19 +1575,6 @@ async fn run_ratatui_app(
     app_result
 }
 
-pub(crate) async fn resolve_session_thread_id(
-    path: &Path,
-    id_str_if_uuid: Option<&str>,
-) -> Option<ThreadId> {
-    match id_str_if_uuid {
-        Some(id_str) => ThreadId::from_string(id_str).ok(),
-        None => read_session_meta_line(path)
-            .await
-            .ok()
-            .map(|meta_line| meta_line.meta.id),
-    }
-}
-
 pub(crate) async fn read_session_cwd(
     config: &Config,
     thread_id: ThreadId,
@@ -1620,22 +1607,6 @@ pub(crate) async fn read_session_cwd(
             None
         }
     }
-}
-
-pub(crate) async fn read_session_model(
-    config: &Config,
-    thread_id: ThreadId,
-    path: Option<&Path>,
-) -> Option<String> {
-    if let Some(state_db_ctx) = get_state_db(config).await
-        && let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await
-        && let Some(model) = metadata.model
-    {
-        return Some(model);
-    }
-
-    let path = path?;
-    read_latest_turn_context(path).await.map(|item| item.model)
 }
 
 async fn read_latest_turn_context(path: &Path) -> Option<TurnContextItem> {

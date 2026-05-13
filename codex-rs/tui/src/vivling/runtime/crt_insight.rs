@@ -5,6 +5,8 @@
 //! the goal here is just to pick the most useful thing to say right now —
 //! never numeric labels, never long sentences.
 
+use super::super::model::Stage;
+use super::super::model::VivlingWorkMemoryEntry;
 use super::super::model::WorkArchetype;
 use super::VivlingLiveContext;
 use super::VivlingState;
@@ -22,13 +24,16 @@ pub(crate) fn compute_insight(
     if let Some(phrase) = brain_error_phrase(state) {
         return Some(phrase);
     }
-    if let Some(phrase) = active_loop_phrase(state) {
-        return Some(phrase);
-    }
     if let Some(phrase) = blocked_loop_phrase(state) {
         return Some(phrase);
     }
+    if let Some(phrase) = active_loop_phrase(state) {
+        return Some(phrase);
+    }
     if let Some(phrase) = proactive_next_phrase(state) {
+        return Some(phrase);
+    }
+    if let Some(phrase) = recent_memory_phrase(state) {
         return Some(phrase);
     }
     if let Some(phrase) = last_work_summary_phrase(state) {
@@ -63,20 +68,18 @@ fn brain_error_phrase(state: &VivlingState) -> Option<String> {
 }
 
 fn blocked_loop_phrase(state: &VivlingState) -> Option<String> {
-    let blocked_total = state
-        .loop_blocked_review
-        .saturating_add(state.loop_blocked_side)
-        .saturating_add(state.loop_blocked_busy);
-    if blocked_total > 0 && blocked_total >= state.loop_runtime_submissions.max(1) {
-        if state.loop_blocked_review >= state.loop_blocked_side
-            && state.loop_blocked_review >= state.loop_blocked_busy
-        {
-            return Some("review gate blocking".to_string());
+    let latest = state
+        .work_memory
+        .iter()
+        .rev()
+        .find(|entry| entry.kind != "live_context");
+    if let Some(entry) = latest {
+        match entry.kind.as_str() {
+            "loop_blocked_review" => return Some("review gate blocking".to_string()),
+            "loop_blocked_side" => return Some("side work blocking".to_string()),
+            "loop_blocked_busy" => return Some("busy - wait for state".to_string()),
+            _ => {}
         }
-        if state.loop_blocked_side >= state.loop_blocked_busy {
-            return Some("side work blocking".to_string());
-        }
-        return Some("busy - wait for state".to_string());
     }
     if state.loop_admin_churn >= 3 && state.loop_runtime_submissions == 0 {
         return Some("churn - verify state".to_string());
@@ -85,12 +88,22 @@ fn blocked_loop_phrase(state: &VivlingState) -> Option<String> {
 }
 
 fn active_loop_phrase(state: &VivlingState) -> Option<String> {
-    if state.loop_runtime_submissions > 0
-        && state.loop_runtime_submissions > state.loop_runtime_blocks
-    {
-        return Some("loop landed - verify next".to_string());
+    let latest = state
+        .work_memory
+        .iter()
+        .rev()
+        .find(|entry| entry.kind != "live_context")?;
+    if latest.kind != "loop_runtime" || !latest.summary.to_ascii_lowercase().contains("submitted") {
+        return None;
     }
-    None
+    Some(
+        match state.stage() {
+            Stage::Baby => "loop landed!",
+            Stage::Juvenile => "clean - verify next",
+            Stage::Adult => "landed - check fallout",
+        }
+        .to_string(),
+    )
 }
 
 fn proactive_next_phrase(state: &VivlingState) -> Option<String> {
@@ -129,6 +142,45 @@ fn proactive_next_phrase(state: &VivlingState) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn recent_memory_phrase(state: &VivlingState) -> Option<String> {
+    state
+        .work_memory
+        .iter()
+        .rev()
+        .find(|entry| entry.kind != "live_context")
+        .and_then(memory_entry_phrase)
+}
+
+fn memory_entry_phrase(entry: &VivlingWorkMemoryEntry) -> Option<String> {
+    let summary = entry.summary.trim();
+    if summary.is_empty() {
+        return None;
+    }
+    let lower = summary.to_ascii_lowercase();
+    if entry.kind.contains("blocked") || lower.contains("blocked") {
+        return Some("memory: loop blocked".to_string());
+    }
+    if entry.kind == "loop_runtime" && lower.contains("submitted") {
+        return Some("memory: loop submitted".to_string());
+    }
+    if lower.contains("verify") || lower.contains("verified") || lower.contains("smoke") {
+        return Some("memory: verify path".to_string());
+    }
+    if lower.contains("release") || lower.contains("publish") {
+        return Some("memory: release path".to_string());
+    }
+    if lower.contains("merge") || lower.contains("rebase") || lower.contains("conflict") {
+        return Some("memory: merge risk".to_string());
+    }
+    if lower.contains("review") || lower.contains("audit") {
+        return Some("memory: review risk".to_string());
+    }
+    if lower.contains("test") || lower.contains("check") {
+        return Some("memory: test signal".to_string());
+    }
+    None
 }
 
 fn last_work_summary_phrase(state: &VivlingState) -> Option<String> {
@@ -177,6 +229,10 @@ fn compact_summary(raw: &str) -> Option<String> {
             "plan set - do one slice"
         } else if lower.contains("plan") && lower.contains("proposed") {
             "plan ready"
+        } else if lower.contains("blocked") {
+            "blocked - name the gate"
+        } else if lower.contains("build") {
+            "build: verify result"
         } else if lower.contains("test") {
             "tests: isolate failure"
         } else if lower.contains("review") {
@@ -240,9 +296,14 @@ fn strip_numeric_noise(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::model::ADULT_LEVEL;
+    use super::super::super::model::JUVENILE_LEVEL;
     use super::super::super::model::VivlingState;
+    use super::super::super::model::VivlingWorkMemoryEntry;
     use super::super::super::model::WorkAffinitySet;
+    use super::super::super::model::WorkArchetype;
     use super::*;
+    use chrono::Utc;
 
     fn state_with_message(msg: &str) -> VivlingState {
         VivlingState {
@@ -251,11 +312,34 @@ mod tests {
         }
     }
 
+    fn loop_submitted_memory() -> VivlingWorkMemoryEntry {
+        VivlingWorkMemoryEntry {
+            kind: "loop_runtime".to_string(),
+            summary: "loop trigger `codex-vl` (scheduled, status submitted, agent)".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 14,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn loop_blocked_memory(kind: &str) -> VivlingWorkMemoryEntry {
+        VivlingWorkMemoryEntry {
+            kind: kind.to_string(),
+            summary: format!("loop trigger `codex-vl` (pending, status {kind}, agent)"),
+            archetype: WorkArchetype::Operator,
+            weight: 0,
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn blocked_signal_beats_generic_last_message() {
         let mut state = state_with_message("greets the operator");
         state.loop_blocked_review = 2;
         state.loop_runtime_submissions = 0;
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_review"));
         let phrase = compute_insight(&state, None).expect("insight");
         assert_eq!(phrase, "review gate blocking");
     }
@@ -265,6 +349,9 @@ mod tests {
         let mut state = state_with_message("greets the operator");
         state.loop_blocked_busy = 2;
         state.loop_runtime_submissions = 0;
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_busy"));
         let phrase = compute_insight(&state, None).expect("insight");
         assert_eq!(phrase, "busy - wait for state");
     }
@@ -274,6 +361,9 @@ mod tests {
         let mut state = state_with_message("greets the operator");
         state.loop_blocked_review = 2;
         state.loop_runtime_submissions = 0;
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_review"));
         let context = VivlingLiveContext {
             active_agent_label: Some("main".to_string()),
             task_progress: Some("build running".to_string()),
@@ -314,8 +404,115 @@ mod tests {
         let mut state = state_with_message("noticed loop");
         state.loop_runtime_submissions = 3;
         state.loop_runtime_blocks = 0;
+        state.work_memory.push(loop_submitted_memory());
         let phrase = compute_insight(&state, None).expect("insight");
-        assert_eq!(phrase, "loop landed - verify next");
+        assert_eq!(phrase, "loop landed!");
+    }
+
+    #[test]
+    fn old_loop_submission_counters_do_not_stick_without_recent_runtime_memory() {
+        let mut state = state_with_message("noticed loop");
+        state.loop_runtime_submissions = 3;
+        state.loop_runtime_blocks = 0;
+        let phrase = compute_insight(&state, None).expect("insight");
+        assert_eq!(phrase, "noticed loop");
+    }
+
+    #[test]
+    fn old_blocked_counters_do_not_stick_without_recent_block_memory() {
+        let mut state = state_with_message("greets the operator");
+        state.loop_blocked_busy = 4;
+        state.loop_runtime_submissions = 0;
+        let phrase = compute_insight(&state, None).expect("insight");
+        assert_eq!(phrase, "greets the operator");
+    }
+
+    #[test]
+    fn newer_work_memory_beats_old_blocked_memory() {
+        let mut state = state_with_message("greets the operator");
+        state.loop_blocked_busy = 4;
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_busy"));
+        state.work_memory.push(VivlingWorkMemoryEntry {
+            kind: "turn".to_string(),
+            summary: "turn completed: verified the state after loop cleanup".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 14,
+            created_at: Utc::now(),
+        });
+        let phrase = compute_insight(&state, None).expect("insight");
+        assert_eq!(phrase, "memory: verify path");
+    }
+
+    #[test]
+    fn active_loop_signal_uses_stage_voice() {
+        let mut juvenile = state_with_message("noticed loop");
+        juvenile.level = JUVENILE_LEVEL;
+        juvenile.work_memory.push(loop_submitted_memory());
+        let phrase = compute_insight(&juvenile, None).expect("insight");
+        assert_eq!(phrase, "clean - verify next");
+
+        let mut adult = state_with_message("noticed loop");
+        adult.level = ADULT_LEVEL;
+        adult.work_memory.push(loop_submitted_memory());
+        let phrase = compute_insight(&adult, None).expect("insight");
+        assert_eq!(phrase, "landed - check fallout");
+    }
+
+    #[test]
+    fn newer_work_memory_beats_old_loop_submission_memory() {
+        let mut state = state_with_message("noticed loop");
+        state.work_memory.push(loop_submitted_memory());
+        state.work_memory.push(VivlingWorkMemoryEntry {
+            kind: "turn".to_string(),
+            summary: "turn completed: tests verified".to_string(),
+            archetype: WorkArchetype::Builder,
+            weight: 14,
+            created_at: Utc::now(),
+        });
+        let phrase = compute_insight(&state, None).expect("insight");
+        assert_eq!(phrase, "memory: verify path");
+    }
+
+    #[test]
+    fn blocked_loop_beats_landed_loop_signal() {
+        let mut state = state_with_message("noticed loop");
+        state.loop_runtime_submissions = 2;
+        state.loop_runtime_blocks = 3;
+        state.loop_blocked_review = 3;
+        state.work_memory.push(loop_submitted_memory());
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_review"));
+        let phrase = compute_insight(&state, None).expect("insight");
+        assert_eq!(phrase, "review gate blocking");
+    }
+
+    #[test]
+    fn recent_memory_beats_live_context_and_ignores_live_context_capsules() {
+        let mut state = state_with_message("greets");
+        state.work_memory.push(VivlingWorkMemoryEntry {
+            kind: "live_context".to_string(),
+            summary: "live context: state Working; cwd codex-vl".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 0,
+            created_at: Utc::now(),
+        });
+        state.work_memory.push(VivlingWorkMemoryEntry {
+            kind: "turn".to_string(),
+            summary: "turn completed: verified the local build path".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 14,
+            created_at: Utc::now(),
+        });
+        let context = VivlingLiveContext {
+            active_agent_label: Some("main".to_string()),
+            ..Default::default()
+        };
+
+        let phrase = compute_insight(&state, Some(&context)).expect("insight");
+        assert_eq!(phrase, "memory: verify path");
     }
 
     #[test]
@@ -483,12 +680,16 @@ mod tests {
 
         let mut blocked = VivlingState::default();
         blocked.loop_blocked_busy = 1;
+        blocked
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_busy"));
 
         let mut error = VivlingState::default();
         error.brain_last_error = Some("oops".to_string());
 
         let mut active = VivlingState::default();
         active.loop_runtime_submissions = 2;
+        active.work_memory.push(loop_submitted_memory());
 
         let mut summary = state_with_message("watching");
         summary.last_work_summary = Some("loop runtime work continues".to_string());

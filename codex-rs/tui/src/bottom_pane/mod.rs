@@ -663,9 +663,23 @@ impl BottomPane {
                     .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
                 && self.composer_is_empty()
             {
-                self.vl_sidebar.toggle();
-                self.request_redraw();
+                self.toggle_vl_sidebar();
                 return InputResult::None;
+            }
+            if self.vl_sidebar.is_expanded()
+                && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            {
+                let scroll_delta = match key_event.code {
+                    KeyCode::PageUp if key_event.modifiers.is_empty() => Some(-5),
+                    KeyCode::PageDown if key_event.modifiers.is_empty() => Some(5),
+                    KeyCode::Up if key_event.modifiers == KeyModifiers::CONTROL => Some(-1),
+                    KeyCode::Down if key_event.modifiers == KeyModifiers::CONTROL => Some(1),
+                    _ => None,
+                };
+                if let Some(delta) = scroll_delta {
+                    self.scroll_vl_sidebar(delta);
+                    return InputResult::None;
+                }
             }
             let records_composer_activity =
                 matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -1004,6 +1018,7 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
+        self.vivling.set_task_running(running);
 
         if running {
             if !was_running {
@@ -1629,12 +1644,16 @@ impl BottomPane {
             // codex-vl: Vivling chat sidebar opens above the strip when
             // Ctrl+J expands it. desired_height returns 0 while collapsed,
             // so this is a no-op when the panel is closed.
-            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+            if self.vl_sidebar.should_render() {
+                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+            }
             // codex-vl: Vivling strip sits between the inline previews/status
             // area and the composer. The Vivling renderer self-reports
             // desired_height = 0 when no visible Vivling is hatched, so this
             // is a no-op for users who never spawned one.
-            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+            if self.vivling.should_render() {
+                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+            }
             let composer: RenderableItem<'_> = if composer_right_reserve == 0 {
                 RenderableItem::Borrowed(&self.composer)
             } else {

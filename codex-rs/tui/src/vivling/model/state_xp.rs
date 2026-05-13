@@ -480,8 +480,15 @@ impl VivlingState {
         summary: &str,
     ) -> Vec<VivlingWorkMemoryEntry> {
         let summary = truncate_summary(summary.trim(), 160);
-        if summary.is_empty() || self.last_live_context_summary.as_deref() == Some(summary.as_str())
-        {
+        if summary.is_empty() || low_signal_live_context_summary(&summary) {
+            return Vec::new();
+        }
+        let normalized = normalize_live_context_summary(&summary);
+        let last_normalized = self
+            .last_live_context_summary
+            .as_deref()
+            .map(normalize_live_context_summary);
+        if last_normalized.as_deref() == Some(normalized.as_str()) {
             return Vec::new();
         }
 
@@ -588,5 +595,60 @@ impl VivlingState {
             strongest_summaries,
             strongest_paths
         )
+    }
+}
+
+fn normalize_live_context_summary(summary: &str) -> String {
+    summary
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(';')
+        .to_ascii_lowercase()
+}
+
+fn low_signal_live_context_summary(summary: &str) -> bool {
+    let normalized = normalize_live_context_summary(summary);
+    let has_actionable_part = normalized.contains("task ")
+        || normalized.contains("branch ")
+        || normalized.contains("active ");
+    if has_actionable_part {
+        return false;
+    }
+    normalized.contains("state ") || normalized.contains("cwd ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_context_memory_skips_low_signal_state_only_updates() {
+        let mut state = VivlingState::default();
+        let entries = state.record_live_context_summary("state Working; cwd codex-vl");
+        assert!(entries.is_empty());
+        assert!(state.last_live_context_summary.is_none());
+    }
+
+    #[test]
+    fn live_context_memory_deduplicates_normalized_repeats() {
+        let mut state = VivlingState::default();
+        let first = state.record_live_context_summary(
+            "state Working; active main; task verify build; branch develop",
+        );
+        let second = state.record_live_context_summary(
+            " state   Working; active main; task verify build; branch develop ",
+        );
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+        assert_eq!(
+            state
+                .work_memory
+                .iter()
+                .filter(|entry| entry.kind == "live_context")
+                .count(),
+            1
+        );
     }
 }

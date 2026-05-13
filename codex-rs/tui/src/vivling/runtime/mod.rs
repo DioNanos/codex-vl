@@ -16,7 +16,6 @@ mod tests;
 
 pub(crate) use action::VivlingAction;
 pub(crate) use live_context::VivlingLiveContext;
-pub(crate) use live_context::VivlingLiveStatusItem;
 pub(crate) use msa::VivlingMsa;
 pub(crate) use panel::VivlingPanelData;
 pub(crate) use panel::render_upgrade_card;

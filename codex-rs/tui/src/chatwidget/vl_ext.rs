@@ -157,6 +157,9 @@ impl ChatWidget {
             .bottom_pane
             .active_agent_label()
             .map(std::string::ToString::to_string);
+        if let Some(loop_context) = self.bottom_pane.loop_context_label() {
+            context.task_progress = Some(loop_context.to_string());
+        }
         self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }

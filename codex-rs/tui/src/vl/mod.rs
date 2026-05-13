@@ -11,7 +11,6 @@ pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod sidebar;
 
-pub(crate) use events::LoopCommandRequest;
 pub(crate) use events::VlEvent;
 pub(crate) use lifecycle::LifecycleState;
 pub(crate) use lifecycle::TickResult;

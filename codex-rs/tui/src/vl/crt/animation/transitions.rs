@@ -32,6 +32,7 @@ pub(crate) struct TransitionPhases {
 
 impl TransitionPhases {
     /// All transitions completed (no in-flight motion).
+    #[cfg(test)]
     pub(crate) fn is_settled(&self) -> bool {
         self.mode_fade >= 1.0 && self.insight_slide >= 1.0
     }

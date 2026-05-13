@@ -91,6 +91,7 @@ impl ChatWidget {
             self.abort_all_loop_job_tasks();
             self.loop_jobs.clear();
             self.bottom_pane.set_loop_context_label(None);
+            self.sync_vivling_live_context();
             return;
         }
 
@@ -142,6 +143,7 @@ impl ChatWidget {
             })
         };
         self.bottom_pane.set_loop_context_label(label);
+        self.sync_vivling_live_context();
     }
 
     pub(crate) fn submit_loop_prompt(
@@ -202,6 +204,8 @@ impl ChatWidget {
     pub(crate) fn clear_loop_jobs(&mut self) {
         self.abort_all_loop_job_tasks();
         self.loop_jobs.clear();
+        self.bottom_pane.set_loop_context_label(None);
+        self.sync_vivling_live_context();
     }
 
     fn schedule_loop_job_task(&self, runtime: &mut LoopJobRuntime) {

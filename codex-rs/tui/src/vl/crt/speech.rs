@@ -21,6 +21,7 @@ pub(crate) struct BubbleAnim {
 }
 
 impl BubbleAnim {
+    #[cfg(test)]
     pub(crate) fn settled() -> Self {
         Self {
             reveal_chars: usize::MAX,
@@ -29,6 +30,7 @@ impl BubbleAnim {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn draw_bubble(
     surface: &mut CrtSurface,
     panel_x: u16,
