@@ -86,6 +86,22 @@ impl VivlingBond {
         }
     }
 
+    /// Compact UI label for status / card surfaces, e.g. `"Companions 58/100"`.
+    /// Same source-of-truth as `prompt_hint` (via `level()` + clamped display)
+    /// but kept separate because intent differs: this is a glanceable text
+    /// snippet, while `prompt_hint` embeds a behavioral rule for the brain.
+    pub(crate) fn display_label(&self) -> String {
+        let display = self.value.min(MAX_BOND);
+        let label = match self.level() {
+            BondLevel::Strangers => "Strangers",
+            BondLevel::Acquaintances => "Acquaintances",
+            BondLevel::Companions => "Companions",
+            BondLevel::Partners => "Partners",
+            BondLevel::Bonded => "Bonded",
+        };
+        format!("{label} {display}/100")
+    }
+
     /// One-line bond hint for brain prompt steering on the Chat / Assist
     /// human-facing paths. LoopTick is intentionally not a caller — bond is a
     /// user-relationship signal, not an automation quality signal.
@@ -503,5 +519,37 @@ mod tests {
         let hint = bond.prompt_hint();
         assert!(hint.contains("(100/100)"), "{hint}");
         assert!(hint.contains("Bonded"), "{hint}");
+    }
+
+    #[test]
+    fn display_label_strangers_at_0() {
+        assert_eq!(bond_at(0).display_label(), "Strangers 0/100");
+    }
+
+    #[test]
+    fn display_label_acquaintances_at_30() {
+        assert_eq!(bond_at(30).display_label(), "Acquaintances 30/100");
+    }
+
+    #[test]
+    fn display_label_companions_at_60() {
+        assert_eq!(bond_at(60).display_label(), "Companions 60/100");
+    }
+
+    #[test]
+    fn display_label_partners_at_80() {
+        assert_eq!(bond_at(80).display_label(), "Partners 80/100");
+    }
+
+    #[test]
+    fn display_label_bonded_at_100() {
+        assert_eq!(bond_at(100).display_label(), "Bonded 100/100");
+    }
+
+    #[test]
+    fn display_label_clamps_at_max_defensively() {
+        let mut bond = VivlingBond::default();
+        bond.value = 200;
+        assert_eq!(bond.display_label(), "Bonded 100/100");
     }
 }

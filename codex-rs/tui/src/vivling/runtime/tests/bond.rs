@@ -376,3 +376,45 @@ fn loop_tick_prompt_omits_bond_section() {
         request.prompt_context
     );
 }
+
+#[test]
+fn status_includes_bond_segment() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+
+    let status = vivling.status().expect("status");
+    assert!(
+        status.contains("bond Strangers 20/100"),
+        "status should include bond segment for fresh hatch:\n{}",
+        status
+    );
+}
+
+#[test]
+fn card_includes_bond_row() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let mut state = vivling.state.clone().expect("state");
+
+    let card = crate::vivling::runtime::render_vivling_card(&mut state);
+    let narrow_has = card
+        .narrow_lines
+        .iter()
+        .filter(|line| line.as_str() == "Bond Strangers 20/100")
+        .count();
+    let wide_has = card
+        .wide_lines
+        .iter()
+        .filter(|line| line.as_str() == "Bond Strangers 20/100")
+        .count();
+    assert_eq!(
+        narrow_has, 1,
+        "narrow_lines should contain exactly one bond row:\n{:?}",
+        card.narrow_lines
+    );
+    assert_eq!(
+        wide_has, 1,
+        "wide_lines should contain exactly one bond row:\n{:?}",
+        card.wide_lines
+    );
+}

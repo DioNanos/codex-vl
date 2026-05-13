@@ -44,6 +44,7 @@ pub(crate) fn render_vivling_card(state: &mut VivlingState) -> VivlingPanelData 
             state.gene_vector.temperament_summary(),
             state.gene_vector.brain_potential_label()
         ));
+        lines.push(format!("Bond {}", state.bond.display_label()));
         lines.push(format!(
             "Tone {} · recent {} · distilled {} · paths {}",
             state.identity_profile.tone,
