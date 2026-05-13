@@ -55,7 +55,12 @@ fn vl_chat_dispatch_records_bond_chat() {
 
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.chat_count, before_count + 1);
-    assert!(after.value >= before_value + 1, "value {} should be >= {}+1", after.value, before_value);
+    assert!(
+        after.value >= before_value + 1,
+        "value {} should be >= {}+1",
+        after.value,
+        before_value
+    );
     assert!(after.last_interaction.is_some());
 }
 
@@ -82,8 +87,39 @@ fn vivling_assist_dispatch_records_bond_assist() {
 
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.assist_count, before_count + 1);
-    assert!(after.value >= before_value + 2, "value {} should be >= {}+2", after.value, before_value);
+    assert!(
+        after.value >= before_value + 2,
+        "value {} should be >= {}+2",
+        after.value,
+        before_value
+    );
     assert!(after.last_interaction.is_some());
+}
+
+#[test]
+fn vivling_assist_failure_without_brain_profile_does_not_record_bond() {
+    // /vivling assist on an Adult Vivling WITHOUT brain profile must fail in
+    // prepare_assist_request after compose_brain_prompt but at the brain_profile
+    // check. The fix moves record_interaction AFTER all validation so bond
+    // state must stay unchanged on failure.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    // No assign_brain_profile — assist will fail.
+    let before = vivling.state.as_ref().expect("state").bond.clone();
+
+    let result = vivling.command(
+        VivlingAction::Assist("review this blocker".to_string()),
+        temp.path(),
+    );
+    assert!(result.is_err(), "expected assist to fail without profile");
+
+    let after = &vivling.state.as_ref().expect("state").bond;
+    assert_eq!(after.value, before.value);
+    assert_eq!(after.assist_count, before.assist_count);
+    assert_eq!(after.last_interaction, before.last_interaction);
 }
 
 #[test]
@@ -117,12 +153,7 @@ fn loop_tick_success_path_records_bond_loop_tick() {
         .assign_brain_profile("vivling-spark".to_string())
         .expect("assign profile");
 
-    let vivling_id = vivling
-        .state
-        .as_ref()
-        .expect("state")
-        .vivling_id
-        .clone();
+    let vivling_id = vivling.state.as_ref().expect("state").vivling_id.clone();
     let before_value = vivling.state.as_ref().expect("state").bond.value;
     let before_count = vivling.state.as_ref().expect("state").bond.loop_ticks_count;
 
@@ -132,7 +163,12 @@ fn loop_tick_success_path_records_bond_loop_tick() {
 
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.loop_ticks_count, before_count + 1);
-    assert!(after.value >= before_value + 1, "value {} should be >= {}+1", after.value, before_value);
+    assert!(
+        after.value >= before_value + 1,
+        "value {} should be >= {}+1",
+        after.value,
+        before_value
+    );
     assert!(after.last_interaction.is_some());
 }
 
@@ -148,12 +184,7 @@ fn loop_tick_failure_path_does_not_record_bond() {
         .assign_brain_profile("vivling-spark".to_string())
         .expect("assign profile");
 
-    let vivling_id = vivling
-        .state
-        .as_ref()
-        .expect("state")
-        .vivling_id
-        .clone();
+    let vivling_id = vivling.state.as_ref().expect("state").vivling_id.clone();
     let before = vivling.state.as_ref().expect("state").bond.clone();
 
     vivling

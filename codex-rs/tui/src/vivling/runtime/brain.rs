@@ -14,9 +14,6 @@ impl Vivling {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
-            state
-                .bond
-                .record_interaction(crate::vivling::VivlingInteractionKind::Assist, now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Assist,
@@ -27,6 +24,11 @@ impl Vivling {
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
+            // codex-vl bond: only credit Assist after pre-dispatch validation
+            // succeeds, so a failed precondition does not mutate bond state.
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Assist, now);
             (
                 state.vivling_id.clone(),
                 state.name.clone(),
@@ -56,9 +58,6 @@ impl Vivling {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
-            state
-                .bond
-                .record_interaction(crate::vivling::VivlingInteractionKind::Chat, now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Chat,
@@ -69,6 +68,11 @@ impl Vivling {
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
+            // codex-vl bond: only credit Chat after pre-dispatch validation
+            // succeeds, so a failed precondition does not mutate bond state.
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Chat, now);
             (
                 state.vivling_id.clone(),
                 state.name.clone(),

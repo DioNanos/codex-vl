@@ -92,11 +92,7 @@ impl VivlingBond {
         }
     }
 
-    pub(crate) fn record_interaction(
-        &mut self,
-        kind: VivlingInteractionKind,
-        now: DateTime<Utc>,
-    ) {
+    pub(crate) fn record_interaction(&mut self, kind: VivlingInteractionKind, now: DateTime<Utc>) {
         let base_gain: u8 = match kind {
             VivlingInteractionKind::Chat => 1,
             VivlingInteractionKind::Assist => 2,
@@ -166,8 +162,7 @@ impl VivlingBond {
 
         let overdue_hours = elapsed_hours - DECAY_GRACE_HOURS;
         let overdue_days = (overdue_hours / 24) as u64 + 1;
-        let total_decay =
-            (overdue_days.min(u8::MAX as u64) as u8).saturating_mul(DECAY_PER_DAY);
+        let total_decay = (overdue_days.min(u8::MAX as u64) as u8).saturating_mul(DECAY_PER_DAY);
         let before = self.value;
         self.value = self.value.saturating_sub(total_decay).max(MIN_BOND);
         self.last_decay_at = Some(now);
