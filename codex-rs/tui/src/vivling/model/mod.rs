@@ -169,6 +169,8 @@ pub(crate) struct VivlingState {
     pub(crate) last_zed_topic: Option<String>,
     #[serde(default)]
     pub(crate) unlocked_species: Vec<String>,
+    #[serde(default)]
+    pub(crate) bond: crate::vivling::VivlingBond,
 }
 
 #[derive(Clone)]

@@ -110,6 +110,7 @@ impl VivlingState {
             last_seen_upgrade: None,
             last_zed_topic: None,
             unlocked_species,
+            bond: crate::vivling::VivlingBond::default(),
         };
         state.normalize_unlocked_species();
         state.recompute_level();
@@ -117,6 +118,7 @@ impl VivlingState {
     }
 
     pub(crate) fn apply_decay(&mut self, now: DateTime<Utc>) {
+        self.bond.apply_decay(now);
         let Some(last_seen) = self.last_seen_at else {
             self.last_seen_at = Some(now);
             return;

@@ -12,7 +12,11 @@ impl Vivling {
         let live_snapshot = self.live_context.borrow().clone();
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
-            state.apply_decay(Utc::now());
+            let now = Utc::now();
+            state.apply_decay(now);
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Assist, now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Assist,
@@ -50,7 +54,11 @@ impl Vivling {
         let live_snapshot = self.live_context.borrow().clone();
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
-            state.apply_decay(Utc::now());
+            let now = Utc::now();
+            state.apply_decay(now);
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Chat, now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Chat,
@@ -363,6 +371,12 @@ impl Vivling {
             .map_err(|err| err.to_string())?
             .ok_or_else(|| format!("Vivling `{vivling_id}` is missing on disk."))?;
         state.mark_brain_reply(reply);
+        // codex-vl bond: this path is exclusive to successful Vivling loop ticks
+        // (only caller is `loop_controller::handle_vivling_loop_tick_finished`
+        // on Ok arm). Bond gets +1 LoopTick credit here, never on Err arm.
+        state
+            .bond
+            .record_interaction(crate::vivling::VivlingInteractionKind::LoopTick, Utc::now());
         self.save_state_record(&state, /*set_active*/ false, state.is_imported)
             .map_err(|err| err.to_string())?;
         if self.active_vivling_id.as_deref() == Some(vivling_id) {

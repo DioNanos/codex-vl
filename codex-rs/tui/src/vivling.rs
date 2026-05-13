@@ -1,3 +1,5 @@
+#[path = "vivling/bond.rs"]
+mod bond;
 mod model;
 #[path = "vivling/registry.rs"]
 mod registry;
@@ -5,6 +7,11 @@ mod runtime;
 #[path = "vivling/zed.rs"]
 mod zed;
 
+#[allow(unused_imports)]
+pub(crate) use bond::BondLevel;
+#[allow(unused_imports)]
+pub(crate) use bond::VivlingBond;
+pub(crate) use bond::VivlingInteractionKind;
 pub(crate) use model::Stage;
 pub(crate) use model::VivlingLoopEvent;
 pub(crate) use model::VivlingLoopEventKind;

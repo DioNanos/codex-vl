@@ -105,6 +105,7 @@ impl VivlingState {
         spawned.pending_upgrade = None;
         spawned.last_seen_upgrade = None;
         spawned.last_zed_topic = None;
+        spawned.bond = crate::vivling::VivlingBond::for_offspring();
         spawned
     }
 

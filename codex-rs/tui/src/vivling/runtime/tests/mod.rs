@@ -1,3 +1,4 @@
+mod bond;
 mod brain;
 mod commands;
 mod common;
