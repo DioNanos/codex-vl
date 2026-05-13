@@ -7,9 +7,6 @@ mod runtime;
 #[path = "vivling/zed.rs"]
 mod zed;
 
-#[allow(unused_imports)]
-pub(crate) use bond::BondLevel;
-#[allow(unused_imports)]
 pub(crate) use bond::VivlingBond;
 pub(crate) use bond::VivlingInteractionKind;
 pub(crate) use model::Stage;

@@ -92,6 +92,12 @@ pub(crate) fn compose_brain_prompt(
     if let Some(stale) = stale_signals_section(state) {
         sections.push(stale);
     }
+    // codex-vl bond: relational steering hint, only on human-facing paths.
+    // LoopTick is automation owned by the Vivling and must stay deterministic;
+    // bond is a user-relationship signal, not an automation quality signal.
+    if matches!(kind, BrainPromptKind::Chat | BrainPromptKind::Assist) {
+        sections.push(format!("Bond:\n{}", state.bond.prompt_hint()));
+    }
     sections.push(format!(
         "Live state contract:\n{}",
         kind.live_state_contract()

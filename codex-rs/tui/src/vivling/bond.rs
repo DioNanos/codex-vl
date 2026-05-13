@@ -20,10 +20,6 @@ pub(crate) enum VivlingInteractionKind {
     LoopTick,
 }
 
-// Variants are consumed by `BondLevel::level()` once UI status/card surfaces
-// land (see DocsHub design doc § "Out of scope"); the public enum is part of
-// the foundation API and is intentionally kept exported.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BondLevel {
     Strangers,
@@ -80,8 +76,6 @@ impl VivlingBond {
         }
     }
 
-    // Consumer arrives in the next iteration (UI status/card + brain prompt).
-    #[allow(dead_code)]
     pub(crate) fn level(&self) -> BondLevel {
         match self.value {
             0..=20 => BondLevel::Strangers,
@@ -90,6 +84,41 @@ impl VivlingBond {
             76..=90 => BondLevel::Partners,
             _ => BondLevel::Bonded,
         }
+    }
+
+    /// One-line bond hint for brain prompt steering on the Chat / Assist
+    /// human-facing paths. LoopTick is intentionally not a caller — bond is a
+    /// user-relationship signal, not an automation quality signal.
+    ///
+    /// The displayed value is clamped to `MAX_BOND` defensively: even though
+    /// `record_interaction` and `apply_decay` keep `value` in `[0..=100]`, a
+    /// corrupted `vivling.json` load could surface a stray `255/100` — the
+    /// display pins it without mutating in-memory state.
+    pub(crate) fn prompt_hint(&self) -> String {
+        let display = self.value.min(MAX_BOND);
+        let (label, rule) = match self.level() {
+            BondLevel::Strangers => (
+                "Strangers",
+                "Be useful, brief, and do not assume familiarity.",
+            ),
+            BondLevel::Acquaintances => (
+                "Acquaintances",
+                "Be clear and steady; keep tone neutral-friendly.",
+            ),
+            BondLevel::Companions => (
+                "Companions",
+                "Be contextual and direct; avoid generic intros.",
+            ),
+            BondLevel::Partners => (
+                "Partners",
+                "Be proactive about relevant context, but keep claims verifiable.",
+            ),
+            BondLevel::Bonded => (
+                "Bonded",
+                "Use high trust and continuity, but stay precise and check assumptions.",
+            ),
+        };
+        format!("Bond with user: {label} ({display}/100). {rule}")
     }
 
     pub(crate) fn record_interaction(&mut self, kind: VivlingInteractionKind, now: DateTime<Utc>) {
@@ -415,5 +444,64 @@ mod tests {
         assert_eq!(bond.value, DEFAULT_BOND);
         assert_eq!(bond.streak_days, 0);
         assert!(bond.last_interaction.is_none());
+    }
+
+    fn bond_at(value: u8) -> VivlingBond {
+        VivlingBond {
+            value,
+            ..VivlingBond::default()
+        }
+    }
+
+    #[test]
+    fn prompt_hint_strangers_at_0() {
+        let hint = bond_at(0).prompt_hint();
+        assert!(hint.contains("Bond with user: Strangers"), "{hint}");
+        assert!(hint.contains("(0/100)"), "{hint}");
+        assert!(hint.contains("do not assume familiarity"), "{hint}");
+    }
+
+    #[test]
+    fn prompt_hint_acquaintances_at_30() {
+        let hint = bond_at(30).prompt_hint();
+        assert!(hint.contains("Bond with user: Acquaintances"), "{hint}");
+        assert!(hint.contains("(30/100)"), "{hint}");
+        assert!(hint.contains("neutral-friendly"), "{hint}");
+    }
+
+    #[test]
+    fn prompt_hint_companions_at_60() {
+        let hint = bond_at(60).prompt_hint();
+        assert!(hint.contains("Bond with user: Companions"), "{hint}");
+        assert!(hint.contains("(60/100)"), "{hint}");
+        assert!(hint.contains("contextual and direct"), "{hint}");
+    }
+
+    #[test]
+    fn prompt_hint_partners_at_80() {
+        let hint = bond_at(80).prompt_hint();
+        assert!(hint.contains("Bond with user: Partners"), "{hint}");
+        assert!(hint.contains("(80/100)"), "{hint}");
+        assert!(hint.contains("proactive about relevant context"), "{hint}");
+    }
+
+    #[test]
+    fn prompt_hint_bonded_at_100() {
+        let hint = bond_at(100).prompt_hint();
+        assert!(hint.contains("Bond with user: Bonded"), "{hint}");
+        assert!(hint.contains("(100/100)"), "{hint}");
+        assert!(hint.contains("high trust and continuity"), "{hint}");
+    }
+
+    #[test]
+    fn prompt_hint_clamps_display_value_defensively() {
+        // Even if value were corrupted past 100 (e.g. tampered JSON), the
+        // displayed value must stay within MAX_BOND. Bypass struct invariants
+        // by writing the field directly.
+        let mut bond = VivlingBond::default();
+        bond.value = 200;
+        let hint = bond.prompt_hint();
+        assert!(hint.contains("(100/100)"), "{hint}");
+        assert!(hint.contains("Bonded"), "{hint}");
     }
 }

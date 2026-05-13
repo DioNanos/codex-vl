@@ -264,3 +264,115 @@ fn serde_round_trip_preserves_bond() {
     let restored: VivlingState = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(state.bond, restored.bond);
 }
+
+#[test]
+fn chat_prompt_includes_bond_section() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+
+    let request = match vivling
+        .command(VivlingAction::Chat("ciao bello".to_string()), temp.path())
+        .expect("chat dispatch")
+    {
+        VivlingCommandOutcome::DispatchAssist(request) => request,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+
+    assert!(
+        request.prompt_context.contains("Bond with user:"),
+        "chat prompt should include bond section header:\n{}",
+        request.prompt_context
+    );
+    // Default bond.value is 20 → Strangers
+    assert!(
+        request.prompt_context.contains("Strangers"),
+        "chat prompt should mention default Strangers level:\n{}",
+        request.prompt_context
+    );
+}
+
+#[test]
+fn assist_prompt_includes_bond_section() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+
+    let request = match vivling
+        .command(
+            VivlingAction::Assist("review this blocker".to_string()),
+            temp.path(),
+        )
+        .expect("assist dispatch")
+    {
+        VivlingCommandOutcome::DispatchAssist(request) => request,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+
+    assert!(
+        request.prompt_context.contains("Bond with user:"),
+        "assist prompt should include bond section header:\n{}",
+        request.prompt_context
+    );
+    assert!(
+        request.prompt_context.contains("Strangers"),
+        "assist prompt should mention default Strangers level:\n{}",
+        request.prompt_context
+    );
+}
+
+#[test]
+fn loop_tick_prompt_omits_bond_section() {
+    // The literal section header string must not appear in LoopTick prompts —
+    // defensive against any future relabeling of level enum strings.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+    let owner_id = vivling.state.as_ref().expect("state").vivling_id.clone();
+    vivling.save_state().expect("persist state");
+
+    let job = codex_state::ThreadLoopJob {
+        id: "test-loop-job".to_string(),
+        thread_id: codex_protocol::ThreadId::new(),
+        label: "verify".to_string(),
+        prompt_text: "please verify and report".to_string(),
+        goal_text: Some("verify the bond foundation merge".to_string()),
+        interval_seconds: 60,
+        enabled: true,
+        run_policy: "auto".to_string(),
+        auto_remove_on_completion: false,
+        created_by: "test".to_string(),
+        next_run_ms: None,
+        last_run_ms: None,
+        last_status: None,
+        last_error: None,
+        pending_tick: false,
+        created_at_ms: 0,
+        updated_at_ms: 0,
+    };
+
+    let request = vivling
+        .prepare_loop_tick_request(&owner_id, &job)
+        .expect("loop tick request");
+
+    assert!(
+        !request.prompt_context.contains("Bond with user:"),
+        "loop tick prompt must NOT include bond section header:\n{}",
+        request.prompt_context
+    );
+}
