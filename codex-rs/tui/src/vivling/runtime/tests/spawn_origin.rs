@@ -15,6 +15,7 @@ use crate::vivling::model::VivlingState;
 use crate::vivling::model::constants::JUVENILE_LEVEL;
 use crate::vivling::model::hatch_species_from_unlocked;
 use crate::vivling::runtime::spawn_origin::SpawnOrigin;
+use crate::vivling::runtime::spawn_origin::build_offspring_for_origin;
 use crate::vivling::runtime::spawn_origin::pick_spawn_origin;
 
 fn primary_at_level(level: u64, species: &str) -> VivlingState {
@@ -178,4 +179,112 @@ fn empty_pool_when_primary_below_level_30_returns_none() {
         pick_spawn_origin(&primary, &lineage, 0).is_none(),
         "below lv30 primary + no alts + no veterans → empty pool",
     );
+}
+
+// ---------- E2E: build_offspring_for_origin per origin ----------
+
+/// PrimaryChild: clone della specie del primary, gene inherited via
+/// `inherit_from(primary)`, cultural_parent == primary, bio parent ==
+/// primary (impostato da `create_spawned_offspring`).
+#[test]
+fn primary_child_clones_primary_species_and_culture() {
+    let primary = primary_at_level(JUVENILE_LEVEL, "syllo");
+    let origin = SpawnOrigin::PrimaryChild;
+    let spawned = build_offspring_for_origin(
+        &origin,
+        &primary,
+        "viv-child-primary".to_string(),
+        "spawn-1".to_string(),
+    );
+    assert_eq!(spawned.species, "syllo");
+    assert_eq!(
+        spawned.parent_vivling_id.as_deref(),
+        Some(primary.vivling_id.as_str())
+    );
+    assert_eq!(
+        spawned.cultural_parent_vivling_id.as_deref(),
+        Some(primary.vivling_id.as_str()),
+    );
+    assert!(!spawned.is_primary);
+    assert!(!spawned.is_imported);
+    assert_eq!(spawned.brain_enabled, false);
+}
+
+/// VeteranChild: clone della specie del VETERAN (non del primary), bio
+/// parent == veteran, ma cultural_parent == primary (override).
+#[test]
+fn veteran_child_inherits_veteran_species_but_primary_culture() {
+    let mut primary = primary_at_level(JUVENILE_LEVEL, "syllo");
+    primary.unlocked_species = vec!["syllo".to_string(), "orchestra".to_string()];
+    let mut vet = veteran(&primary.vivling_id, JUVENILE_LEVEL, "orchestra");
+    vet.species = "orchestra".to_string();
+    let origin = SpawnOrigin::VeteranChild(&vet);
+    let spawned = build_offspring_for_origin(
+        &origin,
+        &primary,
+        "viv-child-vet".to_string(),
+        "spawn-vet".to_string(),
+    );
+    assert_eq!(
+        spawned.species, "orchestra",
+        "veteran child inherits veteran's species (not primary's)",
+    );
+    assert_eq!(
+        spawned.parent_vivling_id.as_deref(),
+        Some(vet.vivling_id.as_str()),
+        "biological parent is the veteran",
+    );
+    assert_eq!(
+        spawned.cultural_parent_vivling_id.as_deref(),
+        Some(primary.vivling_id.as_str()),
+        "cultural parent is ALWAYS the active primary (override on veteran)",
+    );
+    assert!(!spawned.is_primary);
+    assert_eq!(spawned.brain_enabled, false);
+}
+
+/// ZedHatch: species e rarity dall'alternativa ZED, gene_vector FRESH
+/// (non inherited dal primary — bloodline nuova), cultural_parent ==
+/// primary, brain off.
+#[test]
+fn zed_hatch_overrides_species_and_uses_fresh_gene_vector() {
+    use crate::vivling::registry::active_species_registry;
+    let mut primary = primary_at_level(JUVENILE_LEVEL, "syllo");
+    primary.unlocked_species = vec!["syllo".to_string(), "orchestra".to_string()];
+
+    let alt_species = active_species_registry()
+        .into_iter()
+        .find(|s| s.id == "orchestra")
+        .expect("orchestra must exist in active species registry");
+    let origin = SpawnOrigin::ZedHatch(alt_species);
+
+    let spawned = build_offspring_for_origin(
+        &origin,
+        &primary,
+        "viv-child-zed".to_string(),
+        "spawn-zed".to_string(),
+    );
+
+    assert_ne!(
+        spawned.species, primary.species,
+        "ZED hatch must override species to a different one",
+    );
+    assert_eq!(spawned.species, "orchestra");
+    assert_eq!(
+        spawned.cultural_parent_vivling_id.as_deref(),
+        Some(primary.vivling_id.as_str()),
+        "cultural parent is the active primary",
+    );
+
+    // Fresh biology: gene_vector must come from the offspring's seed_hash
+    // (VivlingGeneVector::generate), not from inherit_from(primary).
+    // We assert this indirectly by recomputing the deterministic
+    // generate(seed_hash) and comparing.
+    let expected_fresh = crate::vivling::model::VivlingGeneVector::generate(&spawned.seed_hash);
+    assert_eq!(
+        spawned.gene_vector, expected_fresh,
+        "ZED gene_vector must be freshly generated from seed_hash, not inherited from primary",
+    );
+    assert_eq!(spawned.brain_enabled, false);
+    assert!(!spawned.is_primary);
 }

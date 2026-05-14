@@ -14,6 +14,7 @@
 //! Eligibility is filtered before the roll; non-eligible origins are
 //! removed from the pool (the roll never fails).
 
+use super::super::model::VivlingGeneVector;
 use super::super::model::VivlingState;
 use super::super::model::constants::JUVENILE_LEVEL;
 use super::super::registry::VivlingSpeciesDefinition;
@@ -121,4 +122,44 @@ fn pick_zed_alternative_species(
     }
     let idx = ((roll >> 32) as usize) % alternatives.len();
     Some(alternatives[idx])
+}
+
+/// Build the offspring `VivlingState` for a given `SpawnOrigin`, with
+/// the cultural-parent override applied (`cultural_parent_vivling_id`
+/// is always the active primary, regardless of biological origin).
+///
+/// ZED-origin specifics (DAG design directive 2026-05-15):
+/// - `species` and `rarity` come from the picked alternative (not the
+///   primary's clone);
+/// - `gene_vector` is **freshly generated** from the offspring's own
+///   `seed_hash`, **not** inherited from the primary. The primary
+///   determines culture, never biology, on ZED-origin hatches.
+///
+/// Primary- and Veteran-origin keep the existing semantics of
+/// `create_spawned_offspring` (species + gene clone from the bio
+/// parent, then mutated by `inherit_from`).
+pub(crate) fn build_offspring_for_origin(
+    origin: &SpawnOrigin<'_>,
+    primary: &VivlingState,
+    new_id: String,
+    instance_label: String,
+) -> VivlingState {
+    let mut spawned = match origin {
+        SpawnOrigin::PrimaryChild => primary.create_spawned_offspring(new_id, instance_label),
+        SpawnOrigin::VeteranChild(veteran) => {
+            veteran.create_spawned_offspring(new_id, instance_label)
+        }
+        SpawnOrigin::ZedHatch(species) => {
+            let mut child = primary.create_spawned_offspring(new_id, instance_label);
+            child.species = species.id.clone();
+            child.rarity = species.rarity.label().to_string();
+            // Fresh biology: ZED introduces a new bloodline so the
+            // gene_vector must not carry the primary's inheritance.
+            child.gene_vector = VivlingGeneVector::generate(&child.seed_hash);
+            child
+        }
+    };
+
+    spawned.cultural_parent_vivling_id = Some(primary.vivling_id.clone());
+    spawned
 }

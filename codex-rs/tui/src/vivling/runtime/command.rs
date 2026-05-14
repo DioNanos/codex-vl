@@ -579,32 +579,12 @@ impl Vivling {
         let origin = super::spawn_origin::pick_spawn_origin(&primary, &lineage_states, roll)
             .ok_or_else(|| "No eligible spawn origin available.".to_string())?;
         let origin_label = origin.label();
-
-        let mut spawned = match origin {
-            super::spawn_origin::SpawnOrigin::PrimaryChild => {
-                primary.create_spawned_offspring(new_id.clone(), instance_label.clone())
-            }
-            super::spawn_origin::SpawnOrigin::VeteranChild(veteran) => {
-                veteran.create_spawned_offspring(new_id.clone(), instance_label.clone())
-            }
-            super::spawn_origin::SpawnOrigin::ZedHatch(species) => {
-                let mut child =
-                    primary.create_spawned_offspring(new_id.clone(), instance_label.clone());
-                // ZED origin: bypass the species clone so the offspring
-                // hatches a different species than its biological parent
-                // chain (narratively, ZED introduces a new bloodline).
-                child.species = species.id.clone();
-                child.rarity = species.rarity.label().to_string();
-                child
-            }
-        };
-
-        // Cultural parent is always the active primary, regardless of
-        // biological origin (DAG design directive 2026-05-15). For
-        // VeteranChild this overrides the bio parent set by
-        // create_spawned_offspring; for the other origins it stays
-        // equal but the assignment is explicit and intentional.
-        spawned.cultural_parent_vivling_id = Some(primary.vivling_id.clone());
+        let mut spawned = super::spawn_origin::build_offspring_for_origin(
+            &origin,
+            &primary,
+            new_id.clone(),
+            instance_label.clone(),
+        );
 
         let existing_name_count = lineage_states
             .iter()
