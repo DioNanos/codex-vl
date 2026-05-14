@@ -282,7 +282,13 @@ impl Vivling {
                 }
             }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
-        })
+        })?;
+
+        // codex-vl lineage passive learning: propagate distillates to
+        // direct children after the active primary records a loop event
+        // (parallel to record_turn_completed). Best-effort.
+        let _ = self.propagate_parent_summaries_to_children();
+        Ok(())
     }
 
     pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) -> Result<(), String> {
@@ -319,7 +325,17 @@ impl Vivling {
                 }
             }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
-        })
+        })?;
+
+        // codex-vl lineage passive learning (Fase 4 iter 1A): after the
+        // active primary has updated its own distilled_summaries via
+        // record_turn_completed → maybe_distill_memory →
+        // rebuild_learning_profiles, propagate the new/refreshed
+        // distillates to all direct children whose cultural parent is
+        // this primary. Best-effort: a propagation failure does not
+        // mask the successful turn record above.
+        let _ = self.propagate_parent_summaries_to_children();
+        Ok(())
     }
 
     pub(crate) fn assign_brain_profile(&mut self, profile: String) -> Result<String, String> {

@@ -5,6 +5,7 @@ mod commands;
 mod common;
 mod import_export;
 mod lineage;
+mod lineage_summary;
 mod migration;
 mod rendering;
 mod zed;

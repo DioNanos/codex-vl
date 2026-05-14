@@ -111,6 +111,10 @@ impl VivlingState {
             last_zed_topic: None,
             unlocked_species,
             bond: crate::vivling::VivlingBond::default(),
+            lineage_seen_parent_summary_keys: Vec::new(),
+            lineage_rarity_pressure_pct: 0,
+            cultural_parent_vivling_id: None,
+            lineage_blessed: false,
         };
         state.normalize_unlocked_species();
         state.recompute_level();

@@ -198,6 +198,14 @@ fn clamp_brain_potential(value: f32) -> f32 {
     value.clamp(BRAIN_POTENTIAL_MIN, BRAIN_POTENTIAL_MAX)
 }
 
+/// codex-vl public re-export of [`clamp_brain_potential`] so the lineage
+/// quality-roll helper in `model::lineage` can keep `brain_potential` within
+/// the canonical `[BRAIN_POTENTIAL_MIN, BRAIN_POTENTIAL_MAX]` range without
+/// re-defining the constants.
+pub(crate) fn clamp_brain_potential_value(value: f32) -> f32 {
+    clamp_brain_potential(value)
+}
+
 fn mutated_temperament(value: u8, delta: i16) -> u8 {
     (i16::from(value) + delta).clamp(i16::from(TEMPERAMENT_MIN), i16::from(TEMPERAMENT_MAX)) as u8
 }

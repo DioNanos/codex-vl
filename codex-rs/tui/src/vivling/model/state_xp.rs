@@ -110,6 +110,22 @@ impl VivlingState {
         spawned.last_seen_upgrade = None;
         spawned.last_zed_topic = None;
         spawned.bond = crate::vivling::VivlingBond::for_offspring();
+        spawned.lineage_seen_parent_summary_keys = Vec::new();
+        spawned.lineage_rarity_pressure_pct = 0;
+        spawned.cultural_parent_vivling_id = Some(self.vivling_id.clone());
+        spawned.lineage_blessed = false;
+
+        // codex-vl: lineage rarity pressure — dentro-specie quality roll.
+        // Never swaps species (kept inherited via clone). May lift gene
+        // temperaments and brain_potential when the deterministic trigger
+        // fires. Pressure ≥ LINEAGE_BLESSED_PRESSURE_THRESHOLD on a
+        // successful trigger marks the offspring as `lineage_blessed`.
+        let pressure = self.lineage_rarity_pressure_pct;
+        let triggered =
+            super::lineage::apply_lineage_quality_roll(&mut spawned.gene_vector, hash, pressure);
+        if triggered && super::lineage::is_lineage_blessed_threshold(pressure) {
+            spawned.lineage_blessed = true;
+        }
         spawned
     }
 

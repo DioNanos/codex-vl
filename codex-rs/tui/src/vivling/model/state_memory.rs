@@ -96,7 +96,7 @@ impl VivlingState {
         self.xp = self.work_xp;
     }
 
-    pub(super) fn rebuild_learning_profiles(&mut self) {
+    pub(crate) fn rebuild_learning_profiles(&mut self) {
         let dominant = self.dominant_archetype();
         let verification_bias = self
             .work_memory
@@ -210,7 +210,7 @@ impl VivlingState {
         self.distill_memory();
     }
 
-    pub(super) fn distill_memory(&mut self) {
+    pub(crate) fn distill_memory(&mut self) {
         if self.work_memory.len() < 4 {
             return;
         }
@@ -224,6 +224,14 @@ impl VivlingState {
         let mut grouped: BTreeMap<(String, WorkArchetype, String), Vec<VivlingWorkMemoryEntry>> =
             BTreeMap::new();
         for capsule in &candidates {
+            // codex-vl lineage anti-convergence (G2v2): never re-distill the
+            // parent lineage capsules absorbed by this Vivling. Distilling
+            // them would let the recipient cascade them down to its own
+            // children, flattening the lineage. Only the Vivling's own work
+            // produces distilled summaries.
+            if capsule.kind == super::lineage::LINEAGE_PARENT_SUMMARY_KIND {
+                continue;
+            }
             let topic = Self::infer_semantic_topic(&capsule.kind, &capsule.summary).to_string();
             grouped
                 .entry((capsule.kind.clone(), capsule.archetype, topic))
