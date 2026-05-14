@@ -1,5 +1,6 @@
 mod bond;
 mod brain;
+mod care_decay;
 mod commands;
 mod common;
 mod import_export;

@@ -124,15 +124,20 @@ impl VivlingState {
             return;
         };
         let elapsed = now.signed_duration_since(last_seen);
+        if elapsed < Duration::zero() {
+            return;
+        }
         if elapsed < Duration::hours(12) {
             self.last_seen_at = Some(now);
             return;
         }
-        let days = elapsed.num_days().max(1);
-        self.hunger = (self.hunger - days * 8).clamp(0, 100);
-        self.energy = (self.energy - days * 3).clamp(0, 100);
-        self.happiness = (self.happiness - days * 4).clamp(0, 100);
-        self.social = (self.social - days * 5).clamp(0, 100);
+        let weeks = (elapsed.num_days() / 7).max(0);
+        if weeks > 0 {
+            self.hunger = (self.hunger - weeks * 4).clamp(0, 100);
+            self.energy = (self.energy - weeks * 2).clamp(0, 100);
+            self.happiness = (self.happiness - weeks * 3).clamp(0, 100);
+            self.social = (self.social - weeks * 3).clamp(0, 100);
+        }
         self.last_seen_at = Some(now);
     }
 
