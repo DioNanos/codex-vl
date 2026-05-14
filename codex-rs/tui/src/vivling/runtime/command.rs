@@ -585,6 +585,22 @@ impl Vivling {
         }
         self.save_state_record(&spawned, false, false)
             .map_err(|err| err.to_string())?;
+
+        // codex-vl iter 1A: a successful spawn bumps the primary's
+        // lineage rarity pressure for the next offspring's dentro-specie
+        // quality roll (DAG design directive 2026-05-15). Failed spawns
+        // never reach this point — the early returns above keep the
+        // pressure untouched on error paths.
+        if let Some(state) = self.state.as_mut() {
+            state.lineage_rarity_pressure_pct =
+                super::super::model::lineage::bump_lineage_rarity_pressure(
+                    state.lineage_rarity_pressure_pct,
+                );
+            let primary_after_bump = state.clone();
+            self.save_state_record(&primary_after_bump, /*set_active*/ true, false)
+                .map_err(|err| err.to_string())?;
+        }
+
         Ok(format!(
             "Spawned {} [{}] {}. Local spawn slots now {}/{}.",
             spawned.vivling_id,

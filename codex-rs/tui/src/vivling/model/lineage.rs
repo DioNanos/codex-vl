@@ -3,18 +3,26 @@
 //! Helper model-level for **direct child** Vivlings to absorb parent
 //! distilled summaries without becoming the active actor.
 //!
-//! Hard invariants enforced by this module:
-//! - never grants work XP, daily work XP or active work days to the child;
+//! Contract of [`VivlingState::record_lineage_parent_summary`]:
+//! - never grants work XP, daily work XP or active work days;
 //! - never unlocks brain (`brain_enabled`, `ai_mode`, `chat_unlocked_at`,
 //!   `active_mode_unlocked_at` stay untouched);
-//! - never calls `recompute_level` / `rebuild_learning_profiles` /
-//!   `maybe_distill_memory` on the child;
+//! - never calls `recompute_level` or `maybe_distill_memory`;
 //! - never mutates `loop_jobs`, `loop_exposure`, `loop_runtime_*`,
 //!   `turns_observed`, `suggestions_made`, care meters, bond.
 //!
-//! All of these are kept off by **not calling** the side-effecting helpers
-//! in `state_xp.rs`; the lineage capsule is pushed via the local
-//! `push_lineage_capsule` (memory + cap only).
+//! `rebuild_learning_profiles` is **not** called by this helper either.
+//! The runtime caller (`propagate_parent_summaries_to_children`) is
+//! responsible for invoking it **once per propagation cycle per child**
+//! after the 1..=3 absorptions land (G2v2 batch-rebuild policy). That
+//! lets the child's `identity_profile` and `mental_paths` evolve
+//! culturally without recomputing on every individual capsule.
+//!
+//! All side-effects are kept off by **not calling** the helpers in
+//! `state_xp.rs` (`record_work_capsule`, `record_memory_only_capsule`,
+//! `note_active_work_day`, `grant_work_xp`); the lineage capsule is
+//! pushed directly into `work_memory` with FIFO eviction on the
+//! lineage subset.
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -22,7 +30,6 @@ use chrono::Utc;
 use super::VivlingDistilledSummary;
 use super::VivlingState;
 use super::VivlingWorkMemoryEntry;
-use super::WorkArchetype;
 use super::text_utils::fnv1a64;
 use super::text_utils::truncate_summary;
 
@@ -72,7 +79,6 @@ pub(crate) fn lineage_seen_key(
 /// `None` means it was already seen (dedup hit).
 pub(crate) struct LineageAbsorption {
     pub(crate) entry: VivlingWorkMemoryEntry,
-    pub(crate) seen_key: String,
 }
 
 impl VivlingState {
@@ -131,7 +137,7 @@ impl VivlingState {
         self.work_memory.push(entry.clone());
         self.evict_lineage_capsules_if_needed();
 
-        self.lineage_seen_parent_summary_keys.push(key.clone());
+        self.lineage_seen_parent_summary_keys.push(key);
         if self.lineage_seen_parent_summary_keys.len() > LINEAGE_SEEN_KEYS_BOUND {
             let overflow = self
                 .lineage_seen_parent_summary_keys
@@ -140,10 +146,7 @@ impl VivlingState {
             self.lineage_seen_parent_summary_keys.drain(0..overflow);
         }
 
-        Some(LineageAbsorption {
-            entry,
-            seen_key: key,
-        })
+        Some(LineageAbsorption { entry })
     }
 
     /// Drop-oldest eviction on lineage capsules only. Non-lineage entries
