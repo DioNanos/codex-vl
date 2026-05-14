@@ -35,6 +35,8 @@ pub use runtime::DEFAULT_WAIT_YIELD_TIME_MS;
 #[cfg(not(target_os = "android"))]
 pub use runtime::ExecuteRequest;
 #[cfg(not(target_os = "android"))]
+pub use runtime::ExecuteToPendingOutcome;
+#[cfg(not(target_os = "android"))]
 pub use runtime::RuntimeResponse;
 #[cfg(not(target_os = "android"))]
 pub use runtime::WaitOutcome;
@@ -56,6 +58,10 @@ pub use runtime_stub::RuntimeResponse;
 pub use runtime_stub::WaitOutcome;
 #[cfg(target_os = "android")]
 pub use runtime_stub::WaitRequest;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingOutcome;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingRequest;
 #[cfg(not(target_os = "android"))]
 pub use service::CodeModeService;
 #[cfg(not(target_os = "android"))]

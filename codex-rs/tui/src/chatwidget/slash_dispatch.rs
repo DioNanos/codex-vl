@@ -241,16 +241,6 @@ impl ChatWidget {
                     );
                 }
             }
-            SlashCommand::Collab => {
-                if !self.collaboration_modes_enabled() {
-                    self.add_info_message(
-                        "Collaboration modes are disabled.".to_string(),
-                        Some("Enable collaboration modes to use /collab.".to_string()),
-                    );
-                    return;
-                }
-                self.open_collaboration_modes_popup();
-            }
             SlashCommand::Side => {
                 self.request_empty_side_conversation();
             }
@@ -1099,7 +1089,6 @@ impl ChatWidget {
             | SlashCommand::Personality
             | SlashCommand::Plan
             | SlashCommand::Goal
-            | SlashCommand::Collab
             | SlashCommand::Side
             | SlashCommand::Keymap
             | SlashCommand::Agent

@@ -1,6 +1,8 @@
 use super::REMOTE_GLOBAL_MARKETPLACE_NAME;
-use super::REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME;
 use super::REMOTE_WORKSPACE_MARKETPLACE_NAME;
+use super::REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME;
+use super::REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME;
+use super::REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME;
 use super::RemotePluginCatalogError;
 use super::RemotePluginScope;
 use super::RemotePluginServiceConfig;
@@ -153,7 +155,15 @@ pub async fn sync_remote_installed_plugin_bundles_once(
                 BTreeSet::new(),
             ),
             (
-                REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME.to_string(),
+                REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME.to_string(),
+                BTreeSet::new(),
+            ),
+            (
+                REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME.to_string(),
+                BTreeSet::new(),
+            ),
+            (
+                REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME.to_string(),
                 BTreeSet::new(),
             ),
         ]);
@@ -298,7 +308,9 @@ fn remove_stale_remote_plugin_caches(
     for marketplace_name in [
         REMOTE_GLOBAL_MARKETPLACE_NAME,
         REMOTE_WORKSPACE_MARKETPLACE_NAME,
-        REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME,
+        REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME,
+        REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME,
+        REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME,
     ] {
         let marketplace_root = codex_home.join(PLUGINS_CACHE_DIR).join(marketplace_name);
         if !marketplace_root.exists() {
@@ -457,7 +469,11 @@ mod tests {
                     BTreeSet::new(),
                 ),
                 (
-                    REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME.to_string(),
+                    REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME.to_string(),
+                    BTreeSet::new(),
+                ),
+                (
+                    REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME.to_string(),
                     BTreeSet::new(),
                 ),
             ]);
@@ -500,12 +516,12 @@ mod tests {
     }
 
     #[test]
-    fn stale_remote_plugin_cleanup_removes_shared_with_me_cache() {
+    fn stale_remote_plugin_cleanup_removes_old_shared_with_me_cache_and_keeps_canonical_cache() {
         let codex_home = tempfile::tempdir().expect("create codex home");
         let cached_manifest = codex_home
             .path()
             .join(PLUGINS_CACHE_DIR)
-            .join(REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME)
+            .join(REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME)
             .join("private-plugin")
             .join("1.2.3")
             .join(".codex-plugin")
@@ -514,6 +530,18 @@ mod tests {
             .expect("create cached plugin manifest parent");
         std::fs::write(&cached_manifest, r#"{"name":"private-plugin"}"#)
             .expect("write cached plugin manifest");
+        let canonical_cached_manifest = codex_home
+            .path()
+            .join(PLUGINS_CACHE_DIR)
+            .join(REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME)
+            .join("shared-plugin")
+            .join("1.2.3")
+            .join(".codex-plugin")
+            .join("plugin.json");
+        std::fs::create_dir_all(canonical_cached_manifest.parent().expect("manifest parent"))
+            .expect("create canonical cached plugin manifest parent");
+        std::fs::write(&canonical_cached_manifest, r#"{"name":"shared-plugin"}"#)
+            .expect("write canonical cached plugin manifest");
         let installed_plugin_names_by_marketplace =
             BTreeMap::<String, BTreeSet<String>>::from_iter([
                 (REMOTE_GLOBAL_MARKETPLACE_NAME.to_string(), BTreeSet::new()),
@@ -522,7 +550,15 @@ mod tests {
                     BTreeSet::new(),
                 ),
                 (
-                    REMOTE_SHARED_WITH_ME_MARKETPLACE_NAME.to_string(),
+                    REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME.to_string(),
+                    BTreeSet::from(["shared-plugin".to_string()]),
+                ),
+                (
+                    REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME.to_string(),
+                    BTreeSet::new(),
+                ),
+                (
+                    REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME.to_string(),
                     BTreeSet::new(),
                 ),
             ]);
@@ -531,9 +567,13 @@ mod tests {
             codex_home.path(),
             &installed_plugin_names_by_marketplace,
         )
-        .expect("cleanup shared-with-me cache");
+        .expect("cleanup private shared-with-me cache");
 
-        assert_eq!(removed, vec!["private-plugin@shared-with-me".to_string()]);
+        assert_eq!(
+            removed,
+            vec!["private-plugin@workspace-shared-with-me-private".to_string()]
+        );
         assert!(!cached_manifest.exists());
+        assert!(canonical_cached_manifest.is_file());
     }
 }
