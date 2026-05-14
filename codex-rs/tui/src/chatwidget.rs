@@ -1138,6 +1138,11 @@ impl ChatWidget {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
+        self.vl_lifecycle_tick(
+            self.is_vivling_baby_or_juvenile(),
+            !self.is_vl_sidebar_expanded(),
+            false,
+        );
         if let Some(pet) = self.ambient_pet.as_ref() {
             pet.schedule_next_frame();
         }

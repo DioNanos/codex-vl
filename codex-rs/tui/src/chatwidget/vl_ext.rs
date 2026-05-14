@@ -171,3 +171,45 @@ impl ChatWidget {
         self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // codex-vl regression guard: `pre_draw_tick` must invoke `vl_lifecycle_tick`
+    // so the Vivling lifecycle/animation/care path keeps ticking each frame.
+    // Lost during the upstream chatwidget phase-5 refactor merge — pin the
+    // contract so the call cannot disappear silently again.
+
+    const CHATWIDGET_SOURCE: &str = include_str!("../chatwidget.rs");
+
+    #[test]
+    fn pre_draw_tick_invokes_vl_lifecycle_tick() {
+        let body = extract_fn_body(CHATWIDGET_SOURCE, "pre_draw_tick")
+            .expect("pre_draw_tick must exist in chatwidget.rs");
+        assert!(
+            body.contains("self.vl_lifecycle_tick("),
+            "pre_draw_tick must call self.vl_lifecycle_tick(...) to drive the \
+             Vivling lifecycle each frame. Body was:\n{body}",
+        );
+    }
+
+    fn extract_fn_body<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+        let needle = format!("fn {fn_name}(");
+        let start = source.find(&needle)?;
+        let open = source[start..].find('{')? + start;
+        let bytes = source.as_bytes();
+        let mut depth = 0i32;
+        for (idx, &b) in bytes.iter().enumerate().skip(open) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open + 1..idx]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
