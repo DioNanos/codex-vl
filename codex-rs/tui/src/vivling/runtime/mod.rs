@@ -12,6 +12,7 @@ pub(crate) mod proactive;
 pub(crate) mod render;
 pub(crate) mod request;
 pub(crate) mod roster;
+pub(crate) mod spawn_origin;
 #[cfg(test)]
 mod tests;
 

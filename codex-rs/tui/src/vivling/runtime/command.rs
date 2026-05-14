@@ -569,9 +569,43 @@ impl Vivling {
                 "No free local spawn slots. Used {local_spawn_used}/{local_spawn_unlocked}."
             ));
         }
+
         let new_id = format!("viv-{}", Uuid::new_v4().simple());
         let instance_label = format!("spawn-{}", local_spawn_used + 1);
-        let mut spawned = primary.create_spawned_offspring(new_id.clone(), instance_label.clone());
+
+        // codex-vl iter 1B: multi-origin sort. The origin is rolled
+        // uniformly over the eligible pool; the user never picks it.
+        let roll = super::super::model::text_utils::fnv1a64(new_id.as_bytes());
+        let origin = super::spawn_origin::pick_spawn_origin(&primary, &lineage_states, roll)
+            .ok_or_else(|| "No eligible spawn origin available.".to_string())?;
+        let origin_label = origin.label();
+
+        let mut spawned = match origin {
+            super::spawn_origin::SpawnOrigin::PrimaryChild => {
+                primary.create_spawned_offspring(new_id.clone(), instance_label.clone())
+            }
+            super::spawn_origin::SpawnOrigin::VeteranChild(veteran) => {
+                veteran.create_spawned_offspring(new_id.clone(), instance_label.clone())
+            }
+            super::spawn_origin::SpawnOrigin::ZedHatch(species) => {
+                let mut child =
+                    primary.create_spawned_offspring(new_id.clone(), instance_label.clone());
+                // ZED origin: bypass the species clone so the offspring
+                // hatches a different species than its biological parent
+                // chain (narratively, ZED introduces a new bloodline).
+                child.species = species.id.clone();
+                child.rarity = species.rarity.label().to_string();
+                child
+            }
+        };
+
+        // Cultural parent is always the active primary, regardless of
+        // biological origin (DAG design directive 2026-05-15). For
+        // VeteranChild this overrides the bio parent set by
+        // create_spawned_offspring; for the other origins it stays
+        // equal but the assignment is explicit and intentional.
+        spawned.cultural_parent_vivling_id = Some(primary.vivling_id.clone());
+
         let existing_name_count = lineage_states
             .iter()
             .filter(|entry| entry.name == primary.name)
@@ -586,8 +620,8 @@ impl Vivling {
         self.save_state_record(&spawned, false, false)
             .map_err(|err| err.to_string())?;
 
-        // codex-vl iter 1A: a successful spawn bumps the primary's
-        // lineage rarity pressure for the next offspring's dentro-specie
+        // codex-vl: a successful spawn bumps the primary's lineage
+        // rarity pressure for the next offspring's dentro-specie
         // quality roll (DAG design directive 2026-05-15). Failed spawns
         // never reach this point — the early returns above keep the
         // pressure untouched on error paths.
@@ -602,10 +636,11 @@ impl Vivling {
         }
 
         Ok(format!(
-            "Spawned {} [{}] {}. Local spawn slots now {}/{}.",
+            "Spawned {} [{}] {} via {}. Local spawn slots now {}/{}.",
             spawned.vivling_id,
             instance_label,
             spawned.name,
+            origin_label,
             local_spawn_used + 1,
             local_spawn_unlocked
         ))
