@@ -6,3 +6,4 @@ mod import_export;
 mod lineage;
 mod migration;
 mod rendering;
+mod zed;

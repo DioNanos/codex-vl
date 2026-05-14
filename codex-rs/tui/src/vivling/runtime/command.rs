@@ -216,7 +216,32 @@ impl Vivling {
                     "Vivling reset. Use /vivling hatch when you want a new one.".to_string(),
                 ))
             }
+            VivlingAction::Zed => self
+                .open_zed_companion()
+                .map(VivlingCommandOutcome::OpenUpgrade),
         }
+    }
+
+    /// codex-vl ZED Companion panel: bond + gene snapshot dispatched through
+    /// the existing `OpenUpgrade` ZED channel (per Codex design review iter 1
+    /// §1: do not reuse `OpenCard` which opens `VivlingCardView` and would
+    /// blur the identity-card / ZED-panel separation).
+    pub(crate) fn open_zed_companion(&mut self) -> Result<VivlingPanelData, String> {
+        self.ensure_hatched()?;
+        let panel = {
+            let state = self.state.as_mut().expect("state checked");
+            state.apply_decay(Utc::now());
+            let summary = super::super::zed::zed_companion_summary(state);
+            state.last_zed_topic = Some("companion".to_string());
+            let zed = zed_panel_data(super::super::zed::ZedTopic::Companion, &summary);
+            VivlingPanelData {
+                title: zed.title,
+                narrow_lines: zed.narrow_lines,
+                wide_lines: zed.wide_lines,
+            }
+        };
+        self.save_state().map_err(|err| err.to_string())?;
+        Ok(panel)
     }
 
     pub(crate) fn chat(&mut self, text: &str) -> Result<VivlingCommandOutcome, String> {
