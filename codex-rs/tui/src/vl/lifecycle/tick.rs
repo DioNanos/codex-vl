@@ -6,6 +6,7 @@ use super::activity::{
 use super::animation::VivlingAnimation;
 use super::baby_thoughts::idle_thought;
 use super::stats::VivlingLiveStats;
+use super::voice_tone::LifecycleVoiceTone;
 
 const IDLE_THOUGHT_INTERVAL_SECS: u64 = 18;
 const IDLE_THOUGHT_FIRST_SECS: u64 = 22;
@@ -49,6 +50,7 @@ impl LifecycleState {
         is_baby_or_juvenile: bool,
         sidebar_collapsed: bool,
         loop_tick_running: bool,
+        voice_tone: LifecycleVoiceTone,
     ) -> TickResult {
         self.animation.advance();
 
@@ -120,6 +122,7 @@ impl LifecycleState {
                 let thought = idle_thought(
                     idle_secs >= 60, // juvenile-like after 60s idle
                     self.idle_thought_tick,
+                    voice_tone,
                 );
                 self.idle_thought_tick = self.idle_thought_tick.wrapping_add(1);
                 Some(thought.to_string())

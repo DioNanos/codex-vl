@@ -13,6 +13,20 @@ use crate::vivling::VivlingAction;
 use crate::vivling::VivlingCommandOutcome;
 use crate::vivling::VivlingLoopEvent;
 
+/// codex-vl boundary adapter: translate a `vivling::BondTone` (vivling domain)
+/// to a `vl::lifecycle::LifecycleVoiceTone` (lifecycle layer). Keeping the
+/// translation here lets `vl/lifecycle` stay free of any `crate::vivling::*`
+/// import, so the layer remains testable in isolation.
+fn vivling_tone_to_lifecycle(
+    tone: crate::vivling::BondTone,
+) -> crate::vl::lifecycle::LifecycleVoiceTone {
+    match tone {
+        crate::vivling::BondTone::Neutral => crate::vl::lifecycle::LifecycleVoiceTone::Neutral,
+        crate::vivling::BondTone::Warm => crate::vl::lifecycle::LifecycleVoiceTone::Warm,
+        crate::vivling::BondTone::Familiar => crate::vl::lifecycle::LifecycleVoiceTone::Familiar,
+    }
+}
+
 impl BottomPane {
     pub(crate) fn configure_vivling(&mut self, config: &Config) {
         self.vivling
@@ -185,9 +199,25 @@ impl BottomPane {
         loop_tick_running: bool,
     ) -> Option<crate::vl::TickResult> {
         self.ensure_vl_lifecycle();
+        // codex-vl care-effects boundary adapter: read bond tone from the
+        // vivling domain and translate to a lifecycle-local enum. The
+        // `vl/lifecycle` layer never imports `crate::vivling::*` — this is
+        // the single crossing point per tick. If no Vivling is hatched yet,
+        // the default `LifecycleVoiceTone::Neutral` is used.
+        let voice_tone = self
+            .vivling
+            .state
+            .as_ref()
+            .map(|state| vivling_tone_to_lifecycle(state.bond.tone()))
+            .unwrap_or_default();
         let home = self.vivling_codex_home();
         let lifecycle = self.vl_lifecycle.as_mut()?;
-        let result = lifecycle.tick(is_baby_or_juvenile, sidebar_collapsed, loop_tick_running);
+        let result = lifecycle.tick(
+            is_baby_or_juvenile,
+            sidebar_collapsed,
+            loop_tick_running,
+            voice_tone,
+        );
         if lifecycle.should_persist() {
             if let Some(home) = home {
                 let path = home.join("vivlings").join("live_stats.json");

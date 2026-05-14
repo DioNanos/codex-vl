@@ -36,6 +36,19 @@ pub(crate) enum BondLevel {
     Bonded,
 }
 
+/// Relational tone band derived from `BondLevel`. The boundary adapter in
+/// `*_ext.rs` translates this to `vl::lifecycle::LifecycleVoiceTone` for the
+/// lifecycle layer — `vl/lifecycle` itself must NOT import `vivling::BondTone`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BondTone {
+    /// Strangers (0–20) + Acquaintances (21–50): short, professional, no presumed familiarity.
+    Neutral,
+    /// Companions (51–75): default warmth — matches the pool that shipped pre-care-effects.
+    Warm,
+    /// Partners (76–90) + Bonded (91–100): warm, contextual, allusive.
+    Familiar,
+}
+
 fn default_bond_value() -> u8 {
     DEFAULT_BOND
 }
@@ -90,6 +103,17 @@ impl VivlingBond {
             51..=75 => BondLevel::Companions,
             76..=90 => BondLevel::Partners,
             _ => BondLevel::Bonded,
+        }
+    }
+
+    /// Map the current bond level to a relational tone band (3 bands).
+    /// Used by `vivling/runtime/proactive.rs` directly, and translated at the
+    /// boundary to `vl::lifecycle::LifecycleVoiceTone` for the lifecycle layer.
+    pub(crate) fn tone(&self) -> BondTone {
+        match self.level() {
+            BondLevel::Strangers | BondLevel::Acquaintances => BondTone::Neutral,
+            BondLevel::Companions => BondTone::Warm,
+            BondLevel::Partners | BondLevel::Bonded => BondTone::Familiar,
         }
     }
 
@@ -621,5 +645,26 @@ mod tests {
         assert_eq!(bond.streak_days, 1);
         // Only the dispatch increments the chat_count.
         assert_eq!(bond.chat_count, 1);
+    }
+
+    #[test]
+    fn tone_strangers_and_acquaintances_map_to_neutral() {
+        for v in [0u8, 10, 20, 21, 35, 50] {
+            assert_eq!(bond_at(v).tone(), BondTone::Neutral, "value={v}");
+        }
+    }
+
+    #[test]
+    fn tone_companions_maps_to_warm() {
+        for v in [51u8, 60, 75] {
+            assert_eq!(bond_at(v).tone(), BondTone::Warm, "value={v}");
+        }
+    }
+
+    #[test]
+    fn tone_partners_and_bonded_map_to_familiar() {
+        for v in [76u8, 85, 90, 91, 100] {
+            assert_eq!(bond_at(v).tone(), BondTone::Familiar, "value={v}");
+        }
     }
 }

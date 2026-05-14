@@ -7,6 +7,7 @@ mod runtime;
 #[path = "vivling/zed.rs"]
 mod zed;
 
+pub(crate) use bond::BondTone;
 pub(crate) use bond::VivlingBond;
 pub(crate) use bond::VivlingInteractionKind;
 pub(crate) use model::Stage;
