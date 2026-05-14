@@ -8,8 +8,9 @@ const ALERT: [Slot; 3] = [Slot::Alert, Slot::Face, Slot::Alert];
 
 pub(crate) fn art_for(stage: Stage, mode: CrtMode, tick: u64) -> Frame {
     let state = super::super::sheet::state_for_mode(mode);
-    if let Some(rows) = super::super::sheet::frame("chronosworn", stage, state) {
-        return Frame::new(*rows, slots_for(mode));
+    if let Some(frames) = super::super::sheet::frame("chronosworn", stage, state) {
+        let idx = (tick as usize) % frames.len();
+        return Frame::new(frames[idx], slots_for(mode));
     }
     legacy_art_for(stage, mode, tick)
 }
