@@ -287,3 +287,75 @@ fn grandchild_cascade_blocked_via_distill_filter() {
          child cannot cascade absorbed lineage to its own offspring",
     );
 }
+
+/// G3 regression guard: lineage capsules absorbed by a child must be
+/// indexed in MSA under the **child's** `vivling_id`, never the
+/// parent's. Verified by checking that the per-child collection
+/// directory exists on disk after the propagation cycle.
+#[test]
+fn lineage_echo_indexes_absorbed_capsule_under_child_id() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+    let mut vivling = configured_vivling(codex_home.path());
+    // Override MSA storage to an isolated tempdir so the test never
+    // writes to the user's HOME.
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    // Hatch primary, bring it to lv30, plant a distilled summary.
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    set_active_level(&mut vivling, JUVENILE_LEVEL);
+    let mut primary = vivling.state.clone().expect("active state");
+    primary.is_primary = true;
+    primary.distilled_summaries = vec![parent_summary("build")];
+    vivling.state = Some(primary.clone());
+    vivling.save_state().expect("save primary distillates");
+
+    let child_id = install_child(
+        &vivling,
+        &primary,
+        "msa-target",
+        Some(primary.vivling_id.clone()),
+        Some(primary.vivling_id.clone()),
+        /*is_imported*/ false,
+    );
+
+    let report = vivling
+        .propagate_parent_summaries_to_children()
+        .expect("propagate ok");
+    assert!(
+        report.capsules_absorbed >= 1,
+        "expected at least one capsule absorbed",
+    );
+
+    // MSA collection for the **child** must exist (G3). The parent
+    // collection may or may not exist depending on prior writes — what
+    // matters is that the child has its own collection, indexed under
+    // child.vivling_id, not parent.vivling_id.
+    assert_msa_collection_has_shard(msa_storage.path(), &child_id);
+}
+
+fn assert_msa_collection_has_shard(msa_storage: &std::path::Path, vivling_id: &str) {
+    let collection_dir = msa_storage.join(format!("vivling::{vivling_id}"));
+    assert!(
+        collection_dir.is_dir(),
+        "MSA collection for {vivling_id} must exist at {}",
+        collection_dir.display(),
+    );
+    let entries: Vec<String> = std::fs::read_dir(&collection_dir)
+        .expect("read collection dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let has_shard = entries
+        .iter()
+        .any(|name| name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx"));
+    assert!(
+        has_shard,
+        "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
+        collection_dir.display(),
+    );
+}
