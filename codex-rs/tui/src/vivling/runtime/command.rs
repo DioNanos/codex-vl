@@ -571,7 +571,7 @@ impl Vivling {
         }
         let new_id = format!("viv-{}", Uuid::new_v4().simple());
         let instance_label = format!("spawn-{}", local_spawn_used + 1);
-        let mut spawned = primary.create_spawned_clone(new_id.clone(), instance_label.clone());
+        let mut spawned = primary.create_spawned_offspring(new_id.clone(), instance_label.clone());
         let existing_name_count = lineage_states
             .iter()
             .filter(|entry| entry.name == primary.name)

@@ -33,7 +33,11 @@ impl VivlingState {
         }
     }
 
-    pub(crate) fn create_spawned_clone(&self, vivling_id: String, instance_label: String) -> Self {
+    pub(crate) fn create_spawned_offspring(
+        &self,
+        vivling_id: String,
+        instance_label: String,
+    ) -> Self {
         let now = Utc::now();
         let hash = fnv1a64(format!("{}:{vivling_id}", self.primary_vivling_id).as_bytes());
         let mut spawned = self.clone();
