@@ -354,6 +354,7 @@ impl Vivling {
             "/vivling switch <vivling_id_or_name> - alias for focus".to_string(),
             "/vivling card - open the current Vivling card".to_string(),
             "/vivling upgrade - open the ZED upgrade card".to_string(),
+            "/vivling zed - open the ZED Companion panel (bond + gene snapshot)".to_string(),
             "/vivling assist <task> - ask the Vivling brain for adult help".to_string(),
             "/vivling brain <on|off> - enable or disable the Vivling brain".to_string(),
             "/vivling model - show the current Vivling brain profile".to_string(),
