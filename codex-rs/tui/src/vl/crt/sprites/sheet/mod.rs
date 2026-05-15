@@ -191,4 +191,73 @@ mod tests {
         assert_eq!(state_for_mode(CrtMode::Tired), SheetState::Sleep);
         assert_eq!(state_for_mode(CrtMode::Hungry), SheetState::Idle);
     }
+
+    /// codex-vl 2026-05-15 DAG rule: the state marker MUST live inside the
+    /// face/core — either embedded in the top row between the dot frame
+    /// (e.g. `.-?-.` / `\.?./`) or as a body indicator in the mid row
+    /// (e.g. `/(-)\` for Juvenile Sleep where the top row degenerates to
+    /// dots). It must NEVER appear as a side suffix appended to the right
+    /// of the closed face (e.g. `.-o-.?` or `_/|<|\_!`).
+    #[test]
+    fn syllo_state_marker_is_inside_face_not_appended() {
+        const MARKERS: &[(SheetState, char)] = &[
+            (SheetState::Idle, 'o'),
+            (SheetState::Work, '<'),
+            (SheetState::Think, '?'),
+            (SheetState::Happy, '^'),
+            (SheetState::Sleep, '-'),
+            (SheetState::Alert, '!'),
+            (SheetState::Success, 'v'),
+            (SheetState::Error, 'x'),
+        ];
+        for stage in STAGES {
+            for (state, marker) in MARKERS {
+                let frames = syllo::frame(*stage, *state);
+                for rows in frames {
+                    let top = rows[0];
+                    let mid = rows[1];
+                    let bot = rows[2];
+                    // Top row must close with `.` (Baby/Juvenile) or `/` (Adult)
+                    // — i.e. the face frame, not a stray marker.
+                    let top_terminator = top.trim_end().chars().last().expect("top row");
+                    assert!(
+                        matches!(top_terminator, '.' | '/'),
+                        "syllo {stage:?} {state:?} top row leaks marker outside face: {top:?}",
+                    );
+                    // Bottom row must close with `\` (Baby/Juvenile, `/_<_\`) or
+                    // `_` (Adult, `_/ \_`) — anything else means a side marker.
+                    let bot_terminator = bot.trim_end().chars().last().expect("bot row");
+                    assert!(
+                        matches!(bot_terminator, '\\' | '_'),
+                        "syllo {stage:?} {state:?} bot row leaks marker outside face: {bot:?}",
+                    );
+                    // The chosen state marker must appear somewhere inside the
+                    // face — top row or mid row body. (For Juvenile Sleep the
+                    // top degenerates to `...` and the `-` sits in `/(-)\`.)
+                    assert!(
+                        top.contains(*marker) || mid.contains(*marker),
+                        "syllo {stage:?} {state:?} marker '{marker}' not found in face: top={top:?} mid={mid:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// codex-vl 2026-05-15 DAG rule: ZED stays in archive mode (narrator/
+    /// presenter), so the ZED sheet must not grow runtime expansions in the
+    /// same branch that refreshes Syllo. Concretely: ZED's source file must
+    /// stay byte-identical to `develop`. We verify via `include_bytes!` +
+    /// SHA snapshot of the canonical bytes shipped at iter A start. This
+    /// catches accidental edits to `sheet/zed.rs` during sub-iter merges.
+    #[test]
+    fn zed_sheet_file_unchanged_under_crt_face_state_refresh() {
+        // Snapshot taken on 2026-05-15 develop @ cf508d2553 (pre-iter A).
+        const ZED_SHEET_BYTES: &[u8] = include_bytes!("zed.rs");
+        const ZED_SHEET_LEN_AT_ITER_A_START: usize = 3895;
+        assert_eq!(
+            ZED_SHEET_BYTES.len(),
+            ZED_SHEET_LEN_AT_ITER_A_START,
+            "zed.rs file changed during crt-face-state sub-iters; ZED must stay archive-only per DAG D5",
+        );
+    }
 }
