@@ -356,6 +356,7 @@ pub(crate) mod loop_jobs;
 mod skills;
 mod slash_dispatch;
 mod vl_ext;
+mod vl_slash;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
 use self::skills::find_skill_mentions_with_tool_mentions;
@@ -1138,11 +1139,7 @@ impl ChatWidget {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         self.bottom_pane.pre_draw_tick();
-        self.vl_lifecycle_tick(
-            self.is_vivling_baby_or_juvenile(),
-            !self.is_vl_sidebar_expanded(),
-            false,
-        );
+        self.codex_vl_pre_draw_tick();
         if let Some(pet) = self.ambient_pet.as_ref() {
             pet.schedule_next_frame();
         }

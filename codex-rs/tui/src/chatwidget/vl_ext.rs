@@ -89,6 +89,20 @@ impl ChatWidget {
         self.bottom_pane.is_vl_sidebar_expanded()
     }
 
+    /// codex-vl: per-frame Vivling lifecycle tick bridge.
+    ///
+    /// Invoked from `ChatWidget::pre_draw_tick` so the upstream-heavy
+    /// `chatwidget.rs` only needs a single-line hook. Keeps the three
+    /// `vl_lifecycle_tick` arguments centralized here, matching the
+    /// regression-pinned contract.
+    pub(crate) fn codex_vl_pre_draw_tick(&mut self) {
+        self.vl_lifecycle_tick(
+            self.is_vivling_baby_or_juvenile(),
+            !self.is_vl_sidebar_expanded(),
+            false,
+        );
+    }
+
     pub(crate) fn vl_lifecycle_tick(
         &mut self,
         is_baby_or_juvenile: bool,
@@ -174,21 +188,56 @@ impl ChatWidget {
 
 #[cfg(test)]
 mod tests {
-    // codex-vl regression guard: `pre_draw_tick` must invoke `vl_lifecycle_tick`
-    // so the Vivling lifecycle/animation/care path keeps ticking each frame.
-    // Lost during the upstream chatwidget phase-5 refactor merge — pin the
-    // contract so the call cannot disappear silently again.
+    // codex-vl regression guard: `pre_draw_tick` must invoke the Vivling
+    // lifecycle bridge so the lifecycle/animation/care path keeps ticking
+    // each frame. Lost during the upstream chatwidget phase-5 refactor
+    // merge — pin the contract so the call cannot disappear silently.
+    //
+    // Boundary extraction 2026-05-15: `pre_draw_tick` now calls the thin
+    // bridge `self.codex_vl_pre_draw_tick()`, which in turn must invoke
+    // `self.vl_lifecycle_tick(is_vivling_baby_or_juvenile, !sidebar, false)`.
+    // We pin BOTH endpoints to catch either:
+    //   (a) someone deleting the hook from `pre_draw_tick`, or
+    //   (b) someone gutting `codex_vl_pre_draw_tick` so it no longer
+    //       drives `vl_lifecycle_tick` with the canonical arguments.
 
     const CHATWIDGET_SOURCE: &str = include_str!("../chatwidget.rs");
+    const VL_EXT_SOURCE: &str = include_str!("vl_ext.rs");
 
     #[test]
-    fn pre_draw_tick_invokes_vl_lifecycle_tick() {
+    fn pre_draw_tick_invokes_codex_vl_pre_draw_tick() {
         let body = extract_fn_body(CHATWIDGET_SOURCE, "pre_draw_tick")
             .expect("pre_draw_tick must exist in chatwidget.rs");
         assert!(
+            body.contains("self.codex_vl_pre_draw_tick()"),
+            "pre_draw_tick must call self.codex_vl_pre_draw_tick() to drive \
+             the Vivling lifecycle each frame. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_pre_draw_tick_invokes_vl_lifecycle_tick_with_canonical_args() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_pre_draw_tick")
+            .expect("codex_vl_pre_draw_tick must exist in vl_ext.rs");
+        assert!(
             body.contains("self.vl_lifecycle_tick("),
-            "pre_draw_tick must call self.vl_lifecycle_tick(...) to drive the \
-             Vivling lifecycle each frame. Body was:\n{body}",
+            "codex_vl_pre_draw_tick must call self.vl_lifecycle_tick(...). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.is_vivling_baby_or_juvenile()"),
+            "codex_vl_pre_draw_tick must pass is_vivling_baby_or_juvenile(). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("!self.is_vl_sidebar_expanded()"),
+            "codex_vl_pre_draw_tick must pass !is_vl_sidebar_expanded(). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("false"),
+            "codex_vl_pre_draw_tick must pass the loop_tick_running=false \
+             literal. Body was:\n{body}",
         );
     }
 
