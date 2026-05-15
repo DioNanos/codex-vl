@@ -589,7 +589,9 @@ impl App {
                     let approvals_reviewer =
                         approvals_reviewer.unwrap_or(config.approvals_reviewer);
                     let active_permission_profile =
-                        if config.permissions.permission_profile() == permission_profile.clone() {
+                        if config.permissions.effective_permission_profile()
+                            == permission_profile.clone()
+                        {
                             config.permissions.active_permission_profile()
                         } else {
                             None
@@ -603,6 +605,7 @@ impl App {
                             approvals_reviewer,
                             permission_profile.clone(),
                             active_permission_profile,
+                            config.permissions.user_visible_workspace_roots(),
                             model.to_string(),
                             *effort,
                             *summary,
@@ -892,7 +895,8 @@ impl App {
         session.thread_id = thread_id;
         session.thread_name = notification.thread.name.clone();
         session.model_provider_id = notification.thread.model_provider.clone();
-        session.cwd = notification.thread.cwd.clone();
+        session
+            .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
         if let Some(model) =
             read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await

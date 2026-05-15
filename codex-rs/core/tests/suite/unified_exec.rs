@@ -235,7 +235,6 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     skip_if_windows!(Ok(()));
 
     let builder = test_codex().with_config(|config| {
-        config.include_apply_patch_tool = true;
         config.use_experimental_unified_exec_tool = true;
         if let Err(err) = config.features.enable(Feature::UnifiedExec) {
             panic!("test config should allow feature update: {err}");
@@ -906,9 +905,12 @@ allow_local_binding = true
                 .enable(Feature::UnifiedExec)
                 .expect("test config should allow feature update");
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config.permissions.permission_profile = Constrained::allow_any(
-                PermissionProfile::from_legacy_sandbox_policy(&sandbox_policy_for_config),
-            );
+            config
+                .permissions
+                .set_permission_profile(PermissionProfile::from_legacy_sandbox_policy(
+                    &sandbox_policy_for_config,
+                ))
+                .expect("set permission profile");
         });
     let test = builder.build_with_remote_env(server).await?;
     assert!(
@@ -2721,7 +2723,6 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
-    use codex_config::Constrained;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
@@ -2752,11 +2753,13 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
                 },
                 access: FileSystemAccessMode::None,
             });
-        config.permissions.permission_profile =
-            Constrained::allow_any(PermissionProfile::from_runtime_permissions(
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::from_runtime_permissions(
                 &file_system_sandbox_policy,
                 NetworkSandboxPolicy::Restricted,
-            ));
+            ))
+            .expect("set permission profile");
     });
     let TestCodex {
         codex,

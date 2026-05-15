@@ -400,8 +400,7 @@ fn session_summary(
     let usage_line = (!token_usage.is_zero()).then(|| token_usage.to_string());
     let thread_id =
         resumable_thread(thread_id, thread_name, rollout_path).map(|thread| thread.thread_id);
-    let resume_command =
-        crate::legacy_core::util::resume_command(/*thread_name*/ None, thread_id);
+    let resume_command = codex_utils_cli::resume_command(/*thread_name*/ None, thread_id);
 
     if usage_line.is_none() && resume_command.is_none() {
         return None;
@@ -961,7 +960,7 @@ See the Codex keymap documentation for supported actions and examples."
         // world-writable dirs on Windows.
         #[cfg(target_os = "windows")]
         {
-            let startup_permission_profile = app.config.permissions.permission_profile();
+            let startup_permission_profile = app.config.permissions.effective_permission_profile();
             let should_check = WindowsSandboxLevel::from_config(&app.config)
                 != WindowsSandboxLevel::Disabled
                 && managed_filesystem_sandbox_is_restricted(&startup_permission_profile)

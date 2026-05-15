@@ -1640,7 +1640,7 @@ async fn update_feature_flags_enabling_guardian_selects_auto_review() -> Result<
             .config_ref()
             .permissions
             .permission_profile(),
-        auto_review.permission_profile
+        &auto_review.permission_profile
     );
     assert_eq!(
         app.chat_widget.config_ref().approvals_reviewer,
@@ -1817,7 +1817,7 @@ async fn update_feature_flags_enabling_guardian_overrides_explicit_manual_review
             .config_ref()
             .permissions
             .permission_profile(),
-        auto_review.permission_profile
+        &auto_review.permission_profile
     );
     assert_eq!(
         op_rx.try_recv(),
@@ -2796,10 +2796,13 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
     let agent_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
+    let shared_root = test_path_buf("/tmp/shared").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone(), shared_root.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
 
     app.primary_thread_id = Some(main_thread_id);
@@ -2871,6 +2874,10 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
     assert_eq!(session.model_provider_id, "agent-provider");
     assert_eq!(session.approval_policy, primary_session.approval_policy);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/agent").as_path());
+    assert_eq!(
+        session.runtime_workspace_roots,
+        vec![test_path_buf("/tmp/agent").abs(), shared_root]
+    );
     assert_eq!(session.rollout_path, Some(rollout_path));
     assert_eq!(
         app.agent_navigation.get(&agent_thread_id),
@@ -2892,10 +2899,12 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
         ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
     let agent_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
 
     app.primary_thread_id = Some(main_thread_id);
@@ -2962,10 +2971,12 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000401").expect("valid thread");
     let read_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000402").expect("valid thread");
+    let primary_cwd = test_path_buf("/tmp/main").abs();
     let primary_session = ThreadSessionState {
         approval_policy: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::workspace_write(),
-        ..test_thread_session(main_thread_id, test_path_buf("/tmp/main"))
+        runtime_workspace_roots: vec![primary_cwd.clone()],
+        ..test_thread_session(main_thread_id, primary_cwd.to_path_buf())
     };
     app.primary_session_configured = Some(primary_session);
 
@@ -2997,11 +3008,16 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
 
     assert_eq!(session.thread_id, read_thread_id);
     assert_eq!(session.cwd.as_path(), test_path_buf("/tmp/read").as_path());
+    assert_eq!(
+        session.runtime_workspace_roots,
+        vec![test_path_buf("/tmp/read").abs()]
+    );
     let expected_permission_profile = app
         .chat_widget
         .config_ref()
         .permissions
-        .permission_profile();
+        .permission_profile()
+        .clone();
     assert_eq!(
         session.permission_profile, expected_permission_profile,
         "thread/read does not return fresh server permissions; the fallback profile must use the \
@@ -3144,7 +3160,7 @@ async fn side_fork_config_inherits_parent_thread_runtime_settings() {
             Some(ReasoningEffortConfig::High),
             Some(parent_service_tier),
             AskForApproval::OnRequest.to_core(),
-            parent_permission_profile,
+            &parent_permission_profile,
             ApprovalsReviewer::AutoReview,
         )
     );
@@ -3168,7 +3184,9 @@ async fn side_start_block_message_tracks_open_side_conversation() {
 
     assert_eq!(
         app.side_start_block_message(),
-        Some("A side conversation is already open. Press Esc to return before starting another.")
+        Some(
+            "A side conversation is already open. Press Ctrl+C to return before starting another."
+        )
     );
 
     app.side_threads.remove(&side_thread_id);
@@ -3685,6 +3703,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: Some(ReasoningEffortConfig::High),
             message_history: None,
@@ -3933,6 +3952,7 @@ fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState 
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
         cwd: cwd.abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: None,
         message_history: None,
@@ -4508,6 +4528,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4571,6 +4592,7 @@ async fn backtrack_selection_with_duplicate_history_targets_unique_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4663,6 +4685,7 @@ async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -4898,6 +4921,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     )];
     let resumed_session = ThreadSessionState {
         cwd: test_path_buf("/tmp/refreshed").abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         ..initial_session.clone()
     };
@@ -5062,6 +5086,7 @@ async fn new_session_requests_shutdown_for_previous_conversation() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/home/user/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -5183,6 +5208,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: test_path_buf("/tmp/project").abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             message_history: None,
@@ -5246,4 +5272,51 @@ async fn backtrack_esc_does_not_steal_empty_vim_insert_escape() {
     assert!(!app.backtrack.primed);
     assert!(!app.chat_widget.should_handle_vim_insert_escape(esc));
     assert!(app.should_handle_backtrack_esc(esc));
+}
+
+#[tokio::test]
+async fn side_conversations_reject_backtrack_esc_without_stealing_vim_insert_escape() {
+    let mut app = make_test_app().await;
+    let esc = crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, KeyModifiers::NONE);
+
+    app.chat_widget
+        .set_side_conversation_active(/*active*/ true);
+    assert!(app.chat_widget.composer_is_empty());
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(app.should_reject_side_backtrack_esc(esc));
+
+    app.chat_widget.toggle_vim_mode_and_notify();
+    app.chat_widget
+        .handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            KeyModifiers::NONE,
+        ));
+
+    assert!(app.chat_widget.should_handle_vim_insert_escape(esc));
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(!app.should_reject_side_backtrack_esc(esc));
+}
+
+#[tokio::test]
+async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.backtrack.primed = true;
+
+    app.reject_side_backtrack_esc();
+
+    assert!(!app.backtrack.primed);
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = cell
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_app_snapshot!(
+        "side_backtrack_rejection_reports_unavailable_message",
+        rendered
+    );
 }

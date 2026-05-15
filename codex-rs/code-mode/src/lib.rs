@@ -42,6 +42,10 @@ pub use runtime::RuntimeResponse;
 pub use runtime::WaitOutcome;
 #[cfg(not(target_os = "android"))]
 pub use runtime::WaitRequest;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingOutcome;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingRequest;
 #[cfg(target_os = "android")]
 pub use runtime_stub::CodeModeNestedToolCall;
 #[cfg(target_os = "android")]
@@ -58,10 +62,6 @@ pub use runtime_stub::RuntimeResponse;
 pub use runtime_stub::WaitOutcome;
 #[cfg(target_os = "android")]
 pub use runtime_stub::WaitRequest;
-#[cfg(not(target_os = "android"))]
-pub use runtime::WaitToPendingOutcome;
-#[cfg(not(target_os = "android"))]
-pub use runtime::WaitToPendingRequest;
 #[cfg(not(target_os = "android"))]
 pub use service::CodeModeService;
 #[cfg(not(target_os = "android"))]
