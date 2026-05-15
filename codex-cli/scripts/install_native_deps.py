@@ -178,12 +178,21 @@ def main() -> int:
         workflow_url = DEFAULT_WORKFLOW_URL
 
     workflow_id = workflow_url.rstrip("/").split("/")[-1]
-    print(f"Downloading native artifacts from workflow {workflow_id}...")
+    # Derive owner/repo from a github.com URL like
+    # https://github.com/<owner>/<repo>/actions/runs/<id> so the fork can
+    # reuse the GitHub Actions artifacts without falling back to openai/codex.
+    repo = "openai/codex"
+    parts = workflow_url.split("github.com/", 1)
+    if len(parts) == 2:
+        tail = parts[1].split("/")
+        if len(tail) >= 2:
+            repo = f"{tail[0]}/{tail[1]}"
+    print(f"Downloading native artifacts from workflow {workflow_id} (repo {repo})...")
 
     with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_id, artifacts_dir)
+            _download_artifacts(workflow_id, artifacts_dir, repo=repo)
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
@@ -267,7 +276,7 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+def _download_artifacts(workflow_id: str, dest_dir: Path, repo: str = "openai/codex") -> None:
     cmd = [
         "gh",
         "run",
@@ -275,7 +284,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        repo,
         workflow_id,
     ]
     subprocess.check_call(cmd)
