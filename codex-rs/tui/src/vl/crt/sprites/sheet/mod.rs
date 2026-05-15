@@ -243,6 +243,49 @@ mod tests {
         }
     }
 
+    /// codex-vl 2026-05-15 DAG rule (iter B Orchestra): same marker-inside-
+    /// face contract applied to Orchestra. Top row terminates with `.`
+    /// (Baby/Juvenile) or `/` (Adult); bottom row terminates with `\` (Baby
+    /// `/___\`) or `_` (Juvenile `_/ \_` / `_/o\_`, Adult `_/ \_`); the
+    /// chosen marker char appears in top OR mid row of the face.
+    #[test]
+    fn orchestra_state_marker_is_inside_face_not_appended() {
+        const MARKERS: &[(SheetState, char)] = &[
+            (SheetState::Idle, 'o'),
+            (SheetState::Work, '<'),
+            (SheetState::Think, '?'),
+            (SheetState::Happy, '^'),
+            (SheetState::Sleep, '-'),
+            (SheetState::Alert, '!'),
+            (SheetState::Success, 'v'),
+            (SheetState::Error, 'x'),
+        ];
+        for stage in STAGES {
+            for (state, marker) in MARKERS {
+                let frames = orchestra::frame(*stage, *state);
+                for rows in frames {
+                    let top = rows[0];
+                    let mid = rows[1];
+                    let bot = rows[2];
+                    let top_terminator = top.trim_end().chars().last().expect("top row");
+                    assert!(
+                        matches!(top_terminator, '.' | '/'),
+                        "orchestra {stage:?} {state:?} top row leaks marker outside face: {top:?}",
+                    );
+                    let bot_terminator = bot.trim_end().chars().last().expect("bot row");
+                    assert!(
+                        matches!(bot_terminator, '\\' | '_'),
+                        "orchestra {stage:?} {state:?} bot row leaks marker outside face: {bot:?}",
+                    );
+                    assert!(
+                        top.contains(*marker) || mid.contains(*marker),
+                        "orchestra {stage:?} {state:?} marker '{marker}' not found in face: top={top:?} mid={mid:?}",
+                    );
+                }
+            }
+        }
+    }
+
     /// codex-vl 2026-05-15 DAG rule: ZED stays in archive mode (narrator/
     /// presenter), so the ZED sheet must not grow runtime expansions in the
     /// same branch that refreshes Syllo. Concretely: ZED's source file must
