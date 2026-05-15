@@ -51,12 +51,17 @@ use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::protocol::AskForApproval;
+#[cfg(test)]
 use codex_protocol::protocol::RolloutItem;
+#[cfg(test)]
 use codex_protocol::protocol::RolloutLine;
+#[cfg(test)]
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::StateDbHandle;
+#[cfg(test)]
 use codex_rollout::read_session_meta_line;
 use codex_rollout::state_db;
+#[cfg(test)]
 use codex_rollout::state_db::get_state_db;
 use codex_state::log_db;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -64,11 +69,10 @@ use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use codex_utils_home_dir::find_codex_home;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
+#[cfg(test)]
 use codex_utils_path as path_utils;
 use color_eyre::eyre::WrapErr;
 use cwd_prompt::CwdPromptAction;
-use cwd_prompt::CwdPromptOutcome;
-use cwd_prompt::CwdSelection;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::path::Path;
@@ -1664,6 +1668,7 @@ async fn run_ratatui_app(
     app_result
 }
 
+#[cfg(test)]
 pub(crate) async fn read_session_cwd(
     config: &Config,
     thread_id: ThreadId,
@@ -1698,6 +1703,7 @@ pub(crate) async fn read_session_cwd(
     }
 }
 
+#[cfg(test)]
 async fn read_latest_turn_context(path: &Path) -> Option<TurnContextItem> {
     let text = tokio::fs::read_to_string(path).await.ok()?;
     for line in text.lines().rev() {
@@ -1715,6 +1721,7 @@ async fn read_latest_turn_context(path: &Path) -> Option<TurnContextItem> {
     None
 }
 
+#[cfg(test)]
 pub(crate) fn cwds_differ(current_cwd: &Path, session_cwd: &Path) -> bool {
     !path_utils::paths_match_after_normalization(current_cwd, session_cwd)
 }
