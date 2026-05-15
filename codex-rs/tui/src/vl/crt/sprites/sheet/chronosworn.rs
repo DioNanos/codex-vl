@@ -1,37 +1,57 @@
 use super::SheetState;
 use crate::vivling::Stage;
 
-// All cycles are single-frame for now (reserved species pre-pool 0.126.0).
-// Wrapped in `&[[..]]` len=1 so they pass through the new multi-frame
-// signature without behavioural change. Future iters can extend any cycle to
-// multiple frames (see Codex iter 7 design review approval).
+// codex-vl 2026-05-15: state marker lives INSIDE the time-core face,
+// never appended on the side (DAG rule, see
+// `docs/assets/vivling/crt/vivling_crt_face_state_sprites_2026-05-15.md`).
+// Chronosworn uses a time-core sigil: body/silhouette stays identical
+// across all states of a stage; only the top frame carries the marker.
+// All cycles remain single-frame for this iter — `chronosworn_zed_
+// single_frame_invariant` test stays green; future iters can extend
+// any cycle to multi-frame, but the canon doc does not call for it yet.
 
-const BABY_IDLE: &[[&str; 3]] = &[["   .-.   ", "  ( o )  ", "  -/_\\-  "]];
-const BABY_WORK: &[[&str; 3]] = &[["   .-.   ", "  ( o>)  ", "  -/_\\-  "]];
-const BABY_THINK: &[[&str; 3]] = &[["   .-.?  ", "  ( o )  ", "  -/_\\-  "]];
-const BABY_HAPPY: &[[&str; 3]] = &[["   .-.*  ", "  (^o^)  ", "  -/_\\-  "]];
-const BABY_SLEEP: &[[&str; 3]] = &[["   .-.z  ", "  (-o-)  ", "  -/_\\-  "]];
-const BABY_ALERT: &[[&str; 3]] = &[["   .-.!  ", "  ( Oo)  ", "  -/_\\-  "]];
-const BABY_SUCCESS: &[[&str; 3]] = &[["   .-.v  ", "  (^o^)  ", "  -/_\\-  "]];
-const BABY_ERROR: &[[&str; 3]] = &[["   .-.x  ", "  ( xo)  ", "  -/_\\-  "]];
+// ---------- BABY ----------
+// Layout: top `.X.`     (3) + 3-space pad each side → 9 cols.
+// Mid    `( | )`        (5) + 2-space pad each side → 9 cols.
+// Bot    `-/_\-`        (5) + 2-space pad each side → 9 cols.
+
+const BABY_IDLE: &[[&str; 3]] = &[["   .o.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_WORK: &[[&str; 3]] = &[["   .<.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_THINK: &[[&str; 3]] = &[["   .?.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_HAPPY: &[[&str; 3]] = &[["   .^.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_SLEEP: &[[&str; 3]] = &[["   ...   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_ALERT: &[[&str; 3]] = &[["   .!.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_SUCCESS: &[[&str; 3]] = &[["   .v.   ", "  ( | )  ", "  -/_\\-  "]];
+const BABY_ERROR: &[[&str; 3]] = &[["   .x.   ", "  ( | )  ", "  -/_\\-  "]];
+
+// ---------- JUVENILE ----------
+// Layout: top `.-X-.`    (5) + 2-space pad each side → 9 cols.
+// Mid    `--/|\--`       (7) + 1-space pad each side → 9 cols.
+//        WORK (cycle) uses `=-/|\--` per canon directed posture.
+// Bot    `o/ \o`         (5) + 2-space pad each side → 9 cols.
 
 const JUVENILE_IDLE: &[[&str; 3]] = &[["  .-o-.  ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_WORK: &[[&str; 3]] = &[["  .-o-.  ", " =-/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_THINK: &[[&str; 3]] = &[["  .-o-.? ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_HAPPY: &[[&str; 3]] = &[["  .-o-.* ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_SLEEP: &[[&str; 3]] = &[["  .-o-.z ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_ALERT: &[[&str; 3]] = &[["  .-o-.! ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_SUCCESS: &[[&str; 3]] = &[["  .-o-.v ", " --/|\\-- ", "  o/ \\o  "]];
-const JUVENILE_ERROR: &[[&str; 3]] = &[["  .-o-.x ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_WORK: &[[&str; 3]] = &[["  .-<-.  ", " =-/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_THINK: &[[&str; 3]] = &[["  .-?-.  ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_HAPPY: &[[&str; 3]] = &[["  .-^-.  ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_SLEEP: &[[&str; 3]] = &[["  .---.  ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_ALERT: &[[&str; 3]] = &[["  .-!-.  ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_SUCCESS: &[[&str; 3]] = &[["  .-v-.  ", " --/|\\-- ", "  o/ \\o  "]];
+const JUVENILE_ERROR: &[[&str; 3]] = &[["  .-x-.  ", " --/|\\-- ", "  o/ \\o  "]];
+
+// ---------- ADULT ----------
+// Layout: top `o-X-o`     (5) + 2-space pad each side → 9 cols.
+// Mid    `--/|\--`        (7) + 1-space pad each side → 9 cols.
+// Bot    `o_/ \_o`        (7) + 1-space pad each side → 9 cols.
 
 const YOUNG_ADULT_IDLE: &[[&str; 3]] = &[["  o-.-o  ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_WORK: &[[&str; 3]] = &[["  o-.-o= ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_THINK: &[[&str; 3]] = &[["  o-.-o? ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_HAPPY: &[[&str; 3]] = &[["  o-.-o* ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_SLEEP: &[[&str; 3]] = &[["  o-.-oz ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_ALERT: &[[&str; 3]] = &[["  o-.-o! ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_SUCCESS: &[[&str; 3]] = &[["  o-.-ov ", " --/|\\-- ", " o_/ \\_o "]];
-const YOUNG_ADULT_ERROR: &[[&str; 3]] = &[["  o-.-ox ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_WORK: &[[&str; 3]] = &[["  o-<-o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_THINK: &[[&str; 3]] = &[["  o-?-o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_HAPPY: &[[&str; 3]] = &[["  o-^-o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_SLEEP: &[[&str; 3]] = &[["  o---o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_ALERT: &[[&str; 3]] = &[["  o-!-o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_SUCCESS: &[[&str; 3]] = &[["  o-v-o  ", " --/|\\-- ", " o_/ \\_o "]];
+const YOUNG_ADULT_ERROR: &[[&str; 3]] = &[["  o-x-o  ", " --/|\\-- ", " o_/ \\_o "]];
 
 pub(super) fn frame(stage: Stage, state: SheetState) -> &'static [[&'static str; 3]] {
     match (stage, state) {

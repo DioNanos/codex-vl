@@ -59,7 +59,10 @@ mod tests {
         ));
         assert_ne!(syllo, orchestra);
         assert!(syllo.contains(".-o-."));
-        assert!(orchestra.contains("-( o )-"));
+        // Orchestra Baby Idle body wraps with `-(   )-` (canon
+        // 2026-05-15) — distinct from Syllo's `/(   )\` body.
+        assert!(orchestra.contains("-(   )-"));
+        assert!(orchestra.contains("/___\\"));
     }
 
     #[test]
