@@ -299,10 +299,13 @@ impl App {
                 self.config.permissions.approval_policy.value(),
             ));
         }
-        if permission_profile_override.is_some()
+        let permission_profile_override_value = permission_profile_override
+            .is_some()
+            .then(|| self.config.permissions.permission_profile().clone());
+        if let Some(permission_profile) = permission_profile_override_value.as_ref()
             && let Err(err) = self
                 .chat_widget
-                .set_permission_profile(self.config.permissions.permission_profile())
+                .set_permission_profile(permission_profile.clone())
         {
             tracing::error!(
                 error = %err,
@@ -311,9 +314,8 @@ impl App {
             self.chat_widget
                 .add_error_message(format!("Failed to enable Auto-review: {err}"));
         }
-        if permission_profile_override.is_some() {
-            self.runtime_permission_profile_override =
-                Some(self.config.permissions.permission_profile());
+        if let Some(permission_profile) = permission_profile_override_value {
+            self.runtime_permission_profile_override = Some(permission_profile);
         }
 
         if approval_policy_override.is_some()
@@ -659,6 +661,7 @@ mod tests {
                 permission_profile: PermissionProfile::read_only(),
                 active_permission_profile: None,
                 cwd: next_cwd.clone().abs(),
+                runtime_workspace_roots: Vec::new(),
                 instruction_source_paths: Vec::new(),
                 reasoning_effort: None,
                 message_history: None,

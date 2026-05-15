@@ -57,6 +57,7 @@ codex-protocol = { workspace = true }
 codex-realtime-webrtc = { workspace = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
+codex-sandboxing = { workspace = true }
 codex-shell-command = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
@@ -65,6 +66,7 @@ codex-utils-absolute-path = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-elapsed = { workspace = true }
 codex-utils-fuzzy-match = { workspace = true }
+codex-utils-home-dir = { workspace = true }
 codex-utils-oss = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-plugins = { workspace = true }

@@ -621,12 +621,12 @@ client_request_definitions! {
     },
     PluginList => "plugin/list" {
         params: v2::PluginListParams,
-        serialization: global_shared_read("plugin-read"),
+        serialization: None,
         response: v2::PluginListResponse,
     },
     PluginRead => "plugin/read" {
         params: v2::PluginReadParams,
-        serialization: global_shared_read("plugin-read"),
+        serialization: None,
         response: v2::PluginReadResponse,
     },
     PluginSkillRead => "plugin/skill/read" {
@@ -1700,12 +1700,7 @@ mod tests {
                 marketplace_kinds: None,
             },
         };
-        assert_eq!(
-            plugin_list.serialization_scope(),
-            Some(ClientRequestSerializationScope::GlobalSharedRead(
-                "plugin-read"
-            ))
-        );
+        assert_eq!(plugin_list.serialization_scope(), None);
 
         let plugin_read = ClientRequest::PluginRead {
             request_id: request_id(),
@@ -1715,12 +1710,7 @@ mod tests {
                 plugin_name: "plugin-a".to_string(),
             },
         };
-        assert_eq!(
-            plugin_read.serialization_scope(),
-            Some(ClientRequestSerializationScope::GlobalSharedRead(
-                "plugin-read"
-            ))
-        );
+        assert_eq!(plugin_read.serialization_scope(), None);
 
         let plugin_uninstall = ClientRequest::PluginUninstall {
             request_id: request_id(),
@@ -2306,6 +2296,7 @@ mod tests {
                 model_provider: "openai".to_string(),
                 service_tier: None,
                 cwd,
+                runtime_workspace_roots: Vec::new(),
                 instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
                 approval_policy: v2::AskForApproval::OnFailure,
                 approvals_reviewer: v2::ApprovalsReviewer::User,
@@ -2350,6 +2341,7 @@ mod tests {
                     "modelProvider": "openai",
                     "serviceTier": null,
                     "cwd": absolute_path_string("tmp"),
+                    "runtimeWorkspaceRoots": [],
                     "instructionSources": [absolute_path_string("tmp/AGENTS.md")],
                     "approvalPolicy": "on-failure",
                     "approvalsReviewer": "user",

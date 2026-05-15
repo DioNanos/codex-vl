@@ -29,6 +29,7 @@ use codex_config::permissions_toml::NetworkDomainPermissionsToml;
 use codex_config::permissions_toml::NetworkToml;
 use codex_config::permissions_toml::PermissionProfileToml;
 use codex_config::permissions_toml::PermissionsToml;
+use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::profile_toml::ConfigProfile;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
@@ -70,7 +71,6 @@ use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ActivePermissionProfile;
-use codex_protocol::models::ActivePermissionProfileModification;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
@@ -104,6 +104,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
+
+fn active_permission_profile_state(
+    permission_profile: PermissionProfile,
+    profile_id: impl Into<String>,
+) -> PermissionProfileState {
+    PermissionProfileState::from_constrained_active_profile(
+        Constrained::allow_any(permission_profile),
+        Some(ActivePermissionProfile::new(profile_id)),
+        Vec::new(),
+    )
+    .expect("active permission profile state should be valid")
+}
 
 fn stdio_mcp(command: &str) -> McpServerConfig {
     McpServerConfig {
@@ -722,6 +734,10 @@ fn config_toml_deserializes_permission_profiles() {
     let toml = r#"
 default_permissions = "workspace"
 
+[permissions.workspace.workspace_roots]
+"~/code/openai" = true
+"~/code/ignored" = false
+
 [permissions.workspace.filesystem]
 ":minimal" = "read"
 
@@ -748,6 +764,12 @@ allow_upstream_proxy = false
             entries: BTreeMap::from([(
                 "workspace".to_string(),
                 PermissionProfileToml {
+                    workspace_roots: Some(WorkspaceRootsToml {
+                        entries: BTreeMap::from([
+                            ("~/code/ignored".to_string(), false),
+                            ("~/code/openai".to_string(), true),
+                        ]),
+                    }),
                     filesystem: Some(FilesystemPermissionsToml {
                         glob_scan_max_depth: None,
                         entries: BTreeMap::from([
@@ -803,6 +825,7 @@ async fn permissions_profiles_proxy_policy_does_not_start_managed_network_proxy_
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -956,6 +979,7 @@ async fn network_proxy_feature_matrix_preserves_sandbox_network_semantics() -> s
                     entries: BTreeMap::from([(
                         "workspace".to_string(),
                         PermissionProfileToml {
+                            workspace_roots: None,
                             filesystem: Some(FilesystemPermissionsToml {
                                 glob_scan_max_depth: None,
                                 entries: BTreeMap::from([(
@@ -1106,6 +1130,7 @@ async fn network_proxy_feature_uses_profile_network_proxy_settings() -> std::io:
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -1208,6 +1233,7 @@ enabled = false
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -1256,6 +1282,7 @@ async fn permissions_profiles_network_disabled_by_default_does_not_start_proxy()
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -1302,6 +1329,7 @@ async fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::
             entries: BTreeMap::from([(
                 "workspace".to_string(),
                 PermissionProfileToml {
+                    workspace_roots: None,
                     filesystem: Some(FilesystemPermissionsToml {
                         glob_scan_max_depth: None,
                         entries: BTreeMap::from([
@@ -1335,6 +1363,7 @@ async fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::
     )
     .await?;
 
+    let cwd_root = cwd.path().abs();
     let memories_root = codex_home.path().join("memories").abs();
     assert_eq!(
         config.permissions.file_system_sandbox_policy(),
@@ -1346,14 +1375,14 @@ async fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::
                 access: FileSystemAccessMode::Read,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Special {
-                    value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+                path: FileSystemPath::Path {
+                    path: cwd_root.clone(),
                 },
                 access: FileSystemAccessMode::Write,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Special {
-                    value: FileSystemSpecialPath::project_roots(Some("docs".into())),
+                path: FileSystemPath::Path {
+                    path: cwd_root.join("docs"),
                 },
                 access: FileSystemAccessMode::Read,
             },
@@ -1373,6 +1402,12 @@ async fn default_permissions_profile_populates_runtime_sandbox_policy() -> std::
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
         }
+    );
+    assert!(
+        !config
+            .permissions
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(&cwd.path().join(".git"), cwd.path())
     );
     assert_eq!(
         config.permissions.network_sandbox_policy(),
@@ -1406,7 +1441,10 @@ async fn permission_profile_override_populates_runtime_permissions() -> std::io:
     )
     .await?;
 
-    assert_eq!(config.permissions.permission_profile(), permission_profile);
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        permission_profile
+    );
     assert_eq!(config.permissions.active_permission_profile(), None);
     assert_eq!(
         &config.legacy_sandbox_policy(),
@@ -1436,7 +1474,10 @@ async fn permission_profile_override_preserves_managed_unrestricted_filesystem()
     )
     .await?;
 
-    assert_eq!(config.permissions.permission_profile(), permission_profile);
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        permission_profile
+    );
     assert_eq!(
         &config.legacy_sandbox_policy(),
         &SandboxPolicy::ExternalSandbox {
@@ -1568,6 +1609,7 @@ async fn permission_profile_override_preserves_configured_network_policy_without
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -1605,7 +1647,10 @@ async fn permission_profile_override_preserves_configured_network_policy_without
         config.permissions.network.is_none(),
         "profile network.enabled should not start the managed network proxy"
     );
-    assert_eq!(config.permissions.permission_profile(), permission_profile);
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        permission_profile
+    );
     Ok(())
 }
 
@@ -1613,7 +1658,9 @@ async fn permission_profile_override_preserves_configured_network_policy_without
 async fn workspace_root_glob_none_compiles_to_filesystem_pattern_entry() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
+    let extra_root = TempDir::new()?;
     tokio::fs::write(cwd.path().join(".git"), "gitdir: nowhere").await?;
+    tokio::fs::write(extra_root.path().join(".git"), "gitdir: nowhere").await?;
 
     let config = Config::load_from_base_config_with_overrides(
         ConfigToml {
@@ -1622,6 +1669,7 @@ async fn workspace_root_glob_none_compiles_to_filesystem_pattern_entry() -> std:
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: Some(2),
                             entries: BTreeMap::from([(
@@ -1640,6 +1688,7 @@ async fn workspace_root_glob_none_compiles_to_filesystem_pattern_entry() -> std:
         },
         ConfigOverrides {
             cwd: Some(cwd.path().to_path_buf()),
+            additional_writable_roots: vec![extra_root.path().to_path_buf()],
             ..Default::default()
         },
         codex_home.abs(),
@@ -1653,21 +1702,23 @@ async fn workspace_root_glob_none_compiles_to_filesystem_pattern_entry() -> std:
             .glob_scan_max_depth,
         Some(2)
     );
-    let expected_pattern = AbsolutePathBuf::resolve_path_against_base("**/*.env", cwd.path())
-        .to_string_lossy()
-        .into_owned();
-    assert!(
-        config
-            .permissions
-            .file_system_sandbox_policy()
-            .entries
-            .contains(&FileSystemSandboxEntry {
-                path: FileSystemPath::GlobPattern {
-                    pattern: expected_pattern,
-                },
-                access: FileSystemAccessMode::None,
-            })
-    );
+    for root in [cwd.path(), extra_root.path()] {
+        let expected_pattern = AbsolutePathBuf::resolve_path_against_base("**/*.env", root)
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            config
+                .permissions
+                .file_system_sandbox_policy()
+                .entries
+                .contains(&FileSystemSandboxEntry {
+                    path: FileSystemPath::GlobPattern {
+                        pattern: expected_pattern,
+                    },
+                    access: FileSystemAccessMode::None,
+                })
+        );
+    }
     assert!(
         !config
             .permissions
@@ -1697,6 +1748,7 @@ async fn permissions_profiles_require_default_permissions() -> std::io::Result<(
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -1767,8 +1819,7 @@ async fn default_permissions_can_select_builtin_profile_without_permissions_tabl
 }
 
 #[tokio::test]
-async fn default_permissions_read_only_applies_additional_writable_roots_as_modifications()
--> std::io::Result<()> {
+async fn default_permissions_read_only_keeps_add_dir_read_only() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     let extra_root = TempDir::new()?;
@@ -1790,20 +1841,112 @@ async fn default_permissions_read_only_applies_additional_writable_roots_as_modi
 
     let policy = config.permissions.file_system_sandbox_policy();
     assert!(
-        policy.can_write_path_with_cwd(extra_root.as_path(), cwd.path()),
-        "expected additional writable root to modify :read-only, policy: {policy:?}"
+        !policy.can_write_path_with_cwd(extra_root.as_path(), cwd.path()),
+        "expected :read-only to stay read-only for runtime workspace roots, policy: {policy:?}"
     );
     assert_eq!(
         config.permissions.active_permission_profile(),
-        Some(
-            ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_READ_ONLY).with_modifications(
-                vec![
-                    ActivePermissionProfileModification::AdditionalWritableRoot {
-                        path: extra_root,
+        Some(ActivePermissionProfile::new(
+            BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
+        ))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_profile_applies_rules_to_runtime_and_profile_workspace_roots()
+-> std::io::Result<()> {
+    let temp_dir = TempDir::new()?;
+    let codex_home = temp_dir.path().join("codex-home");
+    let cwd = temp_dir.path().join("frontend");
+    let runtime_root = temp_dir.path().join("backend");
+    let profile_root = temp_dir.path().join("shared");
+    for root in [&cwd, &runtime_root, &profile_root] {
+        std::fs::create_dir_all(root.join(".git"))?;
+        std::fs::create_dir_all(root.join(".codex"))?;
+    }
+
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            default_permissions: Some("dev".to_string()),
+            permissions: Some(PermissionsToml {
+                entries: BTreeMap::from([(
+                    "dev".to_string(),
+                    PermissionProfileToml {
+                        workspace_roots: Some(WorkspaceRootsToml {
+                            entries: BTreeMap::from([(
+                                profile_root.to_string_lossy().into_owned(),
+                                true,
+                            )]),
+                        }),
+                        filesystem: Some(FilesystemPermissionsToml {
+                            glob_scan_max_depth: None,
+                            entries: BTreeMap::from([(
+                                ":workspace_roots".to_string(),
+                                FilesystemPermissionToml::Scoped(BTreeMap::from([
+                                    (".".to_string(), FileSystemAccessMode::Write),
+                                    (".git".to_string(), FileSystemAccessMode::Read),
+                                    (".codex".to_string(), FileSystemAccessMode::Read),
+                                ])),
+                            )]),
+                        }),
+                        network: None,
                     },
-                ]
-            )
-        )
+                )]),
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            cwd: Some(cwd.clone()),
+            additional_writable_roots: vec![runtime_root.clone()],
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    let cwd_abs = cwd.abs();
+    let runtime_root_abs = runtime_root.abs();
+    let profile_root_abs = profile_root.abs();
+    assert_eq!(
+        config.workspace_roots,
+        vec![cwd_abs.clone(), runtime_root_abs.clone()]
+    );
+    assert_eq!(
+        config.permissions.workspace_roots(),
+        &[cwd_abs.clone(), runtime_root_abs.clone()]
+    );
+    assert_eq!(
+        config.effective_workspace_roots(),
+        vec![
+            cwd_abs.clone(),
+            runtime_root_abs.clone(),
+            profile_root_abs.clone()
+        ]
+    );
+
+    let policy = config.permissions.file_system_sandbox_policy();
+    for root in [cwd_abs, runtime_root_abs, profile_root_abs.clone()] {
+        assert!(
+            policy.can_write_path_with_cwd(root.as_path(), cwd.as_path()),
+            "expected workspace root to be writable, policy: {policy:?}"
+        );
+        assert!(
+            !policy.can_write_path_with_cwd(&root.join(".git"), cwd.as_path()),
+            "expected .git carveout under {root:?}, policy: {policy:?}"
+        );
+        assert!(
+            !policy.can_write_path_with_cwd(&root.join(".codex"), cwd.as_path()),
+            "expected .codex carveout under {root:?}, policy: {policy:?}"
+        );
+    }
+    assert_eq!(
+        config.permissions.profile_workspace_roots(),
+        std::slice::from_ref(&profile_root_abs)
+    );
+    assert_eq!(
+        config.permissions.active_permission_profile(),
+        Some(ActivePermissionProfile::new("dev"))
     );
     Ok(())
 }
@@ -2071,7 +2214,7 @@ async fn default_permissions_can_select_builtin_full_access_profile() -> std::io
     .await?;
 
     assert_eq!(
-        config.permissions.permission_profile(),
+        config.permissions.effective_permission_profile(),
         PermissionProfile::Disabled
     );
     assert_eq!(
@@ -2188,6 +2331,7 @@ async fn permissions_profiles_allow_direct_write_roots_outside_workspace_root()
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -2244,6 +2388,7 @@ async fn permissions_profiles_reject_nested_entries_for_non_workspace_roots() ->
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -2304,6 +2449,7 @@ async fn load_workspace_permission_profile(
 #[tokio::test]
 async fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<()> {
     let config = load_workspace_permission_profile(PermissionProfileToml {
+        workspace_roots: None,
         filesystem: Some(FilesystemPermissionsToml {
             glob_scan_max_depth: None,
             entries: BTreeMap::from([(
@@ -2347,6 +2493,7 @@ async fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<(
 async fn permissions_profiles_allow_unknown_special_paths_with_nested_entries()
 -> std::io::Result<()> {
     let config = load_workspace_permission_profile(PermissionProfileToml {
+        workspace_roots: None,
         filesystem: Some(FilesystemPermissionsToml {
             glob_scan_max_depth: None,
             entries: BTreeMap::from([(
@@ -2383,6 +2530,7 @@ async fn permissions_profiles_allow_unknown_special_paths_with_nested_entries()
 #[tokio::test]
 async fn permissions_profiles_allow_missing_filesystem_with_warning() -> std::io::Result<()> {
     let config = load_workspace_permission_profile(PermissionProfileToml {
+        workspace_roots: None,
         filesystem: None,
         network: None,
     })
@@ -2411,6 +2559,7 @@ async fn permissions_profiles_allow_missing_filesystem_with_warning() -> std::io
 #[tokio::test]
 async fn permissions_profiles_allow_empty_filesystem_with_warning() -> std::io::Result<()> {
     let config = load_workspace_permission_profile(PermissionProfileToml {
+        workspace_roots: None,
         filesystem: Some(FilesystemPermissionsToml {
             glob_scan_max_depth: None,
             entries: BTreeMap::new(),
@@ -2446,6 +2595,7 @@ async fn permissions_profiles_reject_workspace_root_parent_traversal() -> std::i
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -2492,6 +2642,7 @@ async fn permissions_profiles_allow_network_enablement() -> std::io::Result<()> 
                 entries: BTreeMap::from([(
                     "workspace".to_string(),
                     PermissionProfileToml {
+                        workspace_roots: None,
                         filesystem: Some(FilesystemPermissionsToml {
                             glob_scan_max_depth: None,
                             entries: BTreeMap::from([(
@@ -2723,6 +2874,55 @@ async fn runtime_config_resolves_terminal_resize_reflow_defaults_and_overrides()
         cfg.terminal_resize_reflow.max_rows,
         TerminalResizeReflowMaxRows::Disabled
     );
+}
+
+#[tokio::test]
+async fn forced_chatgpt_workspace_id_empty_values_disable_runtime_restriction()
+-> std::io::Result<()> {
+    let cases: Vec<(&str, &str, Option<Vec<&str>>)> = vec![
+        ("unset", "", None),
+        ("empty string", r#"forced_chatgpt_workspace_id = """#, None),
+        (
+            "whitespace string",
+            r#"forced_chatgpt_workspace_id = "   ""#,
+            None,
+        ),
+        ("empty list", r#"forced_chatgpt_workspace_id = []"#, None),
+        (
+            "blank list entries",
+            r#"forced_chatgpt_workspace_id = ["", "  "]"#,
+            None,
+        ),
+        (
+            "mixed list entries",
+            r#"forced_chatgpt_workspace_id = ["", " 123e4567-e89b-42d3-a456-426614174000 ", "123e4567-e89b-42d3-a456-426614174001"]"#,
+            Some(vec![
+                "123e4567-e89b-42d3-a456-426614174000",
+                "123e4567-e89b-42d3-a456-426614174001",
+            ]),
+        ),
+    ];
+
+    for (name, toml, expected) in cases {
+        let cfg_toml: ConfigToml = toml::from_str(toml)
+            .unwrap_or_else(|err| panic!("{name} should parse forced_chatgpt_workspace_id: {err}"));
+        let config = Config::load_from_base_config_with_overrides(
+            cfg_toml,
+            ConfigOverrides::default(),
+            tempdir().expect("tempdir").abs(),
+        )
+        .await?;
+
+        let expected = expected.map(|values| {
+            values
+                .into_iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(config.forced_chatgpt_workspace_id, expected, "{name}");
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -3038,13 +3238,15 @@ exclude_slash_tmp = true
                     );
                     continue;
                 }
+                assert_eq!(
+                    config.permissions.workspace_roots(),
+                    &[cwd.abs(), extra_root.clone()]
+                );
                 assert!(
                     file_system_policy
                         .entries
                         .contains(&FileSystemSandboxEntry {
-                            path: FileSystemPath::Special {
-                                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
-                            },
+                            path: FileSystemPath::Path { path: cwd.abs() },
                             access: FileSystemAccessMode::Write,
                         })
                 );
@@ -3063,15 +3265,16 @@ exclude_slash_tmp = true
                         file_system_policy
                             .entries
                             .contains(&FileSystemSandboxEntry {
-                                path: FileSystemPath::Special {
-                                    value: FileSystemSpecialPath::project_roots(Some(
-                                        subpath.into()
-                                    )),
+                                path: FileSystemPath::Path {
+                                    path: AbsolutePathBuf::resolve_path_against_base(
+                                        subpath,
+                                        cwd.path()
+                                    ),
                                 },
                                 access: FileSystemAccessMode::Read,
                             }),
-                        "case `{name}` should preserve `{subpath}` as a symbolic project-root \
-                         metadata carveout"
+                        "case `{name}` should materialize `{subpath}` for the runtime workspace \
+                         root"
                     );
                 }
             }
@@ -4271,7 +4474,6 @@ async fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
     .await?;
 
     assert!(!config.features.enabled(Feature::ApplyPatchFreeform));
-    assert!(!config.include_apply_patch_tool);
 
     Ok(())
 }
@@ -4610,6 +4812,57 @@ approval_mode = "approve"
             approval_mode: Some(AppToolApproval::Approve),
         }
     );
+}
+
+#[test]
+fn desktop_toml_round_trips_opaque_nested_values() -> anyhow::Result<()> {
+    let parsed = toml::from_str::<ConfigToml>(
+        r#"
+[desktop]
+appearanceTheme = "dark"
+selected-avatar-id = "codex"
+recentViews = ["threads", "settings"]
+
+[desktop.workspace]
+collapsed = true
+width = 320
+pane = { selected = "console", expanded = false }
+"#,
+    )?;
+
+    let desktop = parsed
+        .desktop
+        .as_ref()
+        .expect("desktop settings should deserialize");
+    assert_eq!(
+        desktop.get("appearanceTheme"),
+        Some(&serde_json::json!("dark"))
+    );
+    assert_eq!(
+        desktop.get("selected-avatar-id"),
+        Some(&serde_json::json!("codex"))
+    );
+    assert_eq!(
+        desktop.get("recentViews"),
+        Some(&serde_json::json!(["threads", "settings"]))
+    );
+    assert_eq!(
+        desktop.get("workspace"),
+        Some(&serde_json::json!({
+            "collapsed": true,
+            "width": 320,
+            "pane": {
+                "selected": "console",
+                "expanded": false,
+            },
+        }))
+    );
+
+    let serialized = toml::to_string(&parsed)?;
+    let reparsed = toml::from_str::<ConfigToml>(&serialized)?;
+    assert_eq!(reparsed.desktop, parsed.desktop);
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -7376,10 +7629,11 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             model_provider: fixture.openai_provider.clone(),
             permissions: Permissions {
                 approval_policy: Constrained::allow_any(AskForApproval::Never),
-                permission_profile: Constrained::allow_any(PermissionProfile::read_only()),
-                active_permission_profile: Some(ActivePermissionProfile::new(
+                permission_profile_state: active_permission_profile_state(
+                    PermissionProfile::read_only(),
                     BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
-                )),
+                ),
+                workspace_roots: vec![fixture.cwd()],
                 network: None,
                 allow_login_shell: true,
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -7391,6 +7645,8 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
+            workspace_roots: vec![fixture.cwd()],
+            workspace_roots_explicit: false,
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
             mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -7457,7 +7713,6 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             compact_prompt: None,
             forced_chatgpt_workspace_id: None,
             forced_login_method: None,
-            include_apply_patch_tool: true,
             web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
             web_search_config: None,
             use_experimental_unified_exec_tool: !cfg!(windows),
@@ -7468,7 +7723,6 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             suppress_unstable_features_warning: false,
             active_profile: Some("o3".to_string()),
             active_project: ProjectConfig { trust_level: None },
-            windows_wsl_setup_acknowledged: false,
             notices: Default::default(),
             check_for_update_on_startup: true,
             disable_paste_burst: false,
@@ -7825,10 +8079,11 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         model_provider: fixture.openai_custom_provider.clone(),
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::UnlessTrusted),
-            permission_profile: Constrained::allow_any(PermissionProfile::read_only()),
-            active_permission_profile: Some(ActivePermissionProfile::new(
+            permission_profile_state: active_permission_profile_state(
+                PermissionProfile::read_only(),
                 BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
-            )),
+            ),
+            workspace_roots: vec![fixture.cwd()],
             network: None,
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -7840,6 +8095,8 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
+        workspace_roots: vec![fixture.cwd()],
+        workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -7906,7 +8163,6 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         compact_prompt: None,
         forced_chatgpt_workspace_id: None,
         forced_login_method: None,
-        include_apply_patch_tool: true,
         web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
         web_search_config: None,
         use_experimental_unified_exec_tool: !cfg!(windows),
@@ -7917,7 +8173,6 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         suppress_unstable_features_warning: false,
         active_profile: Some("gpt3".to_string()),
         active_project: ProjectConfig { trust_level: None },
-        windows_wsl_setup_acknowledged: false,
         notices: Default::default(),
         check_for_update_on_startup: true,
         disable_paste_burst: false,
@@ -7988,10 +8243,11 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         model_provider: fixture.openai_provider.clone(),
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
-            permission_profile: Constrained::allow_any(PermissionProfile::read_only()),
-            active_permission_profile: Some(ActivePermissionProfile::new(
+            permission_profile_state: active_permission_profile_state(
+                PermissionProfile::read_only(),
                 BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
-            )),
+            ),
+            workspace_roots: vec![fixture.cwd()],
             network: None,
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -8003,6 +8259,8 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
+        workspace_roots: vec![fixture.cwd()],
+        workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -8069,7 +8327,6 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         compact_prompt: None,
         forced_chatgpt_workspace_id: None,
         forced_login_method: None,
-        include_apply_patch_tool: true,
         web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
         web_search_config: None,
         use_experimental_unified_exec_tool: !cfg!(windows),
@@ -8080,7 +8337,6 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         suppress_unstable_features_warning: false,
         active_profile: Some("zdr".to_string()),
         active_project: ProjectConfig { trust_level: None },
-        windows_wsl_setup_acknowledged: false,
         notices: Default::default(),
         check_for_update_on_startup: true,
         disable_paste_burst: false,
@@ -8136,10 +8392,11 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         model_provider: fixture.openai_provider.clone(),
         permissions: Permissions {
             approval_policy: Constrained::allow_any(AskForApproval::OnFailure),
-            permission_profile: Constrained::allow_any(PermissionProfile::read_only()),
-            active_permission_profile: Some(ActivePermissionProfile::new(
+            permission_profile_state: active_permission_profile_state(
+                PermissionProfile::read_only(),
                 BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
-            )),
+            ),
+            workspace_roots: vec![fixture.cwd()],
             network: None,
             allow_login_shell: true,
             shell_environment_policy: ShellEnvironmentPolicy::default(),
@@ -8151,6 +8408,8 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         user_instructions: None,
         notify: None,
         cwd: fixture.cwd(),
+        workspace_roots: vec![fixture.cwd()],
+        workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: Default::default(),
         mcp_servers: Constrained::allow_any(HashMap::new()),
         mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -8217,7 +8476,6 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         compact_prompt: None,
         forced_chatgpt_workspace_id: None,
         forced_login_method: None,
-        include_apply_patch_tool: true,
         web_search_mode: Constrained::allow_any(WebSearchMode::Cached),
         web_search_config: None,
         use_experimental_unified_exec_tool: !cfg!(windows),
@@ -8228,7 +8486,6 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         suppress_unstable_features_warning: false,
         active_profile: Some("gpt5".to_string()),
         active_project: ProjectConfig { trust_level: None },
-        windows_wsl_setup_acknowledged: false,
         notices: Default::default(),
         check_for_update_on_startup: true,
         disable_paste_burst: false,
@@ -9088,7 +9345,7 @@ async fn permission_profile_override_falls_back_when_disallowed_by_requirements(
     let expected_sandbox_policy = SandboxPolicy::new_read_only_policy();
     assert_eq!(config.legacy_sandbox_policy(), expected_sandbox_policy);
     assert_eq!(
-        config.permissions.permission_profile(),
+        config.permissions.effective_permission_profile(),
         PermissionProfile::read_only()
     );
     Ok(())
@@ -9116,7 +9373,7 @@ async fn active_profile_is_cleared_when_requirements_force_fallback() -> std::io
         .await?;
 
     assert_eq!(
-        config.permissions.permission_profile(),
+        config.permissions.effective_permission_profile(),
         PermissionProfile::read_only()
     );
     assert_eq!(config.permissions.active_permission_profile(), None);
@@ -9236,7 +9493,7 @@ async fn requirements_web_search_mode_overrides_danger_full_access_default() -> 
     assert_eq!(
         resolve_web_search_mode_for_turn(
             &config.web_search_mode,
-            &config.permissions.permission_profile(),
+            &config.permissions.effective_permission_profile(),
         ),
         WebSearchMode::Cached,
     );

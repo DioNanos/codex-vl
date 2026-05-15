@@ -33,6 +33,11 @@ impl ChatWidget {
         self.current_rollout_path = session.rollout_path.clone();
         self.current_cwd = Some(session.cwd.to_path_buf());
         self.config.cwd = session.cwd.clone();
+        let runtime_workspace_roots = session.runtime_workspace_roots.clone();
+        self.config.workspace_roots = runtime_workspace_roots.clone();
+        self.config
+            .permissions
+            .set_workspace_roots(runtime_workspace_roots);
         self.effective_service_tier = session.service_tier.clone();
         if let Err(err) = self
             .config
@@ -47,16 +52,25 @@ impl ChatWidget {
         let permission_sync = self
             .config
             .permissions
-            .set_permission_profile_with_active_profile(
+            .set_permission_profile_from_session_snapshot(
                 session.permission_profile.clone(),
                 session.active_permission_profile.clone(),
             );
         if let Err(err) = permission_sync {
             tracing::warn!(%err, "failed to sync permissions from SessionConfigured");
-            self.config.permissions.permission_profile =
-                Constrained::allow_only(session.permission_profile.clone());
-            self.config.permissions.active_permission_profile =
-                session.active_permission_profile.clone();
+            if let Err(replace_err) = self
+                .config
+                .permissions
+                .replace_permission_profile_from_session_snapshot(
+                    Constrained::allow_only(session.permission_profile.clone()),
+                    session.active_permission_profile.clone(),
+                )
+            {
+                tracing::error!(
+                    %replace_err,
+                    "failed to replace permissions from SessionConfigured after constraint fallback"
+                );
+            }
         }
         self.config.approvals_reviewer = session.approvals_reviewer;
         self.status_line_project_root_name_cache = None;

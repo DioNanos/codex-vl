@@ -1,6 +1,8 @@
 use super::*;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
 use opentelemetry::trace::TraceContextExt;
@@ -456,6 +458,18 @@ async fn thread_start_params_include_review_policy_when_auto_review_is_enabled()
     );
 }
 
+#[test]
+fn active_profile_selection_uses_profile_id_only() {
+    let selection = permissions_selection_from_active_profile(ActivePermissionProfile::new(
+        BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+    ));
+
+    assert_eq!(
+        selection,
+        PermissionProfileSelectionParams::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE)
+    );
+}
+
 #[tokio::test]
 async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile() {
     let codex_home = tempdir().expect("create temp codex home");
@@ -560,6 +574,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         service_tier: None,
         dynamic_tools: Vec::new(),
         cwd: test_path_buf("/tmp").abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
         approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
