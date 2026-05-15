@@ -496,6 +496,16 @@ impl ChatWidget {
                 self.bottom_pane.show_view(Box::new(view));
                 self.request_redraw();
             }
+            Ok(crate::vivling::VivlingCommandOutcome::SpawnNarration { message, panel }) => {
+                // codex-vl iter 1C: L1 chat-history message + L2 ZED
+                // Lineage panel. Newborn stays inactive — the panel
+                // narrates the lineage event without giving the child
+                // any operational surface.
+                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat);
+                let view = crate::bottom_pane::VivlingUpgradeView::new(panel);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
             Ok(crate::vivling::VivlingCommandOutcome::DispatchAssist(request)) => {
                 let log_kind = match &request.kind {
                     crate::vivling::VivlingBrainRequestKind::Chat => {
@@ -548,6 +558,13 @@ impl ChatWidget {
             }
             Ok(crate::vivling::VivlingCommandOutcome::OpenUpgrade(data)) => {
                 let view = crate::bottom_pane::VivlingUpgradeView::new(data);
+                self.bottom_pane.show_view(Box::new(view));
+                self.request_redraw();
+            }
+            Ok(crate::vivling::VivlingCommandOutcome::SpawnNarration { message, panel }) => {
+                // codex-vl iter 1C: see dispatch_vivling_command above.
+                self.add_vivling_message(message, crate::vl::VivlingLogKind::Chat);
+                let view = crate::bottom_pane::VivlingUpgradeView::new(panel);
                 self.bottom_pane.show_view(Box::new(view));
                 self.request_redraw();
             }

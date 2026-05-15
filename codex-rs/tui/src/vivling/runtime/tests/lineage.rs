@@ -27,7 +27,7 @@ fn spawn_requires_level_30_and_persists_new_roster_member() {
         .command(VivlingAction::Spawn, temp.path())
         .expect("spawn should work")
     {
-        VivlingCommandOutcome::Message(message) => message,
+        VivlingCommandOutcome::SpawnNarration { message, .. } => message,
         other => panic!("unexpected outcome: {other:?}"),
     };
     assert!(message.contains("Spawned"));
@@ -97,7 +97,7 @@ fn spawn_slot_progression_enforces_level_30_60_90_thresholds() {
                 .command(VivlingAction::Spawn, temp.path())
                 .expect("spawn attempt")
             {
-                VivlingCommandOutcome::Message(message) => message,
+                VivlingCommandOutcome::SpawnNarration { message, .. } => message,
                 other => panic!("unexpected outcome: {other:?}"),
             };
             assert!(message.contains("Local spawn slots now"));
@@ -246,7 +246,9 @@ fn remove_spawned_vivling_frees_local_spawn_capacity() {
         .command(VivlingAction::Spawn, temp.path())
         .expect("spawn after removal");
     match respawned {
-        VivlingCommandOutcome::Message(message) => assert!(message.contains("Spawned")),
+        VivlingCommandOutcome::SpawnNarration { message, .. } => {
+            assert!(message.contains("Spawned"))
+        }
         other => panic!("unexpected outcome: {other:?}"),
     }
 }

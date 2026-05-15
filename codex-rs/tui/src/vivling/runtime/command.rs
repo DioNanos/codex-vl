@@ -150,7 +150,9 @@ impl Vivling {
             VivlingAction::Status => self.status().map(VivlingCommandOutcome::Message),
             VivlingAction::Roster => self.roster_summary().map(VivlingCommandOutcome::Message),
             VivlingAction::Focus(target) => self.focus(&target).map(VivlingCommandOutcome::Message),
-            VivlingAction::Spawn => self.spawn_vivling().map(VivlingCommandOutcome::Message),
+            VivlingAction::Spawn => self
+                .spawn_vivling()
+                .map(|(message, panel)| VivlingCommandOutcome::SpawnNarration { message, panel }),
             VivlingAction::Export(path) => self
                 .export_active(cwd, path.as_deref())
                 .map(VivlingCommandOutcome::Message),
@@ -547,7 +549,7 @@ impl Vivling {
         ))
     }
 
-    pub(crate) fn spawn_vivling(&mut self) -> Result<String, String> {
+    pub(crate) fn spawn_vivling(&mut self) -> Result<(String, VivlingPanelData), String> {
         self.ensure_hatched()?;
         let primary = self.state.as_ref().expect("state checked").clone();
         if !primary.is_primary {
@@ -615,15 +617,35 @@ impl Vivling {
                 .map_err(|err| err.to_string())?;
         }
 
-        Ok(format!(
-            "Spawned {} [{}] {} via {}. Local spawn slots now {}/{}.",
+        // codex-vl iter 1C: L1 chat-history message + L2 ZED Lineage
+        // panel narration. The newborn stays inactive; the panel makes
+        // the lineage event visible as ZED-as-presenter, and the
+        // message keeps a quick audit trail in chat history.
+        let message = format!(
+            "Spawned {} [{}] {} via {}. Bio species: {}. Cultural parent: {}. \
+             Child stays inactive. Local spawn slots now {}/{}.",
             spawned.vivling_id,
             instance_label,
             spawned.name,
             origin_label,
+            spawned.species,
+            primary.name,
             local_spawn_used + 1,
             local_spawn_unlocked
-        ))
+        );
+        let summary = super::super::zed::zed_summary_for_lineage(
+            &primary.name,
+            &spawned.name,
+            &spawned.species,
+            origin_label,
+        );
+        let zed = super::super::zed::zed_panel_data(super::super::zed::ZedTopic::Lineage, &summary);
+        let panel = VivlingPanelData {
+            title: zed.title,
+            narrow_lines: zed.narrow_lines,
+            wide_lines: zed.wide_lines,
+        };
+        Ok((message, panel))
     }
 
     pub(crate) fn export_active(

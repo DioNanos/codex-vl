@@ -14,6 +14,7 @@ pub(crate) enum ZedTopic {
     LoopRhythm,
     LoopAssistReady,
     Companion,
+    Lineage,
 }
 
 impl ZedTopic {
@@ -25,6 +26,7 @@ impl ZedTopic {
             "loop-onboarding" => Self::LoopOnboarding,
             "loop-rhythm" => Self::LoopRhythm,
             "loop-assist-ready" => Self::LoopAssistReady,
+            "lineage" => Self::Lineage,
             _ => Self::Growth,
         }
     }
@@ -100,6 +102,7 @@ fn zed_title_for_topic(topic: ZedTopic) -> &'static str {
         ZedTopic::LoopRhythm => "ZED THE PRIME · Loop Rhythm",
         ZedTopic::LoopAssistReady => "ZED THE PRIME · Loop Assist Ready",
         ZedTopic::Companion => "ZED THE PRIME · Companion",
+        ZedTopic::Lineage => "ZED THE PRIME · Lineage",
     }
 }
 
@@ -158,6 +161,10 @@ pub(crate) fn zed_summary_for_topic(topic: ZedTopic) -> String {
             "ZED: this is a snapshot of your bond and gene profile. The bond grows with real work and decays with silence; the gene profile shapes how the companion approaches different work archetypes."
                 .to_string()
         }
+        ZedTopic::Lineage => {
+            "ZED: a lineage signal joined the roster. The newborn carries distilled traces from the active primary; the biological origin determines species, the primary determines culture."
+                .to_string()
+        }
     }
 }
 
@@ -184,6 +191,9 @@ fn zed_hint_for_topic(topic: ZedTopic) -> &'static str {
         ZedTopic::Companion => {
             "ZED: bond is the relationship signal; gene is the identity signal. They evolve at different rates. Both inform how your Vivling addresses you on Chat and Assist."
         }
+        ZedTopic::Lineage => {
+            "ZED: the newborn stays inactive. It learns from the primary's distilled summaries; it does not speak through Brain, Chat or Loop."
+        }
     }
 }
 
@@ -198,7 +208,37 @@ fn zed_next_step_for_topic(topic: ZedTopic) -> &'static str {
             "Next: `/vivling mode on` only if you want active help with current work"
         }
         ZedTopic::Companion => "Next: keep working together — bond decays after 24h of silence",
+        ZedTopic::Lineage => {
+            "Next: keep working with the primary — the newborn will learn passively"
+        }
     }
+}
+
+/// codex-vl iter 1C: dynamic Lineage narration for a fresh spawn.
+///
+/// Renders the ZED-as-presenter narration that opens after a successful
+/// `/vivling spawn`. Stays scripted (no Brain), generic (no raw parent
+/// distilled summaries leaked), and emphasises the cultural-vs-biological
+/// split DAG codified on 2026-05-15.
+pub(crate) fn zed_summary_for_lineage(
+    parent_name: &str,
+    child_name: &str,
+    child_species: &str,
+    origin_label: &str,
+) -> String {
+    let origin_note = match origin_label {
+        "primary_child" => format!("biological parent: {parent_name} (primary)"),
+        "veteran_child" => "biological parent: a roster veteran".to_string(),
+        "zed_hatch" => "biological origin: ZED introduces a new bloodline".to_string(),
+        _ => format!("biological origin: {origin_label}"),
+    };
+    format!(
+        "ZED: lineage signal received.\n\
+         {child_name} joined the roster as a {child_species}.\n\
+         {origin_note}.\n\
+         Cultural parent: {parent_name} — the newborn will learn passively from {parent_name}'s distilled summaries.\n\
+         The newborn stays inactive: no Brain, no Chat, no Loop ownership."
+    )
 }
 
 /// Compose the dynamic Companion summary using the current Vivling state.
