@@ -286,6 +286,51 @@ mod tests {
         }
     }
 
+    /// codex-vl 2026-05-15 DAG rule (iter C Chronosworn): the time-core
+    /// face uses a closed top frame per stage:
+    /// - Baby `.X.` (closes with `.`)
+    /// - Juvenile `.-X-.` (closes with `.`)
+    /// - Adult `o-X-o` (closes with `o` — clock dial frame)
+    ///
+    /// State is communicated INSIDE the top frame; the mid sigil
+    /// (`( | )` / `--/|\\--`) and bottom (`-/_\\-` / `o/ \\o` /
+    /// `o_/ \\_o`) stay byte-stable across all 8 states of a stage.
+    /// This catches both side-suffix regressions (which would alter
+    /// the top terminator) and bot-row leaks (which would break
+    /// stability).
+    #[test]
+    fn chronosworn_state_marker_is_inside_face_not_appended() {
+        for stage in STAGES {
+            // (1) Bot row is byte-identical across every state of the stage.
+            let baseline_bot = chronosworn::frame(*stage, STATES[0])[0][2];
+            for state in STATES {
+                for rows in chronosworn::frame(*stage, *state) {
+                    assert_eq!(
+                        rows[2], baseline_bot,
+                        "chronosworn {stage:?} {state:?} bot row drifted from baseline {baseline_bot:?}; side-suffix leak suspected: {:?}",
+                        rows[2],
+                    );
+                }
+            }
+            // (2) Top row terminates with the canon face-frame char for
+            //     the stage, not a marker glyph dangling on the side.
+            let expected_close: &[char] = match stage {
+                Stage::Adult => &['o'],
+                _ => &['.'],
+            };
+            for state in STATES {
+                for rows in chronosworn::frame(*stage, *state) {
+                    let top = rows[0];
+                    let top_terminator = top.trim_end().chars().last().expect("top row");
+                    assert!(
+                        expected_close.contains(&top_terminator),
+                        "chronosworn {stage:?} {state:?} top row leaks marker outside face: {top:?} (expected close in {expected_close:?})",
+                    );
+                }
+            }
+        }
+    }
+
     /// codex-vl 2026-05-15 DAG rule: ZED stays in archive mode (narrator/
     /// presenter), so the ZED sheet must not grow runtime expansions in the
     /// same branch that refreshes Syllo. Concretely: ZED's source file must
