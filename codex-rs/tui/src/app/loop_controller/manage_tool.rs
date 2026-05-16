@@ -3,10 +3,13 @@
 //! Surface consumed by the app-server side when an agent calls the
 //! `manage_loops` dynamic tool (namespace `codex_app::manage_loops`
 //! / flat `manage_loops`). The body of the former
-//! `App::execute_manage_loops_dynamic_tool` +
-//! `App::resolve_manage_loops_app_server_request` lives here as
-//! `pub(super)` free fns. `mod.rs` keeps the `App::resolve_*` facade
-//! signature byte-identical and delegates here.
+//! `App::resolve_manage_loops_app_server_request` lives here as the
+//! single `pub(super)` free fn `resolve_app_server_request`; the
+//! former `App::execute_manage_loops_dynamic_tool` body migrated
+//! alongside it as the private `execute_dynamic_tool` helper since
+//! `resolve_app_server_request` is its only caller. `mod.rs` keeps
+//! the `App::resolve_*` facade signature byte-identical and
+//! delegates here.
 //!
 //! `loop_action_outcome_to_app_server_response` is the only consumer
 //! of `LoopActionOutcome → AppServerDynamicToolCallResponse`, so it
