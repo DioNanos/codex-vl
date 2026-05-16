@@ -192,3 +192,44 @@ pub(super) fn loop_action_failure(
         message,
     }
 }
+
+/// Shared test fixture for `loop_controller` sub-module tests. Lives
+/// here so `formatting::tests` and `manage_tool::tests` can construct
+/// a canonical `ThreadLoopJob` without duplicating the literal.
+#[cfg(test)]
+pub(super) fn sample_job() -> codex_state::ThreadLoopJob {
+    use codex_protocol::ThreadId;
+    codex_state::ThreadLoopJob {
+        id: "job-1".to_string(),
+        thread_id: ThreadId::new(),
+        label: "forge".to_string(),
+        prompt_text: "check forge".to_string(),
+        goal_text: Some("watch package pipeline".to_string()),
+        interval_seconds: 300,
+        enabled: true,
+        run_policy: "queue_one".to_string(),
+        auto_remove_on_completion: true,
+        created_by: "agent".to_string(),
+        next_run_ms: Some(1_700_000_300_000),
+        last_run_ms: Some(1_700_000_000_000),
+        last_status: Some("pending".to_string()),
+        last_error: None,
+        pending_tick: false,
+        created_at_ms: 1_700_000_000_000,
+        updated_at_ms: 1_700_000_000_000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loop_job_json;
+    use super::sample_job;
+
+    #[test]
+    fn loop_job_json_includes_runtime_state_and_normalized_status() {
+        let json = loop_job_json(&sample_job());
+
+        assert_eq!(json["runtime_state"], "scheduled");
+        assert_eq!(json["last_status"], "pending_busy");
+    }
+}

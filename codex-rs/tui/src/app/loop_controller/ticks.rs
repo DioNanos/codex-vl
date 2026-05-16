@@ -20,10 +20,23 @@ use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vl::VlEvent;
 
 use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
+use super::formatting::LOOP_STATUS_BLOCKED_REVIEW;
+use super::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use super::formatting::LOOP_STATUS_DELEGATED_VIVLING;
-use super::loop_submission_status;
+use super::formatting::LOOP_STATUS_PENDING_BUSY;
+use super::formatting::LOOP_STATUS_SUBMITTED;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+
+fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
+    match outcome {
+        LoopPromptSubmissionOutcome::Submitted => Some(LOOP_STATUS_SUBMITTED),
+        LoopPromptSubmissionOutcome::BlockedMissingThread => None,
+        LoopPromptSubmissionOutcome::BlockedSideConversation => Some(LOOP_STATUS_BLOCKED_SIDE),
+        LoopPromptSubmissionOutcome::BlockedReviewMode => Some(LOOP_STATUS_BLOCKED_REVIEW),
+        LoopPromptSubmissionOutcome::BlockedUserTurn => Some(LOOP_STATUS_PENDING_BUSY),
+    }
+}
 
 pub(super) async fn handle_tick(
     app: &mut App,

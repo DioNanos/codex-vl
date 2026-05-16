@@ -1,10 +1,15 @@
-//! codex-vl loop_controller (iter B1..B6 split): facade module.
+//! codex-vl loop_controller (iter B1..B7 split): facade module.
 //!
-//! The custom Vivling/loop runtime is being decomposed into focused
+//! The custom Vivling/loop runtime is decomposed into focused
 //! sub-modules to reduce blast radius on upstream merges. This file
-//! keeps the existing `impl App` public surface (`pub(super)` methods)
-//! and the `mod tests` parser suite (8 unit tests still scheduled for
-//! the B7 cleanup pass).
+//! keeps only the `impl App` public surface (`pub(super)` methods)
+//! plus two small private helpers (`record_vivling_loop_job`,
+//! `record_vivling_loop_runtime`) that the sub-modules call back
+//! into via Rust's default child-sub-module visibility. Every
+//! pub(super) method delegates one-line to a sibling sub-module
+//! function; no behaviour lives in this file. The 8 unit tests that
+//! used to live here have been moved next to the code they cover
+//! (`parsing`, `formatting`, `manage_tool`).
 //!
 //! Sub-modules now isolated:
 //! - `types` — `LoopActionOutcome`, `LoopCommandSource`.
@@ -19,7 +24,8 @@
 //! - `ticks` — `handle_tick` (former `App::handle_loop_tick` body) +
 //!   `process_submission` (former `App::process_loop_submission`,
 //!   includes Vivling owner-kind branch + main-path
-//!   `submit_loop_prompt`).
+//!   `submit_loop_prompt`) + the `loop_submission_status` helper
+//!   (private, only ticks consumes it).
 //! - `vivling_delegation` — `handle_loop_tick_finished` (Vivling brain
 //!   reply consumer with follow-up `LoopCommandRequest`),
 //!   `tick_action_request` (internal helper), and the tokio spawn
@@ -27,8 +33,8 @@
 //!   `crate::app::vivling_background::*`.
 //! - `manage_tool` — `resolve_app_server_request` (former
 //!   `App::resolve_manage_loops_app_server_request` body) +
-//!   `execute_dynamic_tool` (internal helper) +
-//!   `loop_action_outcome_to_app_server_response`.
+//!   `execute_dynamic_tool` + `loop_action_outcome_to_app_server_response`
+//!   (both private, used only inside this sub-module).
 
 mod formatting;
 mod parsing;
@@ -42,35 +48,14 @@ mod ticks;
 mod vivling_delegation;
 
 use super::*;
-use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
 use crate::vl::events::LoopCommandRequest;
-#[cfg(test)]
-use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
 
-use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
-use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
-use self::formatting::LOOP_STATUS_PENDING_BUSY;
-use self::formatting::LOOP_STATUS_SUBMITTED;
 use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
-#[cfg(test)]
-use self::parsing::is_manage_loops_dynamic_tool;
-#[cfg(test)]
-use self::parsing::parse_manage_loops_tool_request;
 use self::state::loop_state_error;
 use self::types::LoopCommandSource;
-
-fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
-    match outcome {
-        LoopPromptSubmissionOutcome::Submitted => Some(LOOP_STATUS_SUBMITTED),
-        LoopPromptSubmissionOutcome::BlockedMissingThread => None,
-        LoopPromptSubmissionOutcome::BlockedSideConversation => Some(LOOP_STATUS_BLOCKED_SIDE),
-        LoopPromptSubmissionOutcome::BlockedReviewMode => Some(LOOP_STATUS_BLOCKED_REVIEW),
-        LoopPromptSubmissionOutcome::BlockedUserTurn => Some(LOOP_STATUS_PENDING_BUSY),
-    }
-}
 
 impl App {
     fn record_vivling_loop_job(
@@ -210,181 +195,5 @@ impl App {
         request: crate::vivling::VivlingLoopTickRequest,
     ) {
         vivling_delegation::run_loop_tick(self, thread_id, job_id, request);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::formatting::loop_action_success;
-    use super::formatting::loop_job_json;
-    use super::manage_tool::loop_action_outcome_to_app_server_response;
-    use super::*;
-
-    fn sample_job() -> codex_state::ThreadLoopJob {
-        codex_state::ThreadLoopJob {
-            id: "job-1".to_string(),
-            thread_id: ThreadId::new(),
-            label: "forge".to_string(),
-            prompt_text: "check forge".to_string(),
-            goal_text: Some("watch package pipeline".to_string()),
-            interval_seconds: 300,
-            enabled: true,
-            run_policy: "queue_one".to_string(),
-            auto_remove_on_completion: true,
-            created_by: "agent".to_string(),
-            next_run_ms: Some(1_700_000_300_000),
-            last_run_ms: Some(1_700_000_000_000),
-            last_status: Some("pending".to_string()),
-            last_error: None,
-            pending_tick: false,
-            created_at_ms: 1_700_000_000_000,
-            updated_at_ms: 1_700_000_000_000,
-        }
-    }
-
-    #[test]
-    fn parse_manage_loops_add_request() {
-        let request = parse_manage_loops_tool_request(serde_json::json!({
-            "action": "add",
-            "label": "forge",
-            "interval": "5m",
-            "prompt": "check forge"
-        }))
-        .expect("valid request");
-
-        assert_eq!(
-            request,
-            LoopCommandRequest::Add {
-                label: "forge".to_string(),
-                interval_seconds: 300,
-                prompt_text: "check forge".to_string(),
-                goal_text: None,
-                auto_remove_on_completion: None,
-            }
-        );
-    }
-
-    #[test]
-    fn manage_loops_dynamic_tool_accepts_flat_and_namespaced_aliases() {
-        assert!(is_manage_loops_dynamic_tool(None, "manage_loops"));
-        assert!(is_manage_loops_dynamic_tool(
-            Some("codex_app"),
-            "manage_loops"
-        ));
-        assert!(is_manage_loops_dynamic_tool(
-            Some("functions"),
-            "manage_loops"
-        ));
-        assert!(!is_manage_loops_dynamic_tool(
-            Some("other_namespace"),
-            "manage_loops"
-        ));
-        assert!(!is_manage_loops_dynamic_tool(None, "other_tool"));
-    }
-
-    #[test]
-    fn parse_manage_loops_add_request_with_goal_and_cleanup() {
-        let request = parse_manage_loops_tool_request(serde_json::json!({
-            "action": "add",
-            "label": "forge",
-            "interval": "5m",
-            "prompt": "check forge",
-            "goal": "watch package pipeline",
-            "auto_remove_on_completion": true
-        }))
-        .expect("valid request");
-
-        assert_eq!(
-            request,
-            LoopCommandRequest::Add {
-                label: "forge".to_string(),
-                interval_seconds: 300,
-                prompt_text: "check forge".to_string(),
-                goal_text: Some("watch package pipeline".to_string()),
-                auto_remove_on_completion: Some(true),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_manage_loops_update_request_supports_partial_updates() {
-        let request = parse_manage_loops_tool_request(serde_json::json!({
-            "action": "update",
-            "label": "forge",
-            "goal": null,
-            "enabled": false
-        }))
-        .expect("valid request");
-
-        assert_eq!(
-            request,
-            LoopCommandRequest::Update {
-                label: "forge".to_string(),
-                interval_seconds: None,
-                prompt_text: None,
-                goal_text: Some(None),
-                auto_remove_on_completion: None,
-                enabled: Some(false),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_manage_loops_trigger_request() {
-        let request = parse_manage_loops_tool_request(serde_json::json!({
-            "action": "trigger",
-            "label": "forge"
-        }))
-        .expect("valid request");
-
-        assert_eq!(
-            request,
-            LoopCommandRequest::Trigger {
-                label: "forge".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_manage_loops_rejects_short_interval() {
-        let error = parse_manage_loops_tool_request(serde_json::json!({
-            "action": "add",
-            "label": "forge",
-            "interval": "5s",
-            "prompt": "check forge"
-        }))
-        .expect_err("interval should be rejected");
-
-        assert!(error.to_string().contains("interval"));
-    }
-
-    #[test]
-    fn loop_job_json_includes_runtime_state_and_normalized_status() {
-        let json = loop_job_json(&sample_job());
-
-        assert_eq!(json["runtime_state"], "scheduled");
-        assert_eq!(json["last_status"], "pending_busy");
-    }
-
-    #[test]
-    fn app_server_response_uses_json_payload() {
-        let response = loop_action_outcome_to_app_server_response(loop_action_success(
-            "show",
-            ThreadId::new(),
-            "ok".to_string(),
-            Some(&sample_job()),
-            None,
-        ));
-
-        let [AppServerDynamicToolCallOutputContentItem::InputText { text }] =
-            response.content_items.as_slice()
-        else {
-            panic!("expected text payload");
-        };
-        let parsed: serde_json::Value =
-            serde_json::from_str(text).expect("tool response should be JSON");
-        assert_eq!(parsed["ok"], true);
-        assert_eq!(parsed["action"], "show");
-        assert_eq!(parsed["job"]["label"], "forge");
     }
 }

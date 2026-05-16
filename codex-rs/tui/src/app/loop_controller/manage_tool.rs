@@ -28,7 +28,7 @@ use super::parsing::parse_manage_loops_tool_request;
 use super::types::LoopActionOutcome;
 use super::types::LoopCommandSource;
 
-pub(super) fn loop_action_outcome_to_app_server_response(
+fn loop_action_outcome_to_app_server_response(
     outcome: LoopActionOutcome,
 ) -> AppServerDynamicToolCallResponse {
     AppServerDynamicToolCallResponse {
@@ -91,4 +91,36 @@ pub(super) async fn resolve_app_server_request(
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
+    use codex_protocol::ThreadId;
+
+    use super::super::formatting::loop_action_success;
+    use super::super::formatting::sample_job;
+    use super::loop_action_outcome_to_app_server_response;
+
+    #[test]
+    fn app_server_response_uses_json_payload() {
+        let response = loop_action_outcome_to_app_server_response(loop_action_success(
+            "show",
+            ThreadId::new(),
+            "ok".to_string(),
+            Some(&sample_job()),
+            None,
+        ));
+
+        let [AppServerDynamicToolCallOutputContentItem::InputText { text }] =
+            response.content_items.as_slice()
+        else {
+            panic!("expected text payload");
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(text).expect("tool response should be JSON");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["action"], "show");
+        assert_eq!(parsed["job"]["label"], "forge");
+    }
 }

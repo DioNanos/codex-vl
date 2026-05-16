@@ -180,3 +180,126 @@ pub(super) fn parse_manage_loops_tool_request(
         other => Err(anyhow::anyhow!("unsupported manage_loops action `{other}`")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_manage_loops_dynamic_tool;
+    use super::parse_manage_loops_tool_request;
+    use crate::vl::events::LoopCommandRequest;
+
+    #[test]
+    fn parse_manage_loops_add_request() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "forge",
+            "interval": "5m",
+            "prompt": "check forge"
+        }))
+        .expect("valid request");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Add {
+                label: "forge".to_string(),
+                interval_seconds: 300,
+                prompt_text: "check forge".to_string(),
+                goal_text: None,
+                auto_remove_on_completion: None,
+            }
+        );
+    }
+
+    #[test]
+    fn manage_loops_dynamic_tool_accepts_flat_and_namespaced_aliases() {
+        assert!(is_manage_loops_dynamic_tool(None, "manage_loops"));
+        assert!(is_manage_loops_dynamic_tool(
+            Some("codex_app"),
+            "manage_loops"
+        ));
+        assert!(is_manage_loops_dynamic_tool(
+            Some("functions"),
+            "manage_loops"
+        ));
+        assert!(!is_manage_loops_dynamic_tool(
+            Some("other_namespace"),
+            "manage_loops"
+        ));
+        assert!(!is_manage_loops_dynamic_tool(None, "other_tool"));
+    }
+
+    #[test]
+    fn parse_manage_loops_add_request_with_goal_and_cleanup() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "forge",
+            "interval": "5m",
+            "prompt": "check forge",
+            "goal": "watch package pipeline",
+            "auto_remove_on_completion": true
+        }))
+        .expect("valid request");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Add {
+                label: "forge".to_string(),
+                interval_seconds: 300,
+                prompt_text: "check forge".to_string(),
+                goal_text: Some("watch package pipeline".to_string()),
+                auto_remove_on_completion: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_update_request_supports_partial_updates() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "update",
+            "label": "forge",
+            "goal": null,
+            "enabled": false
+        }))
+        .expect("valid request");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Update {
+                label: "forge".to_string(),
+                interval_seconds: None,
+                prompt_text: None,
+                goal_text: Some(None),
+                auto_remove_on_completion: None,
+                enabled: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_trigger_request() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "trigger",
+            "label": "forge"
+        }))
+        .expect("valid request");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Trigger {
+                label: "forge".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_rejects_short_interval() {
+        let error = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "forge",
+            "interval": "5s",
+            "prompt": "check forge"
+        }))
+        .expect_err("interval should be rejected");
+
+        assert!(error.to_string().contains("interval"));
+    }
+}
