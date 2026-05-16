@@ -16,7 +16,7 @@ chrono.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tantivy = "0.22"
+tantivy = "0.26"
 unicode-segmentation = "1"
 toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
