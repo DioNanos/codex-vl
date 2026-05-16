@@ -20,7 +20,14 @@ from urllib.request import urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
+# Historical upstream default kept for backward compatibility with the
+# original `openai/codex` parent workflow. codex-vl pipelines always pass
+# `--workflow-url` pointing at our fork (`DioNanos/codex-vl`), so this URL
+# is never used as the source of truth in a fork-driven build. The
+# fork-safe repo default below is what gets used as fallback whenever the
+# workflow URL cannot be parsed.
 DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
+DEFAULT_GITHUB_REPO = "DioNanos/codex-vl"
 VENDOR_DIR_NAME = "vendor"
 RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
 BINARY_TARGETS = (
@@ -181,7 +188,10 @@ def main() -> int:
     # Derive owner/repo from a github.com URL like
     # https://github.com/<owner>/<repo>/actions/runs/<id> so the fork can
     # reuse the GitHub Actions artifacts without falling back to openai/codex.
-    repo = "openai/codex"
+    # The fork-safe default lives in `DEFAULT_GITHUB_REPO` so that, even when
+    # the workflow URL cannot be parsed, the fallback resolves to our fork
+    # instead of silently pointing back at openai/codex.
+    repo = DEFAULT_GITHUB_REPO
     parts = workflow_url.split("github.com/", 1)
     if len(parts) == 2:
         tail = parts[1].split("/")
@@ -276,7 +286,11 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path, repo: str = "openai/codex") -> None:
+def _download_artifacts(
+    workflow_id: str,
+    dest_dir: Path,
+    repo: str = DEFAULT_GITHUB_REPO,
+) -> None:
     cmd = [
         "gh",
         "run",
