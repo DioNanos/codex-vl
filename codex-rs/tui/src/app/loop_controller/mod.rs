@@ -203,7 +203,7 @@ impl App {
         self.refresh_loop_jobs(thread_id).await
     }
 
-    pub(super) async fn process_loop_submission(
+    async fn process_loop_submission(
         &mut self,
         thread_id: ThreadId,
         job: codex_state::ThreadLoopJob,
