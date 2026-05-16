@@ -42,7 +42,6 @@ use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -282,8 +281,7 @@ impl BottomPane {
         let keymap = RuntimeKeymap::defaults();
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
-        let mut vivling = crate::vivling::Vivling::unavailable();
-        vivling.configure_runtime(frame_requester.clone(), animations_enabled);
+        let vivling = Self::codex_vl_make_vivling(&frame_requester, animations_enabled);
         Self {
             composer,
             view_stack: Vec::new(),
@@ -652,34 +650,8 @@ impl BottomPane {
                 self.request_redraw();
                 return InputResult::None;
             }
-            // codex-vl: Ctrl+J toggles the Vivling sidebar (open/close).
-            // Intercepted here so the editor keymap (which binds Ctrl+J to
-            // insert_newline) does not consume it first.
-            if matches!(key_event.kind, KeyEventKind::Press)
-                && key_event.code == KeyCode::Char('j')
-                && key_event.modifiers.contains(KeyModifiers::CONTROL)
-                && !key_event
-                    .modifiers
-                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
-                && self.composer_is_empty()
-            {
-                self.toggle_vl_sidebar();
+            if self.codex_vl_handle_input_event(&key_event) {
                 return InputResult::None;
-            }
-            if self.vl_sidebar.is_expanded()
-                && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-            {
-                let scroll_delta = match key_event.code {
-                    KeyCode::PageUp if key_event.modifiers.is_empty() => Some(-5),
-                    KeyCode::PageDown if key_event.modifiers.is_empty() => Some(5),
-                    KeyCode::Up if key_event.modifiers == KeyModifiers::CONTROL => Some(-1),
-                    KeyCode::Down if key_event.modifiers == KeyModifiers::CONTROL => Some(1),
-                    _ => None,
-                };
-                if let Some(delta) = scroll_delta {
-                    self.scroll_vl_sidebar(delta);
-                    return InputResult::None;
-                }
             }
             let records_composer_activity =
                 matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
@@ -1019,7 +991,7 @@ impl BottomPane {
         let was_running = self.is_task_running;
         self.is_task_running = running;
         self.composer.set_task_running(running);
-        self.vivling.set_task_running(running);
+        self.codex_vl_on_task_running(running);
 
         if running {
             if !was_running {
