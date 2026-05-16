@@ -1,14 +1,12 @@
-//! codex-vl loop_controller (iter B1..B5 split): facade module.
+//! codex-vl loop_controller (iter B1..B6 split): facade module.
 //!
 //! The custom Vivling/loop runtime is being decomposed into focused
 //! sub-modules to reduce blast radius on upstream merges. This file
 //! keeps the existing `impl App` public surface (`pub(super)` methods)
-//! and the still-not-extracted bodies — currently the `manage_loops`
-//! dynamic-tool resolver path (`execute_manage_loops_dynamic_tool` +
-//! `resolve_manage_loops_app_server_request`) and the `mod tests`
-//! parser suite, both scheduled for sub-iters B6/B7.
+//! and the `mod tests` parser suite (8 unit tests still scheduled for
+//! the B7 cleanup pass).
 //!
-//! Sub-modules already isolated:
+//! Sub-modules now isolated:
 //! - `types` — `LoopActionOutcome`, `LoopCommandSource`.
 //! - `parsing` — input parsers + `ManageLoopsToolArgs` +
 //!   `is_manage_loops_dynamic_tool`.
@@ -27,6 +25,10 @@
 //!   `tick_action_request` (internal helper), and the tokio spawn
 //!   helpers `run_assist` / `run_loop_tick` that call into
 //!   `crate::app::vivling_background::*`.
+//! - `manage_tool` — `resolve_app_server_request` (former
+//!   `App::resolve_manage_loops_app_server_request` body) +
+//!   `execute_dynamic_tool` (internal helper) +
+//!   `loop_action_outcome_to_app_server_response`.
 
 mod formatting;
 mod parsing;
@@ -35,6 +37,7 @@ mod types;
 
 mod events;
 mod jobs;
+mod manage_tool;
 mod ticks;
 mod vivling_delegation;
 
@@ -43,32 +46,21 @@ use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
 use crate::vl::events::LoopCommandRequest;
+#[cfg(test)]
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
-use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCallResponse;
 
 use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use self::formatting::LOOP_STATUS_PENDING_BUSY;
 use self::formatting::LOOP_STATUS_SUBMITTED;
 use self::formatting::canonical_last_status;
-use self::formatting::loop_action_failure;
 use self::formatting::loop_runtime_state;
+#[cfg(test)]
 use self::parsing::is_manage_loops_dynamic_tool;
+#[cfg(test)]
 use self::parsing::parse_manage_loops_tool_request;
 use self::state::loop_state_error;
-use self::types::LoopActionOutcome;
 use self::types::LoopCommandSource;
-
-fn loop_action_outcome_to_app_server_response(
-    outcome: LoopActionOutcome,
-) -> AppServerDynamicToolCallResponse {
-    AppServerDynamicToolCallResponse {
-        content_items: vec![AppServerDynamicToolCallOutputContentItem::InputText {
-            text: outcome.payload.to_string(),
-        }],
-        success: outcome.success,
-    }
-}
 
 fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
     match outcome {
@@ -196,60 +188,13 @@ impl App {
         vivling_delegation::handle_loop_tick_finished(self, thread_id, job_id, result).await
     }
 
-    async fn execute_manage_loops_dynamic_tool(
-        &mut self,
-        thread_id: ThreadId,
-        arguments: serde_json::Value,
-    ) -> LoopActionOutcome {
-        match parse_manage_loops_tool_request(arguments) {
-            Ok(request) => {
-                match jobs::run_command_request(self, thread_id, request, LoopCommandSource::Agent)
-                    .await
-                {
-                    Ok(outcome) => outcome,
-                    Err(err) => loop_action_failure("unknown", thread_id, err.to_string()),
-                }
-            }
-            Err(err) => loop_action_failure(
-                "unknown",
-                thread_id,
-                format!("manage_loops arguments invalid: {err}"),
-            ),
-        }
-    }
-
     pub(super) async fn resolve_manage_loops_app_server_request(
         &mut self,
         app_server: &AppServerSession,
         request_id: codex_app_server_protocol::RequestId,
         params: codex_app_server_protocol::DynamicToolCallParams,
     ) -> color_eyre::Result<()> {
-        let thread_id = ThreadId::from_string(&params.thread_id)?;
-        let outcome = if is_manage_loops_dynamic_tool(params.namespace.as_deref(), &params.tool) {
-            self.execute_manage_loops_dynamic_tool(thread_id, params.arguments)
-                .await
-        } else {
-            loop_action_failure(
-                "unknown",
-                thread_id,
-                format!(
-                    "Dynamic tool `{}{}` is not available in TUI yet.",
-                    params
-                        .namespace
-                        .as_deref()
-                        .map(|namespace| format!("{namespace}::"))
-                        .unwrap_or_default(),
-                    params.tool
-                ),
-            )
-        };
-        app_server
-            .resolve_server_request(
-                request_id,
-                serde_json::to_value(loop_action_outcome_to_app_server_response(outcome))?,
-            )
-            .await?;
-        Ok(())
+        manage_tool::resolve_app_server_request(self, app_server, request_id, params).await
     }
 
     /// codex-vl: dispatch a Vivling brain assist request.
@@ -272,6 +217,7 @@ impl App {
 mod tests {
     use super::formatting::loop_action_success;
     use super::formatting::loop_job_json;
+    use super::manage_tool::loop_action_outcome_to_app_server_response;
     use super::*;
 
     fn sample_job() -> codex_state::ThreadLoopJob {
