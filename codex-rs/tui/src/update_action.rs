@@ -6,9 +6,9 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g @mmmbuto/codex-vl@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g @mmmbuto/codex-vl@latest`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
@@ -36,8 +36,8 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
@@ -109,6 +109,14 @@ mod tests {
 
     #[test]
     fn standalone_update_commands_rerun_latest_installer() {
+        assert_eq!(
+            UpdateAction::NpmGlobalLatest.command_args(),
+            ("npm", &["install", "-g", "@mmmbuto/codex-vl"][..],)
+        );
+        assert_eq!(
+            UpdateAction::BunGlobalLatest.command_args(),
+            ("bun", &["install", "-g", "@mmmbuto/codex-vl"][..],)
+        );
         assert_eq!(
             UpdateAction::StandaloneUnix.command_args(),
             (

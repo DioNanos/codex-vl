@@ -192,6 +192,7 @@ mod terminal_title;
 mod text_formatting;
 mod theme_picker;
 mod token_usage;
+pub use token_usage::TokenUsage;
 mod tooltips;
 mod transcript_reflow;
 mod tui;

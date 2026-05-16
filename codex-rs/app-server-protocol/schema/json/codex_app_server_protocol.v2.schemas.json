@@ -9995,12 +9995,16 @@
         "installationId": {
           "type": "string"
         },
+        "serverName": {
+          "type": "string"
+        },
         "status": {
           "$ref": "#/definitions/RemoteControlConnectionStatus"
         }
       },
       "required": [
         "installationId",
+        "serverName",
         "status"
       ],
       "title": "RemoteControlStatusChangedNotification",
@@ -10612,6 +10616,22 @@
             "type"
           ],
           "title": "CompactionResponseItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "compaction_trigger"
+              ],
+              "title": "CompactionTriggerResponseItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "CompactionTriggerResponseItem",
           "type": "object"
         },
         {
@@ -13335,7 +13355,7 @@
               "$ref": "#/definitions/SandboxPolicy"
             }
           ],
-          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
+          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
         },
         "serviceTier": {
           "type": [
@@ -14827,7 +14847,7 @@
               "$ref": "#/definitions/SandboxPolicy"
             }
           ],
-          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
+          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
         },
         "serviceTier": {
           "type": [
@@ -15135,7 +15155,7 @@
               "$ref": "#/definitions/SandboxPolicy"
             }
           ],
-          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
+          "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
         },
         "serviceTier": {
           "type": [
