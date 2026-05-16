@@ -232,11 +232,8 @@ pub(crate) struct BottomPane {
     unified_exec_footer: UnifiedExecFooter,
     /// Preview of pending steers and queued drafts shown above the composer.
     pending_input_preview: PendingInputPreview,
-    /// codex-vl: Local terminal companion (Vivling).
     vivling: crate::vivling::Vivling,
-    /// codex-vl: Dedicated sidebar for Vivling chat/assist messages.
     vl_sidebar: crate::vl::VivlingSidebar,
-    /// codex-vl: Lifecycle state for Vivling activity (sleeping, eating, etc.).
     vl_lifecycle: Option<crate::vl::LifecycleState>,
     /// codex-vl: optional textual summary of active loop jobs for footer display.
     loop_context_label: Option<String>,

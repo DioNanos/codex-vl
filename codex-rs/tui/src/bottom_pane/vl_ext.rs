@@ -3,9 +3,44 @@
 //! These `impl BottomPane` blocks live in a dedicated file so that
 //! upstream changes to `bottom_pane/mod.rs` (where the base struct and
 //! its canonical methods live) do not need to be merged around our
-//! additions. The field `vivling: Vivling` still lives on the struct
+//! additions. The four codex-vl fields (`vivling`, `vl_sidebar`,
+//! `vl_lifecycle`, `loop_context_label`) still live on the struct
 //! because Rust cannot add fields via extensions; keeping *methods*
 //! isolated is the useful half of the separation.
+//!
+//! ## Codex-vl fields documented here (kept undecorated in `mod.rs`)
+//!
+//! - `vivling: crate::vivling::Vivling` — local terminal companion
+//!   (Vivling) used by `/vivling` and `/vl` commands.
+//! - `vl_sidebar: crate::vl::VivlingSidebar` — dedicated sidebar for
+//!   Vivling chat/assist messages, toggled by Ctrl+J.
+//! - `vl_lifecycle: Option<crate::vl::LifecycleState>` — lifecycle
+//!   state for Vivling activity (sleeping/eating/working/animation
+//!   text). Lazy-initialized via `ensure_vl_lifecycle`.
+//! - `loop_context_label: Option<String>` — textual summary of active
+//!   loop jobs surfaced in the chat composer footer.
+//!
+//! ## Boundary helpers extracted in iter C (2026-05-16)
+//!
+//! Iter C (`feat/bottom-pane-vl-boundary-iter-c`) extracted the four
+//! remaining VL logic blocks from `bottom_pane/mod.rs` into the bridge
+//! methods listed below. The upstream-facing file in `mod.rs` now
+//! delegates each VL touch via a single one-line call, so the next
+//! merge from `rust-v0.131.0` final has no Vivling logic to reconcile
+//! inside its render / keymap / task-running / constructor paths.
+//!
+//! - C1: `codex_vl_push_render_extras` — render insert for sidebar +
+//!   Vivling strip (formerly inline in
+//!   `as_renderable_with_composer_right_reserve`).
+//! - C2: `codex_vl_make_vivling` (associated fn) — factory for the
+//!   `Vivling::unavailable()` baseline + `configure_runtime`
+//!   (formerly inline in `BottomPane::new`).
+//! - C2: `codex_vl_handle_input_event` — Ctrl+J toggle + sidebar
+//!   scroll keymap intercept (formerly inline in
+//!   `BottomPane::handle_key_event`).
+//! - C2: `codex_vl_on_task_running` — task-running forward to the
+//!   Vivling companion (formerly inline in
+//!   `BottomPane::set_task_running`).
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
