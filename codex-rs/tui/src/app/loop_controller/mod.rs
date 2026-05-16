@@ -1,12 +1,14 @@
-//! codex-vl loop_controller (iter B1+B2 split): facade module.
+//! codex-vl loop_controller (iter B1+B2+B3 split): facade module.
 //!
 //! The custom Vivling/loop runtime is being decomposed into focused
 //! sub-modules to reduce blast radius on upstream merges. This file
 //! keeps the existing `impl App` public surface (`pub(super)` methods)
-//! and the still-not-extracted bodies (`run_loop_command_request`,
-//! `process_loop_submission`, `handle_vivling_loop_tick_finished`,
-//! manage_loops dynamic-tool resolver, background spawn helpers). The
-//! types/parsing/formatting/state/events sub-modules are now isolated.
+//! and the still-not-extracted bodies (`process_loop_submission`,
+//! `handle_vivling_loop_tick_finished`, manage_loops dynamic-tool
+//! resolver, background spawn helpers). The types / parsing /
+//! formatting / state / events / jobs sub-modules are now isolated;
+//! the former `run_loop_command_request` body now lives in
+//! `jobs::run_command_request` (free fn taking `&mut App`).
 
 mod formatting;
 mod parsing;
