@@ -1,14 +1,32 @@
-//! codex-vl loop_controller (iter B1+B2+B3 split): facade module.
+//! codex-vl loop_controller (iter B1..B5 split): facade module.
 //!
 //! The custom Vivling/loop runtime is being decomposed into focused
 //! sub-modules to reduce blast radius on upstream merges. This file
 //! keeps the existing `impl App` public surface (`pub(super)` methods)
-//! and the still-not-extracted bodies (`process_loop_submission`,
-//! `handle_vivling_loop_tick_finished`, manage_loops dynamic-tool
-//! resolver, background spawn helpers). The types / parsing /
-//! formatting / state / events / jobs sub-modules are now isolated;
-//! the former `run_loop_command_request` body now lives in
-//! `jobs::run_command_request` (free fn taking `&mut App`).
+//! and the still-not-extracted bodies — currently the `manage_loops`
+//! dynamic-tool resolver path (`execute_manage_loops_dynamic_tool` +
+//! `resolve_manage_loops_app_server_request`) and the `mod tests`
+//! parser suite, both scheduled for sub-iters B6/B7.
+//!
+//! Sub-modules already isolated:
+//! - `types` — `LoopActionOutcome`, `LoopCommandSource`.
+//! - `parsing` — input parsers + `ManageLoopsToolArgs` +
+//!   `is_manage_loops_dynamic_tool`.
+//! - `formatting` — `LOOP_STATUS_*` constants + narrating helpers +
+//!   JSON payload builders.
+//! - `state` — `loop_now_ms`, `loop_state_error`.
+//! - `events` — `refresh_jobs`, `handle_reload`.
+//! - `jobs` — `run_command_request` (Add/Update/List/Show/Enable/
+//!   Disable/Remove/Trigger/Owner CRUD dispatcher).
+//! - `ticks` — `handle_tick` (former `App::handle_loop_tick` body) +
+//!   `process_submission` (former `App::process_loop_submission`,
+//!   includes Vivling owner-kind branch + main-path
+//!   `submit_loop_prompt`).
+//! - `vivling_delegation` — `handle_loop_tick_finished` (Vivling brain
+//!   reply consumer with follow-up `LoopCommandRequest`),
+//!   `tick_action_request` (internal helper), and the tokio spawn
+//!   helpers `run_assist` / `run_loop_tick` that call into
+//!   `crate::app::vivling_background::*`.
 
 mod formatting;
 mod parsing;
@@ -18,6 +36,7 @@ mod types;
 mod events;
 mod jobs;
 mod ticks;
+mod vivling_delegation;
 
 use super::*;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
@@ -27,22 +46,15 @@ use crate::vl::events::LoopCommandRequest;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCallResponse;
 
-use self::formatting::LOOP_STATUS_BLOCKED;
-use self::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
-use self::formatting::LOOP_STATUS_DONE;
 use self::formatting::LOOP_STATUS_PENDING_BUSY;
-use self::formatting::LOOP_STATUS_PROGRESS;
 use self::formatting::LOOP_STATUS_SUBMITTED;
 use self::formatting::canonical_last_status;
 use self::formatting::loop_action_failure;
 use self::formatting::loop_runtime_state;
 use self::parsing::is_manage_loops_dynamic_tool;
-use self::parsing::parse_manage_loops_interval_seconds;
 use self::parsing::parse_manage_loops_tool_request;
-use self::parsing::parse_vivling_loop_status;
-use self::state::loop_now_ms;
 use self::state::loop_state_error;
 use self::types::LoopActionOutcome;
 use self::types::LoopCommandSource;
@@ -181,229 +193,7 @@ impl App {
         job_id: String,
         result: Result<crate::vivling::VivlingLoopTickResult, String>,
     ) -> color_eyre::Result<()> {
-        let state_runtime = self.loop_state_runtime().await?;
-        let Some(job) = state_runtime
-            .get_thread_loop_job_by_id(thread_id, &job_id)
-            .await
-            .map_err(loop_state_error)?
-        else {
-            return Ok(());
-        };
-        let owner = state_runtime
-            .get_thread_loop_owner(thread_id)
-            .await
-            .map_err(loop_state_error)?;
-        let owner_vivling_id = owner.owner_vivling_id.clone();
-        let now = loop_now_ms();
-
-        match result {
-            Err(err) => {
-                if let Some(vivling_id) = owner_vivling_id.as_deref()
-                    && let Err(persist_err) = self
-                        .chat_widget
-                        .mark_vivling_brain_runtime_error_for(vivling_id, &err)
-                {
-                    tracing::warn!(
-                        "failed to persist Vivling loop brain error for {vivling_id}: {persist_err}"
-                    );
-                }
-                state_runtime
-                    .update_thread_loop_job_runtime(
-                        thread_id,
-                        &job.id,
-                        codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
-                            last_run_ms: job.last_run_ms,
-                            last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
-                            last_error: Some(err.clone()),
-                            pending_tick: true,
-                            updated_at_ms: now,
-                        },
-                    )
-                    .await
-                    .map_err(loop_state_error)?;
-                self.chat_widget
-                    .add_error_message(format!("Vivling loop `{}` failed: {err}", job.label));
-                self.record_vivling_loop_runtime(
-                    &job.label,
-                    Some("pending"),
-                    Some(LOOP_STATUS_BLOCKED_OWNER),
-                    job.goal_text.as_deref().or(Some(job.prompt_text.as_str())),
-                    &job.created_by,
-                );
-                self.refresh_loop_jobs(thread_id).await?;
-                return Ok(());
-            }
-            Ok(result) => {
-                if let Some(vivling_id) = owner_vivling_id.as_deref()
-                    && let Err(persist_err) = self
-                        .chat_widget
-                        .mark_vivling_brain_reply_for(vivling_id, &result.message)
-                {
-                    tracing::warn!(
-                        "failed to persist Vivling loop brain reply for {vivling_id}: {persist_err}"
-                    );
-                }
-
-                let status = parse_vivling_loop_status(&result.status)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?;
-                let action_request = self
-                    .vivling_loop_tick_action_request(thread_id, &job, status, &result)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?;
-                let mut skipped_runtime_update = false;
-
-                if let Some(request) = action_request {
-                    if matches!(
-                        &request,
-                        LoopCommandRequest::Remove { .. } | LoopCommandRequest::Trigger { .. }
-                    ) {
-                        skipped_runtime_update = true;
-                    }
-                    let _ = jobs::run_command_request(
-                        self,
-                        thread_id,
-                        request,
-                        LoopCommandSource::Agent,
-                    )
-                    .await?;
-                }
-
-                self.chat_widget.add_info_message(
-                    format!("Vivling loop `{}`: {}", job.label, result.message),
-                    /*hint*/ None,
-                );
-
-                let updated_job = state_runtime
-                    .get_thread_loop_job_by_id(thread_id, &job.id)
-                    .await
-                    .map_err(loop_state_error)?;
-                if let Some(updated_job) = updated_job
-                    && !skipped_runtime_update
-                {
-                    let (next_run_ms, pending_tick, last_error) = match status {
-                        LOOP_STATUS_PROGRESS => (
-                            Some(now + (updated_job.interval_seconds * 1000)),
-                            false,
-                            None,
-                        ),
-                        LOOP_STATUS_BLOCKED => (None, true, Some(result.message.clone())),
-                        LOOP_STATUS_DONE => (None, false, None),
-                        _ => unreachable!(),
-                    };
-                    state_runtime
-                        .update_thread_loop_job_runtime(
-                            thread_id,
-                            &updated_job.id,
-                            codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms,
-                                last_run_ms: Some(now),
-                                last_status: Some(status.to_string()),
-                                last_error,
-                                pending_tick,
-                                updated_at_ms: now,
-                            },
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    let runtime_state = if !updated_job.enabled {
-                        Some("disabled")
-                    } else if pending_tick {
-                        Some("pending")
-                    } else if next_run_ms.is_some() {
-                        Some("scheduled")
-                    } else {
-                        Some("unscheduled")
-                    };
-                    self.record_vivling_loop_runtime(
-                        &updated_job.label,
-                        runtime_state,
-                        Some(status),
-                        updated_job
-                            .goal_text
-                            .as_deref()
-                            .or(Some(updated_job.prompt_text.as_str())),
-                        &updated_job.created_by,
-                    );
-                }
-
-                self.refresh_loop_jobs(thread_id).await?;
-            }
-        }
-        Ok(())
-    }
-
-    fn vivling_loop_tick_action_request(
-        &self,
-        _thread_id: ThreadId,
-        job: &codex_state::ThreadLoopJob,
-        status: &str,
-        result: &crate::vivling::VivlingLoopTickResult,
-    ) -> anyhow::Result<Option<LoopCommandRequest>> {
-        let action = result.loop_action.as_ref().and_then(|action| {
-            let trimmed = action.action.trim().to_ascii_lowercase();
-            (!trimmed.is_empty() && trimmed != "none").then_some(trimmed)
-        });
-
-        let action = match (status, action) {
-            (LOOP_STATUS_DONE, None) if job.auto_remove_on_completion => Some("remove".to_string()),
-            (LOOP_STATUS_DONE, None) => Some("disable".to_string()),
-            (_, value) => value,
-        };
-
-        let Some(action) = action else {
-            return Ok(None);
-        };
-
-        let request = match action.as_str() {
-            "disable" => LoopCommandRequest::Disable {
-                label: job.label.clone(),
-            },
-            "remove" => LoopCommandRequest::Remove {
-                label: job.label.clone(),
-            },
-            "trigger" => LoopCommandRequest::Trigger {
-                label: job.label.clone(),
-            },
-            "update" => {
-                let action = result.loop_action.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("Vivling loop update action payload is missing")
-                })?;
-                let interval_seconds = match action.interval.as_deref() {
-                    Some(interval) => Some(
-                        parse_manage_loops_interval_seconds(interval).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Vivling loop tick returned invalid interval `{interval}`"
-                            )
-                        })?,
-                    ),
-                    None => None,
-                };
-                let prompt_text = action
-                    .prompt
-                    .as_ref()
-                    .map(|prompt| prompt.trim().to_string())
-                    .filter(|prompt| !prompt.is_empty());
-                let goal_text = match action.goal.as_ref() {
-                    Some(goal) if goal.trim().is_empty() => Some(None),
-                    Some(goal) => Some(Some(goal.trim().to_string())),
-                    None => None,
-                };
-                LoopCommandRequest::Update {
-                    label: job.label.clone(),
-                    interval_seconds,
-                    prompt_text,
-                    goal_text,
-                    auto_remove_on_completion: None,
-                    enabled: action.enabled,
-                }
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "Vivling loop tick returned unsupported action `{other}`"
-                ));
-            }
-        };
-        Ok(Some(request))
+        vivling_delegation::handle_loop_tick_finished(self, thread_id, job_id, result).await
     }
 
     async fn execute_manage_loops_dynamic_tool(
@@ -463,29 +253,8 @@ impl App {
     }
 
     /// codex-vl: dispatch a Vivling brain assist request.
-    ///
-    /// Spawns a background task that talks to the configured Vivling brain
-    /// model via `vivling_background::run_vivling_assist_request` and
-    /// surfaces the reply through `VlEvent::VivlingAssistFinished`.
     pub(super) fn run_vivling_assist(&mut self, request: crate::vivling::VivlingAssistRequest) {
-        let app_event_tx = self.app_event_tx.clone();
-        let config = self.config.clone();
-        let session_telemetry = self.session_telemetry.clone();
-        tokio::spawn(async move {
-            let vivling_id = request.vivling_id.clone();
-            let kind = request.kind.clone();
-            let result = super::vivling_background::run_vivling_assist_request(
-                config,
-                session_telemetry,
-                request,
-            )
-            .await;
-            app_event_tx.send_vl(crate::vl::VlEvent::VivlingAssistFinished {
-                vivling_id,
-                kind,
-                result,
-            });
-        });
+        vivling_delegation::run_assist(self, request);
     }
 
     /// codex-vl: dispatch a Vivling-managed loop tick.
@@ -495,22 +264,7 @@ impl App {
         job_id: String,
         request: crate::vivling::VivlingLoopTickRequest,
     ) {
-        let app_event_tx = self.app_event_tx.clone();
-        let config = self.config.clone();
-        let session_telemetry = self.session_telemetry.clone();
-        tokio::spawn(async move {
-            let result = super::vivling_background::run_vivling_loop_tick_request(
-                config,
-                session_telemetry,
-                request,
-            )
-            .await;
-            app_event_tx.send_vl(crate::vl::VlEvent::VivlingLoopTickFinished {
-                thread_id,
-                job_id,
-                result,
-            });
-        });
+        vivling_delegation::run_loop_tick(self, thread_id, job_id, request);
     }
 }
 
