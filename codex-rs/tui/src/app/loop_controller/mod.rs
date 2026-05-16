@@ -1,3 +1,20 @@
+//! codex-vl loop_controller (iter B1+B2 split): facade module.
+//!
+//! The custom Vivling/loop runtime is being decomposed into focused
+//! sub-modules to reduce blast radius on upstream merges. This file
+//! keeps the existing `impl App` public surface (`pub(super)` methods)
+//! and the still-not-extracted bodies (`run_loop_command_request`,
+//! `process_loop_submission`, `handle_vivling_loop_tick_finished`,
+//! manage_loops dynamic-tool resolver, background spawn helpers). The
+//! types/parsing/formatting/state/events sub-modules are now isolated.
+
+mod formatting;
+mod parsing;
+mod state;
+mod types;
+
+mod events;
+
 use super::*;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vivling::VivlingLoopEventKind;
@@ -7,379 +24,35 @@ use crate::vl::events::LoopCommandRequest;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCallResponse;
 
-const MANAGE_LOOPS_TOOL_NAMESPACE: &str = "codex_app";
-const MANAGE_LOOPS_TOOL_NAME: &str = "manage_loops";
-
-fn is_manage_loops_dynamic_tool(namespace: Option<&str>, tool: &str) -> bool {
-    matches!(
-        namespace,
-        None | Some(MANAGE_LOOPS_TOOL_NAMESPACE) | Some("functions")
-    ) && tool == MANAGE_LOOPS_TOOL_NAME
-}
-
-const LOOP_STATUS_SUBMITTED: &str = "submitted";
-const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
-const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
-const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";
-const LOOP_STATUS_BLOCKED_OWNER: &str = "blocked_owner";
-const LOOP_STATUS_DELEGATED_VIVLING: &str = "delegated_vivling";
-const LOOP_STATUS_PROGRESS: &str = "progress";
-const LOOP_STATUS_BLOCKED: &str = "blocked";
-const LOOP_STATUS_DONE: &str = "done";
-const LOOP_STATUS_DISABLED: &str = "disabled";
-const LOOP_STATUS_REMOVED: &str = "removed";
-
-#[derive(Debug)]
-struct LoopActionOutcome {
-    success: bool,
-    message: String,
-    payload: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LoopCommandSource {
-    User,
-    Agent,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ManageLoopsToolArgs {
-    action: String,
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default)]
-    interval: Option<String>,
-    #[serde(default)]
-    prompt: Option<String>,
-    #[serde(default)]
-    auto_remove_on_completion: Option<bool>,
-    #[serde(default)]
-    enabled: Option<bool>,
-}
-
-pub(super) fn loop_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
-fn format_loop_interval(interval_seconds: i64) -> String {
-    if interval_seconds % 3600 == 0 {
-        format!("{}h", interval_seconds / 3600)
-    } else if interval_seconds % 60 == 0 {
-        format!("{}m", interval_seconds / 60)
-    } else {
-        format!("{interval_seconds}s")
-    }
-}
-
-fn canonical_last_status(job: &codex_state::ThreadLoopJob) -> Option<String> {
-    match job.last_status.as_deref() {
-        Some("pending") => Some(LOOP_STATUS_PENDING_BUSY.to_string()),
-        Some(status) if !status.trim().is_empty() => Some(status.to_string()),
-        _ => None,
-    }
-}
-
-fn loop_runtime_state(job: &codex_state::ThreadLoopJob) -> &'static str {
-    if !job.enabled {
-        "disabled"
-    } else if job.pending_tick {
-        "pending"
-    } else if job.next_run_ms.is_some() {
-        "scheduled"
-    } else {
-        "unscheduled"
-    }
-}
-
-fn thread_loop_owner_summary(owner: &codex_state::ThreadLoopOwner) -> String {
-    match owner.owner_kind.as_str() {
-        codex_state::THREAD_LOOP_OWNER_KIND_VIVLING => format!(
-            "vivling ({})",
-            owner.owner_vivling_id.as_deref().unwrap_or("missing")
-        ),
-        _ => codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
-    }
-}
-
-fn format_loop_job_line(job: &codex_state::ThreadLoopJob) -> String {
-    let enabled = if job.enabled { "on" } else { "off" };
-    let status = canonical_last_status(job).unwrap_or_else(|| "never".to_string());
-    let cleanup = if job.auto_remove_on_completion {
-        "auto-remove"
-    } else {
-        "keep"
-    };
-    format!(
-        "{} [{}] every {} | runtime={} | status={} | {}",
-        job.label,
-        enabled,
-        format_loop_interval(job.interval_seconds),
-        loop_runtime_state(job),
-        status,
-        cleanup
-    )
-}
-
-fn summarize_loop_goal(job: &codex_state::ThreadLoopJob) -> String {
-    job.goal_text
-        .as_deref()
-        .filter(|goal| !goal.trim().is_empty())
-        .unwrap_or(&job.prompt_text)
-        .to_string()
-}
-
-fn format_loop_job_details(job: &codex_state::ThreadLoopJob) -> String {
-    let next_run = job
-        .next_run_ms
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let last_run = job
-        .last_run_ms
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let last_status = canonical_last_status(job).unwrap_or_else(|| "never".to_string());
-    let last_error = job.last_error.as_deref().unwrap_or("none");
-    let goal = summarize_loop_goal(job);
-    format!(
-        "label: {}\nenabled: {}\ninterval: {}\nruntime_state: {}\nlast_status: {}\npending: {}\nauto_remove_on_completion: {}\ncreated_by: {}\ngoal: {}\nprompt: {}\nnext_run_ms: {}\nlast_run_ms: {}\nlast_error: {}",
-        job.label,
-        job.enabled,
-        format_loop_interval(job.interval_seconds),
-        loop_runtime_state(job),
-        last_status,
-        job.pending_tick,
-        job.auto_remove_on_completion,
-        job.created_by,
-        goal,
-        job.prompt_text,
-        next_run,
-        last_run,
-        last_error
-    )
-}
-
-fn loop_job_json(job: &codex_state::ThreadLoopJob) -> serde_json::Value {
-    serde_json::json!({
-        "label": job.label,
-        "enabled": job.enabled,
-        "interval_seconds": job.interval_seconds,
-        "prompt_text": job.prompt_text,
-        "goal_text": job.goal_text,
-        "auto_remove_on_completion": job.auto_remove_on_completion,
-        "created_by": job.created_by,
-        "run_policy": job.run_policy,
-        "runtime_state": loop_runtime_state(job),
-        "last_status": canonical_last_status(job),
-        "last_error": job.last_error,
-        "pending_tick": job.pending_tick,
-        "next_run_ms": job.next_run_ms,
-        "last_run_ms": job.last_run_ms,
-    })
-}
-
-fn loop_success_payload(
-    action: &str,
-    thread_id: ThreadId,
-    job: Option<&codex_state::ThreadLoopJob>,
-    jobs: Option<Vec<serde_json::Value>>,
-) -> serde_json::Value {
-    let mut payload = serde_json::json!({
-        "ok": true,
-        "action": action,
-        "thread_id": thread_id.to_string(),
-    });
-    let object = payload.as_object_mut().expect("payload must be object");
-    if let Some(job) = job {
-        object.insert("job".to_string(), loop_job_json(job));
-    }
-    if let Some(jobs) = jobs {
-        object.insert("jobs".to_string(), serde_json::Value::Array(jobs));
-    }
-    payload
-}
-
-fn loop_error_payload(action: &str, thread_id: ThreadId, error: String) -> serde_json::Value {
-    serde_json::json!({
-        "ok": false,
-        "action": action,
-        "thread_id": thread_id.to_string(),
-        "error": error,
-    })
-}
-
-fn loop_action_success(
-    action: &str,
-    thread_id: ThreadId,
-    message: String,
-    job: Option<&codex_state::ThreadLoopJob>,
-    jobs: Option<Vec<serde_json::Value>>,
-) -> LoopActionOutcome {
-    LoopActionOutcome {
-        success: true,
-        message,
-        payload: loop_success_payload(action, thread_id, job, jobs),
-    }
-}
-
-fn loop_action_failure(action: &str, thread_id: ThreadId, message: String) -> LoopActionOutcome {
-    LoopActionOutcome {
-        success: false,
-        payload: loop_error_payload(action, thread_id, message.clone()),
-        message,
-    }
-}
-
-pub(super) fn loop_state_error(err: anyhow::Error) -> color_eyre::Report {
-    color_eyre::eyre::eyre!("{err}")
-}
-
-fn parse_manage_loops_interval_seconds(token: &str) -> Option<i64> {
-    if token.len() < 2 {
-        return None;
-    }
-    let (value, unit) = token.split_at(token.len() - 1);
-    let value = value.parse::<i64>().ok()?;
-    let seconds = match unit {
-        "s" => value,
-        "m" => value * 60,
-        "h" => value * 3600,
-        _ => return None,
-    };
-    ((30..=86_400).contains(&seconds)).then_some(seconds)
-}
-
-fn parse_vivling_loop_status(status: &str) -> anyhow::Result<&'static str> {
-    match status.trim().to_ascii_lowercase().as_str() {
-        LOOP_STATUS_PROGRESS => Ok(LOOP_STATUS_PROGRESS),
-        LOOP_STATUS_BLOCKED => Ok(LOOP_STATUS_BLOCKED),
-        LOOP_STATUS_DONE => Ok(LOOP_STATUS_DONE),
-        other => Err(anyhow::anyhow!(
-            "Vivling loop tick returned unsupported status `{other}`"
-        )),
-    }
-}
-
-fn parse_add_goal(raw_goal: Option<serde_json::Value>) -> anyhow::Result<Option<String>> {
-    match raw_goal {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(goal)) if !goal.trim().is_empty() => Ok(Some(goal)),
-        Some(serde_json::Value::String(_)) => {
-            Err(anyhow::anyhow!("`goal` cannot be empty when provided"))
-        }
-        Some(_) => Err(anyhow::anyhow!("`goal` must be a string or null")),
-    }
-}
-
-fn parse_update_goal(
-    raw_goal: Option<serde_json::Value>,
-) -> anyhow::Result<Option<Option<String>>> {
-    match raw_goal {
-        None => Ok(None),
-        Some(serde_json::Value::Null) => Ok(Some(None)),
-        Some(serde_json::Value::String(goal)) if !goal.trim().is_empty() => Ok(Some(Some(goal))),
-        Some(serde_json::Value::String(_)) => {
-            Err(anyhow::anyhow!("`goal` cannot be empty when provided"))
-        }
-        Some(_) => Err(anyhow::anyhow!("`goal` must be a string or null")),
-    }
-}
-
-fn parse_manage_loops_tool_request(
-    arguments: serde_json::Value,
-) -> anyhow::Result<LoopCommandRequest> {
-    let goal_argument = arguments
-        .as_object()
-        .and_then(|object| object.get("goal"))
-        .cloned();
-    let args: ManageLoopsToolArgs = serde_json::from_value(arguments)?;
-    let action = args.action.trim().to_ascii_lowercase();
-    match action.as_str() {
-        "list" | "ls" => Ok(LoopCommandRequest::List),
-        "show" => Ok(LoopCommandRequest::Show {
-            label: args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for show"))?,
-        }),
-        "enable" | "on" => Ok(LoopCommandRequest::Enable {
-            label: args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for enable"))?,
-        }),
-        "disable" | "off" => Ok(LoopCommandRequest::Disable {
-            label: args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for disable"))?,
-        }),
-        "remove" | "rm" => Ok(LoopCommandRequest::Remove {
-            label: args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for remove"))?,
-        }),
-        "trigger" => Ok(LoopCommandRequest::Trigger {
-            label: args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for trigger"))?,
-        }),
-        "add" => {
-            let label = args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for add"))?;
-            let interval_seconds = parse_manage_loops_interval_seconds(
-                args.interval
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("`interval` is required for add"))?,
-            )
-            .ok_or_else(|| anyhow::anyhow!("`interval` must be between 30s and 24h"))?;
-            let prompt_text = args
-                .prompt
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`prompt` is required for add"))?;
-            Ok(LoopCommandRequest::Add {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text: parse_add_goal(goal_argument)?,
-                auto_remove_on_completion: args.auto_remove_on_completion,
-            })
-        }
-        "update" => {
-            let label = args
-                .label
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`label` is required for update"))?;
-            let interval_seconds = match args.interval {
-                Some(interval) => Some(
-                    parse_manage_loops_interval_seconds(&interval)
-                        .ok_or_else(|| anyhow::anyhow!("`interval` must be between 30s and 24h"))?,
-                ),
-                None => None,
-            };
-            let prompt_text = match args.prompt {
-                Some(prompt) if !prompt.trim().is_empty() => Some(prompt),
-                Some(_) => return Err(anyhow::anyhow!("`prompt` cannot be empty when provided")),
-                None => None,
-            };
-            Ok(LoopCommandRequest::Update {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text: parse_update_goal(goal_argument)?,
-                auto_remove_on_completion: args.auto_remove_on_completion,
-                enabled: args.enabled,
-            })
-        }
-        other => Err(anyhow::anyhow!("unsupported manage_loops action `{other}`")),
-    }
-}
+use self::formatting::LOOP_STATUS_BLOCKED;
+use self::formatting::LOOP_STATUS_BLOCKED_OWNER;
+use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
+use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
+use self::formatting::LOOP_STATUS_DELEGATED_VIVLING;
+use self::formatting::LOOP_STATUS_DISABLED;
+use self::formatting::LOOP_STATUS_DONE;
+use self::formatting::LOOP_STATUS_PENDING_BUSY;
+use self::formatting::LOOP_STATUS_PROGRESS;
+use self::formatting::LOOP_STATUS_REMOVED;
+use self::formatting::LOOP_STATUS_SUBMITTED;
+use self::formatting::canonical_last_status;
+use self::formatting::format_loop_interval;
+use self::formatting::format_loop_job_details;
+use self::formatting::format_loop_job_line;
+use self::formatting::loop_action_failure;
+use self::formatting::loop_action_success;
+use self::formatting::loop_job_json;
+use self::formatting::loop_runtime_state;
+use self::formatting::summarize_loop_goal;
+use self::formatting::thread_loop_owner_summary;
+use self::parsing::is_manage_loops_dynamic_tool;
+use self::parsing::parse_manage_loops_interval_seconds;
+use self::parsing::parse_manage_loops_tool_request;
+use self::parsing::parse_vivling_loop_status;
+use self::state::loop_now_ms;
+use self::state::loop_state_error;
+use self::types::LoopActionOutcome;
+use self::types::LoopCommandSource;
 
 fn loop_action_outcome_to_app_server_response(
     outcome: LoopActionOutcome,
@@ -467,18 +140,7 @@ impl App {
         &mut self,
         thread_id: ThreadId,
     ) -> color_eyre::Result<()> {
-        let state_runtime = self.loop_state_runtime().await?;
-        let jobs = state_runtime
-            .list_thread_loop_jobs(thread_id)
-            .await
-            .map_err(loop_state_error)?;
-        let owner = state_runtime
-            .get_thread_loop_owner(thread_id)
-            .await
-            .map_err(loop_state_error)?;
-        self.chat_widget
-            .replace_loop_jobs_with_owner(thread_id, jobs, owner);
-        Ok(())
+        events::refresh_jobs(self, thread_id).await
     }
 
     pub(super) async fn apply_loop_command_request(
@@ -511,28 +173,7 @@ impl App {
         &mut self,
         thread_id: ThreadId,
     ) -> color_eyre::Result<()> {
-        if self.primary_thread_id != Some(thread_id)
-            || self.chat_widget.thread_id() != Some(thread_id)
-        {
-            self.chat_widget.clear_loop_jobs();
-            return Ok(());
-        }
-
-        let state_runtime = self.loop_state_runtime().await?;
-        let jobs = state_runtime
-            .list_thread_loop_jobs(thread_id)
-            .await
-            .map_err(loop_state_error)?;
-
-        if let Some(pending_job) = jobs
-            .iter()
-            .find(|job| job.enabled && job.pending_tick)
-            .cloned()
-        {
-            self.process_loop_submission(thread_id, pending_job).await?;
-        }
-
-        self.refresh_loop_jobs(thread_id).await
+        events::handle_reload(self, thread_id).await
     }
 
     pub(super) async fn handle_loop_tick(
@@ -562,7 +203,7 @@ impl App {
         self.refresh_loop_jobs(thread_id).await
     }
 
-    async fn process_loop_submission(
+    pub(super) async fn process_loop_submission(
         &mut self,
         thread_id: ThreadId,
         job: codex_state::ThreadLoopJob,
