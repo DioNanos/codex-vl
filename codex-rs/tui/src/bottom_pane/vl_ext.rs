@@ -9,6 +9,8 @@
 
 use super::BottomPane;
 use crate::legacy_core::config::Config;
+use crate::render::renderable::FlexRenderable;
+use crate::render::renderable::RenderableItem;
 use crate::vivling::VivlingAction;
 use crate::vivling::VivlingCommandOutcome;
 use crate::vivling::VivlingLoopEvent;
@@ -282,5 +284,117 @@ impl BottomPane {
 
     pub(crate) fn is_vl_sidebar_expanded(&self) -> bool {
         self.vl_sidebar.is_expanded()
+    }
+
+    /// codex-vl render bridge: push the optional Vivling sidebar and Vivling
+    /// strip into the bottom-pane render flex container. Both widgets self-
+    /// report `desired_height = 0` when not visible (sidebar collapsed via
+    /// Ctrl+J, or no Vivling hatched), so each `flex2.push` becomes a no-op
+    /// in the inactive state.
+    ///
+    /// Extracted from `BottomPane::as_renderable_with_composer_right_reserve`
+    /// in iter C1 (bottom_pane VL boundary): keeps the upstream render path
+    /// in `mod.rs` reduced to a single delegate line so upstream merges that
+    /// touch the render layout do not have to be reconciled with our custom
+    /// inserts.
+    pub(super) fn codex_vl_push_render_extras<'a>(&'a self, flex2: &mut FlexRenderable<'a>) {
+        // codex-vl: Vivling chat sidebar opens above the strip when
+        // Ctrl+J expands it. desired_height returns 0 while collapsed,
+        // so this is a no-op when the panel is closed.
+        if self.vl_sidebar.should_render() {
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+        }
+        // codex-vl: Vivling strip sits between the inline previews/status
+        // area and the composer. The Vivling renderer self-reports
+        // desired_height = 0 when no visible Vivling is hatched, so this
+        // is a no-op for users who never spawned one.
+        if self.vivling.should_render() {
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // codex-vl regression guard for the bottom_pane render boundary
+    // (iter C1). `as_renderable_with_composer_right_reserve` must invoke
+    // the thin bridge `self.codex_vl_push_render_extras(&mut flex2)`,
+    // and the bridge body must keep borrowing both `self.vl_sidebar` and
+    // `self.vivling` into the flex container via `flex2.push(...)`. We
+    // pin BOTH endpoints to catch either:
+    //   (a) someone deleting the hook from the render path, or
+    //   (b) someone gutting `codex_vl_push_render_extras` so it no
+    //       longer publishes the sidebar + strip widgets.
+
+    const MOD_SOURCE: &str = include_str!("mod.rs");
+    const VL_EXT_SOURCE: &str = include_str!("vl_ext.rs");
+
+    #[test]
+    fn render_body_invokes_codex_vl_push_render_extras() {
+        let body = extract_fn_body(MOD_SOURCE, "as_renderable_with_composer_right_reserve")
+            .expect("as_renderable_with_composer_right_reserve must exist in bottom_pane/mod.rs");
+        assert!(
+            body.contains("self.codex_vl_push_render_extras("),
+            "as_renderable_with_composer_right_reserve must call \
+             self.codex_vl_push_render_extras(&mut flex2) to publish the \
+             Vivling sidebar + strip in the render path. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_push_render_extras_borrows_vl_sidebar_and_vivling() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_push_render_extras")
+            .expect("codex_vl_push_render_extras must exist in vl_ext.rs");
+        assert!(
+            body.contains("self.vl_sidebar"),
+            "codex_vl_push_render_extras must reference self.vl_sidebar. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.vivling"),
+            "codex_vl_push_render_extras must reference self.vivling. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("flex2.push("),
+            "codex_vl_push_render_extras must push children into flex2 via \
+             flex2.push(...). Body was:\n{body}",
+        );
+    }
+
+    /// Locate the body of `fn <fn_name>` in the given source, tolerating an
+    /// optional generic parameter list (e.g. `fn foo<'a>(...)`). The returned
+    /// slice is the text between the outermost `{` and matching `}` of the
+    /// first matching function definition.
+    fn extract_fn_body<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+        let needle = format!("fn {fn_name}");
+        let mut cursor = 0usize;
+        loop {
+            let hit = source[cursor..].find(&needle)?;
+            let name_end = cursor + hit + needle.len();
+            let after = source.as_bytes().get(name_end).copied()?;
+            // Accept only true matches: the character following the name must
+            // be `(` (regular fn) or `<` (generic fn). Otherwise this was a
+            // partial-name match — keep searching.
+            if matches!(after, b'(' | b'<') {
+                let open = source[name_end..].find('{')? + name_end;
+                let bytes = source.as_bytes();
+                let mut depth = 0i32;
+                for (idx, &b) in bytes.iter().enumerate().skip(open) {
+                    match b {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(&source[open + 1..idx]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+            cursor = name_end;
+        }
     }
 }

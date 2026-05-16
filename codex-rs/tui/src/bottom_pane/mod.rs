@@ -1649,19 +1649,7 @@ impl BottomPane {
             }
             let mut flex2 = FlexRenderable::new();
             flex2.push(/*flex*/ 1, RenderableItem::Owned(flex.into()));
-            // codex-vl: Vivling chat sidebar opens above the strip when
-            // Ctrl+J expands it. desired_height returns 0 while collapsed,
-            // so this is a no-op when the panel is closed.
-            if self.vl_sidebar.should_render() {
-                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
-            }
-            // codex-vl: Vivling strip sits between the inline previews/status
-            // area and the composer. The Vivling renderer self-reports
-            // desired_height = 0 when no visible Vivling is hatched, so this
-            // is a no-op for users who never spawned one.
-            if self.vivling.should_render() {
-                flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
-            }
+            self.codex_vl_push_render_extras(&mut flex2);
             let composer: RenderableItem<'_> = if composer_right_reserve == 0 {
                 RenderableItem::Borrowed(&self.composer)
             } else {
