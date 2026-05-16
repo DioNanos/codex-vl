@@ -3,12 +3,55 @@
 //! These `impl BottomPane` blocks live in a dedicated file so that
 //! upstream changes to `bottom_pane/mod.rs` (where the base struct and
 //! its canonical methods live) do not need to be merged around our
-//! additions. The field `vivling: Vivling` still lives on the struct
+//! additions. The four codex-vl fields (`vivling`, `vl_sidebar`,
+//! `vl_lifecycle`, `loop_context_label`) still live on the struct
 //! because Rust cannot add fields via extensions; keeping *methods*
 //! isolated is the useful half of the separation.
+//!
+//! ## Codex-vl fields documented here (kept undecorated in `mod.rs`)
+//!
+//! - `vivling: crate::vivling::Vivling` — local terminal companion
+//!   (Vivling) used by `/vivling` and `/vl` commands.
+//! - `vl_sidebar: crate::vl::VivlingSidebar` — dedicated sidebar for
+//!   Vivling chat/assist messages, toggled by Ctrl+J.
+//! - `vl_lifecycle: Option<crate::vl::LifecycleState>` — lifecycle
+//!   state for Vivling activity (sleeping/eating/working/animation
+//!   text). Lazy-initialized via `ensure_vl_lifecycle`.
+//! - `loop_context_label: Option<String>` — textual summary of active
+//!   loop jobs surfaced in the chat composer footer.
+//!
+//! ## Boundary helpers extracted in iter C (2026-05-16)
+//!
+//! Iter C (`feat/bottom-pane-vl-boundary-iter-c`) extracted the four
+//! remaining VL logic blocks from `bottom_pane/mod.rs` into the bridge
+//! methods listed below. The upstream-facing file in `mod.rs` now
+//! delegates each VL touch via a single one-line call, so the next
+//! merge from `rust-v0.131.0` final has no Vivling logic to reconcile
+//! inside its render / keymap / task-running / constructor paths.
+//!
+//! - C1: `codex_vl_push_render_extras` — render insert for sidebar +
+//!   Vivling strip (formerly inline in
+//!   `as_renderable_with_composer_right_reserve`).
+//! - C2: `codex_vl_make_vivling` (associated fn) — factory for the
+//!   `Vivling::unavailable()` baseline + `configure_runtime`
+//!   (formerly inline in `BottomPane::new`).
+//! - C2: `codex_vl_handle_input_event` — Ctrl+J toggle + sidebar
+//!   scroll keymap intercept (formerly inline in
+//!   `BottomPane::handle_key_event`).
+//! - C2: `codex_vl_on_task_running` — task-running forward to the
+//!   Vivling companion (formerly inline in
+//!   `BottomPane::set_task_running`).
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 
 use super::BottomPane;
 use crate::legacy_core::config::Config;
+use crate::render::renderable::FlexRenderable;
+use crate::render::renderable::RenderableItem;
+use crate::tui::FrameRequester;
 use crate::vivling::VivlingAction;
 use crate::vivling::VivlingCommandOutcome;
 use crate::vivling::VivlingLoopEvent;
@@ -282,5 +325,289 @@ impl BottomPane {
 
     pub(crate) fn is_vl_sidebar_expanded(&self) -> bool {
         self.vl_sidebar.is_expanded()
+    }
+
+    /// codex-vl init factory: build the `Vivling` companion in its
+    /// `unavailable()` baseline and apply the runtime configuration needed
+    /// before the first hatch/setup call. Extracted from `BottomPane::new`
+    /// in iter C2 (bottom_pane VL boundary): the constructor in `mod.rs`
+    /// now stores the result directly into the struct, so upstream changes
+    /// to the rest of `BottomPane::new` do not need to be reconciled with
+    /// our Vivling-init logic.
+    pub(super) fn codex_vl_make_vivling(
+        frame_requester: &FrameRequester,
+        animations_enabled: bool,
+    ) -> crate::vivling::Vivling {
+        let mut vivling = crate::vivling::Vivling::unavailable();
+        vivling.configure_runtime(frame_requester.clone(), animations_enabled);
+        vivling
+    }
+
+    /// codex-vl input bridge: intercept Vivling-related key events
+    /// (Ctrl+J sidebar toggle, sidebar scroll while expanded) before the
+    /// composer/editor keymap can consume them. Returns `true` when the
+    /// event has been consumed and the caller should short-circuit the
+    /// rest of `handle_key_event` with `InputResult::None`; returns
+    /// `false` when the event should continue through the normal handler.
+    ///
+    /// Extracted from `BottomPane::handle_key_event` in iter C2 (bottom_pane
+    /// VL boundary): the keymap path in `mod.rs` now stays merge-safe by
+    /// delegating the Vivling intercepts to this single bridge.
+    pub(super) fn codex_vl_handle_input_event(&mut self, key_event: &KeyEvent) -> bool {
+        // codex-vl: Ctrl+J toggles the Vivling sidebar (open/close).
+        // Intercepted here so the editor keymap (which binds Ctrl+J to
+        // insert_newline) does not consume it first.
+        if matches!(key_event.kind, KeyEventKind::Press)
+            && key_event.code == KeyCode::Char('j')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && !key_event
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT)
+            && self.composer_is_empty()
+        {
+            self.toggle_vl_sidebar();
+            return true;
+        }
+        if self.vl_sidebar.is_expanded()
+            && matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        {
+            let scroll_delta = match key_event.code {
+                KeyCode::PageUp if key_event.modifiers.is_empty() => Some(-5),
+                KeyCode::PageDown if key_event.modifiers.is_empty() => Some(5),
+                KeyCode::Up if key_event.modifiers == KeyModifiers::CONTROL => Some(-1),
+                KeyCode::Down if key_event.modifiers == KeyModifiers::CONTROL => Some(1),
+                _ => None,
+            };
+            if let Some(delta) = scroll_delta {
+                self.scroll_vl_sidebar(delta);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// codex-vl task-running bridge: forward the bottom-pane busy state to
+    /// the Vivling companion so its idle/working animation stays in sync
+    /// with the upstream task lifecycle. Extracted from
+    /// `BottomPane::set_task_running` in iter C2 (bottom_pane VL boundary).
+    pub(super) fn codex_vl_on_task_running(&self, running: bool) {
+        self.vivling.set_task_running(running);
+    }
+
+    /// codex-vl render bridge: push the optional Vivling sidebar and Vivling
+    /// strip into the bottom-pane render flex container. Both widgets self-
+    /// report `desired_height = 0` when not visible (sidebar collapsed via
+    /// Ctrl+J, or no Vivling hatched), so each `flex2.push` becomes a no-op
+    /// in the inactive state.
+    ///
+    /// Extracted from `BottomPane::as_renderable_with_composer_right_reserve`
+    /// in iter C1 (bottom_pane VL boundary): keeps the upstream render path
+    /// in `mod.rs` reduced to a single delegate line so upstream merges that
+    /// touch the render layout do not have to be reconciled with our custom
+    /// inserts.
+    pub(super) fn codex_vl_push_render_extras<'a>(&'a self, flex2: &mut FlexRenderable<'a>) {
+        // codex-vl: Vivling chat sidebar opens above the strip when
+        // Ctrl+J expands it. desired_height returns 0 while collapsed,
+        // so this is a no-op when the panel is closed.
+        if self.vl_sidebar.should_render() {
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vl_sidebar));
+        }
+        // codex-vl: Vivling strip sits between the inline previews/status
+        // area and the composer. The Vivling renderer self-reports
+        // desired_height = 0 when no visible Vivling is hatched, so this
+        // is a no-op for users who never spawned one.
+        if self.vivling.should_render() {
+            flex2.push(/*flex*/ 0, RenderableItem::Borrowed(&self.vivling));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // codex-vl regression guard for the bottom_pane render boundary
+    // (iter C1). `as_renderable_with_composer_right_reserve` must invoke
+    // the thin bridge `self.codex_vl_push_render_extras(&mut flex2)`,
+    // and the bridge body must keep borrowing both `self.vl_sidebar` and
+    // `self.vivling` into the flex container via `flex2.push(...)`. We
+    // pin BOTH endpoints to catch either:
+    //   (a) someone deleting the hook from the render path, or
+    //   (b) someone gutting `codex_vl_push_render_extras` so it no
+    //       longer publishes the sidebar + strip widgets.
+
+    const MOD_SOURCE: &str = include_str!("mod.rs");
+    const VL_EXT_SOURCE: &str = include_str!("vl_ext.rs");
+
+    #[test]
+    fn render_body_invokes_codex_vl_push_render_extras() {
+        let body = extract_fn_body(MOD_SOURCE, "as_renderable_with_composer_right_reserve")
+            .expect("as_renderable_with_composer_right_reserve must exist in bottom_pane/mod.rs");
+        assert!(
+            body.contains("self.codex_vl_push_render_extras("),
+            "as_renderable_with_composer_right_reserve must call \
+             self.codex_vl_push_render_extras(&mut flex2) to publish the \
+             Vivling sidebar + strip in the render path. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_push_render_extras_borrows_vl_sidebar_and_vivling() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_push_render_extras")
+            .expect("codex_vl_push_render_extras must exist in vl_ext.rs");
+        assert!(
+            body.contains("self.vl_sidebar"),
+            "codex_vl_push_render_extras must reference self.vl_sidebar. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.vivling"),
+            "codex_vl_push_render_extras must reference self.vivling. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("flex2.push("),
+            "codex_vl_push_render_extras must push children into flex2 via \
+             flex2.push(...). Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn new_body_invokes_codex_vl_make_vivling() {
+        let body = extract_fn_body(MOD_SOURCE, "new")
+            .expect("BottomPane::new must exist in bottom_pane/mod.rs");
+        assert!(
+            body.contains("Self::codex_vl_make_vivling("),
+            "BottomPane::new must build the Vivling companion via \
+             Self::codex_vl_make_vivling(&frame_requester, animations_enabled). \
+             Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_make_vivling_calls_unavailable_and_configure_runtime() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_make_vivling")
+            .expect("codex_vl_make_vivling must exist in vl_ext.rs");
+        assert!(
+            body.contains("Vivling::unavailable()"),
+            "codex_vl_make_vivling must start from Vivling::unavailable(). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("configure_runtime("),
+            "codex_vl_make_vivling must apply configure_runtime(...) to the \
+             new Vivling. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn handle_key_event_invokes_codex_vl_handle_input_event() {
+        let body = extract_fn_body(MOD_SOURCE, "handle_key_event")
+            .expect("BottomPane::handle_key_event must exist in bottom_pane/mod.rs");
+        assert!(
+            body.contains("self.codex_vl_handle_input_event("),
+            "BottomPane::handle_key_event must delegate Vivling intercepts \
+             to self.codex_vl_handle_input_event(...) before the regular \
+             keymap path. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_handle_input_event_handles_ctrl_j_toggle_and_sidebar_scroll() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_handle_input_event")
+            .expect("codex_vl_handle_input_event must exist in vl_ext.rs");
+        // Ctrl+J toggle invariants.
+        assert!(
+            body.contains("KeyCode::Char('j')"),
+            "codex_vl_handle_input_event must intercept KeyCode::Char('j'). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("KeyModifiers::CONTROL"),
+            "codex_vl_handle_input_event must require KeyModifiers::CONTROL \
+             on the Ctrl+J intercept. Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.toggle_vl_sidebar()"),
+            "codex_vl_handle_input_event must invoke self.toggle_vl_sidebar() \
+             on the Ctrl+J intercept. Body was:\n{body}",
+        );
+        // Sidebar scroll invariants.
+        assert!(
+            body.contains("self.vl_sidebar.is_expanded()"),
+            "codex_vl_handle_input_event must gate the scroll branch on \
+             self.vl_sidebar.is_expanded(). Body was:\n{body}",
+        );
+        assert!(
+            body.contains("KeyCode::PageUp"),
+            "codex_vl_handle_input_event must handle KeyCode::PageUp scroll. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("KeyCode::PageDown"),
+            "codex_vl_handle_input_event must handle KeyCode::PageDown scroll. \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.scroll_vl_sidebar("),
+            "codex_vl_handle_input_event must invoke self.scroll_vl_sidebar(...) \
+             on the scroll branch. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn set_task_running_invokes_codex_vl_on_task_running() {
+        let body = extract_fn_body(MOD_SOURCE, "set_task_running")
+            .expect("BottomPane::set_task_running must exist in bottom_pane/mod.rs");
+        assert!(
+            body.contains("self.codex_vl_on_task_running("),
+            "BottomPane::set_task_running must forward the running flag to \
+             self.codex_vl_on_task_running(running). Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_on_task_running_invokes_vivling_set_task_running() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_on_task_running")
+            .expect("codex_vl_on_task_running must exist in vl_ext.rs");
+        assert!(
+            body.contains("self.vivling.set_task_running("),
+            "codex_vl_on_task_running must call self.vivling.set_task_running(running). \
+             Body was:\n{body}",
+        );
+    }
+
+    /// Locate the body of `fn <fn_name>` in the given source, tolerating an
+    /// optional generic parameter list (e.g. `fn foo<'a>(...)`). The returned
+    /// slice is the text between the outermost `{` and matching `}` of the
+    /// first matching function definition.
+    fn extract_fn_body<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+        let needle = format!("fn {fn_name}");
+        let mut cursor = 0usize;
+        loop {
+            let hit = source[cursor..].find(&needle)?;
+            let name_end = cursor + hit + needle.len();
+            let after = source.as_bytes().get(name_end).copied()?;
+            // Accept only true matches: the character following the name must
+            // be `(` (regular fn) or `<` (generic fn). Otherwise this was a
+            // partial-name match — keep searching.
+            if matches!(after, b'(' | b'<') {
+                let open = source[name_end..].find('{')? + name_end;
+                let bytes = source.as_bytes();
+                let mut depth = 0i32;
+                for (idx, &b) in bytes.iter().enumerate().skip(open) {
+                    match b {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(&source[open + 1..idx]);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+            cursor = name_end;
+        }
     }
 }
