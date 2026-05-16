@@ -44,7 +44,7 @@ pub(super) async fn handle_reload(app: &mut App, thread_id: ThreadId) -> color_e
         .find(|job| job.enabled && job.pending_tick)
         .cloned()
     {
-        app.process_loop_submission(thread_id, pending_job).await?;
+        super::ticks::process_submission(app, thread_id, pending_job).await?;
     }
 
     refresh_jobs(app, thread_id).await

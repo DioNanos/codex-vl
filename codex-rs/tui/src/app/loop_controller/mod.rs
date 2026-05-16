@@ -17,12 +17,12 @@ mod types;
 
 mod events;
 mod jobs;
+mod ticks;
 
 use super::*;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
-use crate::vl::VlEvent;
 use crate::vl::events::LoopCommandRequest;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem as AppServerDynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallResponse as AppServerDynamicToolCallResponse;
@@ -31,7 +31,6 @@ use self::formatting::LOOP_STATUS_BLOCKED;
 use self::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
-use self::formatting::LOOP_STATUS_DELEGATED_VIVLING;
 use self::formatting::LOOP_STATUS_DONE;
 use self::formatting::LOOP_STATUS_PENDING_BUSY;
 use self::formatting::LOOP_STATUS_PROGRESS;
@@ -173,169 +172,7 @@ impl App {
         thread_id: ThreadId,
         job_id: String,
     ) -> color_eyre::Result<()> {
-        if self.primary_thread_id != Some(thread_id)
-            || self.chat_widget.thread_id() != Some(thread_id)
-        {
-            return Ok(());
-        }
-
-        let state_runtime = self.loop_state_runtime().await?;
-        let Some(job) = state_runtime
-            .get_thread_loop_job_by_id(thread_id, &job_id)
-            .await
-            .map_err(loop_state_error)?
-        else {
-            return Ok(());
-        };
-        if !job.enabled {
-            return Ok(());
-        }
-
-        self.process_loop_submission(thread_id, job).await?;
-        self.refresh_loop_jobs(thread_id).await
-    }
-
-    async fn process_loop_submission(
-        &mut self,
-        thread_id: ThreadId,
-        job: codex_state::ThreadLoopJob,
-    ) -> color_eyre::Result<()> {
-        let state_runtime = self.loop_state_runtime().await?;
-        let owner = state_runtime
-            .get_thread_loop_owner(thread_id)
-            .await
-            .map_err(loop_state_error)?;
-        let now = loop_now_ms();
-        if owner.owner_kind == codex_state::THREAD_LOOP_OWNER_KIND_VIVLING {
-            let Some(owner_vivling_id) = owner.owner_vivling_id.clone() else {
-                state_runtime
-                    .update_thread_loop_job_runtime(
-                        thread_id,
-                        &job.id,
-                        codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
-                            last_run_ms: job.last_run_ms,
-                            last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
-                            last_error: Some("Vivling loop owner is missing.".to_string()),
-                            pending_tick: true,
-                            updated_at_ms: now,
-                        },
-                    )
-                    .await
-                    .map_err(loop_state_error)?;
-                return Ok(());
-            };
-            match self
-                .chat_widget
-                .prepare_vivling_loop_tick(&self.config, &owner_vivling_id, &job)
-            {
-                Ok(request) => {
-                    state_runtime
-                        .update_thread_loop_job_runtime(
-                            thread_id,
-                            &job.id,
-                            codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms: None,
-                                last_run_ms: Some(now),
-                                last_status: Some(LOOP_STATUS_DELEGATED_VIVLING.to_string()),
-                                last_error: None,
-                                pending_tick: false,
-                                updated_at_ms: now,
-                            },
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    self.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
-                        thread_id,
-                        job_id: job.id.clone(),
-                        request,
-                    });
-                    self.record_vivling_loop_runtime(
-                        &job.label,
-                        Some("delegated"),
-                        Some(LOOP_STATUS_DELEGATED_VIVLING),
-                        job.goal_text.as_deref().or(Some(job.prompt_text.as_str())),
-                        &job.created_by,
-                    );
-                    return Ok(());
-                }
-                Err(err) => {
-                    state_runtime
-                        .update_thread_loop_job_runtime(
-                            thread_id,
-                            &job.id,
-                            codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms: None,
-                                last_run_ms: job.last_run_ms,
-                                last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
-                                last_error: Some(err),
-                                pending_tick: true,
-                                updated_at_ms: now,
-                            },
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    return Ok(());
-                }
-            }
-        }
-
-        let submission = self.chat_widget.submit_loop_prompt(&job, &owner);
-
-        let (next_run_ms, pending_tick, last_status) = match submission {
-            LoopPromptSubmissionOutcome::Submitted => (
-                Some(now + (job.interval_seconds * 1000)),
-                false,
-                loop_submission_status(submission).map(str::to_string),
-            ),
-            LoopPromptSubmissionOutcome::BlockedUserTurn
-            | LoopPromptSubmissionOutcome::BlockedReviewMode
-            | LoopPromptSubmissionOutcome::BlockedSideConversation => (
-                None,
-                true,
-                loop_submission_status(submission).map(str::to_string),
-            ),
-            LoopPromptSubmissionOutcome::BlockedMissingThread => {
-                return Ok(());
-            }
-        };
-        let last_status_for_event = last_status.clone();
-
-        state_runtime
-            .update_thread_loop_job_runtime(
-                thread_id,
-                &job.id,
-                codex_state::ThreadLoopJobRuntimeUpdate {
-                    next_run_ms,
-                    last_run_ms: if submission == LoopPromptSubmissionOutcome::Submitted {
-                        Some(now)
-                    } else {
-                        job.last_run_ms
-                    },
-                    last_status,
-                    last_error: None,
-                    pending_tick,
-                    updated_at_ms: now,
-                },
-            )
-            .await
-            .map_err(loop_state_error)?;
-        let runtime_state = if pending_tick {
-            Some("pending")
-        } else if next_run_ms.is_some() {
-            Some("scheduled")
-        } else {
-            Some("unscheduled")
-        };
-        let goal = job.goal_text.as_deref().or(Some(job.prompt_text.as_str()));
-        self.record_vivling_loop_runtime(
-            &job.label,
-            runtime_state,
-            last_status_for_event.as_deref(),
-            goal,
-            &job.created_by,
-        );
-        Ok(())
+        ticks::handle_tick(self, thread_id, job_id).await
     }
 
     pub(super) async fn handle_vivling_loop_tick_finished(
