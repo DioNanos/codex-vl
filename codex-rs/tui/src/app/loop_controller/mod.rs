@@ -14,6 +14,7 @@ mod state;
 mod types;
 
 mod events;
+mod jobs;
 
 use super::*;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
@@ -29,22 +30,13 @@ use self::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use self::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use self::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use self::formatting::LOOP_STATUS_DELEGATED_VIVLING;
-use self::formatting::LOOP_STATUS_DISABLED;
 use self::formatting::LOOP_STATUS_DONE;
 use self::formatting::LOOP_STATUS_PENDING_BUSY;
 use self::formatting::LOOP_STATUS_PROGRESS;
-use self::formatting::LOOP_STATUS_REMOVED;
 use self::formatting::LOOP_STATUS_SUBMITTED;
 use self::formatting::canonical_last_status;
-use self::formatting::format_loop_interval;
-use self::formatting::format_loop_job_details;
-use self::formatting::format_loop_job_line;
 use self::formatting::loop_action_failure;
-use self::formatting::loop_action_success;
-use self::formatting::loop_job_json;
 use self::formatting::loop_runtime_state;
-use self::formatting::summarize_loop_goal;
-use self::formatting::thread_loop_owner_summary;
 use self::parsing::is_manage_loops_dynamic_tool;
 use self::parsing::parse_manage_loops_interval_seconds;
 use self::parsing::parse_manage_loops_tool_request;
@@ -155,9 +147,7 @@ impl App {
         } else {
             LoopCommandSource::User
         };
-        let outcome = self
-            .run_loop_command_request(thread_id, request, source)
-            .await?;
+        let outcome = jobs::run_command_request(self, thread_id, request, source).await?;
         if emit_ui_feedback {
             if outcome.success {
                 self.chat_widget
@@ -430,9 +420,13 @@ impl App {
                     ) {
                         skipped_runtime_update = true;
                     }
-                    let _ = self
-                        .run_loop_command_request(thread_id, request, LoopCommandSource::Agent)
-                        .await?;
+                    let _ = jobs::run_command_request(
+                        self,
+                        thread_id,
+                        request,
+                        LoopCommandSource::Agent,
+                    )
+                    .await?;
                 }
 
                 self.chat_widget.add_info_message(
@@ -573,422 +567,20 @@ impl App {
         Ok(Some(request))
     }
 
-    async fn run_loop_command_request(
-        &mut self,
-        thread_id: ThreadId,
-        request: LoopCommandRequest,
-        source: LoopCommandSource,
-    ) -> color_eyre::Result<LoopActionOutcome> {
-        if self.primary_thread_id != Some(thread_id) || self.active_thread_id != Some(thread_id) {
-            return Ok(loop_action_failure(
-                "guard",
-                thread_id,
-                "Loop commands are only available on the active primary thread.".to_string(),
-            ));
-        }
-
-        let state_runtime = self.loop_state_runtime().await?;
-        let outcome = match request {
-            LoopCommandRequest::Add {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text,
-                auto_remove_on_completion,
-            } => {
-                let now = loop_now_ms();
-                let goal_text = goal_text
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .or_else(|| Some(prompt_text.trim().to_string()));
-                let auto_remove_on_completion = auto_remove_on_completion.unwrap_or(true);
-                let created_by = match source {
-                    LoopCommandSource::User => "user",
-                    LoopCommandSource::Agent => "agent",
-                }
-                .to_string();
-                let job = state_runtime
-                    .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
-                        id: Uuid::new_v4().to_string(),
-                        thread_id,
-                        label: label.clone(),
-                        prompt_text,
-                        goal_text: goal_text.clone(),
-                        interval_seconds,
-                        enabled: true,
-                        run_policy: "queue_one".to_string(),
-                        auto_remove_on_completion,
-                        created_by,
-                        next_run_ms: Some(now + (interval_seconds * 1000)),
-                        created_at_ms: now,
-                        updated_at_ms: now,
-                    })
-                    .await
-                    .map_err(loop_state_error)?;
-                self.record_vivling_loop_job("add", &label, Some(&job), source);
-                loop_action_success(
-                    "add",
-                    thread_id,
-                    format!(
-                        "Loop `{label}` saved every {}.\ngoal: {}\nauto_remove_on_completion: {}",
-                        format_loop_interval(interval_seconds),
-                        goal_text.unwrap_or_else(|| "none".to_string()),
-                        auto_remove_on_completion
-                    ),
-                    Some(&job),
-                    None,
-                )
-            }
-            LoopCommandRequest::Update {
-                label,
-                interval_seconds,
-                prompt_text,
-                goal_text,
-                auto_remove_on_completion,
-                enabled,
-            } => {
-                let Some(existing) = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                else {
-                    return Ok(loop_action_failure(
-                        "update",
-                        thread_id,
-                        format!("Loop `{label}` not found."),
-                    ));
-                };
-                let now = loop_now_ms();
-                let prompt_text = prompt_text.unwrap_or_else(|| existing.prompt_text.clone());
-                let goal_text = match goal_text {
-                    Some(next_goal) => next_goal,
-                    None => existing.goal_text.clone(),
-                };
-                let interval_seconds = interval_seconds.unwrap_or(existing.interval_seconds);
-                let enabled = enabled.unwrap_or(existing.enabled);
-                let auto_remove_on_completion =
-                    auto_remove_on_completion.unwrap_or(existing.auto_remove_on_completion);
-                let job = state_runtime
-                    .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
-                        id: existing.id.clone(),
-                        thread_id,
-                        label: existing.label.clone(),
-                        prompt_text,
-                        goal_text,
-                        interval_seconds,
-                        enabled,
-                        run_policy: existing.run_policy.clone(),
-                        auto_remove_on_completion,
-                        created_by: existing.created_by.clone(),
-                        next_run_ms: if enabled {
-                            Some(now + (interval_seconds * 1000))
-                        } else {
-                            None
-                        },
-                        created_at_ms: existing.created_at_ms,
-                        updated_at_ms: now,
-                    })
-                    .await
-                    .map_err(loop_state_error)?;
-                self.record_vivling_loop_job("update", &label, Some(&job), source);
-                loop_action_success(
-                    "update",
-                    thread_id,
-                    format!("Loop `{label}` updated."),
-                    Some(&job),
-                    None,
-                )
-            }
-            LoopCommandRequest::List => {
-                let jobs = state_runtime
-                    .list_thread_loop_jobs(thread_id)
-                    .await
-                    .map_err(loop_state_error)?;
-                let message = if jobs.is_empty() {
-                    "No loops configured for this thread.".to_string()
-                } else {
-                    jobs.iter()
-                        .map(|job| {
-                            format!(
-                                "{}\ngoal: {}",
-                                format_loop_job_line(job),
-                                summarize_loop_goal(job)
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                loop_action_success(
-                    "list",
-                    thread_id,
-                    message,
-                    None,
-                    Some(jobs.iter().map(loop_job_json).collect()),
-                )
-            }
-            LoopCommandRequest::Show { label } => {
-                if let Some(job) = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                {
-                    loop_action_success(
-                        "show",
-                        thread_id,
-                        format_loop_job_details(&job),
-                        Some(&job),
-                        None,
-                    )
-                } else {
-                    loop_action_failure("show", thread_id, format!("Loop `{label}` not found."))
-                }
-            }
-            LoopCommandRequest::Enable { label } => {
-                if let Some(job) = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                {
-                    let now = loop_now_ms();
-                    state_runtime
-                        .set_thread_loop_job_enabled(
-                            thread_id,
-                            &label,
-                            true,
-                            Some(now + (job.interval_seconds * 1000)),
-                            now,
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    state_runtime
-                        .update_thread_loop_job_runtime(
-                            thread_id,
-                            &job.id,
-                            codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms: Some(now + (job.interval_seconds * 1000)),
-                                last_run_ms: job.last_run_ms,
-                                last_status: None,
-                                last_error: None,
-                                pending_tick: false,
-                                updated_at_ms: now,
-                            },
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    let updated = state_runtime
-                        .get_thread_loop_job_by_label(thread_id, &label)
-                        .await
-                        .map_err(loop_state_error)?
-                        .expect("loop should still exist after enable");
-                    self.record_vivling_loop_job("enable", &label, Some(&updated), source);
-                    loop_action_success(
-                        "enable",
-                        thread_id,
-                        format!("Loop `{label}` enabled."),
-                        Some(&updated),
-                        None,
-                    )
-                } else {
-                    loop_action_failure("enable", thread_id, format!("Loop `{label}` not found."))
-                }
-            }
-            LoopCommandRequest::Disable { label } => {
-                if let Some(job) = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                {
-                    let now = loop_now_ms();
-                    state_runtime
-                        .set_thread_loop_job_enabled(thread_id, &label, false, None, now)
-                        .await
-                        .map_err(loop_state_error)?;
-                    state_runtime
-                        .update_thread_loop_job_runtime(
-                            thread_id,
-                            &job.id,
-                            codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms: None,
-                                last_run_ms: job.last_run_ms,
-                                last_status: Some(LOOP_STATUS_DISABLED.to_string()),
-                                last_error: None,
-                                pending_tick: false,
-                                updated_at_ms: now,
-                            },
-                        )
-                        .await
-                        .map_err(loop_state_error)?;
-                    let updated = state_runtime
-                        .get_thread_loop_job_by_label(thread_id, &label)
-                        .await
-                        .map_err(loop_state_error)?
-                        .expect("loop should still exist after disable");
-                    self.record_vivling_loop_job("disable", &label, Some(&updated), source);
-                    loop_action_success(
-                        "disable",
-                        thread_id,
-                        format!("Loop `{label}` disabled."),
-                        Some(&updated),
-                        None,
-                    )
-                } else {
-                    loop_action_failure("disable", thread_id, format!("Loop `{label}` not found."))
-                }
-            }
-            LoopCommandRequest::Remove { label } => {
-                if state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                    .is_some()
-                {
-                    state_runtime
-                        .delete_thread_loop_job(thread_id, &label)
-                        .await
-                        .map_err(loop_state_error)?;
-                    self.record_vivling_loop_job("remove", &label, None, source);
-                    LoopActionOutcome {
-                        success: true,
-                        message: format!("Loop `{label}` removed."),
-                        payload: serde_json::json!({
-                            "ok": true,
-                            "action": "remove",
-                            "thread_id": thread_id.to_string(),
-                            "job": {
-                                "label": label,
-                                "runtime_state": "disabled",
-                                "last_status": LOOP_STATUS_REMOVED,
-                            }
-                        }),
-                    }
-                } else {
-                    loop_action_failure("remove", thread_id, format!("Loop `{label}` not found."))
-                }
-            }
-            LoopCommandRequest::Trigger { label } => {
-                let Some(job) = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                else {
-                    return Ok(loop_action_failure(
-                        "trigger",
-                        thread_id,
-                        format!("Loop `{label}` not found."),
-                    ));
-                };
-                if !job.enabled {
-                    return Ok(loop_action_failure(
-                        "trigger",
-                        thread_id,
-                        format!("Loop `{label}` is disabled."),
-                    ));
-                }
-                let now = loop_now_ms();
-                state_runtime
-                    .update_thread_loop_job_runtime(
-                        thread_id,
-                        &job.id,
-                        codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
-                            last_run_ms: job.last_run_ms,
-                            last_status: canonical_last_status(&job),
-                            last_error: None,
-                            pending_tick: true,
-                            updated_at_ms: now,
-                        },
-                    )
-                    .await
-                    .map_err(loop_state_error)?;
-                let updated = state_runtime
-                    .get_thread_loop_job_by_label(thread_id, &label)
-                    .await
-                    .map_err(loop_state_error)?
-                    .expect("loop should still exist after trigger");
-                self.record_vivling_loop_job("trigger", &label, Some(&updated), source);
-                loop_action_success(
-                    "trigger",
-                    thread_id,
-                    format!("Loop `{label}` queued for the next safe run."),
-                    Some(&updated),
-                    None,
-                )
-            }
-            LoopCommandRequest::OwnerShow => {
-                let owner = state_runtime
-                    .get_thread_loop_owner(thread_id)
-                    .await
-                    .map_err(loop_state_error)?;
-                loop_action_success(
-                    "owner",
-                    thread_id,
-                    format!("Loop owner: {}.", thread_loop_owner_summary(&owner)),
-                    None,
-                    None,
-                )
-            }
-            LoopCommandRequest::OwnerSetMain => {
-                let owner = state_runtime
-                    .set_thread_loop_owner(codex_state::ThreadLoopOwner {
-                        thread_id,
-                        owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
-                        owner_vivling_id: None,
-                        updated_at_ms: loop_now_ms(),
-                    })
-                    .await
-                    .map_err(loop_state_error)?;
-                loop_action_success(
-                    "owner",
-                    thread_id,
-                    format!("Loop owner set to {}.", thread_loop_owner_summary(&owner)),
-                    None,
-                    None,
-                )
-            }
-            LoopCommandRequest::OwnerSetVivling => {
-                let (vivling_id, vivling_name): (String, String) = self
-                    .chat_widget
-                    .active_vivling_loop_owner_identity(&self.config)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?;
-                let owner = state_runtime
-                    .set_thread_loop_owner(codex_state::ThreadLoopOwner {
-                        thread_id,
-                        owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_VIVLING.to_string(),
-                        owner_vivling_id: Some(vivling_id.clone()),
-                        updated_at_ms: loop_now_ms(),
-                    })
-                    .await
-                    .map_err(loop_state_error)?;
-                loop_action_success(
-                    "owner",
-                    thread_id,
-                    format!(
-                        "Loop owner set to vivling `{vivling_name}` ({vivling_id}); runtime owner is {}.",
-                        thread_loop_owner_summary(&owner)
-                    ),
-                    None,
-                    None,
-                )
-            }
-        };
-
-        self.refresh_loop_jobs(thread_id).await?;
-        Ok(outcome)
-    }
-
     async fn execute_manage_loops_dynamic_tool(
         &mut self,
         thread_id: ThreadId,
         arguments: serde_json::Value,
     ) -> LoopActionOutcome {
         match parse_manage_loops_tool_request(arguments) {
-            Ok(request) => match self
-                .run_loop_command_request(thread_id, request, LoopCommandSource::Agent)
-                .await
-            {
-                Ok(outcome) => outcome,
-                Err(err) => loop_action_failure("unknown", thread_id, err.to_string()),
-            },
+            Ok(request) => {
+                match jobs::run_command_request(self, thread_id, request, LoopCommandSource::Agent)
+                    .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(err) => loop_action_failure("unknown", thread_id, err.to_string()),
+                }
+            }
             Err(err) => loop_action_failure(
                 "unknown",
                 thread_id,
@@ -1085,6 +677,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::formatting::loop_action_success;
+    use super::formatting::loop_job_json;
     use super::*;
 
     fn sample_job() -> codex_state::ThreadLoopJob {
