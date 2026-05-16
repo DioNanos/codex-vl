@@ -226,4 +226,28 @@ mod tests {
             "manual or unknown"
         );
     }
+
+    /// codex-vl fork identity (iter F): pin the GitHub release-feed URL to
+    /// the fork repo so a silent revert during an upstream merge cannot
+    /// quietly redirect the updater back at the upstream parent project.
+    ///
+    /// The upstream repo slug is built via `concat!` so the literal
+    /// substring does not appear in this source file, keeping the
+    /// cross-file catch-all source-grep (in
+    /// `codex-rs/tui/tests/fork_identity_pins.rs`) free of self-reference
+    /// false positives.
+    #[test]
+    fn fork_identity_pin_doctor_updates_github_release_url() {
+        let upstream_repo: &str = concat!("openai", "/", "codex");
+        assert!(
+            GITHUB_LATEST_RELEASE_URL.contains("DioNanos/codex-vl"),
+            "GITHUB_LATEST_RELEASE_URL must point at the fork repo \
+             (DioNanos/codex-vl). Was: {GITHUB_LATEST_RELEASE_URL}",
+        );
+        assert!(
+            !GITHUB_LATEST_RELEASE_URL.contains(upstream_repo),
+            "GITHUB_LATEST_RELEASE_URL must not point at the upstream \
+             parent repo. Was: {GITHUB_LATEST_RELEASE_URL}",
+        );
+    }
 }

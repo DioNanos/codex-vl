@@ -2871,6 +2871,14 @@ mod tests {
 
     use super::*;
 
+    /// codex-vl fork identity (iter F): pin the npm package scope used by
+    /// the doctor managed-by-npm path so an upstream merge cannot silently
+    /// retarget the consistency check at `@openai`.
+    #[test]
+    fn fork_identity_pin_doctor_npm_scope() {
+        assert_eq!(CODEX_VL_NPM_PACKAGE_SCOPE, "@mmmbuto");
+    }
+
     #[derive(Default)]
     struct RecordingProgress {
         events: Mutex<Vec<String>>,
