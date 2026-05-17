@@ -567,13 +567,27 @@ impl Daemon {
             return Ok(());
         }
 
+        // codex-vl fork: do NOT recommend the upstream openai/codex
+        // install script here. Running the upstream installer would
+        // replace the fork binary with unrelated upstream codex and
+        // silently strip every codex-vl feature (Vivling, /loop,
+        // /vivling, /vl, fork-aware doctor/updater, manage_loops
+        // dynamic tool, etc.). Until a fork-owned standalone installer
+        // exists, the supported install path for the fork is the npm
+        // package `@mmmbuto/codex-vl`.
         let managed_codex_path = self.managed_codex_bin.display();
         Err(anyhow!(
-            "managed standalone Codex install not found at {managed_codex_path}\n\n\
-             This command requires the standalone install managed by the Codex installer, because \
-             the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
-             Then rerun the command you just tried."
+            "codex-vl fork: managed standalone install not found at \
+             {managed_codex_path}\n\n\
+             This command requires the standalone install layout, but the \
+             codex-vl fork does not currently ship its own standalone \
+             installer. The supported install/update path for the fork is \
+             the npm package `@mmmbuto/codex-vl`.\n\n\
+             To install or update the fork, run:\n  \
+             npm install -g @mmmbuto/codex-vl@latest\n\n\
+             Note: do NOT run the upstream openai/codex install script. \
+             It would replace the codex-vl binary with the unrelated \
+             upstream codex and remove every codex-vl feature."
         ))
     }
 
