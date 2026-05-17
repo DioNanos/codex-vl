@@ -1,10 +1,12 @@
 use pretty_assertions::assert_eq;
 
 use super::install_latest_standalone;
+use super::reexec_managed_updater;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
 use crate::managed_install::executable_identity_from_bytes;
+use codex_install_context::InstallContext;
 
 #[test]
 fn unchanged_updater_uses_version_based_restart() {
@@ -57,4 +59,12 @@ async fn install_latest_standalone_is_disabled_in_fork() {
         "fork-disabled error must point users at the fork's npm package. \
          Was: {message}",
     );
+}
+
+#[test]
+fn reexec_managed_updater_short_circuits_for_npm_and_bun() {
+    let missing = std::path::Path::new("/definitely/not/a/codex-vl-binary");
+
+    reexec_managed_updater(missing, &InstallContext::Npm).expect("npm short-circuits");
+    reexec_managed_updater(missing, &InstallContext::Bun).expect("bun short-circuits");
 }

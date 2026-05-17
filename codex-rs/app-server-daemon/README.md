@@ -36,36 +36,48 @@ running app-server version when applicable.
 For a new remote machine:
 
 ```sh
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-$HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
+npm install -g @mmmbuto/codex-vl@latest
+codex-vl app-server daemon bootstrap --remote-control
 ```
 
-`bootstrap` requires the standalone managed install. It records the daemon
-settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
-pidfile-backed detached process, and launches a detached updater loop.
+In the codex-vl fork, npm/bun-managed installs bootstrap the daemon with the
+currently running fork binary. The fork does not fetch or run the upstream
+standalone installer. `bootstrap` records the daemon settings under
+`CODEX_HOME/app-server-daemon/`, starts app-server as a pidfile-backed detached
+process, and reports standalone auto-update as disabled for npm/bun installs.
 
 ## Installation and update cases
 
-The daemon assumes Codex is installed through `install.sh` and always launches
-the standalone managed binary under `CODEX_HOME`.
+In this fork, the daemon supports npm/bun-managed launches and legacy
+standalone layouts. npm/bun launches resolve to the currently running fork
+binary. Standalone layouts still resolve through the managed binary path under
+`CODEX_HOME`, but the fork does not fetch upstream standalone installers.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| `install.sh` has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
-| `install.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
-| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
+| npm or bun shim launches the daemon | The pidfile backend uses the currently running `codex-vl` binary | No | No. Update with npm/bun, then restart the daemon to use the newer binary. |
+| Standalone layout exists, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
+| Standalone layout exists, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | No. The fork disables standalone auto-update until a fork-owned installer exists. | No automatic binary replacement. Update through a fork-owned channel, then restart the daemon. |
+| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | No | A currently running app-server remains on the old executable image until an explicit `restart`. |
+
+### npm/bun installs
+
+For installs launched through the `codex-vl` npm/bun shim:
+
+- lifecycle commands use the currently running fork binary
+- `bootstrap` is supported
+- `bootstrap` reports standalone auto-update as disabled
+- after `npm install -g @mmmbuto/codex-vl@latest` or `@next`, restart the daemon
+  to use the newly installed binary
 
 ### Standalone installs
 
-For installs created by `install.sh`:
+For legacy standalone layouts:
 
 - lifecycle commands always use the standalone managed binary path
 - `bootstrap` is supported
-- `bootstrap` starts a detached pid-backed updater loop that fetches via
-  `install.sh`
-- after a successful refresh, if app-server is running and the managed binary
-  contents changed, the updater restarts app-server with that binary first and
-  only then replaces its own process image
+- standalone auto-update is disabled in this fork until a fork-owned installer
+  exists
 - the updater loop is not reboot-persistent; it must be started again by
   rerunning `bootstrap` after a reboot
 
@@ -76,10 +88,8 @@ other tool updates the managed binary path:
 
 - without `bootstrap`, a currently running app-server remains on the old
   executable image until an explicit `restart`
-- with `bootstrap`, the detached updater loop notices the changed managed
-  binary on its next successful scheduled pass after running `install.sh`; if
-  app-server is running, it refreshes app-server first and then refreshes itself
-  once that replacement starts successfully
+- with `bootstrap`, this fork does not run an installer or replace the binary
+  automatically; restart explicitly after updating the fork package
 
 ## Lifecycle semantics
 
