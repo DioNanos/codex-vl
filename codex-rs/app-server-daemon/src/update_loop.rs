@@ -1,8 +1,6 @@
 #[cfg(unix)]
 use std::process::Command as StdCommand;
 #[cfg(unix)]
-use std::process::Stdio;
-#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -14,10 +12,6 @@ use anyhow::bail;
 use futures::FutureExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-#[cfg(unix)]
-use tokio::io::AsyncWriteExt;
-#[cfg(unix)]
-use tokio::process::Command;
 #[cfg(unix)]
 use tokio::signal::unix::Signal;
 #[cfg(unix)]
@@ -153,43 +147,29 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
     })
 }
 
+/// codex-vl fork: standalone auto-updater is **disabled**.
+///
+/// The original upstream openai/codex implementation fetched and
+/// executed the chatgpt-hosted standalone installer shell script
+/// here. Running that script would replace the fork binary with
+/// unrelated upstream codex and silently strip every codex-vl
+/// feature (Vivling, /loop, /vivling, /vl, fork-aware
+/// doctor/updater, `manage_loops` dynamic tool, ecc.). Because the
+/// daemon may run from an `InstallContext::Standalone` managed path
+/// that the fork inherits structurally, a context-based gate alone
+/// is not safe — the fetch is removed entirely until a fork-owned
+/// standalone installer exists. Until then, the supported update
+/// channel is the `@mmmbuto/codex-vl` npm package.
 #[cfg(unix)]
 async fn install_latest_standalone() -> Result<()> {
-    let script = reqwest::get("https://chatgpt.com/codex/install.sh")
-        .await
-        .context("failed to fetch standalone Codex updater")?
-        .error_for_status()
-        .context("standalone Codex updater request failed")?
-        .bytes()
-        .await
-        .context("failed to read standalone Codex updater")?;
-
-    let mut child = Command::new("/bin/sh")
-        .arg("-s")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to invoke standalone Codex updater")?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .context("standalone Codex updater stdin was unavailable")?;
-    stdin
-        .write_all(&script)
-        .await
-        .context("failed to pass standalone Codex updater to shell")?;
-    drop(stdin);
-    let status = child
-        .wait()
-        .await
-        .context("failed to wait for standalone Codex updater")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("standalone Codex updater exited with status {status}")
-    }
+    // The caller (`update_once`) propagates the error and the top-level
+    // `run()` loop matches `Err(_) => {}`, so the daemon simply skips
+    // its hourly install attempt without making any network call.
+    anyhow::bail!(
+        "codex-vl fork: standalone auto-updater is disabled. The fork \
+         does not fetch the upstream openai/codex install script. To \
+         update the fork, run: npm install -g @mmmbuto/codex-vl@latest"
+    )
 }
 
 #[cfg(all(test, unix))]

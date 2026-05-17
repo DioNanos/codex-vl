@@ -138,6 +138,48 @@ fn fork_identity_no_openai_codex_in_fork_owned_sources() {
                 "silently pointing back at openai/codex",
             ],
         },
+        // codex-vl fork (F-bis): app-server daemon error/help text
+        // for the missing managed standalone install. The fork-aware
+        // message intentionally mentions "openai/codex" in a warning
+        // sentence that tells users NOT to run the upstream installer.
+        Case {
+            path: "codex-rs/app-server-daemon/src/lib.rs",
+            source: include_str!("../../app-server-daemon/src/lib.rs"),
+            allowed_substrings: &[
+                "do NOT recommend the upstream openai/codex",
+                "unrelated upstream codex",
+                "fork-aware doctor/updater",
+                "do NOT run the upstream openai/codex",
+                "replace the codex-vl binary with the unrelated",
+            ],
+        },
+        // codex-vl fork (F-bis): app-server daemon update loop.
+        // `install_latest_standalone` documents WHY the upstream
+        // installer is no longer fetched; allow the explanatory text
+        // to mention the upstream slug without flagging it as a
+        // silent revert.
+        Case {
+            path: "codex-rs/app-server-daemon/src/update_loop.rs",
+            source: include_str!("../../app-server-daemon/src/update_loop.rs"),
+            allowed_substrings: &[
+                "upstream openai/codex",
+                "unrelated upstream",
+                "fork-aware doctor/updater",
+            ],
+        },
+        // codex-vl fork (F-bis): TUI update action surfaces no
+        // upstream installer; doc-comments may reference the
+        // historical upstream commands purely to explain WHY they
+        // were removed.
+        Case {
+            path: "codex-rs/tui/src/update_action.rs",
+            source: include_str!("../src/update_action.rs"),
+            allowed_substrings: &[
+                "upstream `openai/codex` installer",
+                "unrelated upstream codex",
+                "fork-aware doctor/updater",
+            ],
+        },
     ];
 
     for case in cases {
