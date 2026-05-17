@@ -25,6 +25,13 @@ codex-vl --version
 codex-vl login
 ```
 
+To test the current pre-release lane:
+
+```bash
+npm install -g @mmmbuto/codex-vl@next
+codex-vl --version
+```
+
 Linux x64 and Termux Android arm64 installs use packaged native binaries. On
 macOS, npm install builds the local native binaries with Cargo; install Rust if
 Cargo is not already available.
@@ -40,10 +47,10 @@ npm install -g @mmmbuto/codex-vl
 ~/.local/bin/codex-vl --version
 ```
 
-## Current Release Focus
+## Release Channels
 
-The `0.130.0` line merges upstream Codex `rust-v0.130.0` while preserving the
-Codex VL workflow layer:
+The npm `latest` tag currently tracks the stable `0.130.0` line. It merges
+upstream Codex `rust-v0.130.0` while preserving the Codex VL workflow layer:
 
 - loop management as a conservative, user-controlled local feature
 - Vivling identity, persistence, lifecycle state, and model profile routing
@@ -60,6 +67,12 @@ Codex VL workflow layer:
 
 For this line, macOS is shipped as a source-build payload instead of a prebuilt
 native binary. The local install path still requires Rust/Cargo on the Mac.
+
+The npm `next` tag tracks the `0.131.0-alpha.*` pre-release line. That line
+follows upstream `0.131.0` alpha builds and includes newer Codex VL work such as
+lineage-aware Vivling spawn, CRT sprite/card refreshes, merge-safe module
+extraction, fork-safe update hardening, and npm/bun-aware app-server daemon
+bootstrap for remote-control workflows.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.

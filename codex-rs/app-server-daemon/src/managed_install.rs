@@ -1,12 +1,13 @@
+use std::env;
+use std::fs as std_fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[cfg(unix)]
 use anyhow::Context;
-#[cfg(unix)]
 use anyhow::Result;
 #[cfg(unix)]
 use anyhow::anyhow;
+use codex_install_context::InstallContext;
 #[cfg(unix)]
 use sha2::Digest;
 #[cfg(unix)]
@@ -22,6 +23,37 @@ pub(crate) fn managed_codex_bin(codex_home: &Path) -> PathBuf {
         .join("standalone")
         .join("current")
         .join(managed_codex_file_name())
+}
+
+pub(crate) fn resolve_managed_codex_bin_for_install_context(
+    install_context: &InstallContext,
+    codex_home: &Path,
+) -> Result<PathBuf> {
+    match install_context {
+        InstallContext::Npm | InstallContext::Bun => managed_package_current_exe(),
+        InstallContext::Standalone { .. } | InstallContext::Brew | InstallContext::Other => {
+            Ok(managed_codex_bin(codex_home))
+        }
+    }
+}
+
+fn managed_package_current_exe() -> Result<PathBuf> {
+    if let Some(self_exe) = env::var_os("CODEX_SELF_EXE") {
+        let self_exe = PathBuf::from(self_exe);
+        if self_exe.is_file() {
+            return std_fs::canonicalize(&self_exe).with_context(|| {
+                format!("failed to resolve CODEX_SELF_EXE {}", self_exe.display())
+            });
+        }
+    }
+
+    let current_exe = env::current_exe().context("failed to resolve current executable")?;
+    std_fs::canonicalize(&current_exe).with_context(|| {
+        format!(
+            "failed to resolve current executable {}",
+            current_exe.display()
+        )
+    })
 }
 
 #[cfg(unix)]

@@ -70,6 +70,28 @@ fn fork_identity_install_native_deps_fork_default_repo() {
     );
 }
 
+/// Pin: the app-server daemon resolves npm/bun managed installs to
+/// the running fork binary instead of the upstream standalone layout.
+#[test]
+fn fork_identity_daemon_managed_install_is_install_context_aware() {
+    const SOURCE: &str = include_str!("../../app-server-daemon/src/managed_install.rs");
+    assert!(
+        SOURCE.contains("InstallContext::Npm | InstallContext::Bun"),
+        "managed_install.rs must branch npm/bun installs away from the \
+         standalone managed path.",
+    );
+    assert!(
+        SOURCE.contains("CODEX_SELF_EXE"),
+        "managed_install.rs must prefer CODEX_SELF_EXE for npm/bun \
+         launches, especially on Android/Termux.",
+    );
+    assert!(
+        SOURCE.contains("env::current_exe()"),
+        "managed_install.rs must fall back to current_exe() for npm/bun \
+         launches when CODEX_SELF_EXE is unavailable or invalid.",
+    );
+}
+
 /// Catch-all: a curated set of fork-owned files must not contain the
 /// upstream `openai/codex` substring. Each entry in the table lists the
 /// optional substrings whose presence is allowed (e.g. comments that
@@ -166,6 +188,14 @@ fn fork_identity_no_openai_codex_in_fork_owned_sources() {
                 "unrelated upstream",
                 "fork-aware doctor/updater",
             ],
+        },
+        // codex-vl fork (F-tri): npm/bun daemon launches resolve to
+        // the running fork binary. This file should not need any
+        // upstream-slug exception.
+        Case {
+            path: "codex-rs/app-server-daemon/src/managed_install.rs",
+            source: include_str!("../../app-server-daemon/src/managed_install.rs"),
+            allowed_substrings: &[],
         },
         // codex-vl fork (F-bis): TUI update action surfaces no
         // upstream installer; doc-comments may reference the

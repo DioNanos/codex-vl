@@ -14,10 +14,11 @@ use anyhow::anyhow;
 pub use backend::BackendKind;
 use backend::BackendPaths;
 use codex_app_server_transport::app_server_control_socket_path;
+use codex_install_context::InstallContext;
 use codex_utils_home_dir::find_codex_home;
-use managed_install::managed_codex_bin;
 #[cfg(unix)]
 use managed_install::managed_codex_version;
+use managed_install::resolve_managed_codex_bin_for_install_context;
 use serde::Serialize;
 use settings::DaemonSettings;
 use tokio::time::sleep;
@@ -208,6 +209,7 @@ struct Daemon {
     operation_lock_file: PathBuf,
     settings_file: PathBuf,
     managed_codex_bin: PathBuf,
+    install_context: InstallContext,
 }
 
 impl Daemon {
@@ -217,13 +219,17 @@ impl Daemon {
             .as_path()
             .to_path_buf();
         let state_dir = codex_home.as_path().join(STATE_DIR_NAME);
+        let install_context = InstallContext::current().clone();
+        let managed_codex_bin =
+            resolve_managed_codex_bin_for_install_context(&install_context, codex_home.as_path())?;
         Ok(Self {
             socket_path,
             pid_file: state_dir.join(PID_FILE_NAME),
             update_pid_file: state_dir.join(UPDATE_PID_FILE_NAME),
             operation_lock_file: state_dir.join(OPERATION_LOCK_FILE_NAME),
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
-            managed_codex_bin: managed_codex_bin(codex_home.as_path()),
+            managed_codex_bin,
+            install_context,
         })
     }
 
@@ -342,7 +348,7 @@ impl Daemon {
         };
 
         if should_reexec_updater(updater_refresh_mode, outcome) {
-            crate::update_loop::reexec_managed_updater(managed_codex_bin)?;
+            crate::update_loop::reexec_managed_updater(managed_codex_bin, &self.install_context)?;
         }
 
         Ok(outcome)
@@ -515,7 +521,7 @@ impl Daemon {
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
-            auto_update_enabled: true,
+            auto_update_enabled: auto_update_enabled_for_install_context(&self.install_context),
             remote_control_enabled: settings.remote_control_enabled,
             managed_codex_path: self.managed_codex_bin.clone(),
             socket_path: self.socket_path.clone(),
@@ -685,6 +691,10 @@ impl Daemon {
     }
 }
 
+fn auto_update_enabled_for_install_context(install_context: &InstallContext) -> bool {
+    !matches!(install_context, InstallContext::Npm | InstallContext::Bun)
+}
+
 fn remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus {
     match mode {
         RemoteControlMode::Enabled => RemoteControlStatus::Enabled,
@@ -761,9 +771,13 @@ mod tests {
     use super::RestartIfRunningOutcome;
     use super::RestartMode;
     use super::UpdaterRefreshMode;
+    use super::auto_update_enabled_for_install_context;
     use super::restart_decision;
     use super::should_reexec_updater;
     use crate::client::ProbeInfo;
+    use codex_install_context::InstallContext;
+    use codex_install_context::StandalonePlatform;
+    use std::path::PathBuf;
 
     #[test]
     fn lifecycle_status_uses_camel_case_json() {
@@ -888,5 +902,28 @@ mod tests {
             serde_json::to_value(output).expect("serialize"),
             serde_json::to_value(bootstrap_output).expect("serialize")
         );
+    }
+
+    #[test]
+    fn bootstrap_auto_update_is_disabled_for_npm_and_bun() {
+        assert!(!auto_update_enabled_for_install_context(
+            &InstallContext::Npm
+        ));
+        assert!(!auto_update_enabled_for_install_context(
+            &InstallContext::Bun
+        ));
+        assert!(auto_update_enabled_for_install_context(
+            &InstallContext::Standalone {
+                release_dir: PathBuf::from("/tmp/codex-release"),
+                resources_dir: None,
+                platform: StandalonePlatform::Unix,
+            }
+        ));
+        assert!(auto_update_enabled_for_install_context(
+            &InstallContext::Brew
+        ));
+        assert!(auto_update_enabled_for_install_context(
+            &InstallContext::Other
+        ));
     }
 }

@@ -9,6 +9,8 @@ use anyhow::Result;
 #[cfg(not(unix))]
 use anyhow::bail;
 #[cfg(unix)]
+use codex_install_context::InstallContext;
+#[cfg(unix)]
 use futures::FutureExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -135,7 +137,14 @@ fn update_modes_for_identities(
 }
 
 #[cfg(unix)]
-pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Result<()> {
+pub(crate) fn reexec_managed_updater(
+    managed_codex_bin: &std::path::Path,
+    install_context: &InstallContext,
+) -> Result<()> {
+    if matches!(install_context, InstallContext::Npm | InstallContext::Bun) {
+        return Ok(());
+    }
+
     let err = StdCommand::new(managed_codex_bin)
         .args(["app-server", "daemon", "pid-update-loop"])
         .exec();
