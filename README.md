@@ -25,7 +25,7 @@ codex-vl --version
 codex-vl login
 ```
 
-To test the current pre-release lane:
+When a pre-release lane is active, install it explicitly:
 
 ```bash
 npm install -g @mmmbuto/codex-vl@next
@@ -49,14 +49,14 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag currently tracks the stable `0.130.0` line. It merges
-upstream Codex `rust-v0.130.0` while preserving the Codex VL workflow layer:
+The npm `latest` tag tracks the stable `0.131.0` line. It merges upstream
+Codex `rust-v0.131.0` while preserving the Codex VL workflow layer:
 
 - loop management as a conservative, user-controlled local feature
 - Vivling identity, persistence, lifecycle state, and model profile routing
 - an early terminal CRT strip that can show compact Vivling state and speech
 - upstream plugin sharing, remote-control, thread pagination, Bedrock auth, and
-  environment-aware image handling improvements from the 0.130.0 release
+  environment-aware image handling improvements from the 0.131.0 release
 - SQLite contention hardening for multi-session local use
 - MCP startup retry hardening for stdio servers that are slow to expose tools
 - maintainable integration points so upstream merges stay practical
@@ -68,11 +68,8 @@ upstream Codex `rust-v0.130.0` while preserving the Codex VL workflow layer:
 For this line, macOS is shipped as a source-build payload instead of a prebuilt
 native binary. The local install path still requires Rust/Cargo on the Mac.
 
-The npm `next` tag tracks the `0.131.0-alpha.*` pre-release line. That line
-follows upstream `0.131.0` alpha builds and includes newer Codex VL work such as
-lineage-aware Vivling spawn, CRT sprite/card refreshes, merge-safe module
-extraction, fork-safe update hardening, and npm/bun-aware app-server daemon
-bootstrap for remote-control workflows.
+The npm `next` tag is reserved for the next upstream alpha lane after a stable
+release. Use it only when a specific pre-release has been announced.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -89,6 +86,8 @@ agent-managed follow-up tasks.
 
 Manages the active Vivling. Current features include local state, growth,
 lifecycle status, species data, and optional brain profile configuration.
+The public development journal is at
+[dev.mmmbuto.com/vivling](https://dev.mmmbuto.com/vivling/).
 
 ### `/vl`
 
@@ -123,7 +122,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.130.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
+`0.131.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
 packages plus the macOS arm64 source-build package.
 
 ## Status
