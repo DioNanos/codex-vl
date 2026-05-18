@@ -159,6 +159,9 @@ pub(crate) enum GoalRuntimeEvent<'a> {
     UsageLimitReached {
         turn_context: &'a TurnContext,
     },
+    UsageLimitReached {
+        turn_context: &'a TurnContext,
+    },
     ExternalMutationStarting,
     ExternalSet {
         external_set: ExternalGoalSet,
@@ -390,6 +393,11 @@ impl Session {
             }),
             GoalRuntimeEvent::TaskAborted { turn_context } => Box::pin(async move {
                 self.handle_thread_goal_task_abort(turn_context).await;
+                Ok(())
+            }),
+            GoalRuntimeEvent::UsageLimitReached { turn_context } => Box::pin(async move {
+                self.usage_limit_active_thread_goal_for_turn(turn_context)
+                    .await?;
                 Ok(())
             }),
             GoalRuntimeEvent::UsageLimitReached { turn_context } => Box::pin(async move {
@@ -1197,6 +1205,59 @@ impl Session {
                 Ok(None)
             }
         }
+    }
+
+    async fn usage_limit_active_thread_goal_for_turn(
+        &self,
+        turn_context: &TurnContext,
+    ) -> anyhow::Result<()> {
+        if should_ignore_goal_for_mode(turn_context.collaboration_mode.mode) {
+            return Ok(());
+        }
+
+        if !self.enabled(Feature::Goals) {
+            return Ok(());
+        }
+
+        let _continuation_guard = self
+            .goal_runtime
+            .continuation_lock
+            .acquire()
+            .await
+            .context("goal continuation semaphore closed")?;
+        let Some(state_db) = self.state_db_for_thread_goals().await? else {
+            return Ok(());
+        };
+        self.account_thread_goal_progress(
+            turn_context,
+            BudgetLimitSteering::Suppressed,
+            TerminalMetricEmission::Emit,
+        )
+        .await?;
+        let previous_status = self
+            .current_goal_status_for_metrics(&state_db, /*expected_goal_id*/ None)
+            .await?;
+        let Some(goal) = state_db
+            .thread_goals()
+            .usage_limit_active_thread_goal(self.conversation_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        self.emit_goal_terminal_metrics_if_status_changed(previous_status, &goal);
+        let goal = protocol_goal_from_state(goal);
+        *self.goal_runtime.budget_limit_reported_goal_id.lock().await = None;
+        self.clear_active_goal_accounting(turn_context).await;
+        self.send_event(
+            turn_context,
+            EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                thread_id: self.conversation_id,
+                turn_id: Some(turn_context.sub_id.clone()),
+                goal,
+            }),
+        )
+        .await;
+        Ok(())
     }
 
     async fn usage_limit_active_thread_goal_for_turn(
