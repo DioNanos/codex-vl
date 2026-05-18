@@ -1946,7 +1946,7 @@ dependencies = [
  "flate2",
  "futures",
  "hmac",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry_sdk",
  "pretty_assertions",
  "reqwest",
@@ -2305,7 +2305,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "http 1.4.0",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry_sdk",
  "pretty_assertions",
  "rand 0.9.3",
@@ -2573,7 +2573,7 @@ dependencies = [
  "maplit",
  "once_cell",
  "openssl-sys",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry_sdk",
  "predicates",
  "pretty_assertions",
@@ -2736,7 +2736,7 @@ dependencies = [
  "codex-utils-sandbox-summary",
  "core_test_support",
  "libc",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry_sdk",
  "owo-colors",
  "predicates",
@@ -3379,7 +3379,7 @@ dependencies = [
  "eventsource-stream",
  "gethostname",
  "http 1.4.0",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -4388,7 +4388,7 @@ dependencies = [
  "ctor 0.6.3",
  "futures",
  "notify",
- "opentelemetry",
+ "opentelemetry 0.32.0",
  "opentelemetry_sdk",
  "pretty_assertions",
  "regex-lite",
@@ -9387,12 +9387,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "opentelemetry-appender-tracing"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef6a1ac5ca3accf562b8c306fa8483c85f4390f768185ab775f242f7fe8fdcc2"
 dependencies = [
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -9407,7 +9421,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http 1.4.0",
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "reqwest",
 ]
 
@@ -9418,7 +9432,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2366db2dca4d2ad033cad11e6ee42844fd727007af5ad04a1730f4cb8163bf"
 dependencies = [
  "http 1.4.0",
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
@@ -9439,7 +9453,7 @@ checksum = "a7175df06de5eaee9909d4805a3d07e28bb752c34cab57fa9cff549da596b30f"
 dependencies = [
  "base64 0.22.1",
  "const-hex",
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "opentelemetry_sdk",
  "prost 0.14.3",
  "serde",
@@ -9463,7 +9477,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "percent-encoding",
  "rand 0.9.3",
  "thiserror 2.0.18",
@@ -13504,7 +13518,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ac28f2d093c6c477eaa76b23525478f38de514fa9aeb1285738d4b97a9552fc"
 dependencies = [
  "js-sys",
- "opentelemetry",
+ "opentelemetry 0.31.0",
  "smallvec",
  "tracing",
  "tracing-core",
