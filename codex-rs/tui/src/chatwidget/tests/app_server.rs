@@ -662,7 +662,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "Reconnecting... 1/5".to_string(),
-                codex_error_info: Some(CodexErrorInfo::Other.into()),
+                codex_error_info: Some(CodexErrorInfo::Other),
                 additional_details: None,
             },
             will_retry: true,
@@ -691,7 +691,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
         .expect("status indicator should be visible");
     assert_eq!(status.header(), "Working");
     assert_eq!(status.details(), None);
-    assert!(chat.retry_status_header.is_none());
+    assert!(chat.status_state.retry_status_header.is_none());
 }
 
 #[tokio::test]
@@ -720,7 +720,7 @@ async fn live_app_server_server_overloaded_error_renders_warning() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "server overloaded".to_string(),
-                codex_error_info: Some(CodexErrorInfo::ServerOverloaded.into()),
+                codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 additional_details: None,
             },
             will_retry: false,
@@ -762,7 +762,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
                 message: "server fallback message".to_string(),
-                codex_error_info: Some(CodexErrorInfo::CyberPolicy.into()),
+                codex_error_info: Some(CodexErrorInfo::CyberPolicy),
                 additional_details: None,
             },
             will_retry: false,

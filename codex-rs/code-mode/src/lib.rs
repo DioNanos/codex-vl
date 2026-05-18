@@ -35,11 +35,17 @@ pub use runtime::DEFAULT_WAIT_YIELD_TIME_MS;
 #[cfg(not(target_os = "android"))]
 pub use runtime::ExecuteRequest;
 #[cfg(not(target_os = "android"))]
+pub use runtime::ExecuteToPendingOutcome;
+#[cfg(not(target_os = "android"))]
 pub use runtime::RuntimeResponse;
 #[cfg(not(target_os = "android"))]
 pub use runtime::WaitOutcome;
 #[cfg(not(target_os = "android"))]
 pub use runtime::WaitRequest;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingOutcome;
+#[cfg(not(target_os = "android"))]
+pub use runtime::WaitToPendingRequest;
 #[cfg(target_os = "android")]
 pub use runtime_stub::CodeModeNestedToolCall;
 #[cfg(target_os = "android")]

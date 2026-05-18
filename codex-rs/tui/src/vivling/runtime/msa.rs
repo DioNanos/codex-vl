@@ -28,8 +28,35 @@ impl std::fmt::Debug for VivlingMsa {
 
 impl VivlingMsa {
     pub(crate) fn open() -> Option<Self> {
-        let cfg = MsaConfig::load().ok()?;
-        Self::open_from_parts(cfg.storage.storage_dir, cfg.chunking)
+        let cfg = match MsaConfig::load() {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                tracing::warn!(
+                    target: "vivling::msa",
+                    "MsaConfig::load failed, vivling retrieval disabled: {err}"
+                );
+                return None;
+            }
+        };
+        let storage_dir = cfg.storage.storage_dir.clone();
+        match Self::open_from_parts(cfg.storage.storage_dir, cfg.chunking) {
+            Some(this) => {
+                tracing::info!(
+                    target: "vivling::msa",
+                    "vivling msa storage opened at {}",
+                    storage_dir.display()
+                );
+                Some(this)
+            }
+            None => {
+                tracing::warn!(
+                    target: "vivling::msa",
+                    "vivling msa storage unavailable at {} (mkdir failed), retrieval disabled",
+                    storage_dir.display()
+                );
+                None
+            }
+        }
     }
 
     #[cfg(test)]
@@ -49,9 +76,19 @@ impl VivlingMsa {
 
     pub(crate) fn collection_for(&self, vivling_id: &str) -> Option<Arc<MsaIndex>> {
         let name = format!("vivling::{vivling_id}");
-        self.registry
+        match self
+            .registry
             .open_or_create(&name, &self.storage_dir, &self.chunk_config)
-            .ok()
+        {
+            Ok(idx) => Some(idx),
+            Err(err) => {
+                tracing::warn!(
+                    target: "vivling::msa",
+                    "open_or_create({name}) failed: {err}"
+                );
+                None
+            }
+        }
     }
 
     pub(crate) fn index_capsule(&self, vivling_id: &str, capsule: &VivlingWorkMemoryEntry) {
@@ -80,8 +117,22 @@ impl VivlingMsa {
             metadata,
             created_at: capsule.created_at,
         };
-        if let Err(err) = idx.index_document(&doc, None) {
-            tracing::debug!(target: "vivling::msa", "index_capsule failed: {err}");
+        match idx.index_document(&doc, None) {
+            Ok(_) => {
+                tracing::info!(
+                    target: "vivling::msa",
+                    "indexed capsule for vivling::{vivling_id} (kind={}, weight={})",
+                    capsule.kind,
+                    capsule.weight
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "vivling::msa",
+                    "index_capsule failed for vivling::{vivling_id} (kind={}): {err}",
+                    capsule.kind
+                );
+            }
         }
     }
 }

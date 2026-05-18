@@ -12,7 +12,8 @@ impl Vivling {
         let live_snapshot = self.live_context.borrow().clone();
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
-            state.apply_decay(Utc::now());
+            let now = Utc::now();
+            state.apply_decay(now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Assist,
@@ -23,6 +24,11 @@ impl Vivling {
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
+            // codex-vl bond: only credit Assist after pre-dispatch validation
+            // succeeds, so a failed precondition does not mutate bond state.
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Assist, now);
             (
                 state.vivling_id.clone(),
                 state.name.clone(),
@@ -50,7 +56,8 @@ impl Vivling {
         let live_snapshot = self.live_context.borrow().clone();
         let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
-            state.apply_decay(Utc::now());
+            let now = Utc::now();
+            state.apply_decay(now);
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Chat,
@@ -61,6 +68,11 @@ impl Vivling {
             let brain_profile = state.brain_profile.clone().ok_or_else(|| {
                 "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
             })?;
+            // codex-vl bond: only credit Chat after pre-dispatch validation
+            // succeeds, so a failed precondition does not mutate bond state.
+            state
+                .bond
+                .record_interaction(crate::vivling::VivlingInteractionKind::Chat, now);
             (
                 state.vivling_id.clone(),
                 state.name.clone(),
@@ -246,12 +258,14 @@ impl Vivling {
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
         let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
-            let before = state.work_memory.len();
-            state.record_loop_event(&event);
+            new_capsules
+                .borrow_mut()
+                .extend(state.record_loop_event(&event));
             if let Some(summary) = live_summary.as_deref() {
-                state.record_live_context_summary(summary);
+                new_capsules
+                    .borrow_mut()
+                    .extend(state.record_live_context_summary(summary));
             }
-            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);
@@ -268,7 +282,13 @@ impl Vivling {
                 }
             }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
-        })
+        })?;
+
+        // codex-vl lineage passive learning: propagate distillates to
+        // direct children after the active primary records a loop event
+        // (parallel to record_turn_completed). Best-effort.
+        let _ = self.propagate_parent_summaries_to_children();
+        Ok(())
     }
 
     pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) -> Result<(), String> {
@@ -281,12 +301,14 @@ impl Vivling {
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
         let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
         self.update_existing(|state| {
-            let before = state.work_memory.len();
-            state.record_turn_completed(summary);
+            new_capsules
+                .borrow_mut()
+                .extend(state.record_turn_completed(summary));
             if let Some(summary) = live_summary.as_deref() {
-                state.record_live_context_summary(summary);
+                new_capsules
+                    .borrow_mut()
+                    .extend(state.record_live_context_summary(summary));
             }
-            new_capsules.replace(state.work_memory[before..].to_vec());
             let proactive = proactive::evaluate_after_turn(state, Utc::now());
             if let Some(msg) = proactive.message {
                 state.last_message = Some(msg);
@@ -303,7 +325,17 @@ impl Vivling {
                 }
             }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
-        })
+        })?;
+
+        // codex-vl lineage passive learning (Fase 4 iter 1A): after the
+        // active primary has updated its own distilled_summaries via
+        // record_turn_completed → maybe_distill_memory →
+        // rebuild_learning_profiles, propagate the new/refreshed
+        // distillates to all direct children whose cultural parent is
+        // this primary. Best-effort: a propagation failure does not
+        // mask the successful turn record above.
+        let _ = self.propagate_parent_summaries_to_children();
+        Ok(())
     }
 
     pub(crate) fn assign_brain_profile(&mut self, profile: String) -> Result<String, String> {
@@ -359,6 +391,12 @@ impl Vivling {
             .map_err(|err| err.to_string())?
             .ok_or_else(|| format!("Vivling `{vivling_id}` is missing on disk."))?;
         state.mark_brain_reply(reply);
+        // codex-vl bond: this path is exclusive to successful Vivling loop ticks
+        // (only caller is `loop_controller::handle_vivling_loop_tick_finished`
+        // on Ok arm). Bond gets +1 LoopTick credit here, never on Err arm.
+        state
+            .bond
+            .record_interaction(crate::vivling::VivlingInteractionKind::LoopTick, Utc::now());
         self.save_state_record(&state, /*set_active*/ false, state.is_imported)
             .map_err(|err| err.to_string())?;
         if self.active_vivling_id.as_deref() == Some(vivling_id) {
@@ -366,5 +404,29 @@ impl Vivling {
         }
         self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         Ok(())
+    }
+
+    /// codex-vl bond: record the supplementary success bonus on the active
+    /// Vivling when a Chat or Assist brain request returned a reply.
+    /// Counters stay tied to dispatch — this only modifies `bond.value`.
+    /// Called from `vl_handler.rs` `VivlingAssistFinished::Ok(reply)` arm
+    /// AFTER `mark_brain_reply`; a failed `mark_brain_reply` must NOT
+    /// prevent this call (Codex design review iter 4 §7).
+    pub(crate) fn record_brain_success(
+        &mut self,
+        kind: VivlingBrainRequestKind,
+    ) -> Result<(), String> {
+        self.ensure_hatched()?;
+        let bond_kind = match kind {
+            VivlingBrainRequestKind::Chat => {
+                crate::vivling::VivlingInteractionKind::BrainChatSucceeded
+            }
+            VivlingBrainRequestKind::Assist => {
+                crate::vivling::VivlingInteractionKind::BrainAssistSucceeded
+            }
+        };
+        let state = self.state.as_mut().expect("state checked");
+        state.bond.record_interaction(bond_kind, Utc::now());
+        self.save_state().map_err(|err| err.to_string())
     }
 }

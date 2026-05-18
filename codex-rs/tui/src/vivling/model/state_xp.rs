@@ -33,7 +33,11 @@ impl VivlingState {
         }
     }
 
-    pub(crate) fn create_spawned_clone(&self, vivling_id: String, instance_label: String) -> Self {
+    pub(crate) fn create_spawned_offspring(
+        &self,
+        vivling_id: String,
+        instance_label: String,
+    ) -> Self {
         let now = Utc::now();
         let hash = fnv1a64(format!("{}:{vivling_id}", self.primary_vivling_id).as_bytes());
         let mut spawned = self.clone();
@@ -105,6 +109,23 @@ impl VivlingState {
         spawned.pending_upgrade = None;
         spawned.last_seen_upgrade = None;
         spawned.last_zed_topic = None;
+        spawned.bond = crate::vivling::VivlingBond::for_offspring();
+        spawned.lineage_seen_parent_summary_keys = Vec::new();
+        spawned.lineage_rarity_pressure_pct = 0;
+        spawned.cultural_parent_vivling_id = Some(self.vivling_id.clone());
+        spawned.lineage_blessed = false;
+
+        // codex-vl: lineage rarity pressure — dentro-specie quality roll.
+        // Never swaps species (kept inherited via clone). May lift gene
+        // temperaments and brain_potential when the deterministic trigger
+        // fires. Pressure ≥ LINEAGE_BLESSED_PRESSURE_THRESHOLD on a
+        // successful trigger marks the offspring as `lineage_blessed`.
+        let pressure = self.lineage_rarity_pressure_pct;
+        let triggered =
+            super::lineage::apply_lineage_quality_roll(&mut spawned.gene_vector, hash, pressure);
+        if triggered && super::lineage::is_lineage_blessed_threshold(pressure) {
+            spawned.lineage_blessed = true;
+        }
         spawned
     }
 
@@ -173,19 +194,21 @@ impl VivlingState {
         archetype: WorkArchetype,
         weight: u64,
         created_at: DateTime<Utc>,
-    ) {
-        self.work_memory.push(VivlingWorkMemoryEntry {
+    ) -> VivlingWorkMemoryEntry {
+        let entry = VivlingWorkMemoryEntry {
             kind: kind.to_string(),
             summary,
             archetype,
             weight,
             created_at,
-        });
+        };
+        self.work_memory.push(entry.clone());
         self.capsules_since_distill = self.capsules_since_distill.saturating_add(1);
         if self.work_memory.len() > MAX_WORK_MEMORY_ENTRIES {
             let overflow = self.work_memory.len() - MAX_WORK_MEMORY_ENTRIES;
             self.work_memory.drain(0..overflow);
         }
+        entry
     }
 
     fn record_work_capsule(
@@ -194,14 +217,14 @@ impl VivlingState {
         summary: String,
         archetype: WorkArchetype,
         weight: u64,
-    ) -> Option<Stage> {
+    ) -> (Option<Stage>, VivlingWorkMemoryEntry) {
         let now = Utc::now();
         self.note_active_work_day(now);
         let granted_xp = self.grant_work_xp(weight);
         let stored_weight = granted_xp.max(weight.min(12));
         self.work_affinities.add(archetype, stored_weight);
         self.last_work_summary = Some(summary.clone());
-        self.push_memory(kind, summary, archetype, stored_weight, now);
+        let entry = self.push_memory(kind, summary, archetype, stored_weight, now);
         self.record_semantic_signal(Self::infer_semantic_topic(
             kind,
             self.last_work_summary.as_deref().unwrap_or(""),
@@ -214,7 +237,7 @@ impl VivlingState {
         );
         self.maybe_distill_memory();
         self.rebuild_learning_profiles();
-        self.recompute_level()
+        (self.recompute_level(), entry)
     }
 
     fn record_memory_only_capsule(
@@ -222,11 +245,11 @@ impl VivlingState {
         kind: &str,
         summary: String,
         archetype: WorkArchetype,
-    ) -> Option<Stage> {
+    ) -> (Option<Stage>, VivlingWorkMemoryEntry) {
         let now = Utc::now();
         self.note_active_work_day(now);
         self.last_work_summary = Some(summary.clone());
-        self.push_memory(kind, summary, archetype, 0, now);
+        let entry = self.push_memory(kind, summary, archetype, 0, now);
         self.record_semantic_signal(Self::infer_semantic_topic(
             kind,
             self.last_work_summary.as_deref().unwrap_or(""),
@@ -239,7 +262,7 @@ impl VivlingState {
         );
         self.maybe_distill_memory();
         self.rebuild_learning_profiles();
-        self.recompute_level()
+        (self.recompute_level(), entry)
     }
 
     pub(crate) fn species_bias(&self) -> &WorkAffinitySet {
@@ -273,7 +296,10 @@ impl VivlingState {
         }
     }
 
-    pub(crate) fn record_loop_event(&mut self, event: &VivlingLoopEvent) {
+    pub(crate) fn record_loop_event(
+        &mut self,
+        event: &VivlingLoopEvent,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         self.loop_exposure = self.loop_exposure.saturating_add(1);
         let source = match event.source {
             VivlingLoopEventSource::User => "user",
@@ -318,7 +344,7 @@ impl VivlingState {
             ),
             (None, None, None) => format!("loop {} `{}` ({source})", event.action, event.label),
         };
-        let gained_stage = match event.kind {
+        let (gained_stage, entry) = match event.kind {
             VivlingLoopEventKind::Config => {
                 self.loop_admin_churn = self.loop_admin_churn.saturating_add(1);
                 let weight = match event.action.as_str() {
@@ -426,9 +452,13 @@ impl VivlingState {
             }
             None => format!("loop {} `{}` noted", event.action, event.label),
         });
+        vec![entry]
     }
 
-    pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) {
+    pub(crate) fn record_turn_completed(
+        &mut self,
+        summary: Option<&str>,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         self.turns_observed = self.turns_observed.saturating_add(1);
         let digest = summary
             .map(str::trim)
@@ -437,16 +467,19 @@ impl VivlingState {
             .unwrap_or_else(|| "completed a codex turn".to_string());
         let archetype = classify_work_archetype(&digest);
         let memory_summary = format!("turn completed: {digest}");
-        let gained_stage = self.record_work_capsule("turn", memory_summary, archetype, 14);
+        let (gained_stage, entry) = self.record_work_capsule("turn", memory_summary, archetype, 14);
         self.last_message = Some(match gained_stage {
             Some(_stage) => self
                 .pending_upgrade
                 .map(VivlingUpgrade::prompt)
                 .unwrap_or("grew from completed work")
                 .to_string(),
-            None if self.stage() == Stage::Adult => {
-                "tracking work rhythm for the current goal".to_string()
-            }
+            None if self.stage() == Stage::Adult => match archetype {
+                WorkArchetype::Builder => "build landed. keep the diff narrow".to_string(),
+                WorkArchetype::Reviewer => "review moved. name remaining risk".to_string(),
+                WorkArchetype::Researcher => "learned enough. choose one unknown".to_string(),
+                WorkArchetype::Operator => "state changed. verify before next wake".to_string(),
+            },
             None if self.stage() == Stage::Juvenile => match archetype {
                 WorkArchetype::Builder => "built. test it now?".to_string(),
                 WorkArchetype::Reviewer => "reviewed. risk moved?".to_string(),
@@ -460,17 +493,28 @@ impl VivlingState {
                 WorkArchetype::Operator => "done. loop ok?".to_string(),
             },
         });
+        vec![entry]
     }
 
-    pub(crate) fn record_live_context_summary(&mut self, summary: &str) {
+    pub(crate) fn record_live_context_summary(
+        &mut self,
+        summary: &str,
+    ) -> Vec<VivlingWorkMemoryEntry> {
         let summary = truncate_summary(summary.trim(), 160);
-        if summary.is_empty() || self.last_live_context_summary.as_deref() == Some(summary.as_str())
-        {
-            return;
+        if summary.is_empty() || low_signal_live_context_summary(&summary) {
+            return Vec::new();
+        }
+        let normalized = normalize_live_context_summary(&summary);
+        let last_normalized = self
+            .last_live_context_summary
+            .as_deref()
+            .map(normalize_live_context_summary);
+        if last_normalized.as_deref() == Some(normalized.as_str()) {
+            return Vec::new();
         }
 
         self.last_live_context_summary = Some(summary.clone());
-        self.record_memory_only_capsule(
+        let (_gained_stage, entry) = self.record_memory_only_capsule(
             "live_context",
             format!("live context: {summary}"),
             WorkArchetype::Operator,
@@ -480,6 +524,7 @@ impl VivlingState {
         } else if self.stage() == Stage::Juvenile {
             self.last_message = Some(format!("tracking {summary}"));
         }
+        vec![entry]
     }
 
     pub(crate) fn memory_digest(&self) -> String {
@@ -571,5 +616,60 @@ impl VivlingState {
             strongest_summaries,
             strongest_paths
         )
+    }
+}
+
+fn normalize_live_context_summary(summary: &str) -> String {
+    summary
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(';')
+        .to_ascii_lowercase()
+}
+
+fn low_signal_live_context_summary(summary: &str) -> bool {
+    let normalized = normalize_live_context_summary(summary);
+    let has_actionable_part = normalized.contains("task ")
+        || normalized.contains("branch ")
+        || normalized.contains("active ");
+    if has_actionable_part {
+        return false;
+    }
+    normalized.contains("state ") || normalized.contains("cwd ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_context_memory_skips_low_signal_state_only_updates() {
+        let mut state = VivlingState::default();
+        let entries = state.record_live_context_summary("state Working; cwd codex-vl");
+        assert!(entries.is_empty());
+        assert!(state.last_live_context_summary.is_none());
+    }
+
+    #[test]
+    fn live_context_memory_deduplicates_normalized_repeats() {
+        let mut state = VivlingState::default();
+        let first = state.record_live_context_summary(
+            "state Working; active main; task verify build; branch develop",
+        );
+        let second = state.record_live_context_summary(
+            " state   Working; active main; task verify build; branch develop ",
+        );
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+        assert_eq!(
+            state
+                .work_memory
+                .iter()
+                .filter(|entry| entry.kind == "live_context")
+                .count(),
+            1
+        );
     }
 }

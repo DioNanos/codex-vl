@@ -15,6 +15,7 @@ impl App {
             .codex_home(self.config.codex_home.to_path_buf())
             .cli_overrides(self.cli_kv_overrides.clone())
             .harness_overrides(overrides)
+            .loader_overrides(self.loader_overrides.clone())
             .build()
             .await
             .wrap_err_with(|| format!("Failed to rebuild config for cwd {cwd_display}"))
@@ -48,7 +49,7 @@ impl App {
         match self.rebuild_config_for_cwd(resume_cwd.clone()).await {
             Ok(config) => Ok(config),
             Err(err) => {
-                if crate::cwds_differ(current_cwd, &resume_cwd) {
+                if crate::session_resume::cwds_differ(current_cwd, &resume_cwd) {
                     Err(err)
                 } else {
                     let resume_cwd_display = resume_cwd.display().to_string();
@@ -65,7 +66,7 @@ impl App {
 
     pub(super) fn apply_runtime_policy_overrides(&mut self, config: &mut Config) {
         if let Some(policy) = self.runtime_approval_policy_override.as_ref()
-            && let Err(err) = config.permissions.approval_policy.set(*policy)
+            && let Err(err) = config.permissions.approval_policy.set(policy.to_core())
         {
             tracing::warn!(%err, "failed to carry forward approval policy override");
             self.chat_widget.add_error_message(format!(
@@ -94,7 +95,7 @@ impl App {
         user_message_prefix: &str,
         log_message: &str,
     ) -> bool {
-        if let Err(err) = config.permissions.approval_policy.set(policy) {
+        if let Err(err) = config.permissions.approval_policy.set(policy.to_core()) {
             tracing::warn!(error = %err, "{log_message}");
             self.chat_widget
                 .add_error_message(format!("{user_message_prefix}: {err}"));
@@ -170,7 +171,7 @@ impl App {
             (root_blocks_disable, profile_configured)
         };
         let mut permissions_history_label: Option<&'static str> = None;
-        let mut builder = ConfigEditsBuilder::new(&self.config.codex_home)
+        let mut builder = ConfigEditsBuilder::for_config(&self.config)
             .with_profile(self.active_profile.as_deref());
 
         for (feature, enabled) in updates {
@@ -294,13 +295,17 @@ impl App {
             self.set_approvals_reviewer_in_app_and_widget(self.config.approvals_reviewer);
         }
         if approval_policy_override.is_some() {
-            self.chat_widget
-                .set_approval_policy(self.config.permissions.approval_policy.value());
+            self.chat_widget.set_approval_policy(AskForApproval::from(
+                self.config.permissions.approval_policy.value(),
+            ));
         }
-        if permission_profile_override.is_some()
+        let permission_profile_override_value = permission_profile_override
+            .is_some()
+            .then(|| self.config.permissions.permission_profile().clone());
+        if let Some(permission_profile) = permission_profile_override_value.as_ref()
             && let Err(err) = self
                 .chat_widget
-                .set_permission_profile(self.config.permissions.permission_profile())
+                .set_permission_profile(permission_profile.clone())
         {
             tracing::error!(
                 error = %err,
@@ -309,9 +314,8 @@ impl App {
             self.chat_widget
                 .add_error_message(format!("Failed to enable Auto-review: {err}"));
         }
-        if permission_profile_override.is_some() {
-            self.runtime_permission_profile_override =
-                Some(self.config.permissions.permission_profile());
+        if let Some(permission_profile) = permission_profile_override_value {
+            self.runtime_permission_profile_override = Some(permission_profile);
         }
 
         if approval_policy_override.is_some()
@@ -406,7 +410,7 @@ impl App {
             },
         ];
 
-        if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
+        if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
             .with_edits(edits)
             .apply()
             .await
@@ -493,7 +497,7 @@ impl App {
         (!model.starts_with("codex-auto-")).then(|| Self::reasoning_label(reasoning_effort))
     }
 
-    pub(crate) fn token_usage(&self) -> codex_protocol::protocol::TokenUsage {
+    pub(crate) fn token_usage(&self) -> crate::token_usage::TokenUsage {
         self.chat_widget.token_usage()
     }
 
@@ -512,6 +516,18 @@ impl App {
     pub(super) fn sync_tui_theme_selection(&mut self, name: String) {
         self.config.tui_theme = Some(name.clone());
         self.chat_widget.set_tui_theme(Some(name));
+    }
+
+    #[cfg(test)]
+    pub(super) fn sync_tui_pet_selection(&mut self, pet: String) {
+        self.config.tui_pet = Some(pet.clone());
+        self.chat_widget.set_tui_pet(Some(pet));
+    }
+
+    pub(super) fn sync_tui_pet_disabled(&mut self) {
+        let pet = crate::pets::DISABLED_PET_ID.to_string();
+        self.config.tui_pet = Some(pet.clone());
+        self.chat_widget.set_tui_pet(Some(pet));
     }
 
     pub(super) fn restore_runtime_theme_from_config(&self) {
@@ -541,16 +557,13 @@ impl App {
     }
 }
 
-#[cfg(all(test, feature = "legacy_tui_tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::test_support::app_enabled_in_effective_config;
     use crate::app::test_support::make_test_app;
     use crate::test_support::PathBufExt;
     use codex_protocol::models::PermissionProfile;
-    use codex_protocol::protocol::Event;
-    use codex_protocol::protocol::EventMsg;
-    use codex_protocol::protocol::SessionConfiguredEvent;
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
 
@@ -581,7 +594,7 @@ mod tests {
 
         assert_eq!(app_enabled_in_effective_config(&app.config, &app_id), None);
 
-        ConfigEditsBuilder::new(&app.config.codex_home)
+        ConfigEditsBuilder::for_config(&app.config)
             .with_edits([
                 ConfigEdit::SetPath {
                     segments: vec!["apps".to_string(), app_id.clone(), "enabled".to_string()],
@@ -634,12 +647,11 @@ mod tests {
         let next_cwd_tmp = tempdir()?;
         let next_cwd = next_cwd_tmp.path().to_path_buf();
 
-        app.chat_widget.handle_codex_event(Event {
-            id: String::new(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: ThreadId::new(),
+        app.chat_widget
+            .handle_thread_session(crate::session_state::ThreadSessionState {
+                thread_id: ThreadId::new(),
                 forked_from_id: None,
-                thread_source: None,
+                fork_parent_title: None,
                 thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
@@ -649,12 +661,13 @@ mod tests {
                 permission_profile: PermissionProfile::read_only(),
                 active_permission_profile: None,
                 cwd: next_cwd.clone().abs(),
+                runtime_workspace_roots: Vec::new(),
+                instruction_source_paths: Vec::new(),
                 reasoning_effort: None,
                 message_history: None,
                 network_proxy: None,
                 rollout_path: Some(PathBuf::new()),
-            }),
-        });
+            });
 
         assert_eq!(app.chat_widget.config_ref().cwd.to_path_buf(), next_cwd);
         assert_eq!(app.config.cwd, original_cwd);
@@ -733,6 +746,35 @@ terminal_resize_reflow_max_rows = 9000
         assert_eq!(
             app.chat_widget.config_ref().tui_theme.as_deref(),
             Some("dracula")
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_tui_pet_selection_updates_chat_widget_config_copy() {
+        let mut app = make_test_app().await;
+
+        app.sync_tui_pet_selection("chefito".to_string());
+
+        assert_eq!(app.config.tui_pet.as_deref(), Some("chefito"));
+        assert_eq!(
+            app.chat_widget.config_ref().tui_pet.as_deref(),
+            Some("chefito")
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_tui_pet_disabled_updates_chat_widget_config_copy() {
+        let mut app = make_test_app().await;
+
+        app.sync_tui_pet_disabled();
+
+        assert_eq!(
+            app.config.tui_pet.as_deref(),
+            Some(crate::pets::DISABLED_PET_ID)
+        );
+        assert_eq!(
+            app.chat_widget.config_ref().tui_pet.as_deref(),
+            Some(crate::pets::DISABLED_PET_ID)
         );
     }
 }

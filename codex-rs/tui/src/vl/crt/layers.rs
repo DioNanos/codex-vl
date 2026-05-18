@@ -1,3 +1,4 @@
+use super::animation::TransitionPhases;
 use super::assets::art_for;
 use super::director::CrtMode;
 use super::expressions::ART_WIDTH;
@@ -6,6 +7,7 @@ use super::frame::compose_at;
 use super::palette::Palette;
 use super::scripts;
 use super::speech;
+use super::speech::BubbleAnim;
 use super::surface::CrtSurface;
 use super::tier::CrtTier;
 use crate::vivling::Stage;
@@ -14,6 +16,9 @@ use crate::vl::VivlingActivity;
 pub(crate) const TICK_DIVISOR_MS: u64 = 180;
 const PANEL_GAP: u16 = 2;
 const LEFT_MARGIN_THRESHOLD: u16 = 18;
+
+/// Threshold below which `insight_slide` triggers the bubble glow accent.
+const INSIGHT_GLOW_THRESHOLD: f32 = 0.6;
 
 pub(crate) fn compose_expression(
     surface: &mut CrtSurface,
@@ -26,6 +31,7 @@ pub(crate) fn compose_expression(
     tier: CrtTier,
     species_id: &str,
     stage: Stage,
+    transitions: TransitionPhases,
 ) {
     let width = surface.width();
     if width == 0 || surface.height() < 3 {
@@ -36,6 +42,8 @@ pub(crate) fn compose_expression(
     let art_left: u16 = if width >= LEFT_MARGIN_THRESHOLD { 1 } else { 0 };
     let art_right = art_left.saturating_add(ART_WIDTH).min(width);
     compose_at(surface, &face, art_left, palette);
+
+    let bubble_anim = bubble_anim_from_transitions(transitions);
 
     let panel_x = art_right.saturating_add(PANEL_GAP).min(width);
     let panel_w = width.saturating_sub(panel_x);
@@ -55,7 +63,15 @@ pub(crate) fn compose_expression(
             .min(width);
         let bubble_w = width.saturating_sub(bubble_x);
         let drew_speech = if width >= 40 {
-            speech::draw_bubble(surface, bubble_x, bubble_w, last_message, palette).is_some()
+            speech::draw_bubble_animated(
+                surface,
+                bubble_x,
+                bubble_w,
+                last_message,
+                palette,
+                bubble_anim,
+            )
+            .is_some()
         } else {
             false
         };
@@ -74,12 +90,26 @@ pub(crate) fn compose_expression(
         let drew_script = scripts::draw_activity_script(
             surface, script_x, script_w, activity, seed, elapsed_ms, palette,
         );
-        let drew_speech =
-            speech::draw_bubble(surface, panel_x, panel_w, last_message, palette).is_some();
+        let drew_speech = speech::draw_bubble_animated(
+            surface,
+            panel_x,
+            panel_w,
+            last_message,
+            palette,
+            bubble_anim,
+        )
+        .is_some();
         (drew_script, drew_speech)
     };
     if !drew_speech && !drew_script {
         overlay_accents(surface, mode, tick, palette, art_left, art_right);
+    }
+}
+
+fn bubble_anim_from_transitions(t: TransitionPhases) -> BubbleAnim {
+    BubbleAnim {
+        reveal_chars: t.message_reveal_chars,
+        glow: t.insight_slide < INSIGHT_GLOW_THRESHOLD,
     }
 }
 
@@ -111,6 +141,11 @@ mod tests {
         surface.fill(0, 0, width, ' ', palette.dim);
         surface.fill(0, 1, width, ' ', palette.dim);
         surface.fill(0, 2, width, ' ', palette.dim);
+        let transitions = TransitionPhases {
+            mode_fade: 1.0,
+            message_reveal_chars: usize::MAX,
+            insight_slide: 1.0,
+        };
         compose_expression(
             &mut surface,
             mode,
@@ -122,6 +157,7 @@ mod tests {
             CrtTier::Safe,
             "syllo",
             Stage::Baby,
+            transitions,
         );
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 3));
         surface.render(Rect::new(0, 0, width, 3), &mut buf);
@@ -210,9 +246,11 @@ mod tests {
             Some("watching completed turns closely"),
             Some(VivlingActivity::Playing),
         );
+        // The multi-line bubble now keeps the full message; it may wrap
+        // across rows 1 and 2 but the prefix and the leading word still
+        // appear on the face row.
         assert!(rendered.contains("< watching"));
         assert!(rendered.contains("o"));
-        assert!(!rendered.contains("completed turns"));
     }
 
     #[test]
@@ -225,7 +263,6 @@ mod tests {
             Some(VivlingActivity::Working),
         );
         assert!(rendered.contains("[>]"));
-        assert!(!rendered.contains("completed turns"));
         assert_eq!(rendered.len(), 120);
     }
 

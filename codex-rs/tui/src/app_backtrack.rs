@@ -13,7 +13,7 @@
 //! - A subsequent `Esc` opens the transcript overlay (`Ctrl+T`) and highlights a user message when
 //!   there is a rewind target.
 //! - `Enter` requests a rollback from core and records a `pending_rollback` guard.
-//! - On `EventMsg::ThreadRolledBack`, we either finish an in-flight backtrack request or queue a
+//! - On rollback completion, we either finish an in-flight backtrack request or queue a
 //!   rollback trim so it runs in event order with transcript inserts.
 //!
 //! The transcript overlay (`Ctrl+T`) renders committed transcript cells plus a render-only live
@@ -259,7 +259,9 @@ impl App {
     /// Useful when switching sessions to ensure prior history remains visible.
     pub(crate) fn render_transcript_once(&mut self, tui: &mut tui::Tui) {
         if !self.transcript_cells.is_empty() {
-            let width = tui.terminal.last_known_screen_size.width;
+            let width = self
+                .chat_widget
+                .history_wrap_width(tui.terminal.last_known_screen_size.width);
             for cell in &self.transcript_cells {
                 tui.insert_history_lines_with_wrap_policy(
                     cell.display_lines_for_mode(width, self.chat_widget.history_render_mode()),
@@ -500,8 +502,8 @@ impl App {
         self.backtrack.pending_rollback = None;
     }
 
-    /// Apply rollback semantics for `ThreadRolledBack` events where this TUI does not have an
-    /// in-flight backtrack request (`pending_rollback` is `None`).
+    /// Apply rollback semantics for a confirmed rollback where this TUI does
+    /// not have an in-flight backtrack request (`pending_rollback` is `None`).
     ///
     /// Returns `true` when local transcript state changed.
     pub(crate) fn apply_non_pending_thread_rollback(&mut self, num_turns: u32) -> bool {

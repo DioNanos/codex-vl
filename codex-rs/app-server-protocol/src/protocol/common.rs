@@ -223,6 +223,7 @@ macro_rules! client_request_definitions {
 
         /// Typed response from the server to the client.
         #[derive(Serialize, Deserialize, Debug, Clone)]
+        #[allow(clippy::large_enum_variant)]
         #[serde(tag = "method", rename_all = "camelCase")]
         pub enum ClientResponse {
             $(
@@ -621,12 +622,12 @@ client_request_definitions! {
     },
     PluginList => "plugin/list" {
         params: v2::PluginListParams,
-        serialization: global_shared_read("config"),
+        serialization: None,
         response: v2::PluginListResponse,
     },
     PluginRead => "plugin/read" {
         params: v2::PluginReadParams,
-        serialization: global("config"),
+        serialization: None,
         response: v2::PluginReadResponse,
     },
     PluginSkillRead => "plugin/skill/read" {
@@ -648,6 +649,11 @@ client_request_definitions! {
         params: v2::PluginShareListParams,
         serialization: global("config"),
         response: v2::PluginShareListResponse,
+    },
+    PluginShareCheckout => "plugin/share/checkout" {
+        params: v2::PluginShareCheckoutParams,
+        serialization: global("config"),
+        response: v2::PluginShareCheckoutResponse,
     },
     PluginShareDelete => "plugin/share/delete" {
         params: v2::PluginShareDeleteParams,
@@ -794,6 +800,24 @@ client_request_definitions! {
         serialization: global("config"),
         response: v2::ExperimentalFeatureEnablementSetResponse,
     },
+    #[experimental("remoteControl/enable")]
+    RemoteControlEnable => "remoteControl/enable" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("remote-control"),
+        response: v2::RemoteControlEnableResponse,
+    },
+    #[experimental("remoteControl/disable")]
+    RemoteControlDisable => "remoteControl/disable" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("remote-control"),
+        response: v2::RemoteControlDisableResponse,
+    },
+    #[experimental("remoteControl/status/read")]
+    RemoteControlStatusRead => "remoteControl/status/read" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global_shared_read("remote-control"),
+        response: v2::RemoteControlStatusReadResponse,
+    },
     #[experimental("collaborationMode/list")]
     /// Lists collaboration mode presets.
     CollaborationModeList => "collaborationMode/list" {
@@ -807,6 +831,13 @@ client_request_definitions! {
         params: v2::MockExperimentalMethodParams,
         serialization: None,
         response: v2::MockExperimentalMethodResponse,
+    },
+    #[experimental("environment/add")]
+    /// Adds or replaces a remote environment by id for later selection.
+    EnvironmentAdd => "environment/add" {
+        params: v2::EnvironmentAddParams,
+        serialization: global("environment"),
+        response: v2::EnvironmentAddResponse,
     },
 
     McpServerOauthLogin => "mcpServer/oauth/login" {
@@ -1312,6 +1343,12 @@ server_request_definitions! {
         response: v2::ChatgptAuthTokensRefreshResponse,
     },
 
+    /// Generate a fresh upstream attestation result on demand.
+    AttestationGenerate => "attestation/generate" {
+        params: v2::AttestationGenerateParams,
+        response: v2::AttestationGenerateResponse,
+    },
+
     /// DEPRECATED APIs below
     /// Request to approve a patch.
     /// This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).
@@ -1670,10 +1707,17 @@ mod tests {
                 marketplace_kinds: None,
             },
         };
-        assert_eq!(
-            plugin_list.serialization_scope(),
-            Some(ClientRequestSerializationScope::GlobalSharedRead("config"))
-        );
+        assert_eq!(plugin_list.serialization_scope(), None);
+
+        let plugin_read = ClientRequest::PluginRead {
+            request_id: request_id(),
+            params: v2::PluginReadParams {
+                marketplace_path: Some(absolute_path("/tmp/marketplace")),
+                remote_marketplace_name: None,
+                plugin_name: "plugin-a".to_string(),
+            },
+        };
+        assert_eq!(plugin_read.serialization_scope(), None);
 
         let plugin_uninstall = ClientRequest::PluginUninstall {
             request_id: request_id(),
@@ -1789,6 +1833,18 @@ mod tests {
         assert_eq!(
             add_credits_nudge.serialization_scope(),
             Some(ClientRequestSerializationScope::Global("account-auth"))
+        );
+
+        let environment_add = ClientRequest::EnvironmentAdd {
+            request_id: request_id(),
+            params: v2::EnvironmentAddParams {
+                environment_id: "remote-a".to_string(),
+                exec_server_url: "ws://127.0.0.1:8765".to_string(),
+            },
+        };
+        assert_eq!(
+            environment_add.serialization_scope(),
+            Some(ClientRequestSerializationScope::Global("environment"))
         );
     }
 
@@ -1910,6 +1966,7 @@ mod tests {
                 },
                 capabilities: Some(v1::InitializeCapabilities {
                     experimental_api: true,
+                    request_attestation: true,
                     opt_out_notification_methods: Some(vec![
                         "thread/started".to_string(),
                         "item/agentMessage/delta".to_string(),
@@ -1930,6 +1987,7 @@ mod tests {
                     },
                     "capabilities": {
                         "experimentalApi": true,
+                        "requestAttestation": true,
                         "optOutNotificationMethods": [
                             "thread/started",
                             "item/agentMessage/delta"
@@ -1955,6 +2013,7 @@ mod tests {
                 },
                 "capabilities": {
                     "experimentalApi": true,
+                    "requestAttestation": true,
                     "optOutNotificationMethods": [
                         "thread/started",
                         "item/agentMessage/delta"
@@ -1975,6 +2034,7 @@ mod tests {
                     },
                     capabilities: Some(v1::InitializeCapabilities {
                         experimental_api: true,
+                        request_attestation: true,
                         opt_out_notification_methods: Some(vec![
                             "thread/started".to_string(),
                             "item/agentMessage/delta".to_string(),
@@ -2088,6 +2148,28 @@ mod tests {
             }),
             serde_json::to_value(&request)?,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_attestation_generate_request() -> Result<()> {
+        let params = v2::AttestationGenerateParams {};
+        let request = ServerRequest::AttestationGenerate {
+            request_id: RequestId::Integer(9),
+            params: params.clone(),
+        };
+        assert_eq!(
+            json!({
+                "method": "attestation/generate",
+                "id": 9,
+                "params": {}
+            }),
+            serde_json::to_value(&request)?,
+        );
+
+        let payload = ServerRequestPayload::AttestationGenerate(params);
+        assert_eq!(request.id(), &RequestId::Integer(9));
+        assert_eq!(payload.request_with_id(RequestId::Integer(9)), request);
         Ok(())
     }
 
@@ -2221,11 +2303,11 @@ mod tests {
                 model_provider: "openai".to_string(),
                 service_tier: None,
                 cwd,
+                runtime_workspace_roots: Vec::new(),
                 instruction_sources: vec![absolute_path("/tmp/AGENTS.md")],
                 approval_policy: v2::AskForApproval::OnFailure,
                 approvals_reviewer: v2::ApprovalsReviewer::User,
                 sandbox: v2::SandboxPolicy::DangerFullAccess,
-                permission_profile: None,
                 active_permission_profile: None,
                 reasoning_effort: None,
             },
@@ -2265,13 +2347,13 @@ mod tests {
                     "modelProvider": "openai",
                     "serviceTier": null,
                     "cwd": absolute_path_string("tmp"),
+                    "runtimeWorkspaceRoots": [],
                     "instructionSources": [absolute_path_string("tmp/AGENTS.md")],
                     "approvalPolicy": "on-failure",
                     "approvalsReviewer": "user",
                     "sandbox": {
                         "type": "dangerFullAccess"
                     },
-                    "permissionProfile": null,
                     "activePermissionProfile": null,
                     "reasoningEffort": null
                 }
@@ -2547,9 +2629,32 @@ mod tests {
     }
 
     #[test]
+    fn serialize_environment_add() -> Result<()> {
+        let request = ClientRequest::EnvironmentAdd {
+            request_id: RequestId::Integer(9),
+            params: v2::EnvironmentAddParams {
+                environment_id: "remote-a".to_string(),
+                exec_server_url: "ws://127.0.0.1:8765".to_string(),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "environment/add",
+                "id": 9,
+                "params": {
+                    "environmentId": "remote-a",
+                    "execServerUrl": "ws://127.0.0.1:8765"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
     fn serialize_fs_get_metadata() -> Result<()> {
         let request = ClientRequest::FsGetMetadata {
-            request_id: RequestId::Integer(9),
+            request_id: RequestId::Integer(10),
             params: v2::FsGetMetadataParams {
                 path: absolute_path("tmp/example"),
             },
@@ -2557,7 +2662,7 @@ mod tests {
         assert_eq!(
             json!({
                 "method": "fs/getMetadata",
-                "id": 9,
+                "id": 10,
                 "params": {
                     "path": absolute_path_string("tmp/example")
                 }
@@ -2816,6 +2921,19 @@ mod tests {
         };
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
         assert_eq!(reason, Some("mock/experimentalMethod"));
+    }
+
+    #[test]
+    fn environment_add_is_marked_experimental() {
+        let request = ClientRequest::EnvironmentAdd {
+            request_id: RequestId::Integer(1),
+            params: v2::EnvironmentAddParams {
+                environment_id: "remote-a".to_string(),
+                exec_server_url: "ws://127.0.0.1:8765".to_string(),
+            },
+        };
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&request);
+        assert_eq!(reason, Some("environment/add"));
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub(crate) enum VivlingAction {
     Chat(String),
     DirectMessage(String),
     Reset,
+    Zed,
 }
 
 impl VivlingAction {
@@ -83,6 +84,7 @@ impl VivlingAction {
             "recap" => Ok(Self::Recap),
             "card" => Ok(Self::Card),
             "upgrade" => Ok(Self::Upgrade),
+            "zed" => Ok(Self::Zed),
             "assist" => {
                 if rest.is_empty() {
                     Err("Usage: /vivling assist <task>".to_string())

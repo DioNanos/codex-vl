@@ -1,4 +1,6 @@
 pub(super) use super::super::*;
+pub(super) use crate::vivling::VivlingLoopEventKind;
+pub(super) use crate::vivling::VivlingLoopEventSource;
 pub(super) use crate::vivling::model::ADULT_LEVEL;
 pub(super) use crate::vivling::model::WORK_XP_PER_LEVEL;
 pub(super) use ratatui::buffer::Buffer;

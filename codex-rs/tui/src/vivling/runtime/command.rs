@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::vl::crt::CrtAnimationLedger;
+use crate::vl::crt::FrameTarget;
+use crate::vl::crt::PacingProbe;
+use crate::vl::crt::VivlingCrtConfig;
+
 impl Vivling {
     pub(crate) fn unavailable() -> Self {
         Self {
@@ -18,6 +23,9 @@ impl Vivling {
             activity: RefCell::new(None),
             live_context: RefCell::new(None),
             msa: None,
+            crt_config: VivlingCrtConfig::default(),
+            crt_animation_ledger: CrtAnimationLedger::new(),
+            crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
         }
     }
 
@@ -28,11 +36,16 @@ impl Vivling {
     ) {
         self.frame_requester = Some(frame_requester);
         self.animations_enabled = animations_enabled;
+        // Re-detect frame pacing once we know the runtime is wired; the
+        // probe is cheap enough to redo here.
+        self.crt_frame_target
+            .set(FrameTarget::detect(PacingProbe::from_std_env()));
     }
 
     pub(crate) fn configure(&mut self, codex_home: &Path, auth_mode: AuthCredentialsStoreMode) {
         let codex_home = codex_home.to_path_buf();
         let needs_reload = self.codex_home.as_ref() != Some(&codex_home);
+        self.crt_config = VivlingCrtConfig::load_from_codex_home(&codex_home);
         self.codex_home = Some(codex_home);
         self.auth_mode = auth_mode;
         if self.msa.is_none() {
@@ -137,7 +150,9 @@ impl Vivling {
             VivlingAction::Status => self.status().map(VivlingCommandOutcome::Message),
             VivlingAction::Roster => self.roster_summary().map(VivlingCommandOutcome::Message),
             VivlingAction::Focus(target) => self.focus(&target).map(VivlingCommandOutcome::Message),
-            VivlingAction::Spawn => self.spawn_vivling().map(VivlingCommandOutcome::Message),
+            VivlingAction::Spawn => self
+                .spawn_vivling()
+                .map(|(message, panel)| VivlingCommandOutcome::SpawnNarration { message, panel }),
             VivlingAction::Export(path) => self
                 .export_active(cwd, path.as_deref())
                 .map(VivlingCommandOutcome::Message),
@@ -203,7 +218,32 @@ impl Vivling {
                     "Vivling reset. Use /vivling hatch when you want a new one.".to_string(),
                 ))
             }
+            VivlingAction::Zed => self
+                .open_zed_companion()
+                .map(VivlingCommandOutcome::OpenUpgrade),
         }
+    }
+
+    /// codex-vl ZED Companion panel: bond + gene snapshot dispatched through
+    /// the existing `OpenUpgrade` ZED channel (per Codex design review iter 1
+    /// §1: do not reuse `OpenCard` which opens `VivlingCardView` and would
+    /// blur the identity-card / ZED-panel separation).
+    pub(crate) fn open_zed_companion(&mut self) -> Result<VivlingPanelData, String> {
+        self.ensure_hatched()?;
+        let panel = {
+            let state = self.state.as_mut().expect("state checked");
+            state.apply_decay(Utc::now());
+            let summary = super::super::zed::zed_companion_summary(state);
+            state.last_zed_topic = Some("companion".to_string());
+            let zed = zed_panel_data(super::super::zed::ZedTopic::Companion, &summary);
+            VivlingPanelData {
+                title: zed.title,
+                narrow_lines: zed.narrow_lines,
+                wide_lines: zed.wide_lines,
+            }
+        };
+        self.save_state().map_err(|err| err.to_string())?;
+        Ok(panel)
     }
 
     pub(crate) fn chat(&mut self, text: &str) -> Result<VivlingCommandOutcome, String> {
@@ -316,6 +356,7 @@ impl Vivling {
             "/vivling switch <vivling_id_or_name> - alias for focus".to_string(),
             "/vivling card - open the current Vivling card".to_string(),
             "/vivling upgrade - open the ZED upgrade card".to_string(),
+            "/vivling zed - open the ZED Companion panel (bond + gene snapshot)".to_string(),
             "/vivling assist <task> - ask the Vivling brain for adult help".to_string(),
             "/vivling brain <on|off> - enable or disable the Vivling brain".to_string(),
             "/vivling model - show the current Vivling brain profile".to_string(),
@@ -508,7 +549,7 @@ impl Vivling {
         ))
     }
 
-    pub(crate) fn spawn_vivling(&mut self) -> Result<String, String> {
+    pub(crate) fn spawn_vivling(&mut self) -> Result<(String, VivlingPanelData), String> {
         self.ensure_hatched()?;
         let primary = self.state.as_ref().expect("state checked").clone();
         if !primary.is_primary {
@@ -530,9 +571,23 @@ impl Vivling {
                 "No free local spawn slots. Used {local_spawn_used}/{local_spawn_unlocked}."
             ));
         }
+
         let new_id = format!("viv-{}", Uuid::new_v4().simple());
         let instance_label = format!("spawn-{}", local_spawn_used + 1);
-        let mut spawned = primary.create_spawned_clone(new_id.clone(), instance_label.clone());
+
+        // codex-vl iter 1B: multi-origin sort. The origin is rolled
+        // uniformly over the eligible pool; the user never picks it.
+        let roll = super::super::model::text_utils::fnv1a64(new_id.as_bytes());
+        let origin = super::spawn_origin::pick_spawn_origin(&primary, &lineage_states, roll)
+            .ok_or_else(|| "No eligible spawn origin available.".to_string())?;
+        let origin_label = origin.label();
+        let mut spawned = super::spawn_origin::build_offspring_for_origin(
+            &origin,
+            &primary,
+            new_id.clone(),
+            instance_label.clone(),
+        );
+
         let existing_name_count = lineage_states
             .iter()
             .filter(|entry| entry.name == primary.name)
@@ -546,14 +601,51 @@ impl Vivling {
         }
         self.save_state_record(&spawned, false, false)
             .map_err(|err| err.to_string())?;
-        Ok(format!(
-            "Spawned {} [{}] {}. Local spawn slots now {}/{}.",
+
+        // codex-vl: a successful spawn bumps the primary's lineage
+        // rarity pressure for the next offspring's dentro-specie
+        // quality roll (DAG design directive 2026-05-15). Failed spawns
+        // never reach this point — the early returns above keep the
+        // pressure untouched on error paths.
+        if let Some(state) = self.state.as_mut() {
+            state.lineage_rarity_pressure_pct =
+                super::super::model::lineage::bump_lineage_rarity_pressure(
+                    state.lineage_rarity_pressure_pct,
+                );
+            let primary_after_bump = state.clone();
+            self.save_state_record(&primary_after_bump, /*set_active*/ true, false)
+                .map_err(|err| err.to_string())?;
+        }
+
+        // codex-vl iter 1C: L1 chat-history message + L2 ZED Lineage
+        // panel narration. The newborn stays inactive; the panel makes
+        // the lineage event visible as ZED-as-presenter, and the
+        // message keeps a quick audit trail in chat history.
+        let message = format!(
+            "Spawned {} [{}] {} via {}. Bio species: {}. Cultural parent: {}. \
+             Child stays inactive. Local spawn slots now {}/{}.",
             spawned.vivling_id,
             instance_label,
             spawned.name,
+            origin_label,
+            spawned.species,
+            primary.name,
             local_spawn_used + 1,
             local_spawn_unlocked
-        ))
+        );
+        let summary = super::super::zed::zed_summary_for_lineage(
+            &primary.name,
+            &spawned.name,
+            &spawned.species,
+            origin_label,
+        );
+        let zed = super::super::zed::zed_panel_data(super::super::zed::ZedTopic::Lineage, &summary);
+        let panel = VivlingPanelData {
+            title: zed.title,
+            narrow_lines: zed.narrow_lines,
+            wide_lines: zed.wide_lines,
+        };
+        Ok((message, panel))
     }
 
     pub(crate) fn export_active(

@@ -36,3 +36,32 @@ impl VivlingAnimation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard: animation text is scientific (eat/sleep/play/work
+    /// activity glyphs) and must never be modulated by relational state.
+    /// The `current_text` signature does not accept `LifecycleVoiceTone`, so
+    /// this test mostly asserts the API surface stays narrow; if a future
+    /// change adds a tone parameter here, the test will fail to compile and
+    /// force a design conversation.
+    #[test]
+    fn animation_text_is_not_modulated_by_bond() {
+        let mut anim = VivlingAnimation::new();
+        anim.frame_index = 0;
+        let eating = anim.current_text(VivlingActivity::Eating);
+        let sleeping = anim.current_text(VivlingActivity::Sleeping);
+        let playing = anim.current_text(VivlingActivity::Playing);
+        let working = anim.current_text(VivlingActivity::Working);
+        let idle = anim.current_text(VivlingActivity::Idle);
+
+        // Verify these are the scientific pool entries, untouched by any tone.
+        assert_eq!(eating, "*munch*");
+        assert_eq!(sleeping, "zZz");
+        assert_eq!(playing, "*hop*");
+        assert_eq!(working, "[>  ]");
+        assert_eq!(idle, "");
+    }
+}

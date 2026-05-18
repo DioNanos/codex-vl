@@ -103,6 +103,22 @@ impl Renderable for Vivling {
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
         let activity = *self.activity.borrow();
+        let mode_for_observe = derive_mode(state, activity, area.width);
+
+        // Update the animation ledger before rendering so transition
+        // phases reflect the new inputs.
+        self.crt_animation_ledger
+            .observe(now, mode_for_observe, last_message, insight.as_deref());
+        let mut transitions = self.crt_animation_ledger.phases(now);
+        if !self.animations_enabled
+            || !self.crt_config.transitions
+            || !self.crt_frame_target.get().schedules_frames()
+        {
+            transitions.mode_fade = 1.0;
+            transitions.message_reveal_chars = usize::MAX;
+            transitions.insight_slide = 1.0;
+        }
+
         let mut surface = crate::vl::crt::CrtSurface::new(
             area.width,
             VIVLING_STRIP_HEIGHT,
@@ -124,16 +140,84 @@ impl Renderable for Vivling {
             last_message,
             activity,
             tier: crate::vl::crt::CrtTier::detect(),
+            crt_config: &self.crt_config,
+            transitions,
         };
         crate::vl::crt::render_crt_scene(&mut surface, &scene);
-        surface.render(area, buf);
+        let strip_h = area.height.min(VIVLING_STRIP_HEIGHT);
+        let render_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: strip_h,
+        };
+        surface.render(render_area, buf);
+
+        self.schedule_animation_wake(now);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        if self.visible_state().is_some() && width >= VIVLING_STRIP_MIN_WIDTH {
-            VIVLING_STRIP_HEIGHT
-        } else {
-            0
+        if self.visible_state().is_none() || width < VIVLING_STRIP_MIN_WIDTH {
+            return 0;
+        }
+        VIVLING_STRIP_HEIGHT
+    }
+}
+
+impl Vivling {
+    fn schedule_animation_wake(&self, now: Instant) {
+        let Some(frame_requester) = &self.frame_requester else {
+            return;
+        };
+        if !self.animations_enabled || !self.crt_config.any_animation_active() {
+            return;
+        }
+        let target = self.crt_frame_target.get();
+        if !target.schedules_frames() {
+            return;
+        }
+        let ledger_wake = self.crt_animation_ledger.next_wake(now);
+        let tick = target.tick();
+        let wake = match (ledger_wake, tick) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => {
+                // Idle but pacing is enabled: schedule a long lazy tick
+                // so breathing/flicker can cycle without burning CPU.
+                Some(b.max(Duration::from_millis(800)))
+            }
+            (None, None) => None,
+        };
+        if let Some(d) = wake {
+            frame_requester.schedule_frame_in(d);
         }
     }
+}
+
+fn derive_mode(
+    state: &VivlingState,
+    activity: Option<crate::vl::VivlingActivity>,
+    width: u16,
+) -> crate::vl::crt::director::CrtMode {
+    use crate::vl::crt::director::CrtMode;
+    match activity {
+        Some(crate::vl::VivlingActivity::Eating) => return CrtMode::Hungry,
+        Some(crate::vl::VivlingActivity::Sleeping) => return CrtMode::Tired,
+        Some(crate::vl::VivlingActivity::Playing) => return CrtMode::Thinking,
+        Some(crate::vl::VivlingActivity::Working) => return CrtMode::Working,
+        Some(crate::vl::VivlingActivity::Idle) | None => {}
+    }
+    if state.energy <= 12 {
+        return CrtMode::Alert;
+    }
+    if state.hunger >= 90 {
+        return CrtMode::Hungry;
+    }
+    if state.energy <= 28 {
+        return CrtMode::Tired;
+    }
+    if width >= 24 && state.mood().eq_ignore_ascii_case("curious") {
+        return CrtMode::Thinking;
+    }
+    CrtMode::Idle
 }

@@ -310,7 +310,7 @@ impl VivlingState {
             &self.gene_vector,
         );
         format!(
-            "{} the {} {} {} - {} - Lv {} - active_days {} - mode {} - {} - dna {} - genes {} - temperament {} - brain potential {} - tone {} - stats {}/{}/{}/{} - recent {} - distilled {} - paths {}{}",
+            "{} the {} {} {} - {} - Lv {} - active_days {} - mode {} - {} - bond {} - dna {} - genes {} - temperament {} - brain potential {} - tone {} - stats {}/{}/{}/{} - recent {} - distilled {} - paths {}{}",
             self.name,
             self.stage().label(),
             self.rarity,
@@ -320,6 +320,7 @@ impl VivlingState {
             self.active_work_days,
             self.ai_mode.label(),
             self.brain_summary(),
+            self.bond.display_label(),
             self.dominant_archetype().label(),
             self.gene_vector.gene_stripe(),
             self.gene_vector.temperament_summary(),

@@ -411,3 +411,235 @@ fn assist_prompt_context_declares_memory_and_live_state_boundary() {
     assert!(prompt.contains("Live state (now):"));
     assert!(prompt.contains("Recent observed work:"));
 }
+
+/// Smoke test for the production hot path that broke in 0.130.0:
+/// a `Vivling::record_turn_completed` call must indicize the new capsule into
+/// the per-Vivling MSA collection on disk. The earlier `relevant_memory_*`
+/// test bypasses the wrapper and calls `MsaIndex` directly, so it cannot
+/// catch a regression where `self.msa` is `None` or the closure-snapshot of
+/// `msa`/`vivling_id` becomes stale.
+///
+/// We override `vivling.msa` to point at an isolated tempdir so the test
+/// does not pollute the user's `~/.local/state/mcp-msa-rs/`.
+#[test]
+fn record_turn_completed_indexes_into_msa() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    // Replace the default-storage MSA with an isolated one so the test does
+    // not depend on (or write to) the user's HOME.
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+
+    let before = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    vivling
+        .record_turn_completed(Some("smoke turn for msa indexing"))
+        .expect("record_turn_completed should succeed");
+    let after = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    assert!(
+        after > before,
+        "work_memory should grow after record_turn_completed (before={before}, after={after})"
+    );
+
+    assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
+}
+
+#[test]
+fn record_turn_completed_indexes_into_msa_when_work_memory_saturated() {
+    use crate::vivling::model::MAX_WORK_MEMORY_ENTRIES;
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+    vivling.state.as_mut().expect("state").work_memory = saturated_memory_entries();
+
+    vivling
+        .record_turn_completed(Some("saturated turn for msa indexing"))
+        .expect("record_turn_completed should succeed");
+
+    let state = vivling.state.as_ref().expect("state");
+    assert_eq!(
+        state.work_memory.len(),
+        MAX_WORK_MEMORY_ENTRIES,
+        "work_memory should remain capped after record_turn_completed"
+    );
+    assert!(
+        state
+            .work_memory
+            .last()
+            .expect("last memory")
+            .summary
+            .contains("saturated turn for msa indexing")
+    );
+
+    assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
+}
+
+#[test]
+fn record_loop_event_indexes_into_msa() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+
+    let before = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    vivling
+        .record_loop_event(VivlingLoopEvent {
+            kind: VivlingLoopEventKind::Runtime,
+            source: VivlingLoopEventSource::Agent,
+            action: "trigger".to_string(),
+            label: "msa-smoke".to_string(),
+            runtime_state: Some("running".to_string()),
+            last_status: Some("submitted".to_string()),
+            goal: Some("cover loop msa indexing".to_string()),
+        })
+        .expect("record_loop_event should succeed");
+    let after = vivling
+        .state
+        .as_ref()
+        .map(|s| s.work_memory.len())
+        .unwrap_or(0);
+    assert!(
+        after > before,
+        "work_memory should grow after record_loop_event (before={before}, after={after})"
+    );
+
+    assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
+}
+
+#[test]
+fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
+    use crate::vivling::model::MAX_WORK_MEMORY_ENTRIES;
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+    vivling.state.as_mut().expect("state").work_memory = saturated_memory_entries();
+
+    vivling
+        .record_loop_event(VivlingLoopEvent {
+            kind: VivlingLoopEventKind::Runtime,
+            source: VivlingLoopEventSource::Agent,
+            action: "trigger".to_string(),
+            label: "msa-saturated".to_string(),
+            runtime_state: Some("running".to_string()),
+            last_status: Some("submitted".to_string()),
+            goal: Some("cover saturated loop msa indexing".to_string()),
+        })
+        .expect("record_loop_event should succeed");
+
+    let state = vivling.state.as_ref().expect("state");
+    assert_eq!(
+        state.work_memory.len(),
+        MAX_WORK_MEMORY_ENTRIES,
+        "work_memory should remain capped after record_loop_event"
+    );
+    assert!(
+        state
+            .work_memory
+            .last()
+            .expect("last memory")
+            .summary
+            .contains("msa-saturated")
+    );
+
+    assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
+}
+
+fn saturated_memory_entries() -> Vec<crate::vivling::model::VivlingWorkMemoryEntry> {
+    use crate::vivling::model::MAX_WORK_MEMORY_ENTRIES;
+    use crate::vivling::model::VivlingWorkMemoryEntry;
+    use crate::vivling::model::WorkArchetype;
+    use chrono::Duration;
+
+    (0..MAX_WORK_MEMORY_ENTRIES)
+        .map(|index| VivlingWorkMemoryEntry {
+            kind: "preexisting".to_string(),
+            summary: format!("preexisting saturated memory {index}"),
+            archetype: WorkArchetype::Builder,
+            weight: 1,
+            created_at: Utc::now() - Duration::seconds(index as i64),
+        })
+        .collect()
+}
+
+fn assert_msa_collection_has_tantivy_shard(msa_storage: &std::path::Path, vivling_id: &str) {
+    let collection_dir = msa_storage.join(format!("vivling::{vivling_id}"));
+    assert!(
+        collection_dir.is_dir(),
+        "MSA collection directory should exist at {}",
+        collection_dir.display()
+    );
+    let entries: Vec<String> = std::fs::read_dir(&collection_dir)
+        .expect("list collection dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let has_tantivy_shard = entries
+        .iter()
+        .any(|name| name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx"));
+    assert!(
+        has_tantivy_shard,
+        "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
+        collection_dir.display()
+    );
+}

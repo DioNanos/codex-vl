@@ -8,8 +8,9 @@ const ALERT: [Slot; 3] = [Slot::Alert, Slot::Face, Slot::Alert];
 
 pub(crate) fn art_for(stage: Stage, mode: CrtMode, tick: u64) -> Frame {
     let state = super::super::sheet::state_for_mode(mode);
-    if let Some(rows) = super::super::sheet::frame("syllo", stage, state) {
-        return Frame::new(*rows, slots_for(mode));
+    if let Some(frames) = super::super::sheet::frame("syllo", stage, state) {
+        let idx = (tick as usize) % frames.len();
+        return Frame::new(frames[idx], slots_for(mode));
     }
     legacy_art_for(stage, mode, tick)
 }
@@ -54,5 +55,30 @@ fn legacy_art_for(stage: Stage, mode: CrtMode, tick: u64) -> Frame {
                 Frame::new(["  _</>_      ", " /__@__\\ .   ", "  /_|_\\      "], BODY)
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cycle through `tick` must alternate the rendered frame on the animated
+    /// principal states. Tick=0 and tick=1 land on adjacent frames inside the
+    /// 2-frame Idle cycle.
+    #[test]
+    fn art_for_idle_alternates_with_tick() {
+        let a = art_for(Stage::Baby, CrtMode::Idle, 0);
+        let b = art_for(Stage::Baby, CrtMode::Idle, 1);
+        assert_ne!(a.rows, b.rows);
+    }
+
+    /// Single-frame cycles return identical frames regardless of tick — guards
+    /// against accidental modulo behaviour on `len==1` arrays in the future.
+    /// Syllo Sleep is single-frame in iter 7.
+    #[test]
+    fn art_for_sleep_stable_across_ticks() {
+        let a = art_for(Stage::Baby, CrtMode::Tired, 0);
+        let b = art_for(Stage::Baby, CrtMode::Tired, 1);
+        assert_eq!(a.rows, b.rows);
     }
 }

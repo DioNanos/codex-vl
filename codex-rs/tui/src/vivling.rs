@@ -1,3 +1,5 @@
+#[path = "vivling/bond.rs"]
+mod bond;
 mod model;
 #[path = "vivling/registry.rs"]
 mod registry;
@@ -5,6 +7,10 @@ mod runtime;
 #[path = "vivling/zed.rs"]
 mod zed;
 
+pub(crate) use bond::BondLevel;
+pub(crate) use bond::BondTone;
+pub(crate) use bond::VivlingBond;
+pub(crate) use bond::VivlingInteractionKind;
 pub(crate) use model::Stage;
 pub(crate) use model::VivlingLoopEvent;
 pub(crate) use model::VivlingLoopEventKind;
@@ -17,7 +23,6 @@ pub(crate) use runtime::VivlingBrainProfileRequestKind;
 pub(crate) use runtime::VivlingBrainRequestKind;
 pub(crate) use runtime::VivlingCommandOutcome;
 pub(crate) use runtime::VivlingLiveContext;
-pub(crate) use runtime::VivlingLiveStatusItem;
 pub(crate) use runtime::VivlingLoopTickRequest;
 pub(crate) use runtime::VivlingLoopTickResult;
 pub(crate) use runtime::VivlingPanelData;

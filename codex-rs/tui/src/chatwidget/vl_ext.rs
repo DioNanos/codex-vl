@@ -46,6 +46,14 @@ impl ChatWidget {
             .mark_vivling_brain_reply_for(&self.config, vivling_id, reply)
     }
 
+    pub(crate) fn record_vivling_brain_success(
+        &mut self,
+        kind: crate::vivling::VivlingBrainRequestKind,
+    ) -> Result<(), String> {
+        self.bottom_pane
+            .record_vivling_brain_success(&self.config, kind)
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,
@@ -81,6 +89,20 @@ impl ChatWidget {
         self.bottom_pane.is_vl_sidebar_expanded()
     }
 
+    /// codex-vl: per-frame Vivling lifecycle tick bridge.
+    ///
+    /// Invoked from `ChatWidget::pre_draw_tick` so the upstream-heavy
+    /// `chatwidget.rs` only needs a single-line hook. Keeps the three
+    /// `vl_lifecycle_tick` arguments centralized here, matching the
+    /// regression-pinned contract.
+    pub(crate) fn codex_vl_pre_draw_tick(&mut self) {
+        self.vl_lifecycle_tick(
+            self.is_vivling_baby_or_juvenile(),
+            !self.is_vl_sidebar_expanded(),
+            false,
+        );
+    }
+
     pub(crate) fn vl_lifecycle_tick(
         &mut self,
         is_baby_or_juvenile: bool,
@@ -102,5 +124,141 @@ impl ChatWidget {
 
     pub(crate) fn vl_lifecycle_observe_worker_turn(&mut self) {
         self.bottom_pane.vl_lifecycle_observe_worker_turn();
+    }
+
+    /// codex-vl: render a Vivling-originated chat/assist message in the main history
+    /// and also push it onto the dedicated Vivling sidebar log.
+    pub(crate) fn add_vivling_message(&mut self, text: String, kind: crate::vl::VivlingLogKind) {
+        use ratatui::style::Stylize;
+        use ratatui::text::Line;
+        let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
+        let is_life = kind == crate::vl::VivlingLogKind::Life;
+        self.app_event_tx
+            .send_vl(crate::vl::VlEvent::SidebarPushMessage {
+                kind,
+                text: text.clone(),
+                vivling_id,
+            });
+        if is_life {
+            self.request_redraw();
+            return;
+        }
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            if index == 0 {
+                lines.push(vec!["Vivling: ".dim(), line.to_string().into()].into());
+            } else {
+                lines.push(vec!["          ".dim(), line.to_string().into()].into());
+            }
+        }
+        if lines.is_empty() {
+            lines.push("Vivling".dim().into());
+        }
+        self.add_plain_history_lines(lines);
+        self.request_redraw();
+    }
+
+    /// codex-vl: refresh the Vivling live-context summary from the current chat state.
+    pub(crate) fn sync_vivling_live_context(&mut self) {
+        let run_state = if self.bottom_pane.is_task_running() {
+            "running"
+        } else {
+            "idle"
+        };
+        let mut context = crate::vivling::VivlingLiveContext::default();
+        context.thread_title = self.thread_name.clone();
+        context.cwd = self
+            .config
+            .cwd
+            .to_str()
+            .map(std::string::ToString::to_string);
+        context.model = self.config.model.clone();
+        context.session_id = self.thread_id.map(|id| id.to_string());
+        context.run_state = Some(run_state.to_string());
+        context.active_agent_label = self
+            .bottom_pane
+            .active_agent_label()
+            .map(std::string::ToString::to_string);
+        if let Some(loop_context) = self.bottom_pane.loop_context_label() {
+            context.task_progress = Some(loop_context.to_string());
+        }
+        self.bottom_pane.set_vivling_live_context(Some(context));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // codex-vl regression guard: `pre_draw_tick` must invoke the Vivling
+    // lifecycle bridge so the lifecycle/animation/care path keeps ticking
+    // each frame. Lost during the upstream chatwidget phase-5 refactor
+    // merge — pin the contract so the call cannot disappear silently.
+    //
+    // Boundary extraction 2026-05-15: `pre_draw_tick` now calls the thin
+    // bridge `self.codex_vl_pre_draw_tick()`, which in turn must invoke
+    // `self.vl_lifecycle_tick(is_vivling_baby_or_juvenile, !sidebar, false)`.
+    // We pin BOTH endpoints to catch either:
+    //   (a) someone deleting the hook from `pre_draw_tick`, or
+    //   (b) someone gutting `codex_vl_pre_draw_tick` so it no longer
+    //       drives `vl_lifecycle_tick` with the canonical arguments.
+
+    const CHATWIDGET_SOURCE: &str = include_str!("../chatwidget.rs");
+    const VL_EXT_SOURCE: &str = include_str!("vl_ext.rs");
+
+    #[test]
+    fn pre_draw_tick_invokes_codex_vl_pre_draw_tick() {
+        let body = extract_fn_body(CHATWIDGET_SOURCE, "pre_draw_tick")
+            .expect("pre_draw_tick must exist in chatwidget.rs");
+        assert!(
+            body.contains("self.codex_vl_pre_draw_tick()"),
+            "pre_draw_tick must call self.codex_vl_pre_draw_tick() to drive \
+             the Vivling lifecycle each frame. Body was:\n{body}",
+        );
+    }
+
+    #[test]
+    fn codex_vl_pre_draw_tick_invokes_vl_lifecycle_tick_with_canonical_args() {
+        let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_pre_draw_tick")
+            .expect("codex_vl_pre_draw_tick must exist in vl_ext.rs");
+        assert!(
+            body.contains("self.vl_lifecycle_tick("),
+            "codex_vl_pre_draw_tick must call self.vl_lifecycle_tick(...). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("self.is_vivling_baby_or_juvenile()"),
+            "codex_vl_pre_draw_tick must pass is_vivling_baby_or_juvenile(). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("!self.is_vl_sidebar_expanded()"),
+            "codex_vl_pre_draw_tick must pass !is_vl_sidebar_expanded(). \
+             Body was:\n{body}",
+        );
+        assert!(
+            body.contains("false"),
+            "codex_vl_pre_draw_tick must pass the loop_tick_running=false \
+             literal. Body was:\n{body}",
+        );
+    }
+
+    fn extract_fn_body<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+        let needle = format!("fn {fn_name}(");
+        let start = source.find(&needle)?;
+        let open = source[start..].find('{')? + start;
+        let bytes = source.as_bytes();
+        let mut depth = 0i32;
+        for (idx, &b) in bytes.iter().enumerate().skip(open) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open + 1..idx]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }

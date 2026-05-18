@@ -1,5 +1,6 @@
 pub(crate) mod constants;
 pub(crate) mod gene;
+pub(crate) mod lineage;
 pub(crate) mod state_chat;
 pub(crate) mod state_init;
 pub(crate) mod state_memory;
@@ -169,6 +170,31 @@ pub(crate) struct VivlingState {
     pub(crate) last_zed_topic: Option<String>,
     #[serde(default)]
     pub(crate) unlocked_species: Vec<String>,
+    #[serde(default)]
+    pub(crate) bond: crate::vivling::VivlingBond,
+    /// codex-vl lineage passive learning: dedup keys for parent distilled
+    /// summaries already absorbed by this child. FIFO eviction at 64 entries.
+    #[serde(default)]
+    pub(crate) lineage_seen_parent_summary_keys: Vec<String>,
+    /// codex-vl lineage rarity pressure: +2 per successful offspring spawn,
+    /// cap 10. Applied **inside species** as a quality roll bias on
+    /// `gene_vector` and `brain_potential` of the next offspring; never
+    /// swaps species (DAG design directive 2026-05-15).
+    #[serde(default)]
+    pub(crate) lineage_rarity_pressure_pct: u8,
+    /// codex-vl cultural parent: the `vivling_id` of the active primary at
+    /// the time this Vivling was hatched/spawned. Drives lineage passive
+    /// learning regardless of the biological parent. `None` for legacy
+    /// states from before the multi-origin spawn; propagation falls back
+    /// to `parent_vivling_id` for those entries.
+    #[serde(default)]
+    pub(crate) cultural_parent_vivling_id: Option<String>,
+    /// codex-vl lineage blessed flag: set on a successful quality roll
+    /// when `lineage_rarity_pressure_pct` met the blessed threshold.
+    /// Cosmetic / audit signal — never affects active state, brain or
+    /// loop ownership.
+    #[serde(default)]
+    pub(crate) lineage_blessed: bool,
 }
 
 #[derive(Clone)]

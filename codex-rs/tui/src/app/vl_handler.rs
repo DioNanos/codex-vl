@@ -135,6 +135,13 @@ impl App {
                         tracing::warn!(
                             "failed to persist Vivling brain reply for {vivling_id}: {err}"
                         );
+                        // do not early-exit: bond success bonus must still record
+                        // (Codex design review iter 4 §7).
+                    }
+                    if let Err(err) = self.chat_widget.record_vivling_brain_success(kind) {
+                        tracing::warn!(
+                            "failed to record Vivling bond success for {vivling_id}: {err}"
+                        );
                     }
                     let log_kind = match kind {
                         crate::vivling::VivlingBrainRequestKind::Chat => {

@@ -121,6 +121,7 @@ fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
     assert!(message.contains("/vivling export [path.vivegg]"));
     assert!(message.contains("/vivling import <path.vivegg>"));
     assert!(message.contains("/vivling <message>"));
+    assert!(message.contains("/vivling zed"));
 }
 
 #[test]

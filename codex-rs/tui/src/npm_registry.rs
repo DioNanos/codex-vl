@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[cfg_attr(debug_assertions, allow(dead_code))]
+#[cfg(not(debug_assertions))]
 pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@mmmbuto%2fcodex-vl";
 
 #[derive(Deserialize, Debug, Clone)]
@@ -22,7 +22,6 @@ struct NpmPackageDist {
     integrity: Option<String>,
 }
 
-#[cfg(test)]
 pub(crate) fn ensure_version_ready(
     package_info: &NpmPackageInfo,
     version: &str,
@@ -39,16 +38,6 @@ pub(crate) fn ensure_version_ready(
 
     version_info_with_dist(package_info, version)?;
     Ok(())
-}
-
-pub(crate) fn latest_version_ready(package_info: &NpmPackageInfo) -> anyhow::Result<String> {
-    let latest = package_info
-        .dist_tags
-        .get("latest")
-        .map(String::as_str)
-        .ok_or_else(|| anyhow::anyhow!("npm package is missing latest dist-tag"))?;
-    version_info_with_dist(package_info, latest)?;
-    Ok(latest.to_string())
 }
 
 fn version_info_with_dist<'a>(
@@ -112,17 +101,6 @@ mod tests {
     }
 
     #[test]
-    fn latest_version_ready_uses_npm_latest_dist_tag() {
-        let latest = "1.2.3";
-        let package_info = package_info(latest, latest);
-
-        assert_eq!(
-            latest_version_ready(&package_info).expect("npm latest is ready"),
-            latest
-        );
-    }
-
-    #[test]
     fn ready_version_rejects_stale_latest_dist_tag() {
         let package_info = package_info("1.2.3", "1.2.2");
 
@@ -147,6 +125,47 @@ mod tests {
         assert!(
             err.to_string().contains("missing dist metadata"),
             "error should name missing dist metadata: {err}"
+        );
+    }
+
+    /// codex-vl fork identity (iter F): pin the npm registry URL to the
+    /// fork package. Uses an `include_str!` source-grep instead of
+    /// referencing `PACKAGE_URL` directly because the const is
+    /// `#[cfg(not(debug_assertions))]` and not visible to debug-mode unit
+    /// tests. The negative assertion (no upstream npm scope) lives in
+    /// the catch-all test in `codex-rs/tui/tests/fork_identity_pins.rs`
+    /// to avoid the self-reference problem of a test that grep its own
+    /// source for a forbidden literal.
+    #[test]
+    fn fork_identity_pin_npm_registry_package_url() {
+        const SOURCE: &str = include_str!("npm_registry.rs");
+        assert!(
+            SOURCE.contains("registry.npmjs.org/@mmmbuto%2fcodex-vl"),
+            "PACKAGE_URL must point at the fork npm package \
+             (@mmmbuto/codex-vl). Source did not contain the expected \
+             encoded URL.",
+        );
+    }
+
+    /// codex-vl fork identity (iter F): pin the updater channel semantics
+    /// so the updater keeps reading the `latest` dist-tag rather than
+    /// `next`. The fork publishes alpha builds under `next`, but the
+    /// observed-by-users channel must remain `latest`; an accidental
+    /// switch would surface pre-release builds to every user.
+    #[test]
+    fn fork_identity_pin_npm_registry_uses_latest_dist_tag() {
+        const SOURCE: &str = include_str!("npm_registry.rs");
+        assert!(
+            SOURCE.contains("dist_tags.get(\"latest\")"),
+            "ensure_version_ready must read the `latest` dist-tag. \
+             Source did not contain `dist_tags.get(\"latest\")`.",
+        );
+        // The `next` dist-tag is reserved for fork alpha publishes; the
+        // updater must never start consuming it as the observed channel.
+        assert!(
+            !SOURCE.contains("dist_tags.get(\"next\")"),
+            "ensure_version_ready must not read the `next` dist-tag as \
+             the observed-by-users update channel.",
         );
     }
 }

@@ -5,7 +5,6 @@
 //! when the visible thread changes.
 
 use super::*;
-use crate::app_event::HistoryLookupResponse;
 use crate::session_resume::read_session_model;
 
 impl App {
@@ -215,24 +214,11 @@ impl App {
         let thread_label = Some(self.thread_label(thread_id));
         match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
-                let network_approval_context = params
-                    .network_approval_context
-                    .clone()
-                    .map(network_approval_context_to_core);
-                let additional_permissions = params.additional_permissions.clone().map(Into::into);
-                let proposed_execpolicy_amendment = params
-                    .proposed_execpolicy_amendment
-                    .clone()
-                    .map(|amendment| amendment.into_core());
-                let proposed_network_policy_amendments = params
-                    .proposed_network_policy_amendments
-                    .clone()
-                    .map(|amendments| {
-                        amendments
-                            .into_iter()
-                            .map(|amendment| amendment.into_core())
-                            .collect::<Vec<_>>()
-                    });
+                let network_approval_context = params.network_approval_context.clone();
+                let additional_permissions = params.additional_permissions.clone();
+                let proposed_execpolicy_amendment = params.proposed_execpolicy_amendment.clone();
+                let proposed_network_policy_amendments =
+                    params.proposed_network_policy_amendments.clone();
                 Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec {
                     thread_id,
                     thread_label,
@@ -246,22 +232,14 @@ impl App {
                         .map(split_command_string)
                         .unwrap_or_default(),
                     reason: params.reason.clone(),
-                    available_decisions: params.available_decisions.clone().map_or_else(
-                        || {
-                            default_exec_approval_decisions(
-                                network_approval_context.as_ref(),
-                                proposed_execpolicy_amendment.as_ref(),
-                                proposed_network_policy_amendments.as_deref(),
-                                additional_permissions.as_ref(),
-                            )
-                        },
-                        |decisions| {
-                            decisions
-                                .into_iter()
-                                .map(command_execution_decision_to_core)
-                                .collect()
-                        },
-                    ),
+                    available_decisions: params.available_decisions.clone().unwrap_or_else(|| {
+                        default_exec_approval_decisions(
+                            network_approval_context.as_ref(),
+                            proposed_execpolicy_amendment.as_ref(),
+                            proposed_network_policy_amendments.as_deref(),
+                            additional_permissions.as_ref(),
+                        )
+                    }),
                     network_approval_context,
                     additional_permissions,
                 }))
@@ -279,7 +257,7 @@ impl App {
                     changes: self
                         .thread_file_change_changes(thread_id, &params.turn_id, &params.item_id)
                         .await
-                        .map(crate::app_server_approval_conversions::file_update_changes_to_core)
+                        .map(crate::app_server_approval_conversions::file_update_changes_to_display)
                         .unwrap_or_default(),
                 }),
             ),
@@ -309,12 +287,12 @@ impl App {
                                 thread_id,
                                 thread_label,
                                 server_name: params.server_name.clone(),
-                                request_id: app_server_request_id_to_mcp_request_id(request_id),
+                                request_id: request_id.clone(),
                                 message: message.clone(),
                             },
                         )),
                         codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
-                            self.app_event_tx.resolve_app_server_elicitation(
+                            self.app_event_tx.resolve_elicitation(
                                 thread_id,
                                 params.server_name.clone(),
                                 request_id.clone(),
@@ -610,12 +588,11 @@ impl App {
                     let config = self.chat_widget.config_ref();
                     let approvals_reviewer =
                         approvals_reviewer.unwrap_or(config.approvals_reviewer);
-                    let active_permission_profile =
-                        if config.permissions.permission_profile() == permission_profile.clone() {
-                            config.permissions.active_permission_profile()
-                        } else {
-                            None
-                        };
+                    let permissions_override = Self::turn_permissions_override_from_config(
+                        config,
+                        permission_profile,
+                        self.runtime_permission_profile_override.as_ref(),
+                    );
                     app_server
                         .turn_start(
                             thread_id,
@@ -623,8 +600,8 @@ impl App {
                             cwd.clone(),
                             *approval_policy,
                             approvals_reviewer,
-                            permission_profile.clone(),
-                            active_permission_profile,
+                            permissions_override,
+                            config.permissions.user_visible_workspace_roots(),
                             model.to_string(),
                             *effort,
                             *summary,
@@ -671,10 +648,8 @@ impl App {
                     .await;
                 Ok(true)
             }
-            AppCommand::Review { review_request } => {
-                app_server
-                    .review_start(thread_id, review_request.clone())
-                    .await?;
+            AppCommand::Review { target } => {
+                app_server.review_start(thread_id, target.clone()).await?;
                 Ok(true)
             }
             AppCommand::CleanBackgroundTerminals => {
@@ -683,9 +658,9 @@ impl App {
                     .await?;
                 Ok(true)
             }
-            AppCommand::RealtimeConversationStart(params) => {
+            AppCommand::RealtimeConversationStart { transport, voice } => {
                 app_server
-                    .thread_realtime_start(thread_id, params.clone())
+                    .thread_realtime_start(thread_id, transport.clone(), voice.clone())
                     .await?;
                 Ok(true)
             }
@@ -719,6 +694,36 @@ impl App {
             }
             _ => Ok(false),
         }
+    }
+
+    fn turn_permissions_override_from_config(
+        config: &Config,
+        permission_profile: &PermissionProfile,
+        runtime_permission_profile_override: Option<&PermissionProfile>,
+    ) -> TurnPermissionsOverride {
+        let effective_permission_profile = config.permissions.effective_permission_profile();
+        if &effective_permission_profile == permission_profile
+            && let Some(active_permission_profile) = config.permissions.active_permission_profile()
+        {
+            return TurnPermissionsOverride::ActiveProfile(active_permission_profile);
+        }
+
+        let runtime_permission_profile_override =
+            runtime_permission_profile_override.map(|profile| {
+                profile
+                    .clone()
+                    .materialize_project_roots_with_workspace_roots(
+                        &config.effective_workspace_roots(),
+                    )
+            });
+        if runtime_permission_profile_override
+            .as_ref()
+            .is_some_and(|profile| profile == permission_profile)
+        {
+            return TurnPermissionsOverride::LegacySandbox(permission_profile.clone());
+        }
+
+        TurnPermissionsOverride::Preserve
     }
 
     pub(super) fn handle_skills_list_result(
@@ -866,20 +871,14 @@ impl App {
         Ok(())
     }
 
-    /// Eagerly fetches nickname and role for receiver threads referenced by a collab notification.
+    /// Locally remembers receiver threads referenced by a collab notification.
     ///
-    /// This runs on every buffered thread notification before it reaches rendering. For each
-    /// receiver thread id that the navigation cache does not yet have metadata for, it issues a
-    /// `thread/read` RPC and registers the result in both `AgentNavigationState` and the
-    /// `ChatWidget` metadata map. Threads that already have a nickname or role cached are skipped,
-    /// so the cost is at most one RPC per thread over the lifetime of a session.
-    ///
-    /// Failures are logged and silently ignored -- the worst outcome is that a rendered item shows
-    /// a thread id instead of a human-readable name, which is the same behavior the TUI had before
-    /// this change.
-    pub(super) async fn hydrate_collab_agent_metadata_for_notification(
+    /// This intentionally avoids app-server reads on the active-thread rendering path. During large
+    /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
+    /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
+    /// names and roles later; until then, rendering falls back to the thread id.
+    pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
-        app_server: &mut AppServerSession,
         notification: &ServerNotification,
     ) {
         let Some(receiver_thread_ids) = collab_receiver_thread_ids(notification) else {
@@ -887,42 +886,26 @@ impl App {
         };
 
         for receiver_thread_id in receiver_thread_ids {
+            if collab_receiver_is_not_found(notification, receiver_thread_id) {
+                continue;
+            }
+
             let Ok(thread_id) = ThreadId::from_string(receiver_thread_id) else {
                 tracing::warn!(
                     thread_id = receiver_thread_id,
-                    "ignoring collab receiver with invalid thread id during metadata hydration"
+                    "ignoring collab receiver with invalid thread id during local caching"
                 );
                 continue;
             };
 
-            if self
-                .agent_navigation
-                .get(&thread_id)
-                .is_some_and(|entry| entry.agent_nickname.is_some() || entry.agent_role.is_some())
-            {
+            if self.agent_navigation.get(&thread_id).is_some() {
                 continue;
             }
 
-            match app_server
-                .thread_read(thread_id, /*include_turns*/ false)
-                .await
-            {
-                Ok(thread) => {
-                    self.upsert_agent_picker_thread(
-                        thread_id,
-                        thread.agent_nickname,
-                        thread.agent_role,
-                        /*is_closed*/ false,
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        thread_id = %thread_id,
-                        error = %err,
-                        "failed to hydrate collab receiver thread metadata"
-                    );
-                }
-            }
+            self.upsert_agent_picker_thread(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                /*is_closed*/ false,
+            );
         }
     }
 
@@ -938,7 +921,8 @@ impl App {
         session.thread_id = thread_id;
         session.thread_name = notification.thread.name.clone();
         session.model_provider_id = notification.thread.model_provider.clone();
-        session.cwd = notification.thread.cwd.clone();
+        session
+            .set_cwd_retargeting_implicit_runtime_workspace_root(notification.thread.cwd.clone());
         let rollout_path = notification.thread.path.clone();
         if let Some(model) =
             read_session_model(self.state_db.as_deref(), thread_id, rollout_path.as_deref()).await
@@ -1389,6 +1373,7 @@ impl App {
         );
         match event {
             ThreadBufferedEvent::Notification(notification) => {
+                self.cache_collab_receiver_threads_for_notification(&notification);
                 self.chat_widget
                     .handle_server_notification(notification, /*replay_kind*/ None);
             }
@@ -1491,11 +1476,6 @@ impl App {
             // thread, so unrelated shutdowns cannot consume this marker.
             self.pending_shutdown_exit_thread_id = None;
         }
-        if let ThreadBufferedEvent::Notification(notification) = &event {
-            self.hydrate_collab_agent_metadata_for_notification(app_server, notification)
-                .await;
-        }
-
         self.handle_thread_event_now(event);
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();
@@ -1504,44 +1484,78 @@ impl App {
     }
 }
 
-fn app_server_request_id_to_mcp_request_id(
-    request_id: &codex_app_server_protocol::RequestId,
-) -> codex_protocol::mcp::RequestId {
-    match request_id {
-        codex_app_server_protocol::RequestId::String(value) => {
-            codex_protocol::mcp::RequestId::String(value.clone())
-        }
-        codex_app_server_protocol::RequestId::Integer(value) => {
-            codex_protocol::mcp::RequestId::Integer(*value)
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::ActivePermissionProfile;
+    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 
-fn command_execution_decision_to_core(
-    decision: codex_app_server_protocol::CommandExecutionApprovalDecision,
-) -> codex_protocol::protocol::ReviewDecision {
-    match decision {
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Accept => {
-            codex_protocol::protocol::ReviewDecision::Approved
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptForSession => {
-            codex_protocol::protocol::ReviewDecision::ApprovedForSession
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
-            execpolicy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::ApprovedExecpolicyAmendment {
-            proposed_execpolicy_amendment: execpolicy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
-            network_policy_amendment,
-        } => codex_protocol::protocol::ReviewDecision::NetworkPolicyAmendment {
-            network_policy_amendment: network_policy_amendment.into_core(),
-        },
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Decline => {
-            codex_protocol::protocol::ReviewDecision::Denied
-        }
-        codex_app_server_protocol::CommandExecutionApprovalDecision::Cancel => {
-            codex_protocol::protocol::ReviewDecision::Abort
-        }
+    async fn config_with_workspace_profile() -> Config {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        ConfigBuilder::default()
+            .codex_home(temp_dir.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string()),
+                ..ConfigOverrides::default()
+            })
+            .build()
+            .await
+            .expect("config should build")
+    }
+
+    #[tokio::test]
+    async fn turn_permissions_use_active_profile_when_available() {
+        let config = config_with_workspace_profile().await;
+        let permission_profile = config.permissions.effective_permission_profile();
+
+        assert_eq!(
+            App::turn_permissions_override_from_config(
+                &config,
+                &permission_profile,
+                /*runtime_permission_profile_override*/ None,
+            ),
+            TurnPermissionsOverride::ActiveProfile(ActivePermissionProfile::new(
+                BUILT_IN_PERMISSION_PROFILE_WORKSPACE
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_permissions_preserve_server_snapshot_without_local_override() {
+        let mut config = config_with_workspace_profile().await;
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::read_only())
+            .expect("read-only profile should be allowed");
+        let permission_profile = config.permissions.effective_permission_profile();
+
+        assert_eq!(
+            App::turn_permissions_override_from_config(
+                &config,
+                &permission_profile,
+                /*runtime_permission_profile_override*/ None,
+            ),
+            TurnPermissionsOverride::Preserve
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_permissions_send_legacy_sandbox_for_local_override() {
+        let mut config = config_with_workspace_profile().await;
+        let permission_profile = PermissionProfile::workspace_write();
+        config
+            .permissions
+            .set_permission_profile(permission_profile.clone())
+            .expect("workspace profile should be allowed");
+        let effective_permission_profile = config.permissions.effective_permission_profile();
+
+        assert_eq!(
+            App::turn_permissions_override_from_config(
+                &config,
+                &effective_permission_profile,
+                Some(&permission_profile),
+            ),
+            TurnPermissionsOverride::LegacySandbox(effective_permission_profile)
+        );
     }
 }

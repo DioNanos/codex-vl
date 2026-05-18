@@ -110,6 +110,11 @@ impl VivlingState {
             last_seen_upgrade: None,
             last_zed_topic: None,
             unlocked_species,
+            bond: crate::vivling::VivlingBond::default(),
+            lineage_seen_parent_summary_keys: Vec::new(),
+            lineage_rarity_pressure_pct: 0,
+            cultural_parent_vivling_id: None,
+            lineage_blessed: false,
         };
         state.normalize_unlocked_species();
         state.recompute_level();
@@ -117,20 +122,26 @@ impl VivlingState {
     }
 
     pub(crate) fn apply_decay(&mut self, now: DateTime<Utc>) {
+        self.bond.apply_decay(now);
         let Some(last_seen) = self.last_seen_at else {
             self.last_seen_at = Some(now);
             return;
         };
         let elapsed = now.signed_duration_since(last_seen);
+        if elapsed < Duration::zero() {
+            return;
+        }
         if elapsed < Duration::hours(12) {
             self.last_seen_at = Some(now);
             return;
         }
-        let days = elapsed.num_days().max(1);
-        self.hunger = (self.hunger - days * 8).clamp(0, 100);
-        self.energy = (self.energy - days * 3).clamp(0, 100);
-        self.happiness = (self.happiness - days * 4).clamp(0, 100);
-        self.social = (self.social - days * 5).clamp(0, 100);
+        let weeks = (elapsed.num_days() / 7).max(0);
+        if weeks > 0 {
+            self.hunger = (self.hunger - weeks * 4).clamp(0, 100);
+            self.energy = (self.energy - weeks * 2).clamp(0, 100);
+            self.happiness = (self.happiness - weeks * 3).clamp(0, 100);
+            self.social = (self.social - weeks * 3).clamp(0, 100);
+        }
         self.last_seen_at = Some(now);
     }
 

@@ -366,11 +366,91 @@ fn species_footer_accent(
 }
 
 fn stage_card_art(seed: &SpeciesSeed, rarity: VivlingRarity, stage: Stage) -> VivlingStageCardArt {
+    if let Some(lines) = species_card_art_lines(seed.id, stage) {
+        let lines = lines
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<String>>();
+        return VivlingStageCardArt {
+            narrow_lines: lines.clone(),
+            wide_lines: lines,
+        };
+    }
+
     let narrow = card_art_lines(seed.family, stage, true);
     let wide = card_art_lines(seed.family, stage, false);
     VivlingStageCardArt {
         narrow_lines: personalize_card_lines(seed, rarity, stage, narrow),
         wide_lines: personalize_card_lines(seed, rarity, stage, wide),
+    }
+}
+
+fn species_card_art_lines(id: &str, stage: Stage) -> Option<Vec<&'static str>> {
+    match (id, stage) {
+        ("syllo", Stage::Baby) => Some(vec![
+            "          .-o-.",
+            "         /(   )\\",
+            "          /_<_\\",
+            "          /   \\",
+            "         /_/ \\_\\",
+        ]),
+        ("syllo", Stage::Juvenile) => Some(vec![
+            "          .-o-.",
+            "        _/(   )\\_",
+            "       /  /_<_\\  \\",
+            "          / | \\",
+            "         /_/ \\_\\",
+        ]),
+        ("syllo", Stage::Adult) => Some(vec![
+            "          \\.-o-./",
+            "        .--(   )--.",
+            "       /___/_<_\\___\\",
+            "           / | \\",
+            "         _/  |  \\_",
+            "        /___/ \\___\\",
+        ]),
+        ("orchestra", Stage::Baby) => Some(vec![
+            "          .-o-.",
+            "        o-(   )-o",
+            "           /_\\",
+            "          /___\\",
+            "           / \\",
+        ]),
+        ("orchestra", Stage::Juvenile) => Some(vec![
+            "        o   .-o-.   o",
+            "         \\_/(   )\\_/",
+            "             /|\\",
+            "            /_|_\\",
+            "            /   \\",
+        ]),
+        ("orchestra", Stage::Adult) => Some(vec![
+            "       o    .-o-.    o",
+            "        \\_.-(   )-._/",
+            "            /|||\\",
+            "          _/ |_| \\_",
+            "         /__/   \\__\\",
+        ]),
+        ("chronosworn", Stage::Baby) => Some(vec![
+            "          .-o-.",
+            "          ( | )",
+            "          -/_\\-",
+            "           / \\",
+        ]),
+        ("chronosworn", Stage::Juvenile) => Some(vec![
+            "         o-.-o",
+            "        --/|\\--",
+            "         o/ \\o",
+            "          /_\\",
+        ]),
+        ("chronosworn", Stage::Adult) => Some(vec![
+            "          o-.-o",
+            "       .--/| |\\--.",
+            "      o__/ | | \\__o",
+            "          _|O|_",
+            "         /__|__\\",
+            "        _/     \\_",
+        ]),
+        _ => None,
     }
 }
 
@@ -1068,5 +1148,58 @@ fn bias_for_profile(profile: BiasProfile, rarity: VivlingRarity) -> WorkAffinity
         BiasProfile::ReviewerResearch => pair(2, 12, 8, 4),
         BiasProfile::ReviewerOperator => pair(2, 12, 4, 8),
         BiasProfile::ResearcherOperator => pair(3, 4, 10, 10),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card_text(id: &str, stage: Stage) -> String {
+        let species = species_for_id(id);
+        card_art_for_species(species, stage, 80).lines.join("\n")
+    }
+
+    #[test]
+    fn primary_species_use_manual_card_art() {
+        let syllo = card_text("syllo", Stage::Adult);
+        let orchestra = card_text("orchestra", Stage::Adult);
+        let chronosworn = card_text("chronosworn", Stage::Adult);
+
+        assert!(syllo.contains("\\.-o-./"));
+        assert!(syllo.contains("/___/_<_\\___\\"));
+        assert!(orchestra.contains("o    .-o-.    o"));
+        assert!(orchestra.contains("/|||\\"));
+        assert!(chronosworn.contains("o-.-o"));
+        assert!(chronosworn.contains("_|O|_"));
+        assert_ne!(syllo, orchestra);
+        assert_ne!(orchestra, chronosworn);
+    }
+
+    #[test]
+    fn manual_card_art_is_ascii_and_bounded() {
+        for id in ["syllo", "orchestra", "chronosworn"] {
+            for stage in [Stage::Baby, Stage::Juvenile, Stage::Adult] {
+                let species = species_for_id(id);
+                let card = card_art_for_species(species, stage, 80);
+                assert!(
+                    card.lines.iter().all(|line| line.is_ascii()),
+                    "{id} {stage:?} card must stay ASCII"
+                );
+                assert!(
+                    card.lines.iter().all(|line| line.len() <= 32),
+                    "{id} {stage:?} card must stay compact: {:?}",
+                    card.lines
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zed_stays_on_archive_card_path() {
+        let zed_runtime_card = card_text("zed", Stage::Adult);
+
+        assert!(!zed_runtime_card.contains("ZED THE PRIME"));
+        assert!(!zed_runtime_card.contains("'-._.-'"));
     }
 }

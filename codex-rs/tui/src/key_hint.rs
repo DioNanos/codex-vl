@@ -5,6 +5,12 @@
 //! cross-terminal inconsistencies in how shifted letters and raw C0 control
 //! characters are reported.
 //!
+//! List and picker code should match navigation through these helpers instead
+//! of comparing `KeyEvent` values directly. The matcher owns compatibility for
+//! terminals that report control chords as C0 characters, while
+//! `is_plain_text_key_event` gives searchable pickers a shared boundary between
+//! text input and navigation commands.
+//!
 //! It also supplies rendering helpers that convert bindings into styled
 //! `ratatui::text::Span` values for UI hint display.
 
@@ -122,6 +128,27 @@ impl KeyBindingListExt for [KeyBinding] {
     }
 }
 
+/// Returns whether an event should be treated as literal text input.
+///
+/// Searchable pickers use this to avoid stealing plain printable characters for
+/// navigation when the same character might be a valid query. For example, a
+/// list may bind `j` and `k` for movement, but a searchable list must let
+/// plain `j` update the query while still allowing `Ctrl+J` to move. Calling
+/// this after normalizing keybindings would blur that distinction and cause
+/// printable search input to disappear.
+pub(crate) fn is_plain_text_key_event(event: KeyEvent) -> bool {
+    matches!(
+        event,
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers,
+            ..
+        } if !ch.is_ascii_control()
+            && !modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::ALT)
+    )
+}
+
 pub(crate) const fn plain(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::NONE)
 }
@@ -224,8 +251,27 @@ mod tests {
     fn shifted_letter_binding_matches_uppercase_char_events() {
         let binding = shift(KeyCode::Char('a'));
 
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE)));
         assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)));
+    }
+
+    #[test]
+    fn shift_letter_binding_preserves_other_modifiers_with_uppercase_compat() {
+        let binding = KeyBinding::new(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn shift_letter_binding_does_not_match_plain_lowercase_or_other_uppercase() {
+        let binding = shift(KeyCode::Char('o'));
+
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE)));
     }
 
     #[test]

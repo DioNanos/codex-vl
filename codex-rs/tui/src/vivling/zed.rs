@@ -1,5 +1,9 @@
 use super::model::Stage;
+use super::model::VivlingState;
 use super::model::VivlingUpgrade;
+use crate::vivling::BondTone;
+use chrono::DateTime;
+use chrono::Utc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ZedTopic {
@@ -9,6 +13,8 @@ pub(crate) enum ZedTopic {
     LoopOnboarding,
     LoopRhythm,
     LoopAssistReady,
+    Companion,
+    Lineage,
 }
 
 impl ZedTopic {
@@ -16,9 +22,11 @@ impl ZedTopic {
         match slug {
             "young-voice" => Self::YoungVoice,
             "active-mode" => Self::ActiveMode,
+            "companion" => Self::Companion,
             "loop-onboarding" => Self::LoopOnboarding,
             "loop-rhythm" => Self::LoopRhythm,
             "loop-assist-ready" => Self::LoopAssistReady,
+            "lineage" => Self::Lineage,
             _ => Self::Growth,
         }
     }
@@ -93,6 +101,8 @@ fn zed_title_for_topic(topic: ZedTopic) -> &'static str {
         ZedTopic::LoopOnboarding => "ZED THE PRIME · Loop Onboarding",
         ZedTopic::LoopRhythm => "ZED THE PRIME · Loop Rhythm",
         ZedTopic::LoopAssistReady => "ZED THE PRIME · Loop Assist Ready",
+        ZedTopic::Companion => "ZED THE PRIME · Companion",
+        ZedTopic::Lineage => "ZED THE PRIME · Lineage",
     }
 }
 
@@ -147,6 +157,14 @@ pub(crate) fn zed_summary_for_topic(topic: ZedTopic) -> String {
             "ZED: your Vivling understands the loop rhythm well enough to support it more deliberately."
                 .to_string()
         }
+        ZedTopic::Companion => {
+            "ZED: this is a snapshot of your bond and gene profile. The bond grows with real work and decays with silence; the gene profile shapes how the companion approaches different work archetypes."
+                .to_string()
+        }
+        ZedTopic::Lineage => {
+            "ZED: a lineage signal joined the roster. The newborn carries distilled traces from the active primary; the biological origin determines species, the primary determines culture."
+                .to_string()
+        }
     }
 }
 
@@ -170,6 +188,12 @@ fn zed_hint_for_topic(topic: ZedTopic) -> &'static str {
         ZedTopic::LoopAssistReady => {
             "ZED: your loop history is healthy enough that active help can be useful, but only if goals stay explicit."
         }
+        ZedTopic::Companion => {
+            "ZED: bond is the relationship signal; gene is the identity signal. They evolve at different rates. Both inform how your Vivling addresses you on Chat and Assist."
+        }
+        ZedTopic::Lineage => {
+            "ZED: the newborn stays inactive. It learns from the primary's distilled summaries; it does not speak through Brain, Chat or Loop."
+        }
     }
 }
 
@@ -183,5 +207,225 @@ fn zed_next_step_for_topic(topic: ZedTopic) -> &'static str {
         ZedTopic::LoopAssistReady => {
             "Next: `/vivling mode on` only if you want active help with current work"
         }
+        ZedTopic::Companion => "Next: keep working together — bond decays after 24h of silence",
+        ZedTopic::Lineage => {
+            "Next: keep working with the primary — the newborn will learn passively"
+        }
+    }
+}
+
+/// codex-vl iter 1C: dynamic Lineage narration for a fresh spawn.
+///
+/// Renders the ZED-as-presenter narration that opens after a successful
+/// `/vivling spawn`. Stays scripted (no Brain), generic (no raw parent
+/// distilled summaries leaked), and emphasises the cultural-vs-biological
+/// split DAG codified on 2026-05-15.
+pub(crate) fn zed_summary_for_lineage(
+    parent_name: &str,
+    child_name: &str,
+    child_species: &str,
+    origin_label: &str,
+) -> String {
+    let origin_note = match origin_label {
+        "primary_child" => format!("biological parent: {parent_name} (primary)"),
+        "veteran_child" => "biological parent: a roster veteran".to_string(),
+        "zed_hatch" => "biological origin: ZED introduces a new bloodline".to_string(),
+        _ => format!("biological origin: {origin_label}"),
+    };
+    format!(
+        "ZED: lineage signal received.\n\
+         {child_name} joined the roster as a {child_species}.\n\
+         {origin_note}.\n\
+         Cultural parent: {parent_name} — the newborn will learn passively from {parent_name}'s distilled summaries.\n\
+         The newborn stays inactive: no Brain, no Chat, no Loop ownership."
+    )
+}
+
+/// Compose the dynamic Companion summary using the current Vivling state.
+///
+/// Runtime entry: calls `Utc::now()`. Tests should target
+/// `zed_companion_summary_at` directly with a fixed `now` so the
+/// `Last seen: ...` rendering is deterministic.
+pub(crate) fn zed_companion_summary(state: &VivlingState) -> String {
+    zed_companion_summary_at(state, Utc::now())
+}
+
+/// Deterministic helper. All tests must use this variant with a fixed
+/// `now` so the `Last seen` rendering is reproducible.
+pub(crate) fn zed_companion_summary_at(state: &VivlingState, now: DateTime<Utc>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("Bond:".to_string());
+    lines.push(format!("  Level    : {}", bond_level_label(state)));
+    lines.push(format!("  Value    : {}/100", state.bond.value.min(100)));
+    lines.push(format!(
+        "  Tone     : {}",
+        bond_tone_label(state.bond.tone())
+    ));
+    if state.bond.streak_days > 0 {
+        let last_streak = state.bond.last_streak_day.as_deref().unwrap_or("?");
+        lines.push(format!(
+            "  Streak   : {} days (last {})",
+            state.bond.streak_days, last_streak
+        ));
+    }
+    lines.push(format!("  Chat     : {} reach-outs", state.bond.chat_count));
+    lines.push(format!(
+        "  Assist   : {} reach-outs",
+        state.bond.assist_count
+    ));
+    lines.push(format!(
+        "  Loop tick: {} collaborations",
+        state.bond.loop_ticks_count
+    ));
+    lines.push(format!(
+        "  Last seen: {}",
+        last_seen_label(state.bond.last_interaction, now)
+    ));
+    lines.push(String::new());
+    lines.push("Gene:".to_string());
+    lines.push(format!(
+        "  Stripe        : {}",
+        state.gene_vector.gene_stripe()
+    ));
+    lines.push(format!(
+        "  Temperament   : {}",
+        state.gene_vector.temperament_summary()
+    ));
+    lines.push(format!(
+        "  Brain potential: {}",
+        state.gene_vector.brain_potential_label()
+    ));
+    lines.join("\n")
+}
+
+fn bond_level_label(state: &VivlingState) -> &'static str {
+    use crate::vivling::BondLevel;
+    match state.bond.level() {
+        BondLevel::Strangers => "Strangers",
+        BondLevel::Acquaintances => "Acquaintances",
+        BondLevel::Companions => "Companions",
+        BondLevel::Partners => "Partners",
+        BondLevel::Bonded => "Bonded",
+    }
+}
+
+fn bond_tone_label(tone: BondTone) -> &'static str {
+    match tone {
+        BondTone::Neutral => "neutral",
+        BondTone::Warm => "warm",
+        BondTone::Familiar => "familiar",
+    }
+}
+
+fn last_seen_label(last_interaction: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(last) = last_interaction else {
+        return "never".to_string();
+    };
+    let delta = now.signed_duration_since(last);
+    let secs = delta.num_seconds().max(0);
+    if secs < 60 {
+        return "just now".to_string();
+    }
+    if secs < 3600 {
+        return format!("{}m ago", secs / 60);
+    }
+    if secs < 86_400 {
+        return format!("{}h ago", secs / 3600);
+    }
+    let days = secs / 86_400;
+    format!("{days} day{} ago", if days == 1 { "" } else { "s" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vivling::VivlingInteractionKind;
+    use crate::vivling::model::SeedIdentity;
+    use chrono::TimeZone;
+
+    fn seeded_state() -> VivlingState {
+        VivlingState::new(SeedIdentity {
+            value: "install:zed-companion-test".to_string(),
+            install_id: Some("zed-companion-test".to_string()),
+        })
+    }
+
+    fn ts(year: i32, month: u32, day: u32, hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, hour, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn companion_summary_at_includes_bond_level_value_tone() {
+        let state = seeded_state();
+        let summary = zed_companion_summary_at(&state, ts(2026, 5, 14, 18));
+        // Default bond: value 20 → Strangers / Neutral.
+        assert!(summary.contains("Bond:"), "{summary}");
+        assert!(summary.contains("Level    : Strangers"), "{summary}");
+        assert!(summary.contains("Value    : 20/100"), "{summary}");
+        assert!(summary.contains("Tone     : neutral"), "{summary}");
+    }
+
+    #[test]
+    fn companion_summary_at_omits_streak_when_zero() {
+        let state = seeded_state();
+        let summary = zed_companion_summary_at(&state, ts(2026, 5, 14, 18));
+        assert!(!summary.contains("Streak"), "{summary}");
+    }
+
+    #[test]
+    fn companion_summary_at_emits_streak_when_present() {
+        let mut state = seeded_state();
+        state
+            .bond
+            .record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 14, 10));
+        let summary = zed_companion_summary_at(&state, ts(2026, 5, 14, 18));
+        assert!(summary.contains("Streak"), "{summary}");
+        assert!(summary.contains("1 days (last 2026-05-14)"), "{summary}");
+    }
+
+    #[test]
+    fn companion_summary_at_includes_gene_stripe_and_temperament() {
+        let state = seeded_state();
+        let summary = zed_companion_summary_at(&state, ts(2026, 5, 14, 18));
+        assert!(summary.contains("Gene:"), "{summary}");
+        assert!(summary.contains("Stripe"), "{summary}");
+        assert!(summary.contains("Temperament"), "{summary}");
+        assert!(summary.contains("Brain potential"), "{summary}");
+    }
+
+    #[test]
+    fn last_seen_label_renders_hours_for_2h_old_interaction() {
+        let now = ts(2026, 5, 14, 18);
+        let last = ts(2026, 5, 14, 16);
+        assert_eq!(last_seen_label(Some(last), now), "2h ago");
+    }
+
+    #[test]
+    fn last_seen_label_renders_minutes_for_recent_interaction() {
+        let now = ts(2026, 5, 14, 18);
+        let last = ts(2026, 5, 14, 17) + chrono::Duration::minutes(30);
+        assert_eq!(last_seen_label(Some(last), now), "30m ago");
+    }
+
+    #[test]
+    fn last_seen_label_renders_just_now_for_under_a_minute() {
+        let now = ts(2026, 5, 14, 18);
+        let last = now - chrono::Duration::seconds(30);
+        assert_eq!(last_seen_label(Some(last), now), "just now");
+    }
+
+    #[test]
+    fn last_seen_label_renders_days_with_pluralization() {
+        let now = ts(2026, 5, 14, 18);
+        let one_day_ago = now - chrono::Duration::days(1);
+        let three_days_ago = now - chrono::Duration::days(3);
+        assert_eq!(last_seen_label(Some(one_day_ago), now), "1 day ago");
+        assert_eq!(last_seen_label(Some(three_days_ago), now), "3 days ago");
+    }
+
+    #[test]
+    fn last_seen_label_renders_never_for_no_interaction() {
+        let now = ts(2026, 5, 14, 18);
+        assert_eq!(last_seen_label(None, now), "never");
     }
 }

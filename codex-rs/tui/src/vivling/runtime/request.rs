@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VivlingBrainRequestKind {
     Assist,
     Chat,
@@ -76,4 +76,10 @@ pub(crate) enum VivlingCommandOutcome {
     OpenUpgrade(VivlingPanelData),
     DispatchAssist(VivlingAssistRequest),
     PersistBrainProfile(VivlingBrainProfileRequest),
+    /// codex-vl iter 1C: emitted by `/vivling spawn`. Carries both the
+    /// chat-history message (L1) and the ZED Lineage panel (L2).
+    SpawnNarration {
+        message: String,
+        panel: VivlingPanelData,
+    },
 }

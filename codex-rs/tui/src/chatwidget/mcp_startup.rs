@@ -1,20 +1,26 @@
 //! MCP startup state and status handling for the chat widget.
 //!
-//! This module is a mechanical extraction from `chatwidget.rs`: it keeps the
-//! buffered startup-round bookkeeping together while preserving the existing
-//! event shapes and rendering behavior.
+//! The app server reports MCP server startup as per-server status updates. This
+//! module keeps the TUI's buffered startup round state coherent and translates
+//! those updates into status headers, warnings, and queued-input release points.
 
 use std::collections::BTreeSet;
 
 use codex_app_server_protocol::McpServerStartupState;
 use codex_app_server_protocol::McpServerStatusUpdatedNotification;
-#[cfg(test)]
-use codex_protocol::protocol::McpStartupCompleteEvent;
-use codex_protocol::protocol::McpStartupStatus;
-#[cfg(test)]
-use codex_protocol::protocol::McpStartupUpdateEvent;
 
 use super::ChatWidget;
+
+const MCP_STARTUP_SINGLE_HEADER_PREFIX: &str = "Booting MCP server:";
+const MCP_STARTUP_MULTI_HEADER_PREFIX: &str = "Starting MCP servers";
+
+#[derive(Debug, Clone)]
+pub(crate) enum McpStartupStatus {
+    Starting,
+    Ready,
+    Failed { error: String },
+    Cancelled,
+}
 
 impl ChatWidget {
     /// Record one MCP startup update, promoting it into either the active startup
@@ -150,11 +156,11 @@ impl ChatWidget {
                 }
                 let header = if total > 1 {
                     format!(
-                        "Starting MCP servers ({completed}/{total}): {}",
+                        "{MCP_STARTUP_MULTI_HEADER_PREFIX} ({completed}/{total}): {}",
                         to_show.join(", ")
                     )
                 } else {
-                    format!("Booting MCP server: {first}")
+                    format!("{MCP_STARTUP_SINGLE_HEADER_PREFIX} {first}")
                 };
                 self.set_status_header(header);
             }
@@ -167,11 +173,6 @@ impl ChatWidget {
         I: IntoIterator<Item = String>,
     {
         self.mcp_startup_expected_servers = Some(server_names.into_iter().collect());
-    }
-
-    #[cfg(test)]
-    pub(super) fn on_mcp_startup_update(&mut self, ev: McpStartupUpdateEvent) {
-        self.update_mcp_startup_status(ev.server, ev.status, /*complete_when_settled*/ false);
     }
 
     pub(super) fn finish_mcp_startup(&mut self, failed: Vec<String>, cancelled: Vec<String>) {
@@ -189,12 +190,16 @@ impl ChatWidget {
             self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
         }
 
+        let mcp_startup_owned_status = self.status_header_is_mcp_startup_owned();
         self.mcp_startup_status = None;
         self.mcp_startup_ignore_updates_until_next_start = true;
         self.mcp_startup_allow_terminal_only_next_round = false;
         self.mcp_startup_pending_next_round.clear();
         self.mcp_startup_pending_next_round_saw_starting = false;
         self.update_task_running_state();
+        if self.bottom_pane.is_task_running() && mcp_startup_owned_status {
+            self.restore_reasoning_status_header();
+        }
         self.maybe_send_next_queued_input();
         self.request_redraw();
     }
@@ -236,10 +241,16 @@ impl ChatWidget {
         self.finish_mcp_startup(failed, cancelled);
     }
 
-    #[cfg(test)]
-    pub(super) fn on_mcp_startup_complete(&mut self, ev: McpStartupCompleteEvent) {
-        let failed = ev.failed.into_iter().map(|f| f.server).collect();
-        self.finish_mcp_startup(failed, ev.cancelled);
+    pub(super) fn status_header_is_mcp_startup_owned(&self) -> bool {
+        self.status_state
+            .current_status
+            .header
+            .starts_with(MCP_STARTUP_SINGLE_HEADER_PREFIX)
+            || self
+                .status_state
+                .current_status
+                .header
+                .starts_with(MCP_STARTUP_MULTI_HEADER_PREFIX)
     }
 
     pub(super) fn on_mcp_server_status_updated(

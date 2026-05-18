@@ -6,12 +6,10 @@ use crate::AgentJobItemStatus;
 use crate::AgentJobProgress;
 use crate::AgentJobStatus;
 use crate::LOGS_DB_FILENAME;
-use crate::LOGS_DB_VERSION;
 use crate::LogEntry;
 use crate::LogQuery;
 use crate::LogRow;
 use crate::STATE_DB_FILENAME;
-use crate::STATE_DB_VERSION;
 use crate::SortKey;
 use crate::ThreadMetadata;
 use crate::ThreadMetadataBuilder;
@@ -27,6 +25,8 @@ use crate::model::datetime_to_epoch_millis;
 use crate::model::datetime_to_epoch_seconds;
 use crate::model::epoch_millis_to_datetime;
 use crate::paths::file_modified_time_utc;
+use crate::telemetry::DbKind;
+use crate::telemetry::DbTelemetry;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
@@ -52,6 +52,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 use std::time::Duration;
+use std::time::Instant;
 use tracing::warn;
 
 mod agent_jobs;
@@ -82,16 +83,7 @@ const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(60);
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[derive(Clone)]
-pub struct StateRuntime {
-    codex_home: PathBuf,
-    default_provider: String,
-    pool: Arc<sqlx::SqlitePool>,
-    logs_pool: Arc<sqlx::SqlitePool>,
-    thread_updated_at_millis: Arc<AtomicI64>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SqliteRuntimeMode {
     journal_mode: SqliteJournalMode,
     max_connections: u32,
@@ -101,7 +93,7 @@ impl SqliteRuntimeMode {
     fn default() -> Self {
         Self {
             journal_mode: SqliteJournalMode::Wal,
-            max_connections: 1,
+            max_connections: 5,
         }
     }
 
@@ -113,6 +105,15 @@ impl SqliteRuntimeMode {
     }
 }
 
+#[derive(Clone)]
+pub struct StateRuntime {
+    codex_home: PathBuf,
+    default_provider: String,
+    pool: Arc<sqlx::SqlitePool>,
+    logs_pool: Arc<sqlx::SqlitePool>,
+    thread_updated_at_millis: Arc<AtomicI64>,
+}
+
 impl StateRuntime {
     /// Initialize the state runtime using the provided Codex home and default provider.
     ///
@@ -120,52 +121,53 @@ impl StateRuntime {
     /// keeping logs in a dedicated file to reduce lock contention with the
     /// rest of the state store.
     pub async fn init(codex_home: PathBuf, default_provider: String) -> anyhow::Result<Arc<Self>> {
+        Self::init_inner(
+            codex_home,
+            default_provider,
+            /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn init_with_telemetry_for_tests(
+        codex_home: PathBuf,
+        default_provider: String,
+        telemetry_override: &dyn DbTelemetry,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::init_inner(codex_home, default_provider, Some(telemetry_override)).await
+    }
+
+    async fn init_inner(
+        codex_home: PathBuf,
+        default_provider: String,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(&codex_home).await?;
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
-        let current_state_name = state_db_filename();
-        let current_logs_name = logs_db_filename();
-        remove_legacy_db_files(
-            &codex_home,
-            current_state_name.as_str(),
-            STATE_DB_FILENAME,
-            "state",
-        )
-        .await;
-        remove_legacy_db_files(
-            &codex_home,
-            current_logs_name.as_str(),
-            LOGS_DB_FILENAME,
-            "logs",
-        )
-        .await;
         let state_path = state_db_path(codex_home.as_path());
         let logs_path = logs_db_path(codex_home.as_path());
-        let pool = match open_state_sqlite(
-            &state_path,
-            &state_migrator,
-            SqliteRuntimeMode::default(),
-        )
-        .await
-        {
+        let pool = match open_state_sqlite(&state_path, &state_migrator, telemetry_override).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 if cfg!(target_os = "android") {
                     warn!(
-                        "failed to open state db at {} with default SQLite mode; retrying in Android compatibility mode: {err}",
+                        "failed to open state db at {} with WAL mode; retrying Android compatibility mode: {err}",
                         state_path.display()
                     );
-                    match open_state_sqlite(
+                    match open_state_sqlite_with_mode(
                         &state_path,
                         &state_migrator,
                         SqliteRuntimeMode::android_compat(),
+                        telemetry_override,
                     )
                     .await
                     {
                         Ok(db) => Arc::new(db),
                         Err(retry_err) => {
                             warn!(
-                                "failed to open state db at {} in Android compatibility mode: {retry_err}",
+                                "failed to open state db at {} with Android compatibility mode: {retry_err}",
                                 state_path.display()
                             );
                             return Err(retry_err);
@@ -177,17 +179,38 @@ impl StateRuntime {
                 }
             }
         };
-        let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator).await {
+        let logs_pool = match open_logs_sqlite(&logs_path, &logs_migrator, telemetry_override).await
+        {
             Ok(db) => Arc::new(db),
             Err(err) => {
                 warn!("failed to open logs db at {}: {err}", logs_path.display());
                 return Err(err);
             }
         };
-        let thread_updated_at_millis: Option<i64> =
+        let started = Instant::now();
+        let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            "ensure_backfill_state",
+            started.elapsed(),
+            &backfill_state_result,
+        );
+        backfill_state_result?;
+        let started = Instant::now();
+        let thread_updated_at_millis_result: anyhow::Result<Option<i64>> =
             sqlx::query_scalar("SELECT MAX(threads.updated_at_ms) FROM threads")
                 .fetch_one(pool.as_ref())
-                .await?;
+                .await
+                .map_err(anyhow::Error::from);
+        crate::telemetry::record_init_result(
+            telemetry_override,
+            DbKind::State,
+            "post_init_query",
+            started.elapsed(),
+            &thread_updated_at_millis_result,
+        );
+        let thread_updated_at_millis = thread_updated_at_millis_result?;
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
             pool,
@@ -224,19 +247,100 @@ fn base_sqlite_options(path: &Path, mode: SqliteRuntimeMode) -> SqliteConnectOpt
 async fn open_state_sqlite(
     path: &Path,
     migrator: &Migrator,
-    mode: SqliteRuntimeMode,
+    telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
     // New state DBs should use incremental auto-vacuum, but retrofitting an
     // existing DB requires a full VACUUM. Do not attempt that during process
     // startup: it is maintenance work that can contend with foreground writers.
+    open_state_sqlite_with_mode(
+        path,
+        migrator,
+        SqliteRuntimeMode::default(),
+        telemetry_override,
+    )
+    .await
+}
+
+async fn open_state_sqlite_with_mode(
+    path: &Path,
+    migrator: &Migrator,
+    mode: SqliteRuntimeMode,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    open_sqlite(
+        path,
+        migrator,
+        DbKind::State,
+        "open_state",
+        "migrate_state",
+        mode,
+        /*reconcile_vl_legacy*/ true,
+        telemetry_override,
+    )
+    .await
+}
+
+async fn open_logs_sqlite(
+    path: &Path,
+    migrator: &Migrator,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
+    open_sqlite(
+        path,
+        migrator,
+        DbKind::Logs,
+        "open_logs",
+        "migrate_logs",
+        SqliteRuntimeMode::default(),
+        /*reconcile_vl_legacy*/ false,
+        telemetry_override,
+    )
+    .await
+}
+
+async fn open_sqlite(
+    path: &Path,
+    migrator: &Migrator,
+    db: DbKind,
+    open_phase: &'static str,
+    migrate_phase: &'static str,
+    mode: SqliteRuntimeMode,
+    reconcile_vl_legacy: bool,
+    telemetry_override: Option<&dyn DbTelemetry>,
+) -> anyhow::Result<SqlitePool> {
     let options = base_sqlite_options(path, mode).auto_vacuum(SqliteAutoVacuum::Incremental);
-    let pool = SqlitePoolOptions::new()
+    let started = Instant::now();
+    let pool_result = SqlitePoolOptions::new()
         .max_connections(mode.max_connections)
         .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
         .connect_with(options)
-        .await?;
-    reconcile_vl_legacy_state_migrations(&pool, migrator).await?;
-    migrator.run(&pool).await?;
+        .await
+        .map_err(anyhow::Error::from);
+    crate::telemetry::record_init_result(
+        telemetry_override,
+        db,
+        open_phase,
+        started.elapsed(),
+        &pool_result,
+    );
+    let pool = pool_result?;
+    let started = Instant::now();
+    let migrate_result = async {
+        if reconcile_vl_legacy {
+            reconcile_vl_legacy_state_migrations(&pool, migrator).await?;
+        }
+        migrator.run(&pool).await.map_err(anyhow::Error::from)?;
+        Ok(())
+    }
+    .await;
+    crate::telemetry::record_init_result(
+        telemetry_override,
+        db,
+        migrate_phase,
+        started.elapsed(),
+        &migrate_result,
+    );
+    migrate_result?;
     Ok(pool)
 }
 
@@ -250,19 +354,25 @@ async fn reconcile_vl_legacy_state_migrations(
 
     reconcile_legacy_loop_tables(pool).await?;
 
+    // Older codex-vl builds carried local migrations in upstream-numbered
+    // slots before those slots were filled upstream. Keep their schema changes,
+    // but remove the incompatible applied records so upstream can own 27..31.
     delete_applied_migration_if_description(pool, 27, "thread loop jobs").await?;
     delete_applied_migration_if_description(pool, 28, "thread loop jobs management").await?;
     delete_applied_migration_if_description(pool, 29, "threads cwd sort indexes").await?;
     delete_applied_migration_if_description(pool, 30, "thread loop owners").await?;
+    delete_applied_migration_if_description(pool, 31, "drop device key bindings").await?;
 
     if sqlite_object_exists(pool, "index", "idx_threads_archived_cwd_created_at_ms").await?
         && sqlite_object_exists(pool, "index", "idx_threads_archived_cwd_updated_at_ms").await?
     {
         mark_embedded_migration_applied(pool, migrator, 27).await?;
     }
+
     if sqlite_object_exists(pool, "table", "device_key_bindings").await? {
         mark_embedded_migration_applied(pool, migrator, 28).await?;
     }
+
     if sqlite_object_exists(pool, "table", "thread_goals").await? {
         mark_embedded_migration_applied(pool, migrator, 29).await?;
     }
@@ -278,8 +388,16 @@ async fn reconcile_legacy_loop_tables(pool: &SqlitePool) -> anyhow::Result<()> {
                 .await?;
         }
     }
+
     if sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await? {
         add_column_if_missing(pool, "vl_thread_loop_jobs", "goal_text", "TEXT").await?;
+        add_column_if_missing(
+            pool,
+            "vl_thread_loop_jobs",
+            "run_policy",
+            "TEXT NOT NULL DEFAULT 'queue_one'",
+        )
+        .await?;
         add_column_if_missing(
             pool,
             "vl_thread_loop_jobs",
@@ -317,36 +435,43 @@ async fn reconcile_legacy_loop_tables(pool: &SqlitePool) -> anyhow::Result<()> {
 
 async fn add_column_if_missing(
     pool: &SqlitePool,
-    table: &str,
-    column: &str,
-    declaration: &str,
+    table_name: &str,
+    column_name: &str,
+    column_definition: &str,
 ) -> anyhow::Result<()> {
-    if table_column_exists(pool, table, column).await? {
+    if table_column_exists(pool, table_name, column_name).await? {
         return Ok(());
     }
-    let query = format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}");
-    sqlx::query(&query).execute(pool).await?;
+
+    let sql = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}");
+    sqlx::query(&sql).execute(pool).await?;
     Ok(())
 }
 
-async fn table_column_exists(pool: &SqlitePool, table: &str, column: &str) -> anyhow::Result<bool> {
-    let query = format!("PRAGMA table_info({table})");
-    let rows = sqlx::query(&query).fetch_all(pool).await?;
+async fn table_column_exists(
+    pool: &SqlitePool,
+    table_name: &str,
+    column_name: &str,
+) -> anyhow::Result<bool> {
+    let quoted_table = table_name.replace('\'', "''");
+    let rows = sqlx::query(&format!("PRAGMA table_info('{quoted_table}')"))
+        .fetch_all(pool)
+        .await?;
     Ok(rows.iter().any(|row| {
-        row.try_get::<String, _>("name")
-            .is_ok_and(|name| name == column)
+        let name: String = row.get("name");
+        name == column_name
     }))
 }
 
 async fn sqlite_object_exists(
     pool: &SqlitePool,
     object_type: &str,
-    name: &str,
+    object_name: &str,
 ) -> anyhow::Result<bool> {
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type = ? AND name = ?")
             .bind(object_type)
-            .bind(name)
+            .bind(object_name)
             .fetch_one(pool)
             .await?;
     Ok(count > 0)
@@ -371,43 +496,49 @@ async fn mark_embedded_migration_applied(
     version: i64,
 ) -> anyhow::Result<()> {
     let Some(migration) = migrator
-        .migrations
         .iter()
         .find(|migration| migration.version == version)
     else {
         return Ok(());
     };
+    let checksum: Vec<u8> = migration.checksum.as_ref().to_vec();
     sqlx::query(
-        "INSERT OR IGNORE INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, ?, ?, ?)",
+        r#"
+INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(version) DO NOTHING
+"#,
     )
-    .bind(migration.version)
+    .bind(version)
     .bind(migration.description.as_ref())
     .bind(true)
-    .bind(migration.checksum.as_ref().to_vec())
+    .bind(checksum)
     .bind(0_i64)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-async fn open_logs_sqlite(path: &Path, migrator: &Migrator) -> anyhow::Result<SqlitePool> {
-    let options = base_sqlite_options(path, SqliteRuntimeMode::default())
-        .auto_vacuum(SqliteAutoVacuum::Incremental);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
-        .connect_with(options)
-        .await?;
-    migrator.run(&pool).await?;
-    Ok(pool)
-}
-
-fn db_filename(base_name: &str, version: u32) -> String {
-    format!("{base_name}_{version}.sqlite")
+pub(super) async fn ensure_backfill_state_row_in_pool(
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+INSERT INTO backfill_state (id, status, last_watermark, last_success_at, updated_at)
+VALUES (?, ?, NULL, NULL, ?)
+ON CONFLICT(id) DO NOTHING
+            "#,
+    )
+    .bind(1_i64)
+    .bind(crate::BackfillStatus::Pending.as_str())
+    .bind(Utc::now().timestamp())
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub fn state_db_filename() -> String {
-    db_filename(STATE_DB_FILENAME, STATE_DB_VERSION)
+    STATE_DB_FILENAME.to_string()
 }
 
 pub fn state_db_path(codex_home: &Path) -> PathBuf {
@@ -415,111 +546,103 @@ pub fn state_db_path(codex_home: &Path) -> PathBuf {
 }
 
 pub fn logs_db_filename() -> String {
-    db_filename(LOGS_DB_FILENAME, LOGS_DB_VERSION)
+    LOGS_DB_FILENAME.to_string()
 }
 
 pub fn logs_db_path(codex_home: &Path) -> PathBuf {
     codex_home.join(logs_db_filename())
 }
 
-async fn remove_legacy_db_files(
-    codex_home: &Path,
-    current_name: &str,
-    base_name: &str,
-    db_label: &str,
-) {
-    let mut entries = match tokio::fs::read_dir(codex_home).await {
-        Ok(entries) => entries,
-        Err(err) => {
-            warn!(
-                "failed to read codex_home for {db_label} db cleanup {}: {err}",
-                codex_home.display(),
-            );
-            return;
-        }
-    };
-    let mut legacy_paths = Vec::new();
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if !entry
-            .file_type()
-            .await
-            .map(|file_type| file_type.is_file())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if !should_remove_db_file(file_name.as_ref(), current_name, base_name) {
-            continue;
-        }
-
-        legacy_paths.push(entry.path());
-    }
-
-    // On Windows, SQLite can keep the main database file undeletable until the
-    // matching `-wal` / `-shm` sidecars are removed. Remove the longest
-    // sidecar-style paths first so the main file is attempted last.
-    legacy_paths.sort_by_key(|path| std::cmp::Reverse(path.as_os_str().len()));
-    for legacy_path in legacy_paths {
-        let mut result = tokio::fs::remove_file(&legacy_path).await;
-        for _ in 0..3 {
-            if result.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            result = tokio::fs::remove_file(&legacy_path).await;
-        }
-        if let Err(err) = result {
-            warn!(
-                "failed to remove legacy {db_label} db file {}: {err}",
-                legacy_path.display(),
-            );
-        }
-    }
-}
-
-fn should_remove_db_file(file_name: &str, current_name: &str, base_name: &str) -> bool {
-    let mut normalized_name = file_name;
-    for suffix in ["-wal", "-shm", "-journal"] {
-        if let Some(stripped) = file_name.strip_suffix(suffix) {
-            normalized_name = stripped;
-            break;
-        }
-    }
-    if normalized_name == current_name {
-        return false;
-    }
-    let unversioned_name = format!("{base_name}.sqlite");
-    if normalized_name == unversioned_name {
-        return true;
-    }
-
-    let Some(version_with_extension) = normalized_name.strip_prefix(&format!("{base_name}_"))
-    else {
-        return false;
-    };
-    let Some(version_suffix) = version_with_extension.strip_suffix(".sqlite") else {
-        return false;
-    };
-    !version_suffix.is_empty() && version_suffix.chars().all(|ch| ch.is_ascii_digit())
+/// Run SQLite's built-in integrity check against an existing database file.
+pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .log_statements(LevelFilter::Off);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let rows = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+        .fetch_all(&pool)
+        .await?;
+    pool.close().await;
+    Ok(rows)
 }
 
 #[cfg(test)]
 mod tests {
     use super::SqliteJournalMode;
     use super::SqliteRuntimeMode;
+    use super::StateRuntime;
     use super::open_state_sqlite;
     use super::runtime_state_migrator;
+    use super::sqlite_integrity_check;
     use super::state_db_path;
     use super::test_support::unique_temp_dir;
+    use crate::DB_INIT_METRIC;
+    use crate::DbTelemetry;
     use crate::migrations::STATE_MIGRATOR;
+    use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
-    use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
-    use std::borrow::Cow;
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::path::Path;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct TestTelemetry {
+        counters: Mutex<Vec<MetricEvent>>,
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct MetricEvent {
+        name: String,
+        tags: BTreeMap<String, String>,
+    }
+
+    impl TestTelemetry {
+        fn counters(&self) -> Vec<MetricEvent> {
+            self.counters
+                .lock()
+                .expect("telemetry lock")
+                .iter()
+                .map(|event| MetricEvent {
+                    name: event.name.clone(),
+                    tags: event.tags.clone(),
+                })
+                .collect()
+        }
+    }
+
+    impl DbTelemetry for TestTelemetry {
+        fn counter(&self, name: &str, _inc: i64, tags: &[(&str, &str)]) {
+            self.counters
+                .lock()
+                .expect("telemetry lock")
+                .push(MetricEvent {
+                    name: name.to_string(),
+                    tags: tags_to_map(tags),
+                });
+        }
+
+        fn record_duration(
+            &self,
+            _name: &str,
+            _duration: std::time::Duration,
+            _tags: &[(&str, &str)],
+        ) {
+        }
+    }
+
+    fn tags_to_map(tags: &[(&str, &str)]) -> BTreeMap<String, String> {
+        tags.iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
         SqlitePool::connect_with(
@@ -529,6 +652,34 @@ mod tests {
         )
         .await
         .expect("open sqlite pool")
+    }
+
+    #[tokio::test]
+    async fn sqlite_integrity_check_reports_ok_for_valid_db() {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let path = state_db_path(codex_home.as_path());
+        let pool = SqlitePool::connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .expect("open sqlite db");
+        sqlx::query("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("create sample table");
+        pool.close().await;
+
+        let result = sqlite_integrity_check(&path)
+            .await
+            .expect("integrity check should run");
+
+        assert_eq!(result, vec!["ok".to_string()]);
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
@@ -574,12 +725,50 @@ mod tests {
         let tolerant_pool = open_state_sqlite(
             state_path.as_path(),
             &tolerant_migrator,
-            SqliteRuntimeMode::default(),
+            /*telemetry_override*/ None,
         )
         .await
         .expect("runtime migrator should tolerate newer applied migrations");
         tolerant_pool.close().await;
 
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn init_records_successful_sqlite_init_phases_to_explicit_telemetry() {
+        let codex_home = unique_temp_dir();
+        let telemetry = TestTelemetry::default();
+
+        let runtime = StateRuntime::init_with_telemetry_for_tests(
+            codex_home.clone(),
+            "test-provider".to_string(),
+            &telemetry,
+        )
+        .await
+        .expect("state runtime should initialize");
+
+        let phases = telemetry
+            .counters()
+            .into_iter()
+            .filter(|event| event.name == DB_INIT_METRIC)
+            .filter(|event| event.tags.get("status").map(String::as_str) == Some("success"))
+            .filter_map(|event| event.tags.get("phase").cloned())
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            "open_state",
+            "migrate_state",
+            "open_logs",
+            "migrate_logs",
+            "ensure_backfill_state",
+            "post_init_query",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+        assert_eq!(phases, expected);
+
+        runtime.pool.close().await;
+        runtime.logs_pool.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
@@ -597,43 +786,30 @@ mod tests {
         )
         .await
         .expect("open state db");
-
-        let legacy_migrator = Migrator {
-            migrations: Cow::Owned(
-                STATE_MIGRATOR
-                    .migrations
-                    .iter()
-                    .filter(|migration| migration.description != "device_key_bindings")
-                    .cloned()
-                    .collect(),
-            ),
-            ignore_missing: false,
-            locking: STATE_MIGRATOR.locking,
-            no_tx: STATE_MIGRATOR.no_tx,
-        };
-        legacy_migrator
+        STATE_MIGRATOR
             .run(&pool)
             .await
-            .expect("apply pre-renumber codex-vl schema");
+            .expect("apply current state schema");
+        sqlx::query("UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = ?")
+            .bind("thread loop jobs management")
+            .bind(vec![9_u8])
+            .bind(28_i64)
+            .execute(&pool)
+            .await
+            .expect("rewrite version 28 as legacy conflicting migration");
         pool.close().await;
 
-        let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = open_state_sqlite(
-            state_path.as_path(),
-            &tolerant_migrator,
-            SqliteRuntimeMode::default(),
-        )
-        .await
-        .expect("runtime migrator should add the renumbered device key schema");
-
-        let device_key_table: (String,) = sqlx::query_as(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'device_key_bindings'",
-        )
-        .fetch_one(&tolerant_pool)
-        .await
-        .expect("device_key_bindings table exists");
-        assert_eq!(device_key_table.0, "device_key_bindings");
-        tolerant_pool.close().await;
+        let migrator = runtime_state_migrator();
+        let pool = open_state_sqlite(state_path.as_path(), &migrator, None)
+            .await
+            .expect("runtime migrator reconciles legacy migration record");
+        let description: String =
+            sqlx::query_scalar("SELECT description FROM _sqlx_migrations WHERE version = 28")
+                .fetch_one(&pool)
+                .await
+                .expect("version 28 migration row");
+        assert_eq!(description, "device key bindings");
+        pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -653,167 +829,90 @@ mod tests {
         .await
         .expect("open state db");
 
-        let pre_conflict_migrator = Migrator {
-            migrations: Cow::Owned(
-                STATE_MIGRATOR
-                    .migrations
-                    .iter()
-                    .filter(|migration| migration.version < 27)
-                    .cloned()
-                    .collect(),
-            ),
-            ignore_missing: false,
-            locking: STATE_MIGRATOR.locking,
-            no_tx: STATE_MIGRATOR.no_tx,
-        };
-        pre_conflict_migrator
-            .run(&pool)
-            .await
-            .expect("apply schema before conflicting vl migrations");
-
         sqlx::query(
-            "CREATE TABLE thread_loop_jobs (
-                id TEXT PRIMARY KEY,
-                thread_id TEXT NOT NULL,
-                label TEXT NOT NULL,
-                prompt_text TEXT NOT NULL,
-                interval_seconds INTEGER NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                run_policy TEXT NOT NULL DEFAULT 'queue_one',
-                next_run_ms INTEGER,
-                last_run_ms INTEGER,
-                last_status TEXT,
-                last_error TEXT,
-                pending_tick INTEGER NOT NULL DEFAULT 0,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                UNIQUE(thread_id, label)
-            )",
+            r#"
+CREATE TABLE _sqlx_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN NOT NULL,
+    checksum BLOB NOT NULL,
+    execution_time BIGINT NOT NULL
+)
+"#,
         )
         .execute(&pool)
         .await
-        .expect("create legacy loop jobs table");
-        sqlx::query("CREATE INDEX idx_thread_loop_jobs_thread_id ON thread_loop_jobs(thread_id)")
-            .execute(&pool)
-            .await
-            .expect("create legacy loop index");
+        .expect("create sqlx migrations table");
         sqlx::query(
-            "CREATE TABLE thread_loop_owners (
-                thread_id TEXT PRIMARY KEY NOT NULL,
-                owner_kind TEXT NOT NULL,
-                owner_vivling_id TEXT,
-                updated_at_ms INTEGER NOT NULL
-            )",
+            r#"
+CREATE TABLE thread_loop_jobs (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    goal_text TEXT,
+    prompt_text TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    run_policy TEXT NOT NULL DEFAULT 'queue_one',
+    auto_remove_on_completion INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL DEFAULT 'user',
+    next_run_ms INTEGER,
+    last_run_ms INTEGER,
+    last_status TEXT,
+    last_error TEXT,
+    pending_tick INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE(thread_id, label)
+)
+"#,
         )
         .execute(&pool)
         .await
-        .expect("create legacy loop owners table");
+        .expect("create legacy loop table");
         sqlx::query(
-            "CREATE INDEX idx_threads_archived_cwd_created_at_ms ON threads(archived, cwd, created_at_ms DESC, id DESC)",
+            r#"
+INSERT INTO thread_loop_jobs (
+    id, thread_id, label, goal_text, prompt_text, interval_seconds, enabled,
+    run_policy, auto_remove_on_completion, created_by, next_run_ms, last_run_ms,
+    last_status, last_error, pending_tick, created_at_ms, updated_at_ms
+)
+VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'agent', 1, NULL, NULL, NULL, 0, 1, 1)
+"#,
         )
         .execute(&pool)
         .await
-        .expect("create upstream cwd created index at legacy version");
+        .expect("insert legacy loop row");
         sqlx::query(
-            "CREATE INDEX idx_threads_archived_cwd_updated_at_ms ON threads(archived, cwd, updated_at_ms DESC, id DESC)",
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, ?, ?, ?)",
         )
+        .bind(27_i64)
+        .bind("thread loop jobs")
+        .bind(true)
+        .bind(vec![7_u8])
+        .bind(1_i64)
         .execute(&pool)
         .await
-        .expect("create upstream cwd updated index at legacy version");
-        sqlx::query(
-            "CREATE TABLE device_key_bindings (
-                key_id TEXT PRIMARY KEY NOT NULL,
-                account_user_id TEXT NOT NULL,
-                client_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .expect("create renumbered device key table");
-        sqlx::query(
-            "CREATE TABLE thread_goals (
-                thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-                goal_id TEXT NOT NULL,
-                objective TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'budget_limited', 'complete')),
-                token_budget INTEGER,
-                tokens_used INTEGER NOT NULL DEFAULT 0,
-                time_used_seconds INTEGER NOT NULL DEFAULT 0,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .expect("create renumbered goals table");
-        for (version, description) in [
-            (27_i64, "thread loop jobs"),
-            (28_i64, "thread loop jobs management"),
-            (29_i64, "threads cwd sort indexes"),
-            (30_i64, "thread loop owners"),
-            (910_i64, "device key bindings"),
-            (920_i64, "thread goals"),
-        ] {
-            sqlx::query(
-                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(version)
-            .bind(description)
-            .bind(true)
-            .bind(vec![version as u8])
-            .bind(1_i64)
-            .execute(&pool)
-            .await
-            .expect("insert legacy migration row");
-        }
+        .expect("insert legacy version 27");
         pool.close().await;
 
-        let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = open_state_sqlite(
-            state_path.as_path(),
-            &tolerant_migrator,
-            SqliteRuntimeMode::default(),
-        )
-        .await
-        .expect("runtime migrator should reconcile old vl migration numbers");
-
-        let vl_loop_table: (String,) = sqlx::query_as(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vl_thread_loop_jobs'",
-        )
-        .fetch_one(&tolerant_pool)
-        .await
-        .expect("vl loop jobs table exists");
-        assert_eq!(vl_loop_table.0, "vl_thread_loop_jobs");
-        let old_loop_table: Option<(String,)> = sqlx::query_as(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'thread_loop_jobs'",
-        )
-        .fetch_optional(&tolerant_pool)
-        .await
-        .expect("query old loop table");
-        assert!(old_loop_table.is_none());
-        let goal_column: (String,) = sqlx::query_as(
-            "SELECT name FROM pragma_table_info('vl_thread_loop_jobs') WHERE name = 'goal_text'",
-        )
-        .fetch_one(&tolerant_pool)
-        .await
-        .expect("goal_text compatibility column exists");
-        assert_eq!(goal_column.0, "goal_text");
-
-        let version_27_description: String =
+        let migrator = runtime_state_migrator();
+        let pool = open_state_sqlite(state_path.as_path(), &migrator, None)
+            .await
+            .expect("runtime migrator reconciles legacy loop migrations");
+        let loop_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vl_thread_loop_jobs")
+            .fetch_one(&pool)
+            .await
+            .expect("count migrated loop jobs");
+        assert_eq!(loop_count, 1);
+        let description: String =
             sqlx::query_scalar("SELECT description FROM _sqlx_migrations WHERE version = 27")
-                .fetch_one(&tolerant_pool)
+                .fetch_one(&pool)
                 .await
-                .expect("version 27 is marked as current upstream migration");
-        assert_eq!(version_27_description, "threads cwd sort indexes");
-        let version_29_description: String =
-            sqlx::query_scalar("SELECT description FROM _sqlx_migrations WHERE version = 29")
-                .fetch_one(&tolerant_pool)
-                .await
-                .expect("version 29 is marked as current upstream migration");
-        assert_eq!(version_29_description, "thread goals");
-        tolerant_pool.close().await;
+                .expect("version 27 migration row");
+        assert_eq!(description, "threads cwd sort indexes");
+        pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -823,5 +922,33 @@ mod tests {
         let mode = SqliteRuntimeMode::android_compat();
         assert_eq!(mode.journal_mode, SqliteJournalMode::Delete);
         assert_eq!(mode.max_connections, 1);
+    }
+
+    #[test]
+    fn runtime_state_migrator_keeps_vl_migrations_outside_upstream_number_range() {
+        let migrations = runtime_state_migrator();
+        let vl_versions = migrations
+            .iter()
+            .filter(|migration| migration.description.as_ref().starts_with("vl "))
+            .map(|migration| migration.version)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(vl_versions, BTreeSet::from([930_i64, 931_i64]));
+
+        let descriptions = migrations
+            .iter()
+            .map(|migration| (migration.version, migration.description.to_string()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            descriptions.get(&27).map(String::as_str),
+            Some("threads cwd sort indexes")
+        );
+        assert_eq!(
+            descriptions.get(&28).map(String::as_str),
+            Some("device key bindings")
+        );
+        assert_eq!(
+            descriptions.get(&29).map(String::as_str),
+            Some("thread goals")
+        );
     }
 }

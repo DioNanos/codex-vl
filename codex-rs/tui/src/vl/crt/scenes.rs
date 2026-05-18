@@ -26,5 +26,6 @@ pub(crate) fn render_scene(
         scene.tier,
         scene.species_id,
         scene.stage,
+        scene.transitions,
     );
 }

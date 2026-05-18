@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-linux-x64:
-    runs-on: linux-x64-primary
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CARGO_INCREMENTAL: "0"
@@ -89,7 +89,7 @@ jobs:
       - name: Stage Linux x64 npm package
         run: |
           set -euo pipefail
-          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/linux-x64"
+          root="$HOME/.local/share/github-artifacts/codex-vl/${GITHUB_SHA}/linux-x64"
           vendor="$root/vendor/x86_64-unknown-linux-musl"
           out="$root/npm"
           rm -rf "$root"
@@ -117,11 +117,12 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: codex-vl-linux-x64-npm-${{ env.RELEASE_VERSION }}
-          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
+          path: ~/.local/share/github-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
           if-no-files-found: error
 
   build-android-arm64:
-    runs-on: android-heavy
+    needs: build-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CARGO_INCREMENTAL: "0"
@@ -145,20 +146,23 @@ jobs:
       - name: Locate Android NDK
         run: |
           set -euo pipefail
-          ndk="${ANDROID_NDK_HOME:-}"
-          if [ -z "$ndk" ]; then
-            for candidate in "$HOME/android-ndk/android-ndk-r27c" "$HOME/android-ndk" "$HOME/android-sdk/ndk"/*; do
+          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-}}}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+            for candidate in /usr/local/lib/android/sdk/ndk/*/ "$HOME/android-sdk/ndk"/*/ "$HOME/android-ndk"/*/; do
+              candidate="${candidate%/}"
               if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
                 ndk="$candidate"
                 break
               fi
             done
           fi
-          if [ -z "$ndk" ]; then
-            echo "Android NDK not found on Forge runner" >&2
+          if [ -z "$ndk" ] || [ ! -d "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+            echo "Android NDK not found on runner" >&2
+            ls -la /usr/local/lib/android/sdk/ndk/ 2>&1 || true
             exit 1
           fi
           toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "Using Android NDK at $ndk"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
@@ -193,7 +197,7 @@ jobs:
       - name: Stage Android arm64 npm package
         run: |
           set -euo pipefail
-          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/android-arm64"
+          root="$HOME/.local/share/github-artifacts/codex-vl/${GITHUB_SHA}/android-arm64"
           vendor="$root/vendor/aarch64-linux-android"
           out="$root/npm"
           rm -rf "$root"
@@ -212,5 +216,5 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: codex-vl-android-arm64-npm-${{ env.RELEASE_VERSION }}
-          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
+          path: ~/.local/share/github-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
           if-no-files-found: error

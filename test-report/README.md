@@ -24,10 +24,20 @@ validates the installed CLI and the AI-operated runtime surface.
 ## Current Files
 
 - `AI_GUIDED_TEST_SUITE.md`: reusable guide for future validating AIs.
-- `manual/2026-05-09_0.130.0_ai_guided_surface.md`: 0.130.0 Termux Android
-  arm64 post-install command surface, MCP listing, feature listing, runtime
-  exec, read/write, network, TUI/Vivling startup, and goal/loop lifecycle
-  evidence.
+- `automated/2026-05-06_0.128.4_next_build_publish.md`: 0.128.4 build,
+  package and publish evidence.
+- `automated/2026-05-07_0.128.5_merge_build_publish.md`: 0.128.5 upstream
+  merge, Linux optimized build evidence, and remaining release gates.
+- `automated/2026-05-07_0.129.0_linux_post_install_suite.md`: 0.129.0 Linux
+  post-install command surface, focused Rust tests, npm dist-tag, read/write,
+  and sanitized report evidence.
+- `manual/2026-05-06_0.128.4_ai_guided_surface.md`: 0.128.4 AI-guided
+  command, tool, TUI, read/write, patch, and runtime smoke report.
+- `manual/2026-05-06_termux_persist_extended_history_warning.md`: Termux
+  source update and startup deprecation-warning fix evidence.
+- `manual/2026-05-07_0.129.0_termux_ai_guided_surface.md`: 0.129.0
+  Termux command surface, runtime exec, read/write, network, and first-launch
+  TUI evidence with operator-scoped limitations.
 
 ## Report Rules
 
