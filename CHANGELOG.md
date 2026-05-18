@@ -4,6 +4,111 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.131.0 - Upstream rust-v0.131.0 final
+
+Based on the OpenAI Codex `rust-v0.131.0` release line.
+
+### Added
+
+- Public development journal pointer in the `/vivling` README section, linking
+  to the Codex VL dev journal at `dev.mmmbuto.com/vivling`.
+- Upstream additions inherited from `rust-v0.131.0`, including data-driven
+  service-tier controls, blended token usage display, permissions/approval
+  mode surface, effective workspace roots, responsive Markdown tables, unified
+  `@` mention picker across files, plugins and skills, plugin marketplace CLI
+  flows, daemon-managed `codex remote-control` with runtime enable/disable and
+  status reads, and the new `codex doctor` diagnostic command.
+
+### Changed
+
+- npm `latest` line moved from `0.130.0` to `0.131.0` with matching platform
+  packages for Linux x64, Termux Android arm64, and a macOS arm64 source-build
+  package that compiles locally with Cargo during npm postinstall.
+- README release-channels section rewritten around `0.131.0 latest`. The npm
+  `next` tag is now described as reserved for the next upstream alpha lane
+  after a stable release rather than tracking the current pre-release line.
+
+### Preserved fork features
+
+- `/loop`, `/goal`, `/vivling`, `/vl` and the Vivling runtime, lifecycle, and
+  CRT layer are preserved across the merge.
+- Fork-owned update, doctor and install surfaces stay on `@mmmbuto/codex-vl`
+  with the fork repository as the package source. No upstream installer URL
+  is reintroduced into fork-owned scripts.
+
+## 0.131.0-alpha.23 - Fork-safe remote-control bootstrap
+
+Pre-release on the npm `next` tag. `latest` stayed on `0.130.0`.
+
+### Changed
+
+- npm-installed and bun-installed Codex VL now keep `autoUpdateEnabled=false`
+  for the app-server daemon and short-circuit the managed updater path so the
+  current fork binary stays in control of remote-control sessions.
+- Standalone, Brew and other install contexts keep their previous managed
+  path, so this is a targeted change for npm/bun installs only.
+
+## 0.131.0-alpha.22 - Fork identity hardening (F-bis)
+
+Pre-release on the npm `next` tag. `latest` stayed on `0.130.0`.
+
+### Changed
+
+- Doctor, updater, npm registry hints and release links all point to
+  `@mmmbuto/codex-vl` and the fork repository, with regression tests pinned
+  against silent upstream reintroduction.
+- `install_native_deps` derives the owner/repository from the workflow URL
+  passed by fork pipelines instead of a hardcoded upstream value, while the
+  historical default URL is preserved as a documented placeholder.
+
+## 0.131.0-alpha.20 - Upstream sync rust-v0.131.0-alpha.20
+
+First Codex VL alpha aligned with the upstream `rust-v0.131.0` alpha line.
+
+### Changed
+
+- Merge target is the explicit upstream tag `rust-v0.131.0-alpha.20`, not the
+  upstream branch head, to keep the conflict surface bounded.
+- TUI session resume is adopted from upstream and the previous inline helpers
+  are gated to test builds where appropriate.
+- Release profile uses thin LTO for slightly smaller binaries.
+
+### Internal
+
+- Merge-safety refactors landed before the upstream sync:
+  - chatwidget `slash_dispatch` boundary extraction so most VL slash logic
+    lives outside the upstream-heavy dispatch surface.
+  - `app/loop_controller` split from a single large module into a small set
+    of focused submodules behind a stable internal facade.
+  - `bottom_pane` VL boundary extraction so the upstream-heavy view module
+    no longer carries VL-specific logic blocks.
+  These changes are not directly user-visible. They exist to keep upstream
+  merges practical without changing public behavior.
+
+## 0.130.0 - Upstream rust-v0.130.0
+
+Based on the OpenAI Codex `rust-v0.130.0` release line.
+
+### Added
+
+- npm `latest` Linux x64 and Termux Android arm64 prebuilt packages plus a
+  macOS arm64 source-build package that compiles locally with Cargo during
+  npm postinstall.
+
+### Changed
+
+- `/goal` lifecycle completion is now clear-on-complete to avoid stale
+  completion state across sessions.
+- MCP startup snapshot behavior and stdio retry hardening kept aligned with
+  the upstream `0.130.0` runtime.
+- SQLite state contention hardening retained for multi-session local use.
+
+### Preserved fork features
+
+- Vivling runtime, identity, persistence, lifecycle and brain profile routing.
+- `/loop` session-scoped recurring jobs.
+- `/goal` workflow alongside upstream `/goal` semantics.
+
 ## 0.128.3 - Local Linux rebuild
 
 - Rebuilds and reinstalls the local Linux package from the aligned Forge/GitHub base.
