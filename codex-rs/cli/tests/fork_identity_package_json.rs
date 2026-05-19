@@ -38,3 +38,40 @@ fn fork_identity_pin_codex_cli_package_json() {
          upstream openai/codex repo. Was: {repository_url}",
     );
 }
+
+/// Pin: the npm entrypoint shims route platform packages and reinstall
+/// guidance through the fork-owned npm scope. These files are what users hit
+/// first after a global npm/bun install, so they must not drift back to an
+/// upstream package name during a merge.
+#[test]
+fn fork_identity_pin_codex_cli_bin_shims() {
+    const CODEX_JS: &str = include_str!("../../../codex-cli/bin/codex.js");
+    const CODEX_EXEC_JS: &str = include_str!("../../../codex-cli/bin/codex-exec.js");
+    let sources = [("codex.js", CODEX_JS), ("codex-exec.js", CODEX_EXEC_JS)];
+
+    for (path, source) in sources {
+        for package in [
+            "@mmmbuto/codex-vl-linux-x64",
+            "@mmmbuto/codex-vl-android-arm64",
+            "@mmmbuto/codex-vl-darwin-arm64",
+        ] {
+            assert!(
+                source.contains(package),
+                "{path} must route target triples to fork platform package `{package}`",
+            );
+        }
+        assert!(
+            source.contains("@mmmbuto/codex-vl@latest"),
+            "{path} reinstall/update guidance must use @mmmbuto/codex-vl@latest",
+        );
+        assert!(
+            !source.contains("@mmmbuto/codex-vl@next"),
+            "{path} user-facing reinstall/update guidance must not point stable users at @next",
+        );
+        assert!(
+            !source.contains(concat!("@openai", "/codex"))
+                && !source.contains(concat!("openai", "/", "codex")),
+            "{path} must not route npm users back to upstream Codex packages or repo slugs",
+        );
+    }
+}
