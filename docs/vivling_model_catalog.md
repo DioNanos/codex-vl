@@ -69,7 +69,7 @@ The examples below use a local Ollama-compatible provider name. You can use a di
 This example is intentionally generic and does not include real secrets.
 
 ```toml
-model = "gpt-5.4"
+model = "gpt-5.5"
 model_provider = "openai"
 model_reasoning_effort = "medium"
 model_catalog_json = "/Users/you/.config/codex/model_catalog.json"

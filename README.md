@@ -15,6 +15,7 @@ experimental workflow features:
 - `/loop` for session-scoped recurring checks and follow-up tasks
 - `/vivling` for a persistent local companion and orchestration foundation
 - `/vl` for direct Vivling chat when a brain profile is configured
+- `/remote-control` for daemon lifecycle checks from inside the TUI
 - side-by-side npm packaging under `@mmmbuto/codex-vl`
 
 ## Install
@@ -69,7 +70,13 @@ For this line, macOS is shipped as a source-build payload instead of a prebuilt
 native binary. The local install path still requires Rust/Cargo on the Mac.
 
 The npm `next` tag is reserved for the next upstream alpha lane after a stable
-release. Use it only when a specific pre-release has been announced.
+release. The current pre-release lane is `0.132.0-alpha.*`, based on upstream
+Codex `rust-v0.132.0-alpha.*`.
+
+The `0.132.0-alpha.1` pre-release adds the first `/remote-control` TUI command
+for daemon status, start, stop, and restart. Device enrollment toggles remain
+outside this fork-owned command until the upstream remote-control client surface
+is ready to reuse directly.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -94,6 +101,12 @@ The public development journal is at
 Sends a direct message to the active Vivling. If the Vivling brain is ready, the
 message routes through its configured Codex profile. Otherwise Codex VL uses the
 local fallback reply path.
+
+### `/remote-control`
+
+Checks and controls the Codex remote-control daemon without leaving the TUI.
+Supported subcommands are `status`, `start`, `stop`, and `restart`. Enrollment
+toggles are intentionally not implemented in this command yet.
 
 ## Configuration
 

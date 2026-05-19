@@ -4,6 +4,37 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.132.0-alpha.1 - Remote-control slash lifecycle
+
+Pre-release on the npm `next` tag. `latest` stays on `0.131.0`.
+
+Based on the OpenAI Codex `rust-v0.132.0-alpha.1` release line.
+
+### Added
+
+- `/remote-control` command inside the TUI for daemon `status`, `start`,
+  `stop`, and `restart`, delegating lifecycle work to the canonical
+  `codex-vl remote-control` binary path instead of duplicating daemon logic.
+- Explicit guarded replies for `/remote-control on`, `off`, `enable`, and
+  `disable`; enrollment toggles wait for a reusable upstream client surface
+  rather than adding fork-only pairing code.
+- Generalized `/loop` payload foundation for future structured loop actions,
+  while preserving raw prompt storage compatibility for existing loop jobs.
+
+### Changed
+
+- Vivling species registry and runtime command handlers were split behind the
+  same internal facades, keeping `/vivling` behavior stable while reducing
+  future upstream merge conflicts.
+- Fork identity shim tests now pin npm wrapper package aliases, reinstall
+  guidance, and repository identity against accidental upstream drift.
+
+### Preserved fork features
+
+- `/loop`, `/goal`, `/vivling`, `/vl`, Vivling lifecycle/CRT state, and fork
+  package identity are preserved across the upstream alpha merge.
+- `/goal` still clears completed goals while blocked goals remain inspectable.
+
 ## 0.131.0 - Upstream rust-v0.131.0 final
 
 Based on the OpenAI Codex `rust-v0.131.0` release line.
