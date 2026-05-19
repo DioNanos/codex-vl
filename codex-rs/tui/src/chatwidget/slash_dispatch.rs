@@ -467,6 +467,7 @@ impl ChatWidget {
             SlashCommand::Loop => super::vl_slash::dispatch_loop_bare(self),
             SlashCommand::Vivling => super::vl_slash::dispatch_vivling(self, ""),
             SlashCommand::VivlingAlias => super::vl_slash::dispatch_vivling_alias_bare(self),
+            SlashCommand::RemoteControl => self.dispatch_remote_control_command(""),
         }
     }
 
@@ -781,6 +782,7 @@ impl ChatWidget {
             SlashCommand::Loop => super::vl_slash::dispatch_loop_with_args(self, trimmed),
             SlashCommand::Vivling => super::vl_slash::dispatch_vivling(self, trimmed),
             SlashCommand::VivlingAlias => super::vl_slash::dispatch_vivling_alias(self, trimmed),
+            SlashCommand::RemoteControl => self.dispatch_remote_control_command(trimmed),
             SlashCommand::Pets
                 if matches!(
                     args.trim().to_ascii_lowercase().as_str(),
@@ -982,9 +984,10 @@ impl ChatWidget {
             | SlashCommand::Statusline
             | SlashCommand::Theme
             | SlashCommand::Pets => QueueDrain::Stop,
-            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => {
-                QueueDrain::Continue
-            }
+            SlashCommand::Loop
+            | SlashCommand::Vivling
+            | SlashCommand::VivlingAlias
+            | SlashCommand::RemoteControl => QueueDrain::Continue,
         }
     }
 

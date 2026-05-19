@@ -77,6 +77,8 @@ pub enum SlashCommand {
     Vivling,
     #[strum(serialize = "vl")]
     VivlingAlias,
+    #[strum(serialize = "remote-control")]
+    RemoteControl,
 }
 
 impl SlashCommand {
@@ -87,6 +89,9 @@ impl SlashCommand {
             SlashCommand::Vivling => return "hatch and care for a local terminal companion",
             SlashCommand::VivlingAlias => {
                 return "chat with the active Vivling (AI if adult, otherwise local reply)";
+            }
+            SlashCommand::RemoteControl => {
+                return "start, stop, restart, or inspect the remote-control daemon";
             }
             _ => {}
         }
@@ -145,9 +150,10 @@ impl SlashCommand {
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
-            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => {
-                unreachable!("codex-vl extensions handled above")
-            }
+            SlashCommand::Loop
+            | SlashCommand::Vivling
+            | SlashCommand::VivlingAlias
+            | SlashCommand::RemoteControl => unreachable!("codex-vl extensions handled above"),
         }
     }
 
@@ -161,7 +167,10 @@ impl SlashCommand {
     pub fn supports_inline_args(self) -> bool {
         if matches!(
             self,
-            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias
+            SlashCommand::Loop
+                | SlashCommand::Vivling
+                | SlashCommand::VivlingAlias
+                | SlashCommand::RemoteControl
         ) {
             return true;
         }
@@ -200,7 +209,10 @@ impl SlashCommand {
     pub fn available_during_task(self) -> bool {
         if matches!(
             self,
-            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias
+            SlashCommand::Loop
+                | SlashCommand::Vivling
+                | SlashCommand::VivlingAlias
+                | SlashCommand::RemoteControl
         ) {
             return true;
         }
@@ -254,7 +266,10 @@ impl SlashCommand {
             SlashCommand::Realtime => true,
             SlashCommand::Settings => true,
             SlashCommand::Agent | SlashCommand::MultiAgents => true,
-            SlashCommand::Loop | SlashCommand::Vivling | SlashCommand::VivlingAlias => true,
+            SlashCommand::Loop
+            | SlashCommand::Vivling
+            | SlashCommand::VivlingAlias
+            | SlashCommand::RemoteControl => true,
             SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }
@@ -319,5 +334,16 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn remote_control_command_is_fork_tail_extension() {
+        assert_eq!(SlashCommand::RemoteControl.command(), "remote-control");
+        assert_eq!(
+            SlashCommand::from_str("remote-control"),
+            Ok(SlashCommand::RemoteControl)
+        );
+        assert!(SlashCommand::RemoteControl.supports_inline_args());
+        assert!(SlashCommand::RemoteControl.available_during_task());
     }
 }

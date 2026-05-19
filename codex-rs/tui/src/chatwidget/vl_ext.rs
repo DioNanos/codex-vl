@@ -158,6 +158,34 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn dispatch_remote_control_command(&mut self, args: &str) {
+        let action = match crate::vl::remote_control::parse_action(args) {
+            Ok(action) => action,
+            Err(error) => {
+                let (message, hint) = crate::vl::remote_control::parse_error_message(error);
+                self.add_info_message(message.to_string(), Some(hint.to_string()));
+                return;
+            }
+        };
+        self.add_info_message(
+            format!(
+                "Remote control {} requested.",
+                crate::vl::remote_control::action_label(action)
+            ),
+            /*hint*/ None,
+        );
+        let tx = self.app_event_tx.clone();
+        tokio::spawn(async move {
+            let text = crate::vl::remote_control::run_action(action).await;
+            tx.send(crate::app_event::AppEvent::RemoteControlResult(text));
+        });
+    }
+
+    pub(crate) fn add_remote_control_output(&mut self, text: String) {
+        let lines = crate::vl::remote_control::render_output(&text);
+        self.add_plain_history_lines(lines);
+    }
+
     /// codex-vl: refresh the Vivling live-context summary from the current chat state.
     pub(crate) fn sync_vivling_live_context(&mut self) {
         let run_state = if self.bottom_pane.is_task_running() {

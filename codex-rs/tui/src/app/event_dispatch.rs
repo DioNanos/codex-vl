@@ -371,6 +371,10 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::RemoteControlResult(text) => {
+                self.chat_widget.add_remote_control_output(text);
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::OpenAppLink {
                 app_id,
                 title,

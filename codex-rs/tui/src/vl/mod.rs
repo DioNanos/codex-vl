@@ -10,6 +10,7 @@ pub(crate) mod crt;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod loop_runtime;
+pub(crate) mod remote_control;
 pub(crate) mod sidebar;
 
 pub(crate) use events::VlEvent;
