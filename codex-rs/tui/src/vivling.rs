@@ -1,7 +1,7 @@
 #[path = "vivling/bond.rs"]
 mod bond;
 mod model;
-#[path = "vivling/registry.rs"]
+#[path = "vivling/registry/mod.rs"]
 mod registry;
 mod runtime;
 #[path = "vivling/zed.rs"]
