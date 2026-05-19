@@ -18,12 +18,15 @@ use codex_protocol::ThreadId;
 use crate::app::App;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
 use crate::vl::VlEvent;
+use crate::vl::loop_runtime::LoopJobPayload;
 
+use super::formatting::LOOP_STATUS_BLOCKED;
 use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use super::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use super::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use super::formatting::LOOP_STATUS_DELEGATED_VIVLING;
 use super::formatting::LOOP_STATUS_PENDING_BUSY;
+use super::formatting::LOOP_STATUS_PROGRESS;
 use super::formatting::LOOP_STATUS_SUBMITTED;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
@@ -35,6 +38,46 @@ fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'stat
         LoopPromptSubmissionOutcome::BlockedSideConversation => Some(LOOP_STATUS_BLOCKED_SIDE),
         LoopPromptSubmissionOutcome::BlockedReviewMode => Some(LOOP_STATUS_BLOCKED_REVIEW),
         LoopPromptSubmissionOutcome::BlockedUserTurn => Some(LOOP_STATUS_PENDING_BUSY),
+    }
+}
+
+struct InternalLoopTickOutcome {
+    message: String,
+    status: &'static str,
+    next_run_ms: Option<i64>,
+    pending_tick: bool,
+    last_error: Option<String>,
+}
+
+fn execute_internal_payload(
+    job: &codex_state::ThreadLoopJob,
+    payload: &LoopJobPayload,
+    now: i64,
+) -> Option<InternalLoopTickOutcome> {
+    let LoopJobPayload::InternalFn { fn_name, args } = payload else {
+        return None;
+    };
+    let message = args
+        .get("message")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Internal loop `{}` ran `{fn_name}`.", job.label));
+    match fn_name.as_str() {
+        "loop.status" | "loop.noop" => Some(InternalLoopTickOutcome {
+            message,
+            status: LOOP_STATUS_PROGRESS,
+            next_run_ms: Some(now + (job.interval_seconds * 1000)),
+            pending_tick: false,
+            last_error: None,
+        }),
+        other => Some(InternalLoopTickOutcome {
+            message: format!("Unsupported internal loop function `{other}`."),
+            status: LOOP_STATUS_BLOCKED,
+            next_run_ms: None,
+            pending_tick: true,
+            last_error: Some(format!("unsupported internal loop function `{other}`")),
+        }),
     }
 }
 
@@ -74,6 +117,46 @@ pub(super) async fn process_submission(
         .await
         .map_err(loop_state_error)?;
     let now = loop_now_ms();
+    let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
+    if let Some(internal_outcome) = execute_internal_payload(&job, &payload, now) {
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: internal_outcome.next_run_ms,
+                    last_run_ms: Some(now),
+                    last_status: Some(internal_outcome.status.to_string()),
+                    last_error: internal_outcome.last_error.clone(),
+                    pending_tick: internal_outcome.pending_tick,
+                    updated_at_ms: now,
+                },
+            )
+            .await
+            .map_err(loop_state_error)?;
+        app.chat_widget.add_info_message(
+            format!("Loop `{}`: {}", job.label, internal_outcome.message),
+            /*hint*/ None,
+        );
+        let runtime_state = if internal_outcome.pending_tick {
+            Some("pending")
+        } else if internal_outcome.next_run_ms.is_some() {
+            Some("scheduled")
+        } else {
+            Some("unscheduled")
+        };
+        app.record_vivling_loop_runtime(
+            &job.label,
+            runtime_state,
+            Some(internal_outcome.status),
+            job.goal_text
+                .as_deref()
+                .or_else(|| payload.prompt_text())
+                .or(Some(job.prompt_text.as_str())),
+            &job.created_by,
+        );
+        return Ok(());
+    }
     if owner.owner_kind == codex_state::THREAD_LOOP_OWNER_KIND_VIVLING {
         let Some(owner_vivling_id) = owner.owner_vivling_id.clone() else {
             state_runtime
@@ -204,4 +287,30 @@ pub(super) async fn process_submission(
         &job.created_by,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LOOP_STATUS_PROGRESS;
+    use super::execute_internal_payload;
+    use crate::vl::loop_runtime::LoopJobPayload;
+
+    #[test]
+    fn internal_status_payload_schedules_next_tick() {
+        let mut job = super::super::formatting::sample_job();
+        job.prompt_text = LoopJobPayload::InternalFn {
+            fn_name: "loop.status".to_string(),
+            args: serde_json::json!({"message": "watching"}),
+        }
+        .to_storage_text()
+        .unwrap();
+        let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
+
+        let outcome = execute_internal_payload(&job, &payload, 1_000).expect("internal outcome");
+
+        assert_eq!(outcome.message, "watching");
+        assert_eq!(outcome.status, LOOP_STATUS_PROGRESS);
+        assert_eq!(outcome.next_run_ms, Some(301_000));
+        assert!(!outcome.pending_tick);
+    }
 }

@@ -4,6 +4,7 @@
 //! status strings / `manage_loops` dynamic tool requests.
 
 use crate::vl::events::LoopCommandRequest;
+use crate::vl::loop_runtime::LoopJobPayload;
 
 use super::formatting::LOOP_STATUS_BLOCKED;
 use super::formatting::LOOP_STATUS_DONE;
@@ -28,6 +29,8 @@ struct ManageLoopsToolArgs {
     interval: Option<String>,
     #[serde(default)]
     prompt: Option<String>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
     #[serde(default)]
     auto_remove_on_completion: Option<bool>,
     #[serde(default)]
@@ -139,10 +142,8 @@ pub(super) fn parse_manage_loops_tool_request(
                     .ok_or_else(|| anyhow::anyhow!("`interval` is required for add"))?,
             )
             .ok_or_else(|| anyhow::anyhow!("`interval` must be between 30s and 24h"))?;
-            let prompt_text = args
-                .prompt
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("`prompt` is required for add"))?;
+            let payload = LoopJobPayload::from_tool_payload(args.payload, args.prompt)?;
+            let prompt_text = payload.to_storage_text()?;
             Ok(LoopCommandRequest::Add {
                 label,
                 interval_seconds,
@@ -163,10 +164,18 @@ pub(super) fn parse_manage_loops_tool_request(
                 ),
                 None => None,
             };
-            let prompt_text = match args.prompt {
-                Some(prompt) if !prompt.trim().is_empty() => Some(prompt),
-                Some(_) => return Err(anyhow::anyhow!("`prompt` cannot be empty when provided")),
-                None => None,
+            let prompt_text = match args.payload {
+                Some(payload) => Some(
+                    LoopJobPayload::from_tool_payload(Some(payload), args.prompt)?
+                        .to_storage_text()?,
+                ),
+                None => match args.prompt {
+                    Some(prompt) if !prompt.trim().is_empty() => Some(prompt),
+                    Some(_) => {
+                        return Err(anyhow::anyhow!("`prompt` cannot be empty when provided"));
+                    }
+                    None => None,
+                },
             };
             Ok(LoopCommandRequest::Update {
                 label,
@@ -247,6 +256,33 @@ mod tests {
                 prompt_text: "check forge".to_string(),
                 goal_text: Some("watch package pipeline".to_string()),
                 auto_remove_on_completion: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_add_request_with_internal_fn_payload() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "status",
+            "interval": "5m",
+            "payload": {
+                "type": "internal_fn",
+                "fn_name": "loop.status",
+                "args": {"message": "still watching"}
+            }
+        }))
+        .expect("valid request");
+
+        let LoopCommandRequest::Add { prompt_text, .. } = request else {
+            panic!("expected add request");
+        };
+        let payload = crate::vl::loop_runtime::LoopJobPayload::from_storage_text(&prompt_text);
+        assert_eq!(
+            payload,
+            crate::vl::loop_runtime::LoopJobPayload::InternalFn {
+                fn_name: "loop.status".to_string(),
+                args: serde_json::json!({"message": "still watching"}),
             }
         );
     }

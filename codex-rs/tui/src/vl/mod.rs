@@ -9,6 +9,7 @@
 pub(crate) mod crt;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
+pub(crate) mod loop_runtime;
 pub(crate) mod sidebar;
 
 pub(crate) use events::VlEvent;

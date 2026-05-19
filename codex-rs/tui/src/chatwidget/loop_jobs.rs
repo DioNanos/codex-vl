@@ -15,6 +15,7 @@ use super::*;
 use crate::vivling::VivlingLoopEvent;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
+use crate::vl::loop_runtime::LoopJobPayload;
 
 fn epoch_millis_now() -> i64 {
     SystemTime::now()
@@ -163,16 +164,21 @@ impl ChatWidget {
         if self.is_user_turn_pending_or_running() {
             return LoopPromptSubmissionOutcome::BlockedUserTurn;
         }
+        let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
         let goal = job
             .goal_text
             .as_deref()
             .filter(|goal| !goal.trim().is_empty())
-            .unwrap_or(&job.prompt_text);
+            .map(str::to_string)
+            .unwrap_or_else(|| payload.display_text());
         self.add_info_message(
             format!("Loop `{}` triggered on thread {thread_id}.", job.label),
             None,
         );
-        let mut prompt = job.prompt_text.clone();
+        let mut prompt = payload
+            .prompt_text()
+            .map(str::to_string)
+            .unwrap_or_else(|| payload.display_text());
         prompt.push_str("\n\n[LOOP_CONTEXT]");
         prompt.push_str(&format!("\nlabel: {}", job.label));
         prompt.push_str(&format!("\ngoal: {goal}"));

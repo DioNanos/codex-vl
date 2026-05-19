@@ -4,6 +4,7 @@
 use codex_protocol::ThreadId;
 
 use super::types::LoopActionOutcome;
+use crate::vl::loop_runtime::LoopJobPayload;
 
 pub(super) const LOOP_STATUS_SUBMITTED: &str = "submitted";
 pub(super) const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
@@ -80,8 +81,8 @@ pub(super) fn summarize_loop_goal(job: &codex_state::ThreadLoopJob) -> String {
     job.goal_text
         .as_deref()
         .filter(|goal| !goal.trim().is_empty())
-        .unwrap_or(&job.prompt_text)
-        .to_string()
+        .map(str::to_string)
+        .unwrap_or_else(|| LoopJobPayload::from_storage_text(&job.prompt_text).display_text())
 }
 
 pub(super) fn format_loop_job_details(job: &codex_state::ThreadLoopJob) -> String {
@@ -96,6 +97,8 @@ pub(super) fn format_loop_job_details(job: &codex_state::ThreadLoopJob) -> Strin
     let last_status = canonical_last_status(job).unwrap_or_else(|| "never".to_string());
     let last_error = job.last_error.as_deref().unwrap_or("none");
     let goal = summarize_loop_goal(job);
+    let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
+    let prompt = payload.display_text();
     format!(
         "label: {}\nenabled: {}\ninterval: {}\nruntime_state: {}\nlast_status: {}\npending: {}\nauto_remove_on_completion: {}\ncreated_by: {}\ngoal: {}\nprompt: {}\nnext_run_ms: {}\nlast_run_ms: {}\nlast_error: {}",
         job.label,
@@ -107,7 +110,7 @@ pub(super) fn format_loop_job_details(job: &codex_state::ThreadLoopJob) -> Strin
         job.auto_remove_on_completion,
         job.created_by,
         goal,
-        job.prompt_text,
+        prompt,
         next_run,
         last_run,
         last_error
@@ -115,11 +118,13 @@ pub(super) fn format_loop_job_details(job: &codex_state::ThreadLoopJob) -> Strin
 }
 
 pub(super) fn loop_job_json(job: &codex_state::ThreadLoopJob) -> serde_json::Value {
+    let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
     serde_json::json!({
         "label": job.label,
         "enabled": job.enabled,
         "interval_seconds": job.interval_seconds,
-        "prompt_text": job.prompt_text,
+        "prompt_text": payload.display_text(),
+        "payload": payload.to_public_json(),
         "goal_text": job.goal_text,
         "auto_remove_on_completion": job.auto_remove_on_completion,
         "created_by": job.created_by,
@@ -231,5 +236,7 @@ mod tests {
 
         assert_eq!(json["runtime_state"], "scheduled");
         assert_eq!(json["last_status"], "pending_busy");
+        assert_eq!(json["payload"]["type"], "prompt");
+        assert_eq!(json["payload"]["text"], "check forge");
     }
 }
