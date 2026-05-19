@@ -18,7 +18,6 @@ use crate::apply_rollout_item;
 use crate::migrations::runtime_logs_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::model::AgentJobRow;
-use crate::model::ThreadGoalRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -66,6 +65,7 @@ mod test_support;
 mod thread_loop_jobs;
 mod threads;
 
+pub use goals::GoalStore;
 pub use goals::ThreadGoalAccountingMode;
 pub use goals::ThreadGoalAccountingOutcome;
 pub use goals::ThreadGoalUpdate;
@@ -111,6 +111,7 @@ pub struct StateRuntime {
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    thread_goals: GoalStore,
     thread_updated_at_millis: Arc<AtomicI64>,
 }
 
@@ -213,6 +214,7 @@ impl StateRuntime {
         let thread_updated_at_millis = thread_updated_at_millis_result?;
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let runtime = Arc::new(Self {
+            thread_goals: GoalStore::new(Arc::clone(&pool)),
             pool,
             logs_pool,
             codex_home,
@@ -231,6 +233,10 @@ impl StateRuntime {
     /// Return the configured Codex home directory for this runtime.
     pub fn codex_home(&self) -> &Path {
         self.codex_home.as_path()
+    }
+
+    pub fn thread_goals(&self) -> &GoalStore {
+        &self.thread_goals
     }
 }
 
