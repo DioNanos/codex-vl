@@ -218,7 +218,7 @@ mod tests {
             RemoteControlAction::Start,
             CliOutput {
                 status: Some(0),
-                stdout: r#"{"status":"alreadyRunning","socketPath":"/tmp/codex.sock","cliVersion":"0.132.0-alpha.1","appServerVersion":"0.132.0-alpha.1"}"#.to_string(),
+                stdout: r#"{"status":"alreadyRunning","socketPath":"/tmp/codex.sock","cliVersion":"0.132.0","appServerVersion":"0.132.0"}"#.to_string(),
                 stderr: String::new(),
             },
         );

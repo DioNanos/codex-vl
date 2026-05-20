@@ -4,11 +4,11 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
-## 0.132.0-alpha.1 - Remote-control slash lifecycle
+## 0.132.0 - Stable upstream sync and Codex VL workflow layer
 
-Pre-release on the npm `next` tag. `latest` stays on `0.131.0`.
+Stable release on the npm `latest` tag.
 
-Based on the OpenAI Codex `rust-v0.132.0-alpha.1` release line.
+Based on the OpenAI Codex `rust-v0.132.0` release line.
 
 ### Added
 
@@ -20,6 +20,9 @@ Based on the OpenAI Codex `rust-v0.132.0-alpha.1` release line.
   rather than adding fork-only pairing code.
 - Generalized `/loop` payload foundation for future structured loop actions,
   while preserving raw prompt storage compatibility for existing loop jobs.
+- Fork-owned standalone install script and source-build documentation hygiene,
+  so public install surfaces point at `DioNanos/codex-vl` and
+  `@mmmbuto/codex-vl`.
 
 ### Changed
 
@@ -27,13 +30,23 @@ Based on the OpenAI Codex `rust-v0.132.0-alpha.1` release line.
   same internal facades, keeping `/vivling` behavior stable while reducing
   future upstream merge conflicts.
 - Fork identity shim tests now pin npm wrapper package aliases, reinstall
-  guidance, and repository identity against accidental upstream drift.
+  guidance, repository identity, public install scripts, and source-install
+  docs against accidental upstream drift.
+- npm package metadata moved from the pre-release lane to `0.132.0`.
 
 ### Preserved fork features
 
 - `/loop`, `/goal`, `/vivling`, `/vl`, Vivling lifecycle/CRT state, and fork
-  package identity are preserved across the upstream alpha merge.
+  package identity are preserved across the upstream stable merge.
 - `/goal` still clears completed goals while blocked goals remain inspectable.
+
+### Upstream merge
+
+- Python SDK authentication and turn API updates.
+- `codex exec resume --output-schema`.
+- Batched TUI startup probes.
+- Remote executor authentication updates.
+- App-server image fidelity improvements.
 
 ## 0.131.0 - Upstream rust-v0.131.0 final
 

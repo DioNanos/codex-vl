@@ -10,10 +10,11 @@
 //! - catch both literal reintroductions of `openai/codex` and accidental
 //!   gutting of the helper constants.
 //!
-//! Upstream-true surfaces (SDK packages, installer scripts in
-//! `scripts/install/`, `MODULE.bazel`, `responses-api-proxy`, feedback /
-//! announcement tooltips) are intentionally NOT scanned here because
-//! they legitimately reference the parent `openai/codex` repo.
+//! Upstream-true surfaces (SDK packages, `MODULE.bazel`,
+//! `responses-api-proxy`, feedback / announcement tooltips) are
+//! intentionally NOT scanned here because they legitimately reference
+//! the parent `openai/codex` repo. Public fork install surfaces are
+//! scanned below because they must never direct users back to upstream.
 
 /// Pin: TUI updates module keeps the GitHub releases feed URL pointing at
 /// the fork. `tui/src/updates.rs` is `#[cfg(not(debug_assertions))]` at
@@ -67,6 +68,51 @@ fn fork_identity_install_native_deps_fork_default_repo() {
         !SOURCE.contains("repo: str = \"openai/codex\""),
         "install_native_deps.py::_download_artifacts must not default \
          the `repo` parameter to \"openai/codex\".",
+    );
+}
+
+/// Pin: public install surfaces must point at the Codex VL fork. These
+/// scripts/docs are tracked in the public repository, so they are user-facing
+/// enough to be treated as fork identity surfaces.
+#[test]
+fn fork_identity_public_install_surfaces_are_fork_owned() {
+    const INSTALL_SH: &str = include_str!("../../../scripts/install/install.sh");
+    const INSTALL_PS1: &str = include_str!("../../../scripts/install/install.ps1");
+    const DOCS_INSTALL: &str = include_str!("../../../docs/install.md");
+
+    for (path, source) in [
+        ("scripts/install/install.sh", INSTALL_SH),
+        ("scripts/install/install.ps1", INSTALL_PS1),
+    ] {
+        assert!(
+            !source.contains("github.com/openai/codex/releases"),
+            "{path} must not download release assets from upstream openai/codex.",
+        );
+        assert!(
+            !source.contains("api.github.com/repos/openai/codex"),
+            "{path} must not resolve release metadata from upstream openai/codex.",
+        );
+        assert!(
+            !source.contains("@openai/codex"),
+            "{path} must not suggest uninstalling or managing @openai/codex.",
+        );
+        assert!(
+            source.contains("DioNanos/codex-vl"),
+            "{path} must reference the Codex VL fork repository.",
+        );
+        assert!(
+            source.contains("@mmmbuto/codex-vl"),
+            "{path} must reference the Codex VL npm package.",
+        );
+    }
+
+    assert!(
+        !DOCS_INSTALL.contains("github.com/openai/codex.git"),
+        "docs/install.md must not tell users to clone upstream openai/codex.",
+    );
+    assert!(
+        DOCS_INSTALL.contains("github.com/DioNanos/codex-vl.git"),
+        "docs/install.md must tell users to clone the Codex VL fork.",
     );
 }
 
