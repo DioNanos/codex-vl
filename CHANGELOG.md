@@ -4,49 +4,35 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
-## 0.132.0 - Stable upstream sync and Codex VL workflow layer
+## 0.132.0 - Upstream rust-v0.132.0 final
 
 Stable release on the npm `latest` tag.
 
 Based on the OpenAI Codex `rust-v0.132.0` release line.
 
-### Added
-
-- `/remote-control` command inside the TUI for daemon `status`, `start`,
-  `stop`, and `restart`, delegating lifecycle work to the canonical
-  `codex-vl remote-control` binary path instead of duplicating daemon logic.
-- Explicit guarded replies for `/remote-control on`, `off`, `enable`, and
-  `disable`; enrollment toggles wait for a reusable upstream client surface
-  rather than adding fork-only pairing code.
-- Generalized `/loop` payload foundation for future structured loop actions,
-  while preserving raw prompt storage compatibility for existing loop jobs.
-- Fork-owned standalone install script and source-build documentation hygiene,
-  so public install surfaces point at `DioNanos/codex-vl` and
-  `@mmmbuto/codex-vl`.
-
 ### Changed
 
-- Vivling species registry and runtime command handlers were split behind the
-  same internal facades, keeping `/vivling` behavior stable while reducing
-  future upstream merge conflicts.
-- Fork identity shim tests now pin npm wrapper package aliases, reinstall
-  guidance, repository identity, public install scripts, and source-install
-  docs against accidental upstream drift.
 - npm package metadata moved from the pre-release lane to `0.132.0`.
+- Public install, source-build, and native artifact staging surfaces remain
+  fork-owned for `DioNanos/codex-vl` and `@mmmbuto/codex-vl`.
 
 ### Preserved fork features
 
-- `/loop`, `/goal`, `/vivling`, `/vl`, Vivling lifecycle/CRT state, and fork
-  package identity are preserved across the upstream stable merge.
-- `/goal` still clears completed goals while blocked goals remain inspectable.
+- Existing Codex VL workflow commands and fork package identity are preserved
+  across the upstream stable merge.
 
 ### Upstream merge
 
-- Python SDK authentication and turn API updates.
-- `codex exec resume --output-schema`.
-- Batched TUI startup probes.
-- Remote executor authentication updates.
-- App-server image fidelity improvements.
+- Python SDK authentication now supports API key login, ChatGPT browser and
+  device-code flows, account inspection, and logout APIs.
+- Python turn APIs are easier to use for text-only workflows and return richer
+  turn results for handle-based runs.
+- `codex exec resume` accepts `--output-schema`, so resumed automations can keep
+  session context while still enforcing structured JSON output.
+- TUI startup probes are batched before the first interactive frame.
+- Remote executor registration can use standard Codex auth.
+- App-server turns preserve requested image fidelity, including original local
+  image detail, across user inputs and image-producing tools.
 
 ## 0.131.0 - Upstream rust-v0.131.0 final
 

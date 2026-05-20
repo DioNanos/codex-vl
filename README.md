@@ -51,38 +51,22 @@ npm install -g @mmmbuto/codex-vl
 ## Release Channels
 
 The npm `latest` tag tracks the stable `0.132.0` line. It merges upstream
-Codex `rust-v0.132.0` while preserving the Codex VL workflow layer:
+Codex `rust-v0.132.0` while preserving the existing Codex VL workflow layer and
+fork-owned install/update guidance.
 
-- `/remote-control` daemon lifecycle checks from inside the TUI
-- loop management as a conservative, user-controlled local feature
-- generalized loop payload storage for future structured loop actions, with
-  unsafe payload types gated off by default
-- Vivling identity, persistence, lifecycle state, and model profile routing
-- an early terminal CRT strip that can show compact Vivling state and speech
-- `/goal` completion semantics that clear completed goals while keeping blocked
-  goals inspectable
-- fork-owned update, install, doctor, daemon, and npm wrapper guidance
-- SQLite contention hardening for multi-session local use
-- MCP startup retry hardening for stdio servers that are slow to expose tools
-- maintainable integration points so upstream merges stay practical
-- optimized Linux x64 and Termux Android arm64 npm packages under the `latest`
-  release lane
-- a macOS arm64 source-build npm package that builds and installs locally with
-  Cargo during npm postinstall
-- upstream improvements from the 0.132.0 release line, including Python SDK
-  auth updates, turn API improvements, `exec resume --output-schema`, batched
-  TUI startup probes, remote executor auth, and app-server image fidelity work
+The `0.132.0` line incorporates upstream improvements including Python SDK auth
+updates, turn API improvements, `exec resume --output-schema`, batched TUI
+startup probes, remote executor auth, and app-server image fidelity work.
+
+The npm `latest` release ships optimized Linux x64 and Termux Android arm64
+native packages plus a macOS arm64 source-build package that builds and installs
+locally with Cargo during npm postinstall.
 
 For this line, macOS is shipped as a source-build payload instead of a prebuilt
 native binary. The local install path still requires Rust/Cargo on the Mac.
 
 The npm `next` tag is reserved for the next upstream alpha lane after a stable
 release.
-
-The `0.132.0` release adds the first `/remote-control` TUI command for daemon
-status, start, stop, and restart. Device enrollment toggles remain outside this
-fork-owned command until the upstream remote-control client surface is ready to
-reuse directly.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
