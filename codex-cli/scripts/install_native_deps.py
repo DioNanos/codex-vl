@@ -20,13 +20,10 @@ from urllib.request import urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
-# Historical upstream default kept for backward compatibility with the
-# original `openai/codex` parent workflow. codex-vl pipelines always pass
-# `--workflow-url` pointing at our fork (`DioNanos/codex-vl`), so this URL
-# is never used as the source of truth in a fork-driven build. The
-# fork-safe repo default below is what gets used as fallback whenever the
-# workflow URL cannot be parsed.
-DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
+# Codex VL release staging must be explicit about the artifact source. Do not
+# keep a parent-project workflow URL here: a missing `--workflow-url` should
+# fail rather than silently downloading native payloads from the wrong project.
+DEFAULT_WORKFLOW_URL = ""
 DEFAULT_GITHUB_REPO = "DioNanos/codex-vl"
 VENDOR_DIR_NAME = "vendor"
 RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
@@ -138,8 +135,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workflow-url",
         help=(
-            "GitHub Actions workflow URL that produced the artifacts. Defaults to a "
-            "known good run when omitted."
+            "GitHub Actions workflow URL that produced the artifacts. Codex VL "
+            "requires this to be a DioNanos/codex-vl workflow run."
         ),
     )
     parser.add_argument(
@@ -182,15 +179,18 @@ def main() -> int:
 
     workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
     if not workflow_url:
-        workflow_url = DEFAULT_WORKFLOW_URL
+        raise SystemExit(
+            "Missing --workflow-url. Codex VL does not default to parent-project "
+            "native artifacts; pass a DioNanos/codex-vl GitHub Actions run URL."
+        )
 
     workflow_id = workflow_url.rstrip("/").split("/")[-1]
     # Derive owner/repo from a github.com URL like
     # https://github.com/<owner>/<repo>/actions/runs/<id> so the fork can
-    # reuse the GitHub Actions artifacts without falling back to openai/codex.
+    # reuse the GitHub Actions artifacts without falling back to the parent repo.
     # The fork-safe default lives in `DEFAULT_GITHUB_REPO` so that, even when
     # the workflow URL cannot be parsed, the fallback resolves to our fork
-    # instead of silently pointing back at openai/codex.
+    # instead of silently pointing back at the parent repo.
     repo = DEFAULT_GITHUB_REPO
     parts = workflow_url.split("github.com/", 1)
     if len(parts) == 2:

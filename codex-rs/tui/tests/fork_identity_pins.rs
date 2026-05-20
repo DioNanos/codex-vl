@@ -69,6 +69,16 @@ fn fork_identity_install_native_deps_fork_default_repo() {
         "install_native_deps.py::_download_artifacts must not default \
          the `repo` parameter to \"openai/codex\".",
     );
+    assert!(
+        !SOURCE.contains("github.com/openai/codex/actions"),
+        "install_native_deps.py must not keep an upstream workflow URL as \
+         an implicit artifact source.",
+    );
+    assert!(
+        SOURCE.contains("Missing --workflow-url"),
+        "install_native_deps.py must fail closed when no workflow URL is \
+         provided, instead of falling back to parent-project artifacts.",
+    );
 }
 
 /// Pin: public install surfaces must point at the Codex VL fork. These
@@ -192,19 +202,9 @@ fn fork_identity_no_openai_codex_in_fork_owned_sources() {
             allowed_substrings: &[],
         },
         Case {
-            // The install script intentionally keeps the historical
-            // upstream default workflow URL as a documented placeholder;
-            // the fork-safe default repo is `DEFAULT_GITHUB_REPO` and
-            // the parsing of `--workflow-url` is what drives the real
-            // value at runtime.
             path: "codex-cli/scripts/install_native_deps.py",
             source: include_str!("../../../codex-cli/scripts/install_native_deps.py"),
-            allowed_substrings: &[
-                "DEFAULT_WORKFLOW_URL",
-                "original `openai/codex` parent workflow",
-                "without falling back to openai/codex",
-                "silently pointing back at openai/codex",
-            ],
+            allowed_substrings: &[],
         },
         // codex-vl fork (F-bis): app-server daemon error/help text
         // for the missing managed standalone install. The fork-aware
