@@ -1,5 +1,5 @@
 use crate::function_tool::FunctionCallError;
-use crate::goals::SetGoalRequest;
+use crate::goals::CreateGoalRequest;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
@@ -8,7 +8,6 @@ use crate::tools::handlers::goal_spec::create_create_goal_tool;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use codex_protocol::protocol::ThreadGoalStatus;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
@@ -51,12 +50,11 @@ impl ToolExecutor<ToolInvocation> for CreateGoalHandler {
 
         let args: CreateGoalArgs = parse_arguments(&arguments)?;
         let goal = session
-            .set_thread_goal(
+            .create_thread_goal(
                 turn.as_ref(),
-                SetGoalRequest {
-                    objective: Some(args.objective),
-                    status: Some(ThreadGoalStatus::Active),
-                    token_budget: Some(args.token_budget),
+                CreateGoalRequest {
+                    objective: args.objective,
+                    token_budget: args.token_budget,
                 },
             )
             .await

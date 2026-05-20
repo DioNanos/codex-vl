@@ -51,6 +51,11 @@ pub(crate) struct SetGoalRequest {
     pub(crate) token_budget: Option<Option<i64>>,
 }
 
+pub(crate) struct CreateGoalRequest {
+    pub(crate) objective: String,
+    pub(crate) token_budget: Option<i64>,
+}
+
 static CONTINUATION_PROMPT_TEMPLATE: LazyLock<Template> =
     LazyLock::new(
         || match Template::parse(include_str!("../templates/goals/continuation.md")) {
@@ -555,6 +560,71 @@ impl Session {
         } else if goal_status != codex_state::ThreadGoalStatus::Active {
             self.clear_active_goal_accounting(turn_context).await;
         }
+        self.send_event(
+            turn_context,
+            EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                thread_id: self.conversation_id,
+                turn_id: Some(turn_context.sub_id.clone()),
+                goal: goal.clone(),
+            }),
+        )
+        .await;
+        Ok(goal)
+    }
+
+    pub(crate) async fn create_thread_goal(
+        &self,
+        turn_context: &TurnContext,
+        request: CreateGoalRequest,
+    ) -> anyhow::Result<ThreadGoal> {
+        if !self.enabled(Feature::Goals) {
+            anyhow::bail!("goals feature is disabled");
+        }
+
+        let CreateGoalRequest {
+            objective,
+            token_budget,
+        } = request;
+        validate_goal_budget(token_budget)?;
+        let objective = objective.trim();
+        validate_thread_goal_objective(objective).map_err(anyhow::Error::msg)?;
+
+        let state_db = self.require_state_db_for_thread_goals().await?;
+        self.account_thread_goal_wall_clock_usage(
+            &state_db,
+            codex_state::ThreadGoalAccountingMode::ActiveOnly,
+            TerminalMetricEmission::Emit,
+        )
+        .await?;
+        let goal = state_db
+            .thread_goals()
+            .insert_thread_goal(
+                self.conversation_id,
+                objective,
+                codex_state::ThreadGoalStatus::Active,
+                token_budget,
+            )
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot create a new goal because thread {} already has a goal",
+                    self.conversation_id
+                )
+            })?;
+
+        let goal_id = goal.goal_id.clone();
+        self.emit_goal_created_metric();
+        let goal = protocol_goal_from_state(goal);
+        *self.goal_runtime.budget_limit_reported_goal_id.lock().await = None;
+
+        let current_token_usage = self.total_token_usage().await.unwrap_or_default();
+        self.mark_active_goal_accounting(
+            goal_id,
+            Some(turn_context.sub_id.clone()),
+            current_token_usage,
+        )
+        .await;
+
         self.send_event(
             turn_context,
             EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
