@@ -128,6 +128,20 @@ wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
 `0.132.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
 packages plus the macOS arm64 source-build package.
 
+## Contact
+
+This is a custom Codex distribution maintained by
+[DioNanos](https://github.com/DioNanos).
+
+- General / dev: **dev@mmmbuto.com**
+- Security disclosures: **security@mmmbuto.com**
+- Project hub: <https://mmmbuto.com>
+
+For bugs and feature requests on Codex VL-specific behavior, please open a
+GitHub issue here. For upstream-relevant issues unaffected by Codex VL additions,
+please open them on [openai/codex](https://github.com/openai/codex). For broader
+questions, use [GitHub Discussions](../../discussions) on this repo.
+
 ## Status
 
 Codex VL is active development software. Use the official OpenAI Codex release
