@@ -10,6 +10,7 @@ mod lineage_summary;
 mod migration;
 mod rendering;
 mod save_safety;
+mod schema_v9;
 mod spawn_narration;
 mod spawn_origin;
 mod zed;

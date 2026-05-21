@@ -1,4 +1,9 @@
-pub const VERSION: u32 = 8;
+/// State schema version. Bumped to 9 in Memory V2 Step 2.A; the only
+/// observable difference vs version 8 is the presence of new
+/// `#[serde(default)]` fields on `VivlingState` (and the matching pure
+/// data types in `codex_vivling_core::model`). V8 JSON loads unchanged
+/// into a V9 binary because every new field has an explicit default.
+pub const VERSION: u32 = 9;
 pub const MAX_LEVEL: u64 = 99;
 pub const JUVENILE_LEVEL: u64 = 30;
 pub const ADULT_LEVEL: u64 = 60;

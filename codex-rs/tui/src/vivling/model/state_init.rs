@@ -115,6 +115,14 @@ impl VivlingState {
             lineage_rarity_pressure_pct: 0,
             cultural_parent_vivling_id: None,
             lineage_blessed: false,
+            // Memory V2 Step 2.A: storage-only defaults.
+            self_voice: None,
+            language_state: codex_vivling_core::model::VivlingLanguageState::default(),
+            lineage_inheritance: None,
+            accumulated_bias: codex_vivling_core::model::BiasCounters::default(),
+            recent_bias: codex_vivling_core::model::BiasCounters::default(),
+            cached_crt_phrase: None,
+            cached_proactive: None,
         };
         state.normalize_unlocked_species();
         state.recompute_level();
