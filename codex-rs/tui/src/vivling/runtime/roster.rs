@@ -14,6 +14,30 @@ fn acquire_vivling_save_lock(roster_dir: &Path, vivling_id: &str) -> io::Result<
     acquire_lock(&lock_path, VIVLING_SAVE_LOCK_TIMEOUT).map_err(safety_io_err)
 }
 
+/// Read the persisted `state.version` from an existing `<vivling_id>.json`
+/// file without forcing a full `VivlingState` deserialize round-trip.
+///
+/// Returns `Ok(None)` when the file does not exist (first save of a new
+/// Vivling — no migration needed). Returns `Ok(Some(version))` otherwise.
+/// Propagates IO and JSON parse errors so a corrupt on-disk file fails
+/// the save instead of silently being overwritten.
+fn read_on_disk_version(path: &Path) -> io::Result<Option<u32>> {
+    #[derive(serde::Deserialize)]
+    struct VersionOnly {
+        #[serde(default)]
+        version: u32,
+    }
+
+    match fs::read_to_string(path) {
+        Ok(text) => {
+            let header: VersionOnly = serde_json::from_str(&text).map_err(io::Error::other)?;
+            Ok(Some(header.version))
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 /// Convert a `codex_vivling_core::safety::SafetyError` into a `std::io::Error`
 /// so the existing `io::Result<()>` save signatures stay untouched.
 fn safety_io_err(err: SafetyError) -> io::Error {
@@ -560,6 +584,19 @@ impl Vivling {
         roster.active_vivling_id = Some(state.vivling_id.clone());
         self.save_roster(&roster)?;
         let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
+        // Memory V2 Step 2.B: snapshot the on-disk file once if we are
+        // about to bump it across a schema boundary. Done BEFORE the
+        // rotational last-write backup and the atomic write so the
+        // pre-migration backup captures the legacy schema unchanged.
+        // `backup_pre_migration` is one-shot: it refuses to overwrite an
+        // existing `.v<old>.bak`.
+        if let Some(old_version) = read_on_disk_version(&path)? {
+            if old_version < VERSION {
+                let pre_bak =
+                    pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
+                backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
+            }
+        }
         let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
         backup_last_write(&path, &backup).map_err(safety_io_err)?;
         write_atomic(&path, text.as_bytes()).map_err(safety_io_err)
@@ -601,6 +638,15 @@ impl Vivling {
         }
         self.save_roster(&roster)?;
         let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
+        // Memory V2 Step 2.B: same one-shot pre-migration backup as
+        // `save_state`. See comment there for the ordering rationale.
+        if let Some(old_version) = read_on_disk_version(&path)? {
+            if old_version < VERSION {
+                let pre_bak =
+                    pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
+                backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
+            }
+        }
         let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
         backup_last_write(&path, &backup).map_err(safety_io_err)?;
         write_atomic(&path, text.as_bytes()).map_err(safety_io_err)
