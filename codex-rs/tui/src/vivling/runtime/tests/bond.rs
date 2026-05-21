@@ -455,11 +455,11 @@ fn vivling_record_brain_success_chat_adds_bond_chat_succeeded() {
         .expect("record brain chat success");
 
     let after = &vivling.state.as_ref().expect("state").bond;
-    // value +2, chat_count unchanged (counters are dispatch-only)
+    // Memory V2 Step 12.B.F: BrainChatSucceeded gain raised 2 → 3.
     assert_eq!(
         after.value,
-        before_value + 2,
-        "bond value should grow by 2 on BrainChatSucceeded"
+        before_value + 3,
+        "bond value should grow by 3 on BrainChatSucceeded (post-12.B.F)"
     );
     assert_eq!(
         after.chat_count, before_chat_count,

@@ -9,9 +9,14 @@ const DEFAULT_BOND: u8 = 20;
 const OFFSPRING_BOND: u8 = 10;
 const DECAY_GRACE_HOURS: i64 = 24;
 const STREAK_RESET_HOURS: i64 = 48;
-const DECAY_PER_DAY: u8 = 3;
+// Memory V2 Step 12.B.F (post-alpha smoke test): bond rates re-tuned
+// after DAG observed Nilo stuck at Strangers 20/100 after 23 active
+// days. Decay halved (3 → 2) and streak cap raised (2 → 3) so a
+// consistent daily user still climbs toward Acquaintances/Companions
+// in ~2-3 active weeks rather than plateauing.
+const DECAY_PER_DAY: u8 = 2;
 const STREAK_DAYS_PER_BONUS: u64 = 7;
-const STREAK_BONUS_CAP: u8 = 2;
+const STREAK_BONUS_CAP: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VivlingInteractionKind {
@@ -169,11 +174,19 @@ impl VivlingBond {
     }
 
     pub(crate) fn record_interaction(&mut self, kind: VivlingInteractionKind, now: DateTime<Utc>) {
+        // Memory V2 Step 12.B.F (post-alpha smoke test): Chat and
+        // BrainChatSucceeded each bumped +1 so a single `/vl` turn
+        // (Chat dispatch + brain reply) contributes +5 instead of
+        // +3, net of decay. Assist / LoopTick / BrainAssistSucceeded
+        // kept as-is — Step 12.B.E moved Baby /vl onto the same Chat
+        // path, so the dominant bonding signal for casual users is
+        // now Chat + BrainChatSucceeded; previous values made daily
+        // chat barely keep pace with decay.
         let base_gain: u8 = match kind {
-            VivlingInteractionKind::Chat => 1,
+            VivlingInteractionKind::Chat => 2,
             VivlingInteractionKind::Assist => 2,
             VivlingInteractionKind::LoopTick => 1,
-            VivlingInteractionKind::BrainChatSucceeded => 2,
+            VivlingInteractionKind::BrainChatSucceeded => 3,
             VivlingInteractionKind::BrainAssistSucceeded => 3,
         };
 
@@ -309,10 +322,11 @@ mod tests {
     }
 
     #[test]
-    fn record_chat_adds_1_and_counts() {
+    fn record_chat_adds_2_and_counts() {
         let mut bond = VivlingBond::default();
         bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 13, 10));
-        assert_eq!(bond.value, 21);
+        // Memory V2 Step 12.B.F: Chat base gain raised 1 → 2.
+        assert_eq!(bond.value, 22);
         assert_eq!(bond.chat_count, 1);
         assert_eq!(bond.assist_count, 0);
         assert_eq!(bond.loop_ticks_count, 0);
@@ -374,8 +388,9 @@ mod tests {
         bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 13, 22));
         assert_eq!(bond.streak_days, 1);
         assert_eq!(bond.chat_count, 3);
-        // 20 + 1 + 1 + 1 = 23 (bonus = 0 because streak < 7)
-        assert_eq!(bond.value, 23);
+        // Memory V2 Step 12.B.F: Chat base = 2.
+        // 20 + 2 + 2 + 2 = 26 (bonus = 0 because streak < 7).
+        assert_eq!(bond.value, 26);
     }
 
     #[test]
@@ -384,16 +399,17 @@ mod tests {
         for d in 13..20 {
             bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, d, 10));
         }
-        // After 7 consecutive days, streak_days == 7, bonus = 7/7 = 1
+        // Memory V2 Step 12.B.F: Chat base = 2, streak bonus capped at 3.
+        // After 7 consecutive days, streak_days == 7, bonus = 7/7 = 1.
         assert_eq!(bond.streak_days, 7);
-        // Days 1-6: +1 each (bonus 0). Day 7: +1 + 1 (bonus).
-        // 20 + 6*1 + 1*(1+1) = 28
-        assert_eq!(bond.value, 28);
+        // Days 1-6: +2 each (bonus 0). Day 7: +2 + 1 (bonus).
+        // 20 + 6*2 + 1*(2+1) = 35
+        assert_eq!(bond.value, 35);
 
         for d in 20..27 {
             bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, d, 10));
         }
-        // After 14 consecutive days, bonus caps at 2
+        // After 14 consecutive days, bonus = 14/7 = 2 (still under cap 3).
         assert_eq!(bond.streak_days, 14);
     }
 
@@ -427,13 +443,15 @@ mod tests {
     }
 
     #[test]
-    fn apply_decay_after_grace_removes_3() {
+    fn apply_decay_after_grace_removes_2() {
         let mut bond = VivlingBond::default();
         bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 13, 10));
-        // 30 hours later: grace 24h, overdue 6h → 1 overdue day → -3
+        // Memory V2 Step 12.B.F: decay per day reduced 3 → 2.
+        // Chat base also raised 1 → 2, so post-chat value = 22.
+        // 30 hours later: grace 24h, overdue 6h → 1 overdue day → -2.
         let delta = bond.apply_decay(ts(2026, 5, 14, 16));
-        assert_eq!(delta, 3);
-        assert_eq!(bond.value, 21 - 3);
+        assert_eq!(delta, 2);
+        assert_eq!(bond.value, 22 - 2);
         assert!(bond.last_decay_at.is_some());
     }
 
@@ -592,14 +610,15 @@ mod tests {
     }
 
     #[test]
-    fn record_brain_chat_succeeded_adds_2_value_only() {
+    fn record_brain_chat_succeeded_adds_3_value_only() {
         let mut bond = VivlingBond::default();
         bond.record_interaction(
             VivlingInteractionKind::BrainChatSucceeded,
             ts(2026, 5, 14, 10),
         );
-        // 20 + 2 = 22
-        assert_eq!(bond.value, 22);
+        // Memory V2 Step 12.B.F: BrainChatSucceeded gain raised 2 → 3.
+        // 20 + 3 = 23
+        assert_eq!(bond.value, 23);
         // counters tied to dispatch, NOT to success
         assert_eq!(bond.chat_count, 0);
         assert_eq!(bond.assist_count, 0);
@@ -640,8 +659,9 @@ mod tests {
             VivlingInteractionKind::BrainChatSucceeded,
             ts(2026, 5, 14, 11),
         );
-        // dispatch +1 = 21; success +2 = 23; both same-day so streak stays at 1
-        assert_eq!(bond.value, 23);
+        // Memory V2 Step 12.B.F: Chat=+2, BrainChatSucceeded=+3.
+        // dispatch +2 = 22; success +3 = 25; both same-day so streak stays at 1.
+        assert_eq!(bond.value, 25);
         assert_eq!(bond.streak_days, 1);
         // Only the dispatch increments the chat_count.
         assert_eq!(bond.chat_count, 1);
