@@ -19,18 +19,19 @@ use std::time::Duration;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_vivling_core::model::VivlingDistilledSummary;
-use codex_vivling_core::model::VivlingLanguageState;
 use codex_vivling_core::model::VivlingSkill;
 use codex_vivling_core::model::VivlingVoice;
 use codex_vivling_core::model::VivlingWorkMemoryEntry;
-use codex_vivling_core::model::truncate_summary;
+use codex_vivling_core::model::expression::ExpressionPromptPlan;
+use codex_vivling_core::model::expression::PlannerStateProjection;
+use codex_vivling_core::model::expression::plan_expression_prompt;
 use codex_vivling_core::paths::last_write_backup_path;
 use codex_vivling_core::paths::lock_file_path;
 use codex_vivling_core::paths::pre_migration_backup_path;
 use codex_vivling_core::paths::skills_file_path;
 use codex_vivling_core::paths::skills_last_write_backup_path;
 use codex_vivling_core::paths::voice_file_path;
-use codex_vivling_core::redaction::redact_secrets;
+use codex_vivling_core::redaction::redacted_semantic_text;
 use codex_vivling_core::safety::SafetyError;
 use codex_vivling_core::safety::acquire_lock;
 use codex_vivling_core::safety::backup_last_write;
@@ -669,66 +670,6 @@ fn run_live_batch_inner(
     })
 }
 
-/// Round-3 helper (P1.3): redact a source string and return it only
-/// if real semantic content survives.
-///
-/// Pure-secret sources (e.g. a `topic` made entirely of an Anthropic
-/// API key) are scrubbed by `redact_secrets` into a marker string
-/// like `[REDACTED:ANTHROPIC_KEY]`. The marker is correct on its own —
-/// the secret never leaks — but using it as a topic/summary turns
-/// noise into a "skill" or a "voice paragraph". The planner contract
-/// is `NoSourceMaterial` in that case.
-///
-/// Implementation: apply `redact_secrets`, strip every
-/// `[REDACTED:...]` marker, and require at least one alphanumeric
-/// character to remain. Returns the (un-stripped) redacted text when
-/// real content survives, so the caller still gets the marker mixed
-/// with the real words.
-fn redacted_semantic_text(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let redacted = redact_secrets(trimmed).trim().to_string();
-    if redacted.is_empty() {
-        return None;
-    }
-    let without_markers = strip_redaction_markers(&redacted);
-    if without_markers.chars().any(|c| c.is_alphanumeric()) {
-        Some(redacted)
-    } else {
-        None
-    }
-}
-
-/// Strip every `[REDACTED:WHATEVER]` token from `text`. Used only by
-/// `redacted_semantic_text` to test whether real content remains
-/// outside the markers.
-fn strip_redaction_markers(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '[' {
-            // Peek the literal `REDACTED:` prefix; the marker family
-            // is closed and only `redact_secrets` produces it.
-            let remainder: String = chars.clone().collect();
-            if let Some(rest) = remainder.strip_prefix("REDACTED:")
-                && let Some(end_idx) = rest.find(']')
-            {
-                // Advance the original iterator past the marker
-                // (including the closing `]`).
-                let to_consume = "REDACTED:".len() + end_idx + 1;
-                for _ in 0..to_consume {
-                    chars.next();
-                }
-                continue;
-            }
-        }
-        out.push(ch);
-    }
-    out
-}
-
 // --- Step 7.A: Axis A voice synthesis planner (deterministic, no LLM) ---
 
 /// Voice payload version emitted by [`plan_voice_update`]. Bumped only
@@ -781,26 +722,6 @@ impl VoicePlanSkipReason {
     }
 }
 
-/// Header projection consumed by the voice planner. Kept separate from
-/// [`VivlingStateHeader`] so the planner does not pay for fields it
-/// does not read, and so the TUI's full `VivlingState` does not have
-/// to be pulled in as a dependency.
-#[derive(Debug, Deserialize)]
-struct VoiceStateProjection {
-    #[serde(default)]
-    vivling_id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    hatched: bool,
-    #[serde(default)]
-    language_state: VivlingLanguageState,
-    #[serde(default)]
-    work_memory: Vec<VivlingWorkMemoryEntry>,
-    #[serde(default)]
-    distilled_summaries: Vec<VivlingDistilledSummary>,
-}
-
 /// Plan a Vivling voice synthesis from a state JSON body.
 ///
 /// Returns:
@@ -820,7 +741,7 @@ pub fn plan_voice_update(
     body: &str,
     now: DateTime<Utc>,
 ) -> Result<Result<VivlingVoicePlan, VoicePlanSkipReason>, MemoryAgentError> {
-    let projection: VoiceStateProjection =
+    let projection: PlannerStateProjection =
         serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
             path: PathBuf::from("<in-memory>"),
             source: err,
@@ -1058,7 +979,7 @@ pub fn plan_skill_updates(
     body: &str,
     now: DateTime<Utc>,
 ) -> Result<Result<Vec<VivlingSkillPlan>, SkillPlanSkipReason>, MemoryAgentError> {
-    let projection: VoiceStateProjection =
+    let projection: PlannerStateProjection =
         serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
             path: PathBuf::from("<in-memory>"),
             source: err,
@@ -1281,269 +1202,6 @@ fn dedup_and_sort_skill_plans(plans: &mut Vec<VivlingSkillPlan>) {
     plans.sort_by(|a, b| a.skill.name.cmp(&b.skill.name));
 }
 
-// --- Step 12.A: Axis F expression prompt planner (deterministic, no LLM) ---
-
-/// Expression-prompt schema version emitted by [`plan_expression_prompt`].
-/// Bumped only when the deterministic prompt template shape changes.
-pub const EXPRESSION_PROMPT_VERSION: u32 = 1;
-
-/// Hard cap on the prompt body length, in characters. The whole point
-/// of Step 12.A is to draft a *bounded* prompt the future Step 12.B
-/// can hand to an LLM with confidence; the bound is enforced even
-/// across heterogeneous sources so a malicious or huge state file can
-/// never blow the LLM budget.
-const EXPRESSION_PROMPT_MAX_CHARS: usize = 2_000;
-const EXPRESSION_VOICE_FRAGMENT_MAX: usize = 240;
-const EXPRESSION_CAPSULE_TEXT_MAX: usize = 96;
-const EXPRESSION_MAX_CAPSULES: usize = 3;
-const EXPRESSION_NAME_MAX: usize = 80;
-const EXPRESSION_NAME_FALLBACK: &str = "Vivling";
-
-/// Why the expression planner produced no prompt. Same `serde(snake_case)`
-/// shape as the voice/skill skip enums so JSON consumers can render
-/// all three uniformly.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpressionPlanSkipReason {
-    NotHatched,
-    NoSourceMaterial,
-}
-
-impl ExpressionPlanSkipReason {
-    fn as_str(&self) -> &'static str {
-        match self {
-            ExpressionPlanSkipReason::NotHatched => "not hatched yet",
-            ExpressionPlanSkipReason::NoSourceMaterial => "no source material",
-        }
-    }
-}
-
-/// Where the expression planner pulled its anchor text from. The
-/// drafted prompt mixes both layers when available; the field reports
-/// the *primary* source so consumers can render confidence /
-/// freshness without re-parsing the prompt.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpressionPlanPrimarySource {
-    SelfVoice,
-    DistilledSummaries,
-    WorkMemoryCapsules,
-}
-
-/// Output of [`plan_expression_prompt`]. The `prompt` is bounded and
-/// deterministic; Step 12.B+ would feed it into the configured LLM
-/// when the Vivling needs to express itself.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-pub struct ExpressionPromptPlan {
-    pub prompt: String,
-    pub language: String,
-    pub primary_source: ExpressionPlanPrimarySource,
-    pub sources_count: usize,
-    pub generated_at: DateTime<Utc>,
-    pub version: u32,
-}
-
-/// Plan a Vivling expression prompt from a state JSON body.
-///
-/// Source priority is: `self_voice` (if non-empty after redaction),
-/// then the top-N distilled summaries, then the most recent
-/// work-memory capsules as a fallback. All text is run through
-/// `redacted_semantic_text` so a sidecar made of just `[REDACTED:*]`
-/// markers cannot promote noise into the LLM prompt.
-///
-/// Determinism contract: for a given `body` and `now`, returns the
-/// same `ExpressionPromptPlan` byte-for-byte. No LLM, no randomness,
-/// no environment lookups.
-pub fn plan_expression_prompt(
-    body: &str,
-    now: DateTime<Utc>,
-) -> Result<Result<ExpressionPromptPlan, ExpressionPlanSkipReason>, MemoryAgentError> {
-    let projection: VoiceStateProjection =
-        serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
-            path: PathBuf::from("<in-memory>"),
-            source: err,
-        })?;
-
-    if !projection.hatched {
-        return Ok(Err(ExpressionPlanSkipReason::NotHatched));
-    }
-
-    let language = projection.language_state.effective_language(None);
-    // Step 12.A round-2 fix: name is now redacted and bounded so a
-    // state file with a secret in `name` cannot leak into the LLM
-    // prompt — and a `name` longer than the prompt budget cannot
-    // crowd out the rest of the expression.
-    let name_display = expression_display_name(&projection);
-
-    // Anchor #1: a previously written self_voice (Step 7.B), bounded
-    // and only if the redacted text carries real content.
-    let voice_anchor: Option<String> = (|| {
-        let voice = projection_self_voice(body)?;
-        let bounded = redacted_semantic_text(&voice)
-            .map(|text| truncate_summary(text.trim(), EXPRESSION_VOICE_FRAGMENT_MAX))?;
-        if bounded.trim().is_empty() {
-            None
-        } else {
-            Some(bounded)
-        }
-    })();
-
-    let valid_summaries: Vec<&VivlingDistilledSummary> = projection
-        .distilled_summaries
-        .iter()
-        .filter(|s| {
-            let topic_ok = redacted_semantic_text(&s.topic).is_some();
-            let summary_ok = redacted_semantic_text(&s.summary).is_some();
-            let has_signal = s.observations > 0 || s.total_weight > 0;
-            (topic_ok || summary_ok) && has_signal
-        })
-        .collect();
-    let valid_capsules: Vec<&VivlingWorkMemoryEntry> = projection
-        .work_memory
-        .iter()
-        .filter(|c| {
-            let kind_ok = redacted_semantic_text(&c.kind).is_some();
-            let summary_ok = redacted_semantic_text(&c.summary).is_some();
-            let has_signal = c.weight > 0;
-            (kind_ok || summary_ok) && has_signal
-        })
-        .collect();
-
-    if voice_anchor.is_none() && valid_summaries.is_empty() && valid_capsules.is_empty() {
-        return Ok(Err(ExpressionPlanSkipReason::NoSourceMaterial));
-    }
-
-    // Pick the primary source for the report metadata. Both layers
-    // still go into the prompt when available; this field is the
-    // *anchor* the planner relied on most.
-    let primary_source = if voice_anchor.is_some() {
-        ExpressionPlanPrimarySource::SelfVoice
-    } else if !valid_summaries.is_empty() {
-        ExpressionPlanPrimarySource::DistilledSummaries
-    } else {
-        ExpressionPlanPrimarySource::WorkMemoryCapsules
-    };
-
-    let mut prompt_lines: Vec<String> = Vec::new();
-    prompt_lines.push(format!("You are {name_display}. Speak in {language}."));
-    if let Some(voice) = voice_anchor.as_deref() {
-        prompt_lines.push(format!("Your established voice: {voice}"));
-    }
-    let mut sources_count: usize = if voice_anchor.is_some() { 1 } else { 0 };
-
-    // Stable ordering: distilled by total_weight desc, then by topic asc.
-    let mut summaries = valid_summaries;
-    summaries.sort_by(|a, b| {
-        b.total_weight
-            .cmp(&a.total_weight)
-            .then_with(|| a.topic.cmp(&b.topic))
-    });
-    let mut capsules = valid_capsules;
-    capsules.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-    let mut anchor_lines: Vec<String> = Vec::new();
-    for summary in summaries.into_iter().take(EXPRESSION_MAX_CAPSULES) {
-        let topic = redacted_semantic_text(&summary.topic)
-            .map(|t| truncate_summary(t.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
-            .unwrap_or_default();
-        let pattern = redacted_semantic_text(&summary.summary)
-            .map(|p| truncate_summary(p.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
-            .unwrap_or_default();
-        if topic.is_empty() && pattern.is_empty() {
-            continue;
-        }
-        anchor_lines.push(format!("- {topic}: {pattern}"));
-        sources_count += 1;
-    }
-    if anchor_lines.is_empty() && voice_anchor.is_none() {
-        for capsule in capsules.into_iter().take(EXPRESSION_MAX_CAPSULES) {
-            let topic = redacted_semantic_text(&capsule.kind)
-                .map(|t| truncate_summary(t.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
-                .unwrap_or_default();
-            let pattern = redacted_semantic_text(&capsule.summary)
-                .map(|p| truncate_summary(p.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
-                .unwrap_or_default();
-            if topic.is_empty() && pattern.is_empty() {
-                continue;
-            }
-            anchor_lines.push(format!("- {topic}: {pattern}"));
-            sources_count += 1;
-        }
-    }
-    if !anchor_lines.is_empty() {
-        prompt_lines.push("Recent patterns:".to_string());
-        prompt_lines.extend(anchor_lines);
-    }
-
-    if sources_count == 0 {
-        // Defensive: if every source survived the validity filter but
-        // then collapsed to empty under redaction, treat the plan as
-        // skipped instead of emitting "You are X. Speak in Y." alone.
-        return Ok(Err(ExpressionPlanSkipReason::NoSourceMaterial));
-    }
-
-    let mut prompt = prompt_lines.join("\n");
-    if prompt.chars().count() > EXPRESSION_PROMPT_MAX_CHARS {
-        prompt = truncate_summary(&prompt, EXPRESSION_PROMPT_MAX_CHARS);
-    }
-
-    Ok(Ok(ExpressionPromptPlan {
-        prompt,
-        language,
-        primary_source,
-        sources_count,
-        generated_at: now,
-        version: EXPRESSION_PROMPT_VERSION,
-    }))
-}
-
-/// Extract the `self_voice.text` field from a raw state JSON body
-/// without forcing the planner to depend on the full `VivlingState`.
-/// Returns `None` when the field is absent, null, or carries an empty
-/// `text`. Errors during deserialise bubble up to the caller via the
-/// outer `MemoryAgentError`; here we treat parse problems as "no
-/// voice" so the planner can still fall back to memory/work sources.
-fn projection_self_voice(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let text = value
-        .get("self_voice")?
-        .get("text")?
-        .as_str()?
-        .trim()
-        .to_string();
-    if text.is_empty() { None } else { Some(text) }
-}
-
-/// Step 12.A round-2 fix — redact + bound the Vivling's display name
-/// before it lands in the expression prompt.
-///
-/// Resolution order:
-/// 1. `name`, after `redacted_semantic_text` + trim + cap.
-/// 2. `vivling_id`, same treatment, when `name` collapses.
-/// 3. Static `EXPRESSION_NAME_FALLBACK` (`"Vivling"`) when both fields
-///    are missing, empty after redaction, or made entirely of
-///    redaction markers.
-///
-/// Never returns a raw secret and never returns a string longer than
-/// `EXPRESSION_NAME_MAX`. Marker-only names cannot become a Vivling's
-/// identity: that role goes to the fallback so the LLM still has a
-/// usable handle.
-fn expression_display_name(projection: &VoiceStateProjection) -> String {
-    if let Some(name) = redacted_semantic_text(&projection.name) {
-        let bounded = truncate_summary(name.trim(), EXPRESSION_NAME_MAX);
-        if !bounded.trim().is_empty() {
-            return bounded;
-        }
-    }
-    if let Some(id) = redacted_semantic_text(&projection.vivling_id) {
-        let bounded = truncate_summary(id.trim(), EXPRESSION_NAME_MAX);
-        if !bounded.trim().is_empty() {
-            return bounded;
-        }
-    }
-    EXPRESSION_NAME_FALLBACK.to_string()
-}
-
 fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
     if header.vivling_id.is_empty() {
         return (false, Some("missing vivling_id".to_string()));
@@ -1566,6 +1224,10 @@ fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_vivling_core::model::expression::EXPRESSION_PROMPT_MAX_CHARS;
+    use codex_vivling_core::model::expression::EXPRESSION_PROMPT_VERSION;
+    use codex_vivling_core::model::expression::ExpressionPlanPrimarySource;
+    use codex_vivling_core::model::expression::ExpressionPlanSkipReason;
     use std::fs;
     use tempfile::TempDir;
 

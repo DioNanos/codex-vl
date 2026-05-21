@@ -159,6 +159,59 @@ fn shannon_entropy_bits_per_char(s: &str) -> f64 {
         .sum()
 }
 
+/// Memory V2 Step 8.A round-3 helper — redact and verify a source
+/// string carries real semantic content.
+///
+/// Returns `Some(redacted_text)` when at least one alphanumeric
+/// character survives after stripping `[REDACTED:*]` markers, so
+/// the caller still gets the marker mixed with the real words.
+/// Returns `None` when the input collapses to empty or is made
+/// entirely of redaction markers — used by the voice / skill /
+/// expression planners to refuse pure-secret sources.
+///
+/// Moved into `core::redaction` by Step 12.B.0 so the planners can
+/// live in core without bouncing through the memory-agent crate.
+pub fn redacted_semantic_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let redacted = redact_secrets(trimmed).trim().to_string();
+    if redacted.is_empty() {
+        return None;
+    }
+    let without_markers = strip_redaction_markers(&redacted);
+    if without_markers.chars().any(|c| c.is_alphanumeric()) {
+        Some(redacted)
+    } else {
+        None
+    }
+}
+
+/// Strip every `[REDACTED:WHATEVER]` token from `text`. Used only by
+/// `redacted_semantic_text` to test whether real content remains
+/// outside the markers.
+fn strip_redaction_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '[' {
+            let remainder: String = chars.clone().collect();
+            if let Some(rest) = remainder.strip_prefix("REDACTED:")
+                && let Some(end_idx) = rest.find(']')
+            {
+                let to_consume = "REDACTED:".len() + end_idx + 1;
+                for _ in 0..to_consume {
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +321,29 @@ mod tests {
         let out =
             redact_secrets("export FORGE_TOKEN=forge_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert!(out.contains("[REDACTED:FORGE_TOKEN]"));
+    }
+
+    // --- Step 12.B.0 moves: redacted_semantic_text + strip_redaction_markers ---
+
+    #[test]
+    fn redacted_semantic_text_returns_none_on_empty_or_whitespace() {
+        assert!(redacted_semantic_text("").is_none());
+        assert!(redacted_semantic_text("   \t\n  ").is_none());
+    }
+
+    #[test]
+    fn redacted_semantic_text_returns_none_on_marker_only_input() {
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        assert!(redacted_semantic_text(secret).is_none());
+    }
+
+    #[test]
+    fn redacted_semantic_text_preserves_mixed_real_content() {
+        let secret = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        let mixed = format!("debug pipeline {secret}");
+        let kept = redacted_semantic_text(&mixed).expect("real content survives");
+        assert!(kept.contains("debug"));
+        assert!(kept.contains("pipeline"));
+        assert!(!kept.contains(secret));
     }
 }

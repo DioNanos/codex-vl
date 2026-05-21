@@ -10,12 +10,14 @@
 //! and are scheduled for a later step once their coupling is broken.
 
 pub mod constants;
+pub mod expression;
 pub mod gene;
 pub mod language;
 pub mod text_utils;
 pub mod types;
 
 pub use constants::*;
+pub use expression::*;
 pub use gene::*;
 pub use language::MAX_RECENT_SAMPLES;
 pub use language::SUPPORTED_LANGS;
