@@ -18,9 +18,14 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use chrono::Utc;
+use codex_vivling_core::model::VivlingDistilledSummary;
+use codex_vivling_core::model::VivlingLanguageState;
+use codex_vivling_core::model::VivlingVoice;
+use codex_vivling_core::model::VivlingWorkMemoryEntry;
 use codex_vivling_core::paths::last_write_backup_path;
 use codex_vivling_core::paths::lock_file_path;
 use codex_vivling_core::paths::pre_migration_backup_path;
+use codex_vivling_core::redaction::redact_secrets;
 use codex_vivling_core::safety::SafetyError;
 use codex_vivling_core::safety::acquire_lock;
 use codex_vivling_core::safety::backup_last_write;
@@ -112,6 +117,17 @@ pub struct DryRunVivlingEntry {
     pub pre_migration_backup_path: Option<PathBuf>,
     /// Reason the row was skipped, when `would_write` is false.
     pub skip_reason: Option<String>,
+    /// Step 7.A — proposed Axis A voice paragraph the live batch would
+    /// write into `state.self_voice`. Backward-compatible additive
+    /// field: omitted from the JSON when the planner declined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_plan: Option<VivlingVoicePlan>,
+    /// Step 7.A — short reason string when the voice planner declined
+    /// (e.g. `not hatched yet`, `no source material`). Mirrors the
+    /// planner's skip-reason variant for human inspection. Omitted
+    /// from the JSON when a plan was produced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_plan_skipped: Option<String>,
 }
 
 /// Top-level JSON document produced by `plan_dry_run`. Stable shape:
@@ -152,6 +168,12 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
         return Err(MemoryAgentError::MissingRosterDir(roster_dir.to_path_buf()));
     }
 
+    // Round-2 P2.1: stamp one `now` for the whole report so the
+    // per-entry voice plans share `generated_at` with the report
+    // header. Without this each candidate gets a slightly different
+    // timestamp, which is harmless but makes diffs noisier.
+    let now = Utc::now();
+
     let candidate_paths = collect_state_candidates(roster_dir)?;
 
     let mut entries: Vec<DryRunVivlingEntry> = Vec::new();
@@ -188,6 +210,20 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
             None
         };
 
+        // Step 7.A — voice planner runs against every candidate so the
+        // dry-run report makes the proposed Axis A write visible to
+        // the operator before any live batch lands. Failure to parse
+        // the body for the planner is reported via `voice_plan_skipped`
+        // rather than aborting the whole dry-run.
+        let (voice_plan, voice_plan_skipped) = match plan_voice_update(&body, now) {
+            Ok(Ok(plan)) => (Some(plan), None),
+            Ok(Err(reason)) => (None, Some(reason.as_str().to_string())),
+            Err(_) => (
+                None,
+                Some("voice planner could not parse state".to_string()),
+            ),
+        };
+
         entries.push(DryRunVivlingEntry {
             vivling_id: header.vivling_id,
             name: header.name,
@@ -198,6 +234,8 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
             state_path: path,
             pre_migration_backup_path: pre_migration_backup,
             skip_reason,
+            voice_plan,
+            voice_plan_skipped,
         });
     }
 
@@ -208,7 +246,7 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
         report_version: DRY_RUN_REPORT_VERSION,
         supported_state_version: SUPPORTED_STATE_VERSION,
         roster_dir: roster_dir.to_path_buf(),
-        generated_at: Utc::now(),
+        generated_at: now,
         total_entries: entries.len(),
         would_write_count,
         tokens_used_estimate: 0,
@@ -473,6 +511,237 @@ fn run_live_batch_inner(
         skipped_count,
         actions,
     })
+}
+
+// --- Step 7.A: Axis A voice synthesis planner (deterministic, no LLM) ---
+
+/// Voice payload version emitted by [`plan_voice_update`]. Bumped only
+/// when the deterministic template shape changes.
+pub const VOICE_PLAN_VERSION: u32 = 1;
+
+/// Maximum number of distilled summaries / work-memory capsules that
+/// feed into one synthesis. Kept small on purpose: voice paragraphs are
+/// short and a few dominant patterns produce a more focused identity
+/// than a long enumeration.
+const VOICE_MAX_INPUTS: usize = 3;
+
+/// Where the planner drew its source material from. Surfaced in the
+/// dry-run report so an operator can tell whether a Vivling already
+/// has stable patterns or is still relying on raw recent activity.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoicePlanSourceKind {
+    DistilledSummaries,
+    WorkMemoryCapsules,
+}
+
+/// Planner output: what the live batch would write into `state.self_voice`
+/// during Step 7.B. Step 7.A never touches the state file; this
+/// structure is reported in the dry-run JSON so the user can inspect
+/// the proposed text before any write lands.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct VivlingVoicePlan {
+    pub voice: VivlingVoice,
+    pub source_kind: VoicePlanSourceKind,
+    pub inputs_count: usize,
+}
+
+/// Reason the planner refused to synthesise a voice. These are not
+/// errors: they are design-level decisions that the report surfaces so
+/// the operator understands why a Vivling stays voiceless.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoicePlanSkipReason {
+    NotHatched,
+    NoSourceMaterial,
+}
+
+impl VoicePlanSkipReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            VoicePlanSkipReason::NotHatched => "not hatched yet",
+            VoicePlanSkipReason::NoSourceMaterial => "no source material",
+        }
+    }
+}
+
+/// Header projection consumed by the voice planner. Kept separate from
+/// [`VivlingStateHeader`] so the planner does not pay for fields it
+/// does not read, and so the TUI's full `VivlingState` does not have
+/// to be pulled in as a dependency.
+#[derive(Debug, Deserialize)]
+struct VoiceStateProjection {
+    #[serde(default)]
+    vivling_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    hatched: bool,
+    #[serde(default)]
+    language_state: VivlingLanguageState,
+    #[serde(default)]
+    work_memory: Vec<VivlingWorkMemoryEntry>,
+    #[serde(default)]
+    distilled_summaries: Vec<VivlingDistilledSummary>,
+}
+
+/// Plan a Vivling voice synthesis from a state JSON body.
+///
+/// Returns:
+/// - `Ok(Ok(plan))` when a deterministic voice could be drafted from
+///   the available work memory.
+/// - `Ok(Err(reason))` when the planner deliberately declined
+///   (unhatched Vivling, no source material). These are not errors —
+///   they are reported so the operator can see why no voice was
+///   produced.
+/// - `Err(MemoryAgentError::InvalidStateJson)` on parse failure of
+///   the state body. The caller is expected to surface the path.
+///
+/// Determinism contract: for a given `body` and `now`, this function
+/// returns the same `VivlingVoicePlan` byte-for-byte. No LLM, no
+/// randomness, no environment lookups.
+pub fn plan_voice_update(
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<Result<VivlingVoicePlan, VoicePlanSkipReason>, MemoryAgentError> {
+    let projection: VoiceStateProjection =
+        serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
+            path: PathBuf::from("<in-memory>"),
+            source: err,
+        })?;
+
+    if !projection.hatched {
+        return Ok(Err(VoicePlanSkipReason::NotHatched));
+    }
+
+    // Source priority: distilled patterns first (long-term identity),
+    // then recent capsules as a fallback so brand-new adults still get
+    // something to anchor on.
+    let language = projection.language_state.effective_language(None);
+    let name_display = if projection.name.trim().is_empty() {
+        projection.vivling_id.clone()
+    } else {
+        projection.name.clone()
+    };
+
+    // Round-2 fix: filter sources AFTER redaction + trim. A summary
+    // that is empty (or made of zero-weight zero-observation rows)
+    // is not "source material" — generating a voice from it would
+    // invent content the Vivling never expressed.
+    let valid_summaries: Vec<VivlingDistilledSummary> = projection
+        .distilled_summaries
+        .iter()
+        .filter(|s| {
+            let topic_ok = !redact_secrets(s.topic.trim()).trim().is_empty();
+            let summary_ok = !redact_secrets(s.summary.trim()).trim().is_empty();
+            let has_signal = s.observations > 0 || s.total_weight > 0;
+            (topic_ok || summary_ok) && has_signal
+        })
+        .cloned()
+        .collect();
+    if !valid_summaries.is_empty() {
+        let mut summaries = valid_summaries;
+        summaries.sort_by(|a, b| b.total_weight.cmp(&a.total_weight));
+        let inputs: Vec<&VivlingDistilledSummary> =
+            summaries.iter().take(VOICE_MAX_INPUTS).collect();
+        let topic = redact_secrets(inputs[0].topic.trim()).trim().to_string();
+        let pattern = redact_secrets(inputs[0].summary.trim()).trim().to_string();
+        if topic.is_empty() && pattern.is_empty() {
+            return Ok(Err(VoicePlanSkipReason::NoSourceMaterial));
+        }
+        let text = render_voice_paragraph(&language, &name_display, &topic, &pattern);
+        return Ok(Ok(VivlingVoicePlan {
+            voice: VivlingVoice {
+                text,
+                language,
+                generated_at: Some(now),
+                source_capsules_count: inputs.iter().map(|s| s.observations).sum(),
+                version: VOICE_PLAN_VERSION,
+            },
+            source_kind: VoicePlanSourceKind::DistilledSummaries,
+            inputs_count: inputs.len(),
+        }));
+    }
+
+    let valid_capsules: Vec<VivlingWorkMemoryEntry> = projection
+        .work_memory
+        .iter()
+        .filter(|c| {
+            let kind_ok = !redact_secrets(c.kind.trim()).trim().is_empty();
+            let summary_ok = !redact_secrets(c.summary.trim()).trim().is_empty();
+            let has_signal = c.weight > 0;
+            (kind_ok || summary_ok) && has_signal
+        })
+        .cloned()
+        .collect();
+    if !valid_capsules.is_empty() {
+        let mut capsules = valid_capsules;
+        capsules.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let inputs: Vec<&VivlingWorkMemoryEntry> = capsules.iter().take(VOICE_MAX_INPUTS).collect();
+        let topic = redact_secrets(inputs[0].kind.trim()).trim().to_string();
+        let pattern = redact_secrets(inputs[0].summary.trim()).trim().to_string();
+        if topic.is_empty() && pattern.is_empty() {
+            return Ok(Err(VoicePlanSkipReason::NoSourceMaterial));
+        }
+        let text = render_voice_paragraph(&language, &name_display, &topic, &pattern);
+        return Ok(Ok(VivlingVoicePlan {
+            voice: VivlingVoice {
+                text,
+                language,
+                generated_at: Some(now),
+                source_capsules_count: inputs.len() as u64,
+                version: VOICE_PLAN_VERSION,
+            },
+            source_kind: VoicePlanSourceKind::WorkMemoryCapsules,
+            inputs_count: inputs.len(),
+        }));
+    }
+
+    Ok(Err(VoicePlanSkipReason::NoSourceMaterial))
+}
+
+/// Deterministic paragraph template. Localised on the small supported
+/// set; falls back to English for any other language. The template is
+/// intentionally minimal — Step 7.A is the planner, not the
+/// copywriter. A future LLM enrichment step can replace this body
+/// without changing the planner's API.
+///
+/// Round-2 contract: the caller MUST have verified that at least one
+/// of `topic` / `pattern` is non-empty after redaction. The renderer
+/// no longer invents content (no `il mio lavoro` / `imparo ogni
+/// giorno` placeholder). When only one of the two slots is present,
+/// the missing clause is dropped instead of being papered over with
+/// an invented Italian phrase.
+fn render_voice_paragraph(language: &str, name: &str, topic: &str, pattern: &str) -> String {
+    let topic_clause = (!topic.is_empty()).then(|| match language {
+        "it" => format!("Lavoro su {topic}."),
+        "es" => format!("Trabajo en {topic}."),
+        "fr" => format!("Je travaille sur {topic}."),
+        "de" => format!("Ich arbeite an {topic}."),
+        _ => format!("I work on {topic}."),
+    });
+    let pattern_clause = (!pattern.is_empty()).then(|| match language {
+        "it" => format!("Noto: {pattern}."),
+        "es" => format!("Observo: {pattern}."),
+        "fr" => format!("Je remarque: {pattern}."),
+        "de" => format!("Ich bemerke: {pattern}."),
+        _ => format!("I notice: {pattern}."),
+    });
+    let intro = match language {
+        "it" => format!("Io sono {name}."),
+        "es" => format!("Soy {name}."),
+        "fr" => format!("Je suis {name}."),
+        "de" => format!("Ich bin {name}."),
+        _ => format!("I am {name}."),
+    };
+    let mut parts = vec![intro];
+    if let Some(clause) = topic_clause {
+        parts.push(clause);
+    }
+    if let Some(clause) = pattern_clause {
+        parts.push(clause);
+    }
+    parts.join(" ")
 }
 
 fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
@@ -1080,6 +1349,307 @@ mod tests {
         assert_eq!(action["kind"], "noop_transaction");
         assert_eq!(action["wrote"], true);
         assert_eq!(action["vivling_id"], "viv-1");
+    }
+
+    // --- Step 7.A: voice planner tests ---
+
+    fn make_now() -> chrono::DateTime<chrono::Utc> {
+        // Fixed timestamp so determinism tests do not flake.
+        chrono::DateTime::parse_from_rfc3339("2026-05-21T08:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn voice_planner_returns_not_hatched_on_unhatched() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":false}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NotHatched));
+    }
+
+    #[test]
+    fn voice_planner_returns_no_source_material_on_empty_memory() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn voice_planner_synthesises_from_distilled_with_italian_language() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "language_state":{{"detected_language":"it","language_mode":"mirror_user","recent_samples":[],"language_override":null}},
+                "distilled_summaries":[
+                    {{"topic":"refactor del runtime","summary":"verifica prima di committare","total_weight":5,"observations":3}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_voice_update(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(plan.source_kind, VoicePlanSourceKind::DistilledSummaries);
+        assert_eq!(plan.voice.language, "it");
+        assert!(plan.voice.text.starts_with("Io sono Aelia"));
+        assert!(plan.voice.text.contains("refactor del runtime"));
+        assert!(plan.voice.text.contains("verifica prima di committare"));
+        assert_eq!(plan.voice.version, VOICE_PLAN_VERSION);
+        assert_eq!(plan.voice.generated_at, Some(make_now()));
+    }
+
+    #[test]
+    fn voice_planner_falls_back_to_work_memory_when_no_summaries() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"loop tick","summary":"controllato CI release","weight":1,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_voice_update(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(plan.source_kind, VoicePlanSourceKind::WorkMemoryCapsules);
+        assert!(plan.voice.text.contains("loop tick"));
+        assert!(plan.voice.text.contains("controllato CI release"));
+    }
+
+    #[test]
+    fn voice_planner_redacts_secrets_in_source_text() {
+        // sk-ant-api03 prefix is one of the patterns covered by
+        // codex_vivling_core::redaction::redact_secrets. The planner
+        // must scrub the source text before it lands in voice.text.
+        let secret = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug auth","summary":"key seen: {secret}","total_weight":5,"observations":1}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plan = plan_voice_update(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(
+            !plan.voice.text.contains(secret),
+            "secret leaked into voice.text: {}",
+            plan.voice.text
+        );
+    }
+
+    // --- Round-2 regression tests for empty / zero-signal sources ---
+
+    #[test]
+    fn empty_distilled_summary_is_no_source_material() {
+        // Codex repro: a hatched Vivling whose only distilled summary
+        // has empty topic + empty summary + zero weight + zero
+        // observations would have produced a hallucinated voice
+        // ("I work on il mio lavoro. I notice imparo ogni giorno.").
+        // Round-2 contract: skip.
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"","summary":"","total_weight":0,"observations":0}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn zero_observation_zero_weight_distilled_summary_is_no_source_material() {
+        // Real text content but no signal weight: the planner must
+        // refuse so the live batch does not promote pre-aggregated
+        // noise into the Vivling's identity paragraph.
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"random topic","summary":"random summary","total_weight":0,"observations":0}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn empty_work_memory_capsule_is_no_source_material() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"","summary":"","weight":0,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn english_voice_does_not_leak_italian_fallback_phrases() {
+        // Round-2 regression: when the renderer drops a missing
+        // clause it must NOT silently substitute Italian filler
+        // ("il mio lavoro" / "imparo ogni giorno") into a voice
+        // that is supposed to be English.
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "language_state":{{"detected_language":"en","language_mode":"mirror_user","recent_samples":[],"language_override":null}},
+                "distilled_summaries":[
+                    {{"topic":"async deploys","summary":"","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_voice_update(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(plan.voice.language, "en");
+        assert!(plan.voice.text.starts_with("I am Aelia"));
+        assert!(plan.voice.text.contains("I work on async deploys"));
+        // The missing `summary` field used to produce an Italian
+        // filler; the missing-clause branch must instead drop it.
+        assert!(
+            !plan.voice.text.contains("imparo ogni giorno"),
+            "italian filler leaked into english voice: {}",
+            plan.voice.text
+        );
+        assert!(
+            !plan.voice.text.contains("Noto:"),
+            "italian template leaked into english voice: {}",
+            plan.voice.text
+        );
+    }
+
+    #[test]
+    fn voice_planner_is_deterministic_for_same_input() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"loops","summary":"verifico prima","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let now = make_now();
+        let a = plan_voice_update(&body, now).expect("parse").expect("plan");
+        let b = plan_voice_update(&body, now).expect("parse").expect("plan");
+        assert_eq!(a, b, "planner must be deterministic for the same input");
+    }
+
+    #[test]
+    fn dry_run_report_includes_voice_plan_for_eligible_state() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "language_state":{{"detected_language":"it","language_mode":"mirror_user","recent_samples":[],"language_override":null}},
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verifica","total_weight":5,"observations":3}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        let voice_plan = entry
+            .voice_plan
+            .as_ref()
+            .expect("voice plan must be populated");
+        assert_eq!(
+            voice_plan.source_kind,
+            VoicePlanSourceKind::DistilledSummaries
+        );
+        assert!(voice_plan.voice.text.contains("refactor"));
+        assert!(entry.voice_plan_skipped.is_none());
+
+        // Wire-shape assertion: the new fields ship only when relevant.
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(json["entries"][0].get("voice_plan").is_some());
+        assert!(
+            json["entries"][0].get("voice_plan_skipped").is_none(),
+            "voice_plan_skipped must be omitted when a plan is present"
+        );
+    }
+
+    #[test]
+    fn dry_run_report_omits_voice_plan_when_planner_skipped() {
+        let temp = TempDir::new().expect("tempdir");
+        // Hatched but no memory at all → planner returns
+        // NoSourceMaterial. The report must record the skip reason
+        // and omit the `voice_plan` key entirely.
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        assert!(entry.voice_plan.is_none());
+        assert_eq!(
+            entry.voice_plan_skipped.as_deref(),
+            Some("no source material")
+        );
+
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(
+            json["entries"][0].get("voice_plan").is_none(),
+            "voice_plan key must be absent when planner declined"
+        );
+        assert_eq!(
+            json["entries"][0]["voice_plan_skipped"],
+            "no source material"
+        );
     }
 
     #[test]
