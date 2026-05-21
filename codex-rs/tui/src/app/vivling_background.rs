@@ -366,6 +366,19 @@ Do not include markdown fences, code blocks, or commentary outside the JSON obje
 /// `Config` as-is (no `ConfigBuilder` rebuild) and reads `config.model`;
 /// `Profile(p)` rebuilds through the standard `ConfigBuilder` so the
 /// profile's model/provider/effort overrides take effect.
+///
+/// Memory V2 Step 12.B.G — wrapper-agnostic contract: the
+/// `SessionDefault` arm explicitly clones the active session `Config`
+/// without rewriting `config.model` or `config.model_provider`. That
+/// means whatever the wrapper (AnthMorph proxy, Ollama Cloud bridge,
+/// Z.AI Anthropic endpoint, raw `~/.codex/config.toml`, …) configured
+/// for the running `codex-vl` session — including the model selected
+/// via `/model` — is preserved verbatim for the Vivling brain. The
+/// codex-vl fork does NOT special-case any wrapper by name; it just
+/// honours the standard Codex `Config` shape, which is what every
+/// wrapper produces. A Vivling with `brain off` and no pinned profile
+/// will therefore dispatch its `/vl` chat through the same model the
+/// user is currently talking to in the main session.
 async fn resolve_vivling_brain_target_config(
     config: &Config,
     target: &BrainTarget,
@@ -454,6 +467,46 @@ mod resolve_brain_target_tests {
         assert!(
             err.contains("session has no default model"),
             "error must explain inheritance + missing model, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_default_is_wrapper_agnostic_for_ollama_cloud_style_model() {
+        // Memory V2 Step 12.B.G — wrapper-agnostic verification.
+        // A wrapper-shaped session (e.g. Ollama Cloud sets
+        // `config.model = "glm-5.1:cloud"`) must propagate verbatim
+        // through `SessionDefault` — no rewrite, no special-case for
+        // any specific wrapper name. The fork supports the standard
+        // Codex Config shape; the wrapper is responsible for setting
+        // `config.model`.
+        let config = config_with_model(Some("glm-5.1:cloud")).await;
+        let (resolved_config, model) =
+            resolve_vivling_brain_target_config(&config, &BrainTarget::SessionDefault)
+                .await
+                .expect("resolve wrapper-shaped session default");
+        assert_eq!(
+            model, "glm-5.1:cloud",
+            "wrapper-shaped model string must propagate verbatim"
+        );
+        assert_eq!(
+            resolved_config.model.as_deref(),
+            Some("glm-5.1:cloud"),
+            "the cloned Config must preserve the wrapper-shaped model"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_default_is_wrapper_agnostic_for_anthropic_proxy_style_model() {
+        // Memory V2 Step 12.B.G — wrapper-agnostic verification.
+        // AnthMorph / Z.AI proxy sessions typically set a vendor-prefixed
+        // model id. The fork must not strip or rewrite the prefix.
+        let config = config_with_model(Some("anthropic/claude-opus-4-7")).await;
+        let (_, model) = resolve_vivling_brain_target_config(&config, &BrainTarget::SessionDefault)
+            .await
+            .expect("resolve proxy-shaped session default");
+        assert_eq!(
+            model, "anthropic/claude-opus-4-7",
+            "vendor-prefixed model string must propagate verbatim"
         );
     }
 }
