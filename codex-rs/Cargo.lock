@@ -3840,6 +3840,7 @@ dependencies = [
  "codex-utils-sandbox-summary",
  "codex-utils-sleep-inhibitor",
  "codex-utils-string",
+ "codex-vivling-core",
  "codex-windows-sandbox",
  "color-eyre",
  "core_test_support",
@@ -4134,9 +4135,11 @@ dependencies = [
 name = "codex-vivling-core"
 version = "0.132.0"
 dependencies = [
+ "chrono",
  "libc",
  "once_cell",
  "regex",
+ "serde",
  "tempfile",
  "thiserror 2.0.18",
 ]

@@ -12,9 +12,11 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+chrono = { workspace = true, features = ["serde"] }
 libc = { workspace = true }
 once_cell = { workspace = true }
 regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]

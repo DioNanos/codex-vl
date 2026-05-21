@@ -9,6 +9,7 @@
 //! model types remain in `codex-tui::vivling::model` and will move here in
 //! Step 1.B once the safety primitives are validated.
 
+pub mod model;
 pub mod paths;
 pub mod redaction;
 pub mod safety;
