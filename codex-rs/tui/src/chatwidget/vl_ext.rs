@@ -88,6 +88,22 @@ impl ChatWidget {
         }
     }
 
+    /// Memory V2 Step 12.B.H — force-refresh trigger for the
+    /// `/vivling crt-brain refresh` command. Bypasses the 60s
+    /// throttle; budget / opt-out / dedup still apply.
+    pub(crate) fn maybe_trigger_vivling_expression_refresh_forced(&mut self) -> bool {
+        if let Some(request) = self
+            .bottom_pane
+            .try_dispatch_vivling_expression_refresh_forced(&self.config)
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::RunVivlingExpression { request });
+            true
+        } else {
+            false
+        }
+    }
+
     /// Memory V2 Step 12.B.D.4 — loop-event hook variant. Wired
     /// into `record_vivling_loop_event` with extra anti-burn
     /// gating (Adult-only + 5min throttle + 50% budget headroom)
@@ -149,6 +165,14 @@ impl ChatWidget {
             !self.is_vl_sidebar_expanded(),
             false,
         );
+        // Memory V2 Step 12.B.H: opportunistic idle Expression
+        // refresh. The CRT footer should keep evolving even when the
+        // user goes quiet for a while. `try_dispatch_*` already
+        // enforces the 60s Expression throttle + 5min loop floor +
+        // budget cap, so calling on every frame is safe — only the
+        // first qualifying frame inside an open window actually
+        // spends an LLM slot.
+        self.maybe_trigger_vivling_expression_refresh();
     }
 
     pub(crate) fn vl_lifecycle_tick(

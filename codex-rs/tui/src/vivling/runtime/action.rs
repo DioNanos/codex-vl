@@ -15,6 +15,10 @@ pub(crate) enum CrtBrainAction {
     /// `/vivling crt-brain default` — stage-driven (Adult/Juvenile run,
     /// Baby rare-event only).
     Default,
+    /// Memory V2 Step 12.B.H — `/vivling crt-brain refresh`: force
+    /// an Expression refresh now, bypassing the 60s throttle window.
+    /// Budget + opt-out + dedup gates still apply.
+    Refresh,
 }
 
 /// Memory V2 §8.2 (Step 5.B) — sub-actions for `/vivling language`.
@@ -201,7 +205,8 @@ impl VivlingAction {
             "on" => Ok(Self::CrtBrain(CrtBrainAction::On)),
             "off" => Ok(Self::CrtBrain(CrtBrainAction::Off)),
             "default" | "auto" | "clear" | "reset" => Ok(Self::CrtBrain(CrtBrainAction::Default)),
-            _ => Err("Usage: /vivling crt-brain [show|on|off|default]".to_string()),
+            "refresh" | "now" => Ok(Self::CrtBrain(CrtBrainAction::Refresh)),
+            _ => Err("Usage: /vivling crt-brain [show|on|off|default|refresh]".to_string()),
         }
     }
 

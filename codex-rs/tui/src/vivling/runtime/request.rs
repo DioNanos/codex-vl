@@ -167,6 +167,11 @@ pub(crate) enum VivlingCommandOutcome {
     OpenCard(VivlingPanelData),
     OpenUpgrade(VivlingPanelData),
     DispatchAssist(VivlingAssistRequest),
+    /// Memory V2 Step 12.B.H — `/vivling crt-brain refresh` outcome.
+    /// chatwidget dispatcher emits a forced Expression refresh via
+    /// `maybe_trigger_vivling_expression_refresh_forced()` and
+    /// surfaces a user-visible status message.
+    CrtBrainRefresh,
     PersistBrainProfile(VivlingBrainProfileRequest),
     /// codex-vl iter 1C: emitted by `/vivling spawn`. Carries both the
     /// chat-history message (L1) and the ZED Lineage panel (L2).

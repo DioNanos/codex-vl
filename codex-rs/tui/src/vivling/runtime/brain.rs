@@ -534,6 +534,22 @@ impl Vivling {
         Some(request)
     }
 
+    /// Memory V2 Step 12.B.H — forced variant invoked by the
+    /// `/vivling crt-brain refresh` command. Bypasses the 60s
+    /// Expression throttle; budget / opt-out / dedup gates still
+    /// apply. Same save-state-before-spawn contract.
+    pub(crate) fn try_dispatch_expression_refresh_forced(
+        &mut self,
+    ) -> Option<super::expression::VivlingExpressionRequest> {
+        let state = self.state.as_mut()?;
+        let now = Utc::now();
+        let request = super::expression::try_plan_and_reserve_expression_forced(state, now)?;
+        if self.save_state().is_err() {
+            return None;
+        }
+        Some(request)
+    }
+
     /// Memory V2 Step 12.B.D.4 — loop-event variant of
     /// `try_dispatch_expression_refresh`. Layers Adult-only + 5min
     /// throttle + 50% budget headroom on top of the standard

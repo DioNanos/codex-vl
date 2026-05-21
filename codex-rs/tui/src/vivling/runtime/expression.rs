@@ -33,6 +33,7 @@ use chrono::Duration;
 use chrono::Utc;
 use codex_vivling_core::model::CachedCrtPhrase;
 use codex_vivling_core::model::CachedProactive;
+use codex_vivling_core::model::LLM_EXPRESSION_THROTTLE_SECONDS;
 use codex_vivling_core::model::LOOP_EXPRESSION_HEADROOM_DENOMINATOR;
 use codex_vivling_core::model::LOOP_EXPRESSION_THROTTLE_SECONDS;
 use codex_vivling_core::model::Stage;
@@ -196,6 +197,44 @@ pub(crate) fn try_plan_and_reserve_expression(
     if state.crt_brain_mode == VivlingExpressionMode::Off {
         return None;
     }
+    // Memory V2 Step 12.B.H: high-frequency callers (the per-frame
+    // `pre_draw_tick` idle hook) hit this helper many times per
+    // second. Skip the JSON serialization + planner pass when the
+    // 60s Expression throttle window is still open — `try_reserve`
+    // would refuse anyway, but only after the expensive work. This
+    // is purely an optimization; correctness is unchanged.
+    if let Some(prev) = state.last_llm_dispatch_at
+        && now.signed_duration_since(prev).num_seconds() < LLM_EXPRESSION_THROTTLE_SECONDS
+    {
+        return None;
+    }
+    let body = serde_json::to_string(state).ok()?;
+    let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
+    let prompt_hash = fnv1a64(plan.prompt.as_bytes());
+    maybe_dispatch_expression_refresh(state, now, plan.prompt, plan.language, prompt_hash)
+}
+
+/// Memory V2 Step 12.B.H — force-refresh variant of
+/// [`try_plan_and_reserve_expression`] used by the
+/// `/vivling crt-brain refresh` command. Bypasses the 60s
+/// Expression throttle by temporarily clearing
+/// `last_llm_dispatch_at` before the standard pipeline runs;
+/// budget / opt-out / dedup gates all still apply. The cleared
+/// timestamp is restored by `maybe_dispatch_expression_refresh`
+/// when it bills the slot on success, so the regular throttle
+/// resumes from this dispatch onwards.
+pub(crate) fn try_plan_and_reserve_expression_forced(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+) -> Option<VivlingExpressionRequest> {
+    if state.crt_brain_mode == VivlingExpressionMode::Off {
+        return None;
+    }
+    // Clear the throttle anchor so the inner throttle gate stops
+    // refusing — opt-out / budget / dedup / planner-no-source still
+    // gate the dispatch, and on success `try_reserve_llm_call`
+    // re-stamps `last_llm_dispatch_at` to `now`.
+    state.last_llm_dispatch_at = None;
     let body = serde_json::to_string(state).ok()?;
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
     let prompt_hash = fnv1a64(plan.prompt.as_bytes());

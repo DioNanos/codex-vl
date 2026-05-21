@@ -101,15 +101,32 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
                 VivlingBrainRequestKind::Chat => VivlingLogKind::Chat,
                 VivlingBrainRequestKind::Assist => VivlingLogKind::Assist,
             };
-            let pending_message = match &request.kind {
-                VivlingBrainRequestKind::Chat => "Vivling brain chat is thinking...".to_string(),
-                VivlingBrainRequestKind::Assist => {
-                    "Vivling brain assist is thinking...".to_string()
-                }
-            };
+            // Memory V2 Step 12.B.H: keep the "thinking…" line short.
+            // `add_vivling_message` already prefixes it with
+            // `Vivling: ` (often the Vivling's name elsewhere), so
+            // "Vivling brain chat is thinking…" produced
+            // "Vivling: Vivling brain chat is thinking…" — a double
+            // "Vivling" that read as noise. The pending line now just
+            // says "thinking…" with no extra framing.
+            let pending_message = "thinking…".to_string();
             cw.app_event_tx
                 .send_vl(VlEvent::RunVivlingAssist { request });
             cw.add_vivling_message(pending_message, log_kind);
+        }
+        Ok(VivlingCommandOutcome::CrtBrainRefresh) => {
+            // Memory V2 Step 12.B.H: force a single Expression
+            // refresh that bypasses the 60s throttle. Budget /
+            // opt-out / dedup still gate the dispatch — if any of
+            // those refuses, we surface a hint so the user knows
+            // the channel did not actually fire.
+            if cw.maybe_trigger_vivling_expression_refresh_forced() {
+                cw.add_info_message("CRT brain: refresh dispatched.".to_string(), None);
+            } else {
+                cw.add_info_message(
+                    "CRT brain: refresh skipped (mode off, budget exhausted, or planner had no signal).".to_string(),
+                    Some("Run `/vivling crt-brain show` for counters.".to_string()),
+                );
+            }
         }
         Ok(VivlingCommandOutcome::PersistBrainProfile(request)) => {
             cw.app_event_tx

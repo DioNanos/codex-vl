@@ -109,6 +109,9 @@ impl Vivling {
                 super::action::CrtBrainAction::Default => self
                     .crt_brain_set(codex_vivling_core::model::VivlingExpressionMode::Default)
                     .map(VivlingCommandOutcome::Message),
+                super::action::CrtBrainAction::Refresh => {
+                    Ok(VivlingCommandOutcome::CrtBrainRefresh)
+                }
             },
             VivlingAction::Language(language_action) => match language_action {
                 super::action::LanguageAction::Show => self

@@ -154,6 +154,17 @@ impl App {
                     let visible_reply = format_vivling_brain_reply(kind, &reply);
                     self.chat_widget
                         .add_vivling_message(visible_reply, log_kind);
+                    // Memory V2 Step 12.B.H: pre-warm the CRT live
+                    // phrase after every successful brain reply. Slash
+                    // commands like `/vl` do NOT fire the upstream
+                    // `record_vivling_turn_completed` hook (that one
+                    // only runs at the end of a Codex agent turn), so
+                    // without this trigger the CRT footer stays on
+                    // the template chain even though the Vivling just
+                    // produced fresh content. The Expression channel
+                    // still obeys throttle/dedup/budget, so a chat
+                    // turn never overspends.
+                    self.chat_widget.maybe_trigger_vivling_expression_refresh();
                 }
                 Err(err) => {
                     if let Err(persist_err) =
@@ -244,14 +255,16 @@ impl App {
 }
 
 fn format_vivling_brain_reply(
-    kind: crate::vivling::VivlingBrainRequestKind,
+    _kind: crate::vivling::VivlingBrainRequestKind,
     reply: &str,
 ) -> String {
-    let prefix = match kind {
-        crate::vivling::VivlingBrainRequestKind::Chat => "Brain response",
-        crate::vivling::VivlingBrainRequestKind::Assist => "Brain assist",
-    };
-    format!("{prefix}: {reply}")
+    // Memory V2 Step 12.B.H: drop the `Brain response: ` /
+    // `Brain assist: ` prefix. `add_vivling_message` already
+    // displays the line under a `Vivling: ` header, so the legacy
+    // prefix produced "Vivling: Brain response: Io sono Nilo …" —
+    // a double frame the user read as noise. Returning the raw
+    // reply lets the Vivling voice speak directly.
+    reply.to_string()
 }
 
 #[cfg(test)]
@@ -260,22 +273,26 @@ mod tests {
     use crate::vivling::VivlingBrainRequestKind;
 
     #[test]
-    fn brain_response_label_distinguishes_chat_from_assist() {
+    fn brain_reply_returns_raw_reply_without_prefix() {
+        // Memory V2 Step 12.B.H: legacy "Brain response:" /
+        // "Brain assist:" prefix removed. The Vivling voice speaks
+        // through `add_vivling_message`'s `Vivling: ` header — no
+        // extra framing.
         assert_eq!(
             format_vivling_brain_reply(VivlingBrainRequestKind::Chat, "ready"),
-            "Brain response: ready"
+            "ready"
         );
         assert_eq!(
             format_vivling_brain_reply(VivlingBrainRequestKind::Assist, "check logs"),
-            "Brain assist: check logs"
+            "check logs"
         );
     }
 
     #[test]
-    fn brain_response_label_preserves_multiline_reply() {
+    fn brain_reply_preserves_multiline_reply() {
         assert_eq!(
             format_vivling_brain_reply(VivlingBrainRequestKind::Chat, "first\nsecond"),
-            "Brain response: first\nsecond"
+            "first\nsecond"
         );
     }
 }

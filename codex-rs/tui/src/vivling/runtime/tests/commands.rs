@@ -113,6 +113,14 @@ fn action_parse_supports_crt_brain_subcommands() {
         VivlingAction::parse("crt-brain default"),
         Ok(VivlingAction::CrtBrain(CrtBrainAction::Default))
     );
+    assert_eq!(
+        VivlingAction::parse("crt-brain refresh"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Refresh))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain now"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Refresh))
+    );
     // Underscore + snake-case aliases must also work — keymap muscle
     // memory tends to drop the dash.
     assert_eq!(
