@@ -20,6 +20,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_vivling_core::model::VivlingDistilledSummary;
 use codex_vivling_core::model::VivlingLanguageState;
+use codex_vivling_core::model::VivlingSkill;
 use codex_vivling_core::model::VivlingVoice;
 use codex_vivling_core::model::VivlingWorkMemoryEntry;
 use codex_vivling_core::paths::last_write_backup_path;
@@ -129,6 +130,17 @@ pub struct DryRunVivlingEntry {
     /// from the JSON when a plan was produced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_plan_skipped: Option<String>,
+    /// Step 8.A — proposed Axis B skill catalogue the live batch
+    /// would later persist to `<vivling_id>_skills.json`.
+    /// Backward-compatible additive field: omitted from the JSON
+    /// when the planner produced nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_plans: Vec<VivlingSkillPlan>,
+    /// Step 8.A — short reason string when the skill planner
+    /// declined. Mutually exclusive on the wire with `skill_plans`:
+    /// when the planner produced any skill, this field is omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_plan_skipped: Option<String>,
 }
 
 /// Top-level JSON document produced by `plan_dry_run`. Stable shape:
@@ -224,6 +236,17 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
                 Some("voice planner could not parse state".to_string()),
             ),
         };
+        // Step 8.A — same calling contract as the voice planner: a
+        // parse failure here is reported via `skill_plan_skipped` so
+        // the dry-run does not abort on a single bad entry.
+        let (skill_plans, skill_plan_skipped) = match plan_skill_updates(&body, now) {
+            Ok(Ok(plans)) => (plans, None),
+            Ok(Err(reason)) => (Vec::new(), Some(reason.as_str().to_string())),
+            Err(_) => (
+                Vec::new(),
+                Some("skill planner could not parse state".to_string()),
+            ),
+        };
 
         entries.push(DryRunVivlingEntry {
             vivling_id: header.vivling_id,
@@ -237,6 +260,8 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
             skip_reason,
             voice_plan,
             voice_plan_skipped,
+            skill_plans,
+            skill_plan_skipped,
         });
     }
 
@@ -564,6 +589,66 @@ fn run_live_batch_inner(
     })
 }
 
+/// Round-3 helper (P1.3): redact a source string and return it only
+/// if real semantic content survives.
+///
+/// Pure-secret sources (e.g. a `topic` made entirely of an Anthropic
+/// API key) are scrubbed by `redact_secrets` into a marker string
+/// like `[REDACTED:ANTHROPIC_KEY]`. The marker is correct on its own —
+/// the secret never leaks — but using it as a topic/summary turns
+/// noise into a "skill" or a "voice paragraph". The planner contract
+/// is `NoSourceMaterial` in that case.
+///
+/// Implementation: apply `redact_secrets`, strip every
+/// `[REDACTED:...]` marker, and require at least one alphanumeric
+/// character to remain. Returns the (un-stripped) redacted text when
+/// real content survives, so the caller still gets the marker mixed
+/// with the real words.
+fn redacted_semantic_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let redacted = redact_secrets(trimmed).trim().to_string();
+    if redacted.is_empty() {
+        return None;
+    }
+    let without_markers = strip_redaction_markers(&redacted);
+    if without_markers.chars().any(|c| c.is_alphanumeric()) {
+        Some(redacted)
+    } else {
+        None
+    }
+}
+
+/// Strip every `[REDACTED:WHATEVER]` token from `text`. Used only by
+/// `redacted_semantic_text` to test whether real content remains
+/// outside the markers.
+fn strip_redaction_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '[' {
+            // Peek the literal `REDACTED:` prefix; the marker family
+            // is closed and only `redact_secrets` produces it.
+            let remainder: String = chars.clone().collect();
+            if let Some(rest) = remainder.strip_prefix("REDACTED:")
+                && let Some(end_idx) = rest.find(']')
+            {
+                // Advance the original iterator past the marker
+                // (including the closing `]`).
+                let to_consume = "REDACTED:".len() + end_idx + 1;
+                for _ in 0..to_consume {
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
 // --- Step 7.A: Axis A voice synthesis planner (deterministic, no LLM) ---
 
 /// Voice payload version emitted by [`plan_voice_update`]. Bumped only
@@ -675,16 +760,16 @@ pub fn plan_voice_update(
         projection.name.clone()
     };
 
-    // Round-2 fix: filter sources AFTER redaction + trim. A summary
-    // that is empty (or made of zero-weight zero-observation rows)
-    // is not "source material" — generating a voice from it would
-    // invent content the Vivling never expressed.
+    // Round-3 P1.3: source validity uses `redacted_semantic_text`
+    // so a topic/summary made entirely of `[REDACTED:*]` markers is
+    // rejected. Otherwise a pure-secret topic would be promoted into
+    // a voice paragraph anchored on the marker text.
     let valid_summaries: Vec<VivlingDistilledSummary> = projection
         .distilled_summaries
         .iter()
         .filter(|s| {
-            let topic_ok = !redact_secrets(s.topic.trim()).trim().is_empty();
-            let summary_ok = !redact_secrets(s.summary.trim()).trim().is_empty();
+            let topic_ok = redacted_semantic_text(&s.topic).is_some();
+            let summary_ok = redacted_semantic_text(&s.summary).is_some();
             let has_signal = s.observations > 0 || s.total_weight > 0;
             (topic_ok || summary_ok) && has_signal
         })
@@ -695,8 +780,8 @@ pub fn plan_voice_update(
         summaries.sort_by(|a, b| b.total_weight.cmp(&a.total_weight));
         let inputs: Vec<&VivlingDistilledSummary> =
             summaries.iter().take(VOICE_MAX_INPUTS).collect();
-        let topic = redact_secrets(inputs[0].topic.trim()).trim().to_string();
-        let pattern = redact_secrets(inputs[0].summary.trim()).trim().to_string();
+        let topic = redacted_semantic_text(&inputs[0].topic).unwrap_or_default();
+        let pattern = redacted_semantic_text(&inputs[0].summary).unwrap_or_default();
         if topic.is_empty() && pattern.is_empty() {
             return Ok(Err(VoicePlanSkipReason::NoSourceMaterial));
         }
@@ -718,8 +803,8 @@ pub fn plan_voice_update(
         .work_memory
         .iter()
         .filter(|c| {
-            let kind_ok = !redact_secrets(c.kind.trim()).trim().is_empty();
-            let summary_ok = !redact_secrets(c.summary.trim()).trim().is_empty();
+            let kind_ok = redacted_semantic_text(&c.kind).is_some();
+            let summary_ok = redacted_semantic_text(&c.summary).is_some();
             let has_signal = c.weight > 0;
             (kind_ok || summary_ok) && has_signal
         })
@@ -729,8 +814,8 @@ pub fn plan_voice_update(
         let mut capsules = valid_capsules;
         capsules.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         let inputs: Vec<&VivlingWorkMemoryEntry> = capsules.iter().take(VOICE_MAX_INPUTS).collect();
-        let topic = redact_secrets(inputs[0].kind.trim()).trim().to_string();
-        let pattern = redact_secrets(inputs[0].summary.trim()).trim().to_string();
+        let topic = redacted_semantic_text(&inputs[0].kind).unwrap_or_default();
+        let pattern = redacted_semantic_text(&inputs[0].summary).unwrap_or_default();
         if topic.is_empty() && pattern.is_empty() {
             return Ok(Err(VoicePlanSkipReason::NoSourceMaterial));
         }
@@ -830,6 +915,290 @@ fn render_voice_sidecar_markdown(voice: &VivlingVoice) -> String {
         count = voice.source_capsules_count,
         version = voice.version,
     )
+}
+
+// --- Step 8.A: Axis B skill planner (deterministic, planner-only) ---
+
+/// Skill payload version emitted by [`plan_skill_updates`]. Bumped
+/// only when the deterministic extraction shape changes.
+pub const SKILL_PLAN_VERSION: u32 = 1;
+
+/// Maximum number of skills surfaced in a single batch. Conservative
+/// on purpose: the live `_skills.json` sidecar will later persist this
+/// list, and a long list of weakly-supported skills would dilute the
+/// catalogue more than help.
+const SKILL_MAX_INPUTS: usize = 5;
+
+/// Where the skill planner drew its material from. Same enum shape as
+/// the voice planner so consumers can render both with a single
+/// component.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillPlanSourceKind {
+    DistilledSummaries,
+    WorkMemoryCapsules,
+}
+
+/// One proposed skill entry the live batch would persist. Wraps the
+/// canonical `VivlingSkill` from `codex_vivling_core::model` so the
+/// wire shape matches the on-disk sidecar exactly.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct VivlingSkillPlan {
+    pub skill: VivlingSkill,
+    pub source_kind: SkillPlanSourceKind,
+    pub inputs_count: usize,
+}
+
+/// Reason the skill planner produced nothing. Same semantics as
+/// `VoicePlanSkipReason`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillPlanSkipReason {
+    NotHatched,
+    NoSourceMaterial,
+}
+
+impl SkillPlanSkipReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SkillPlanSkipReason::NotHatched => "not hatched yet",
+            SkillPlanSkipReason::NoSourceMaterial => "no source material",
+        }
+    }
+}
+
+/// Plan a Vivling skill catalogue update from a state JSON body.
+///
+/// Determinism contract: for a given `body` and `now`, returns the
+/// same `Vec<VivlingSkillPlan>` byte-for-byte. No LLM, no randomness.
+/// Source priority is distilled summaries first, then recent work
+/// memory; both go through the same validity filter the voice planner
+/// uses (non-empty after redaction + positive signal).
+pub fn plan_skill_updates(
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<Result<Vec<VivlingSkillPlan>, SkillPlanSkipReason>, MemoryAgentError> {
+    let projection: VoiceStateProjection =
+        serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
+            path: PathBuf::from("<in-memory>"),
+            source: err,
+        })?;
+
+    if !projection.hatched {
+        return Ok(Err(SkillPlanSkipReason::NotHatched));
+    }
+
+    let valid_summaries: Vec<VivlingDistilledSummary> = projection
+        .distilled_summaries
+        .iter()
+        .filter(|s| {
+            let topic_ok = redacted_semantic_text(&s.topic).is_some();
+            let summary_ok = redacted_semantic_text(&s.summary).is_some();
+            let has_signal = s.observations > 0 || s.total_weight > 0;
+            (topic_ok || summary_ok) && has_signal
+        })
+        .cloned()
+        .collect();
+
+    if !valid_summaries.is_empty() {
+        let mut summaries = valid_summaries;
+        summaries.sort_by(|a, b| b.total_weight.cmp(&a.total_weight));
+        let inputs: Vec<&VivlingDistilledSummary> =
+            summaries.iter().take(SKILL_MAX_INPUTS).collect();
+        let inputs_len = inputs.len();
+        let mut plans: Vec<VivlingSkillPlan> = inputs
+            .iter()
+            .filter_map(|s| build_skill_from_distilled(s, now, inputs_len))
+            .collect();
+        dedup_and_sort_skill_plans(&mut plans);
+        if plans.is_empty() {
+            return Ok(Err(SkillPlanSkipReason::NoSourceMaterial));
+        }
+        return Ok(Ok(plans));
+    }
+
+    let valid_capsules: Vec<VivlingWorkMemoryEntry> = projection
+        .work_memory
+        .iter()
+        .filter(|c| {
+            let kind_ok = redacted_semantic_text(&c.kind).is_some();
+            let summary_ok = redacted_semantic_text(&c.summary).is_some();
+            let has_signal = c.weight > 0;
+            (kind_ok || summary_ok) && has_signal
+        })
+        .cloned()
+        .collect();
+
+    if !valid_capsules.is_empty() {
+        let mut capsules = valid_capsules;
+        capsules.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let inputs: Vec<&VivlingWorkMemoryEntry> = capsules.iter().take(SKILL_MAX_INPUTS).collect();
+        let inputs_len = inputs.len();
+        let mut plans: Vec<VivlingSkillPlan> = inputs
+            .iter()
+            .filter_map(|c| build_skill_from_work_memory(c, now, inputs_len))
+            .collect();
+        dedup_and_sort_skill_plans(&mut plans);
+        if plans.is_empty() {
+            return Ok(Err(SkillPlanSkipReason::NoSourceMaterial));
+        }
+        return Ok(Ok(plans));
+    }
+
+    Ok(Err(SkillPlanSkipReason::NoSourceMaterial))
+}
+
+fn build_skill_from_distilled(
+    summary: &VivlingDistilledSummary,
+    now: DateTime<Utc>,
+    inputs_count: usize,
+) -> Option<VivlingSkillPlan> {
+    // Round-2 fix P1.2: derive the name from the first non-empty
+    // redacted source (topic, then summary). If both are empty after
+    // redaction, drop this input — the caller turns "no inputs
+    // survive" into `NoSourceMaterial` rather than emitting
+    // `unnamed-skill`.
+    // Round-3 P1.3: use `redacted_semantic_text` so a pure-secret
+    // topic/summary (whose redact_secrets output is just the marker
+    // `[REDACTED:ANTHROPIC_KEY]`) is treated as no source material
+    // and the whole input is dropped. Otherwise we would promote the
+    // marker into `skill.name = "redacted-anthropic-key"`.
+    let redacted_topic = redacted_semantic_text(&summary.topic);
+    let redacted_summary = redacted_semantic_text(&summary.summary);
+    let name_seed = match (redacted_topic.as_deref(), redacted_summary.as_deref()) {
+        (Some(topic), _) => topic.to_string(),
+        (None, Some(summary)) => summary.to_string(),
+        _ => return None,
+    };
+    let name = skill_name_from_text(&name_seed);
+    if name == "unnamed-skill" {
+        return None;
+    }
+    let trigger_keywords = trigger_keywords_from_text(&name);
+    let step_sequence: Vec<String> = Vec::new();
+    let confidence = clamped_confidence(summary.observations.max(1), summary.total_weight.max(1));
+    let capsule_provenance = redacted_topic
+        .clone()
+        .or_else(|| redacted_summary.clone())
+        .unwrap_or_default();
+    let description = redacted_summary.unwrap_or_default();
+    Some(VivlingSkillPlan {
+        skill: VivlingSkill {
+            name,
+            description,
+            trigger_keywords,
+            step_sequence,
+            success_count: summary.observations,
+            failure_count: 0,
+            last_used_at: Some(now),
+            confidence,
+            version: SKILL_PLAN_VERSION,
+            abstracted_from_capsules: vec![capsule_provenance],
+            superseded_by: None,
+        },
+        source_kind: SkillPlanSourceKind::DistilledSummaries,
+        inputs_count,
+    })
+}
+
+fn build_skill_from_work_memory(
+    capsule: &VivlingWorkMemoryEntry,
+    now: DateTime<Utc>,
+    inputs_count: usize,
+) -> Option<VivlingSkillPlan> {
+    let redacted_kind = redacted_semantic_text(&capsule.kind);
+    let redacted_summary = redacted_semantic_text(&capsule.summary);
+    let name_seed = match (redacted_kind.as_deref(), redacted_summary.as_deref()) {
+        (Some(kind), _) => kind.to_string(),
+        (None, Some(summary)) => summary.to_string(),
+        _ => return None,
+    };
+    let name = skill_name_from_text(&name_seed);
+    if name == "unnamed-skill" {
+        return None;
+    }
+    let trigger_keywords = trigger_keywords_from_text(&name);
+    let step_sequence: Vec<String> = Vec::new();
+    let confidence = clamped_confidence(1, capsule.weight.max(1));
+    let capsule_provenance = redacted_kind
+        .clone()
+        .or_else(|| redacted_summary.clone())
+        .unwrap_or_default();
+    let description = redacted_summary.unwrap_or_default();
+    Some(VivlingSkillPlan {
+        skill: VivlingSkill {
+            name,
+            description,
+            trigger_keywords,
+            step_sequence,
+            success_count: 1,
+            failure_count: 0,
+            last_used_at: Some(now),
+            confidence,
+            version: SKILL_PLAN_VERSION,
+            abstracted_from_capsules: vec![capsule_provenance],
+            superseded_by: None,
+        },
+        source_kind: SkillPlanSourceKind::WorkMemoryCapsules,
+        inputs_count,
+    })
+}
+
+/// Slugify a source string into a stable skill name. Lowercase ASCII,
+/// non-alphanumeric collapsed to single `-`, trimmed of leading and
+/// trailing dashes. Empty input maps to `"unnamed-skill"` (the caller
+/// is supposed to filter empties out first, but the fallback keeps
+/// the function total).
+fn skill_name_from_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut last_dash = true;
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() {
+            for low in ch.to_lowercase() {
+                out.push(low);
+            }
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "unnamed-skill".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Derive trigger keywords from the skill name. Splits on the slug's
+/// `-` separator and drops single-character fragments so very common
+/// stop-letters do not flood the trigger list.
+fn trigger_keywords_from_text(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = name
+        .split('-')
+        .filter(|t| t.len() >= 2)
+        .map(|t| t.to_string())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn clamped_confidence(observations: u64, total_weight: u64) -> f32 {
+    let denom = total_weight.max(1) as f32;
+    let raw = (observations as f32) / denom;
+    raw.clamp(0.05, 0.95)
+}
+
+/// Deterministic dedup: keep the first occurrence by name, then sort
+/// the resulting list alphabetically. Two summaries that slugify to
+/// the same name (e.g. "Loop tick" and "loop-tick") collapse into a
+/// single plan so the sidecar does not carry phantom duplicates.
+fn dedup_and_sort_skill_plans(plans: &mut Vec<VivlingSkillPlan>) {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    plans.retain(|plan| seen.insert(plan.skill.name.clone()));
+    plans.sort_by(|a, b| a.skill.name.cmp(&b.skill.name));
 }
 
 fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
@@ -1913,6 +2282,565 @@ mod tests {
         assert!(
             !sidecar.contains(secret),
             "secret leaked into voice sidecar markdown"
+        );
+    }
+
+    // --- Step 8.A: skill planner tests ---
+
+    #[test]
+    fn skill_planner_returns_not_hatched_on_unhatched() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":false}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(SkillPlanSkipReason::NotHatched));
+    }
+
+    #[test]
+    fn skill_planner_returns_no_source_material_on_empty_memory() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(SkillPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn skill_planner_returns_no_source_material_on_zero_signal_summaries() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"random","summary":"random","total_weight":0,"observations":0}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(SkillPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn skill_planner_extracts_from_distilled_summary_deterministic() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"Refactor Pipeline","summary":"verify before commit","total_weight":5,"observations":3}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plans_a = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        let plans_b = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans_a, plans_b, "skill planner must be deterministic");
+        assert_eq!(plans_a.len(), 1);
+        let plan = &plans_a[0];
+        assert_eq!(plan.source_kind, SkillPlanSourceKind::DistilledSummaries);
+        assert_eq!(plan.skill.name, "refactor-pipeline");
+        assert_eq!(plan.skill.description, "verify before commit");
+        assert!(
+            plan.skill
+                .trigger_keywords
+                .contains(&"refactor".to_string())
+        );
+        assert!(
+            plan.skill
+                .trigger_keywords
+                .contains(&"pipeline".to_string())
+        );
+        assert_eq!(plan.skill.version, SKILL_PLAN_VERSION);
+        assert!(
+            plan.skill.step_sequence.is_empty(),
+            "Step 8.A leaves steps empty"
+        );
+    }
+
+    #[test]
+    fn skill_planner_falls_back_to_work_memory() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"loop tick check","summary":"watch CI release","weight":2,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].source_kind,
+            SkillPlanSourceKind::WorkMemoryCapsules
+        );
+        assert_eq!(plans[0].skill.name, "loop-tick-check");
+    }
+
+    #[test]
+    fn skill_planner_redacts_secrets_in_extracted_skill() {
+        let secret = "sk-ant-api03-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug {secret}","summary":"key {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        let plan = &plans[0];
+        assert!(!plan.skill.name.contains(secret));
+        assert!(!plan.skill.description.contains(secret));
+        for trig in &plan.skill.trigger_keywords {
+            assert!(!trig.contains(secret), "trigger leak: {trig}");
+        }
+    }
+
+    #[test]
+    fn skill_planner_dedups_summaries_with_same_slug() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"Loop tick","summary":"a","total_weight":5,"observations":2}},
+                    {{"topic":"loop-tick","summary":"b","total_weight":4,"observations":2}},
+                    {{"topic":"LOOP  TICK","summary":"c","total_weight":3,"observations":1}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans.len(), 1, "duplicate slugs must collapse");
+        assert_eq!(plans[0].skill.name, "loop-tick");
+    }
+
+    #[test]
+    fn dry_run_report_includes_skill_plans_when_eligible() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        assert_eq!(entry.skill_plans.len(), 1);
+        assert!(entry.skill_plan_skipped.is_none());
+
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(json["entries"][0].get("skill_plans").is_some());
+        assert!(
+            json["entries"][0].get("skill_plan_skipped").is_none(),
+            "skipped key must be omitted when plans are present"
+        );
+    }
+
+    #[test]
+    fn dry_run_report_omits_skill_plans_when_planner_skipped() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        assert!(entry.skill_plans.is_empty());
+        assert_eq!(
+            entry.skill_plan_skipped.as_deref(),
+            Some("no source material")
+        );
+
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(
+            json["entries"][0].get("skill_plans").is_none(),
+            "skill_plans key must be absent when planner declined"
+        );
+        assert_eq!(
+            json["entries"][0]["skill_plan_skipped"],
+            "no source material"
+        );
+    }
+
+    // --- Step 8.A round-2 regression tests ---
+
+    #[test]
+    fn skill_planner_redacts_secrets_in_abstracted_from_capsules() {
+        let secret = "sk-ant-api03-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+        let body_distilled = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug {secret}","summary":"key {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plans = plan_skill_updates(&body_distilled, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert!(!plans.is_empty());
+        for plan in &plans {
+            for cap in &plan.skill.abstracted_from_capsules {
+                assert!(
+                    !cap.contains(secret),
+                    "secret leaked into distilled abstracted_from_capsules: {cap}"
+                );
+            }
+        }
+        let body_work = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"trace {secret}","summary":"call {secret}","weight":3,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plans = plan_skill_updates(&body_work, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert!(!plans.is_empty());
+        for plan in &plans {
+            for cap in &plan.skill.abstracted_from_capsules {
+                assert!(
+                    !cap.contains(secret),
+                    "secret leaked into work_memory abstracted_from_capsules: {cap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dry_run_report_never_leaks_secret_through_skill_plans() {
+        let secret = "sk-ant-api03-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE";
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug {secret}","summary":"trace {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let serialised =
+            serde_json::to_string(&report.entries[0].skill_plans).expect("serialise plans");
+        assert!(
+            !serialised.contains(secret),
+            "secret leaked through serialised skill plans"
+        );
+    }
+
+    #[test]
+    fn skill_planner_derives_name_from_summary_when_topic_empty() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"","summary":"verify release artifacts","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans.len(), 1);
+        let name = &plans[0].skill.name;
+        assert_ne!(
+            name, "unnamed-skill",
+            "fallback to summary must produce a real name, not the placeholder"
+        );
+        assert_eq!(name, "verify-release-artifacts");
+        assert_eq!(
+            plans[0].skill.abstracted_from_capsules,
+            vec!["verify release artifacts".to_string()]
+        );
+    }
+
+    #[test]
+    fn skill_planner_derives_name_from_summary_when_kind_empty_work_memory() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"","summary":"watch release ci","weight":2,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans.len(), 1);
+        let name = &plans[0].skill.name;
+        assert_ne!(name, "unnamed-skill");
+        assert_eq!(name, "watch-release-ci");
+    }
+
+    #[test]
+    fn skill_planner_skips_input_that_redacts_to_empty() {
+        let secret = "sk-ant-api03-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        // Either the validity filter drops the input (the redacted
+        // marker string itself is still a non-empty token) and the
+        // planner produces a "redacted" skill, OR build_skill_from_*
+        // returns None and we fall through to NoSourceMaterial. Both
+        // outcomes are acceptable IF AND ONLY IF the secret never
+        // appears in any surfaced field — the test asserts the
+        // secret-absence invariant directly.
+        match outcome {
+            Ok(plans) => {
+                for plan in &plans {
+                    for cap in &plan.skill.abstracted_from_capsules {
+                        assert!(!cap.contains(secret));
+                    }
+                    assert!(!plan.skill.name.contains(secret));
+                    assert!(!plan.skill.description.contains(secret));
+                }
+            }
+            Err(reason) => assert_eq!(reason, SkillPlanSkipReason::NoSourceMaterial),
+        }
+    }
+
+    // --- Step 8.A round-3 regression tests for P1.3 ---
+
+    #[test]
+    fn redacted_semantic_text_strips_pure_secret_to_none() {
+        let secret = "sk-ant-api03-GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG";
+        assert!(redacted_semantic_text(secret).is_none());
+        assert!(redacted_semantic_text("").is_none());
+        assert!(redacted_semantic_text("   ").is_none());
+        // Mixed text + secret survives because real words remain.
+        let mixed = format!("debug {secret}");
+        let surviving = redacted_semantic_text(&mixed).expect("real content present");
+        assert!(surviving.contains("debug"));
+        assert!(!surviving.contains(secret));
+    }
+
+    #[test]
+    fn skill_planner_pure_secret_distilled_is_no_source_material() {
+        let secret = "sk-ant-api03-HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(SkillPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn skill_planner_pure_secret_work_memory_is_no_source_material() {
+        let secret = "sk-ant-api03-IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"{secret}","summary":"{secret}","weight":2,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let outcome = plan_skill_updates(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(SkillPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn skill_planner_mixed_text_and_secret_preserves_real_words() {
+        let secret = "sk-ant-api03-JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug pipeline {secret}","summary":"trace step {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plans = plan_skill_updates(&body, make_now())
+            .expect("parse")
+            .expect("plans");
+        assert_eq!(plans.len(), 1);
+        let skill = &plans[0].skill;
+        // Real words ("debug", "pipeline") become the slug; the
+        // [REDACTED:*] marker is folded into a dash but the secret
+        // bytes never appear.
+        assert!(skill.name.contains("debug"));
+        assert!(skill.name.contains("pipeline"));
+        assert!(!skill.name.contains(secret));
+        for cap in &skill.abstracted_from_capsules {
+            assert!(!cap.contains(secret));
+        }
+    }
+
+    #[test]
+    fn voice_planner_pure_secret_distilled_is_no_source_material() {
+        let secret = "sk-ant-api03-KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let outcome = plan_voice_update(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(VoicePlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn dry_run_report_does_not_promote_redaction_marker_to_skill_or_voice() {
+        let secret = "sk-ant-api03-LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL";
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        assert!(entry.voice_plan.is_none(), "voice marker must not promote");
+        assert!(
+            entry.skill_plans.is_empty(),
+            "skill marker must not promote"
+        );
+        let serialised = serde_json::to_string(&report).expect("serialise");
+        assert!(
+            !serialised.contains("redacted-anthropic-key"),
+            "marker-derived skill slug must not appear in the report"
+        );
+        // Neither must any voice text be anchored on the marker
+        // alone. The dry-run report's `voice_plan_skipped` /
+        // `skill_plan_skipped` carry the design-level reason.
+        assert!(serialised.contains("no source material"));
+    }
+
+    #[test]
+    fn live_batch_does_not_write_skills_sidecar_in_step_8a() {
+        // Step 8.A keeps the live batch invariant from 7.B: only
+        // `self_voice` + `_voice.md` ever land on disk. The future
+        // `_skills.json` sidecar is Step 8.B.
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-skills",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"loop tick","summary":"check ci","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-skills", &body);
+        let _ = run_live_batch(temp.path()).expect("live batch");
+        let skills_sidecar = temp.path().join("viv-skills_skills.json");
+        assert!(
+            !skills_sidecar.exists(),
+            "Step 8.A must not write the skills sidecar yet"
         );
     }
 
