@@ -23,6 +23,7 @@ use codex_vivling_core::model::VivlingLanguageState;
 use codex_vivling_core::model::VivlingSkill;
 use codex_vivling_core::model::VivlingVoice;
 use codex_vivling_core::model::VivlingWorkMemoryEntry;
+use codex_vivling_core::model::truncate_summary;
 use codex_vivling_core::paths::last_write_backup_path;
 use codex_vivling_core::paths::lock_file_path;
 use codex_vivling_core::paths::pre_migration_backup_path;
@@ -143,6 +144,19 @@ pub struct DryRunVivlingEntry {
     /// when the planner produced any skill, this field is omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_plan_skipped: Option<String>,
+    /// Step 12.A — proposed Axis F expression prompt the live batch
+    /// would later hand to an LLM (Step 12.B+) when the Vivling needs
+    /// to *say something*. Step 12.A is planner-only: the prompt is
+    /// drafted, bounded and surfaced in the dry-run JSON; no LLM is
+    /// invoked and no state file is mutated. Additive optional field,
+    /// omitted when the planner declined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_prompt_plan: Option<ExpressionPromptPlan>,
+    /// Step 12.A — short reason string when the expression planner
+    /// declined. Mutually exclusive on the wire with
+    /// `expression_prompt_plan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression_prompt_skipped: Option<String>,
 }
 
 /// Top-level JSON document produced by `plan_dry_run`. Stable shape:
@@ -249,6 +263,18 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
                 Some("skill planner could not parse state".to_string()),
             ),
         };
+        // Step 12.A — expression prompt planner runs against the same
+        // fresh body for every candidate. Parse failure is reported
+        // via `expression_prompt_skipped`, never aborts the dry-run.
+        let (expression_prompt_plan, expression_prompt_skipped) =
+            match plan_expression_prompt(&body, now) {
+                Ok(Ok(plan)) => (Some(plan), None),
+                Ok(Err(reason)) => (None, Some(reason.as_str().to_string())),
+                Err(_) => (
+                    None,
+                    Some("expression planner could not parse state".to_string()),
+                ),
+            };
 
         entries.push(DryRunVivlingEntry {
             vivling_id: header.vivling_id,
@@ -264,6 +290,8 @@ pub fn plan_dry_run(roster_dir: &Path) -> Result<DryRunReport, MemoryAgentError>
             voice_plan_skipped,
             skill_plans,
             skill_plan_skipped,
+            expression_prompt_plan,
+            expression_prompt_skipped,
         });
     }
 
@@ -1251,6 +1279,269 @@ fn dedup_and_sort_skill_plans(plans: &mut Vec<VivlingSkillPlan>) {
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     plans.retain(|plan| seen.insert(plan.skill.name.clone()));
     plans.sort_by(|a, b| a.skill.name.cmp(&b.skill.name));
+}
+
+// --- Step 12.A: Axis F expression prompt planner (deterministic, no LLM) ---
+
+/// Expression-prompt schema version emitted by [`plan_expression_prompt`].
+/// Bumped only when the deterministic prompt template shape changes.
+pub const EXPRESSION_PROMPT_VERSION: u32 = 1;
+
+/// Hard cap on the prompt body length, in characters. The whole point
+/// of Step 12.A is to draft a *bounded* prompt the future Step 12.B
+/// can hand to an LLM with confidence; the bound is enforced even
+/// across heterogeneous sources so a malicious or huge state file can
+/// never blow the LLM budget.
+const EXPRESSION_PROMPT_MAX_CHARS: usize = 2_000;
+const EXPRESSION_VOICE_FRAGMENT_MAX: usize = 240;
+const EXPRESSION_CAPSULE_TEXT_MAX: usize = 96;
+const EXPRESSION_MAX_CAPSULES: usize = 3;
+const EXPRESSION_NAME_MAX: usize = 80;
+const EXPRESSION_NAME_FALLBACK: &str = "Vivling";
+
+/// Why the expression planner produced no prompt. Same `serde(snake_case)`
+/// shape as the voice/skill skip enums so JSON consumers can render
+/// all three uniformly.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpressionPlanSkipReason {
+    NotHatched,
+    NoSourceMaterial,
+}
+
+impl ExpressionPlanSkipReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ExpressionPlanSkipReason::NotHatched => "not hatched yet",
+            ExpressionPlanSkipReason::NoSourceMaterial => "no source material",
+        }
+    }
+}
+
+/// Where the expression planner pulled its anchor text from. The
+/// drafted prompt mixes both layers when available; the field reports
+/// the *primary* source so consumers can render confidence /
+/// freshness without re-parsing the prompt.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpressionPlanPrimarySource {
+    SelfVoice,
+    DistilledSummaries,
+    WorkMemoryCapsules,
+}
+
+/// Output of [`plan_expression_prompt`]. The `prompt` is bounded and
+/// deterministic; Step 12.B+ would feed it into the configured LLM
+/// when the Vivling needs to express itself.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ExpressionPromptPlan {
+    pub prompt: String,
+    pub language: String,
+    pub primary_source: ExpressionPlanPrimarySource,
+    pub sources_count: usize,
+    pub generated_at: DateTime<Utc>,
+    pub version: u32,
+}
+
+/// Plan a Vivling expression prompt from a state JSON body.
+///
+/// Source priority is: `self_voice` (if non-empty after redaction),
+/// then the top-N distilled summaries, then the most recent
+/// work-memory capsules as a fallback. All text is run through
+/// `redacted_semantic_text` so a sidecar made of just `[REDACTED:*]`
+/// markers cannot promote noise into the LLM prompt.
+///
+/// Determinism contract: for a given `body` and `now`, returns the
+/// same `ExpressionPromptPlan` byte-for-byte. No LLM, no randomness,
+/// no environment lookups.
+pub fn plan_expression_prompt(
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<Result<ExpressionPromptPlan, ExpressionPlanSkipReason>, MemoryAgentError> {
+    let projection: VoiceStateProjection =
+        serde_json::from_str(body).map_err(|err| MemoryAgentError::InvalidStateJson {
+            path: PathBuf::from("<in-memory>"),
+            source: err,
+        })?;
+
+    if !projection.hatched {
+        return Ok(Err(ExpressionPlanSkipReason::NotHatched));
+    }
+
+    let language = projection.language_state.effective_language(None);
+    // Step 12.A round-2 fix: name is now redacted and bounded so a
+    // state file with a secret in `name` cannot leak into the LLM
+    // prompt — and a `name` longer than the prompt budget cannot
+    // crowd out the rest of the expression.
+    let name_display = expression_display_name(&projection);
+
+    // Anchor #1: a previously written self_voice (Step 7.B), bounded
+    // and only if the redacted text carries real content.
+    let voice_anchor: Option<String> = (|| {
+        let voice = projection_self_voice(body)?;
+        let bounded = redacted_semantic_text(&voice)
+            .map(|text| truncate_summary(text.trim(), EXPRESSION_VOICE_FRAGMENT_MAX))?;
+        if bounded.trim().is_empty() {
+            None
+        } else {
+            Some(bounded)
+        }
+    })();
+
+    let valid_summaries: Vec<&VivlingDistilledSummary> = projection
+        .distilled_summaries
+        .iter()
+        .filter(|s| {
+            let topic_ok = redacted_semantic_text(&s.topic).is_some();
+            let summary_ok = redacted_semantic_text(&s.summary).is_some();
+            let has_signal = s.observations > 0 || s.total_weight > 0;
+            (topic_ok || summary_ok) && has_signal
+        })
+        .collect();
+    let valid_capsules: Vec<&VivlingWorkMemoryEntry> = projection
+        .work_memory
+        .iter()
+        .filter(|c| {
+            let kind_ok = redacted_semantic_text(&c.kind).is_some();
+            let summary_ok = redacted_semantic_text(&c.summary).is_some();
+            let has_signal = c.weight > 0;
+            (kind_ok || summary_ok) && has_signal
+        })
+        .collect();
+
+    if voice_anchor.is_none() && valid_summaries.is_empty() && valid_capsules.is_empty() {
+        return Ok(Err(ExpressionPlanSkipReason::NoSourceMaterial));
+    }
+
+    // Pick the primary source for the report metadata. Both layers
+    // still go into the prompt when available; this field is the
+    // *anchor* the planner relied on most.
+    let primary_source = if voice_anchor.is_some() {
+        ExpressionPlanPrimarySource::SelfVoice
+    } else if !valid_summaries.is_empty() {
+        ExpressionPlanPrimarySource::DistilledSummaries
+    } else {
+        ExpressionPlanPrimarySource::WorkMemoryCapsules
+    };
+
+    let mut prompt_lines: Vec<String> = Vec::new();
+    prompt_lines.push(format!("You are {name_display}. Speak in {language}."));
+    if let Some(voice) = voice_anchor.as_deref() {
+        prompt_lines.push(format!("Your established voice: {voice}"));
+    }
+    let mut sources_count: usize = if voice_anchor.is_some() { 1 } else { 0 };
+
+    // Stable ordering: distilled by total_weight desc, then by topic asc.
+    let mut summaries = valid_summaries;
+    summaries.sort_by(|a, b| {
+        b.total_weight
+            .cmp(&a.total_weight)
+            .then_with(|| a.topic.cmp(&b.topic))
+    });
+    let mut capsules = valid_capsules;
+    capsules.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    let mut anchor_lines: Vec<String> = Vec::new();
+    for summary in summaries.into_iter().take(EXPRESSION_MAX_CAPSULES) {
+        let topic = redacted_semantic_text(&summary.topic)
+            .map(|t| truncate_summary(t.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
+            .unwrap_or_default();
+        let pattern = redacted_semantic_text(&summary.summary)
+            .map(|p| truncate_summary(p.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
+            .unwrap_or_default();
+        if topic.is_empty() && pattern.is_empty() {
+            continue;
+        }
+        anchor_lines.push(format!("- {topic}: {pattern}"));
+        sources_count += 1;
+    }
+    if anchor_lines.is_empty() && voice_anchor.is_none() {
+        for capsule in capsules.into_iter().take(EXPRESSION_MAX_CAPSULES) {
+            let topic = redacted_semantic_text(&capsule.kind)
+                .map(|t| truncate_summary(t.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
+                .unwrap_or_default();
+            let pattern = redacted_semantic_text(&capsule.summary)
+                .map(|p| truncate_summary(p.trim(), EXPRESSION_CAPSULE_TEXT_MAX))
+                .unwrap_or_default();
+            if topic.is_empty() && pattern.is_empty() {
+                continue;
+            }
+            anchor_lines.push(format!("- {topic}: {pattern}"));
+            sources_count += 1;
+        }
+    }
+    if !anchor_lines.is_empty() {
+        prompt_lines.push("Recent patterns:".to_string());
+        prompt_lines.extend(anchor_lines);
+    }
+
+    if sources_count == 0 {
+        // Defensive: if every source survived the validity filter but
+        // then collapsed to empty under redaction, treat the plan as
+        // skipped instead of emitting "You are X. Speak in Y." alone.
+        return Ok(Err(ExpressionPlanSkipReason::NoSourceMaterial));
+    }
+
+    let mut prompt = prompt_lines.join("\n");
+    if prompt.chars().count() > EXPRESSION_PROMPT_MAX_CHARS {
+        prompt = truncate_summary(&prompt, EXPRESSION_PROMPT_MAX_CHARS);
+    }
+
+    Ok(Ok(ExpressionPromptPlan {
+        prompt,
+        language,
+        primary_source,
+        sources_count,
+        generated_at: now,
+        version: EXPRESSION_PROMPT_VERSION,
+    }))
+}
+
+/// Extract the `self_voice.text` field from a raw state JSON body
+/// without forcing the planner to depend on the full `VivlingState`.
+/// Returns `None` when the field is absent, null, or carries an empty
+/// `text`. Errors during deserialise bubble up to the caller via the
+/// outer `MemoryAgentError`; here we treat parse problems as "no
+/// voice" so the planner can still fall back to memory/work sources.
+fn projection_self_voice(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let text = value
+        .get("self_voice")?
+        .get("text")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// Step 12.A round-2 fix — redact + bound the Vivling's display name
+/// before it lands in the expression prompt.
+///
+/// Resolution order:
+/// 1. `name`, after `redacted_semantic_text` + trim + cap.
+/// 2. `vivling_id`, same treatment, when `name` collapses.
+/// 3. Static `EXPRESSION_NAME_FALLBACK` (`"Vivling"`) when both fields
+///    are missing, empty after redaction, or made entirely of
+///    redaction markers.
+///
+/// Never returns a raw secret and never returns a string longer than
+/// `EXPRESSION_NAME_MAX`. Marker-only names cannot become a Vivling's
+/// identity: that role goes to the fallback so the LLM still has a
+/// usable handle.
+fn expression_display_name(projection: &VoiceStateProjection) -> String {
+    if let Some(name) = redacted_semantic_text(&projection.name) {
+        let bounded = truncate_summary(name.trim(), EXPRESSION_NAME_MAX);
+        if !bounded.trim().is_empty() {
+            return bounded;
+        }
+    }
+    if let Some(id) = redacted_semantic_text(&projection.vivling_id) {
+        let bounded = truncate_summary(id.trim(), EXPRESSION_NAME_MAX);
+        if !bounded.trim().is_empty() {
+            return bounded;
+        }
+    }
+    EXPRESSION_NAME_FALLBACK.to_string()
 }
 
 fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
@@ -3060,6 +3351,357 @@ mod tests {
             } => {}
             other => panic!("expected both flags false for viv-none, got: {other:?}"),
         }
+    }
+
+    // --- Step 12.A: expression prompt planner tests ---
+
+    #[test]
+    fn expression_planner_skips_unhatched() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":false}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_expression_prompt(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(ExpressionPlanSkipReason::NotHatched));
+    }
+
+    #[test]
+    fn expression_planner_skips_empty_state() {
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let outcome = plan_expression_prompt(&body, make_now()).expect("parse");
+        assert_eq!(outcome, Err(ExpressionPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn expression_planner_uses_voice_and_distilled_in_stable_order() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "language_state":{{"detected_language":"it","language_mode":"mirror_user","recent_samples":[],"language_override":null}},
+                "self_voice":{{"text":"Io sono Aelia. Verifico prima.","language":"it","source_capsules_count":2,"version":1}},
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verifica prima","total_weight":5,"observations":3}},
+                    {{"topic":"loop tick","summary":"check ci","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(plan.language, "it");
+        assert_eq!(plan.primary_source, ExpressionPlanPrimarySource::SelfVoice);
+        assert!(plan.prompt.starts_with("You are Aelia. Speak in it."));
+        assert!(
+            plan.prompt
+                .contains("Your established voice: Io sono Aelia. Verifico prima.")
+        );
+        assert!(plan.prompt.contains("Recent patterns:"));
+        let refactor_pos = plan
+            .prompt
+            .find("- refactor: verifica prima")
+            .expect("refactor line");
+        let loop_pos = plan
+            .prompt
+            .find("- loop tick: check ci")
+            .expect("loop line");
+        assert!(refactor_pos < loop_pos);
+        assert_eq!(plan.version, EXPRESSION_PROMPT_VERSION);
+        assert_eq!(plan.generated_at, make_now());
+        assert!(plan.sources_count >= 2);
+    }
+
+    #[test]
+    fn expression_planner_falls_back_to_work_memory_without_voice_or_summaries() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "work_memory":[
+                    {{"kind":"loop tick","summary":"watch ci","weight":2,"created_at":"2026-05-20T10:00:00Z"}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(
+            plan.primary_source,
+            ExpressionPlanPrimarySource::WorkMemoryCapsules
+        );
+        assert!(plan.prompt.contains("- loop tick: watch ci"));
+    }
+
+    #[test]
+    fn expression_planner_redacts_raw_secrets_and_rejects_marker_only_sources() {
+        let secret = "sk-ant-api03-NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN";
+        let body_mixed = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug pipeline {secret}","summary":"trace step {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plan = plan_expression_prompt(&body_mixed, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(!plan.prompt.contains(secret));
+        assert!(plan.prompt.contains("debug pipeline"));
+
+        let body_only = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let outcome = plan_expression_prompt(&body_only, make_now()).expect("parse");
+        assert_eq!(outcome, Err(ExpressionPlanSkipReason::NoSourceMaterial));
+    }
+
+    #[test]
+    fn expression_planner_bounds_prompt_size_and_source_counts() {
+        let mut summaries: Vec<String> = Vec::new();
+        for i in 0..10 {
+            summaries.push(format!(
+                r#"{{"topic":"topic-{i}","summary":"{long}","total_weight":{w},"observations":2}}"#,
+                long = "x".repeat(1000),
+                w = 100 - i
+            ));
+        }
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[{summaries}]
+            }}"#,
+            SUPPORTED_STATE_VERSION,
+            summaries = summaries.join(",")
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(plan.prompt.chars().count() <= EXPRESSION_PROMPT_MAX_CHARS);
+        let capsule_lines = plan.prompt.matches("- topic-").count();
+        assert!(
+            capsule_lines <= 3,
+            "expected at most 3 capsule lines, got {capsule_lines}"
+        );
+        assert_eq!(plan.sources_count, capsule_lines);
+    }
+
+    #[test]
+    fn expression_planner_is_deterministic_for_same_input_and_now() {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "self_voice":{{"text":"Io sono Aelia","language":"it","source_capsules_count":1,"version":1}}
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let now = make_now();
+        let a = plan_expression_prompt(&body, now)
+            .expect("parse")
+            .expect("plan");
+        let b = plan_expression_prompt(&body, now)
+            .expect("parse")
+            .expect("plan");
+        assert_eq!(a, b, "planner must be deterministic for the same input");
+    }
+
+    // --- Step 12.A round-2 regression tests for P1.1 name bounding ---
+
+    #[test]
+    fn expression_planner_redacts_secret_in_display_name() {
+        let secret = "sk-ant-api03-OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-1",
+                "name":"Aelia {secret}",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(
+            !plan.prompt.contains(secret),
+            "secret leaked into expression prompt name: {}",
+            plan.prompt
+        );
+        // Real fragment of the name still surfaces.
+        assert!(plan.prompt.contains("Aelia"));
+        // Source line still present after name handling.
+        assert!(plan.prompt.contains("- refactor: verify first"));
+    }
+
+    #[test]
+    fn expression_planner_falls_back_to_vivling_id_when_name_is_marker_only() {
+        let secret = "sk-ant-api03-PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-real-id",
+                "name":"{secret}",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(!plan.prompt.contains(secret));
+        // Marker-only name → fallback to vivling_id; the fallback
+        // path produces "You are viv-real-id." not the marker.
+        assert!(plan.prompt.contains("You are viv-real-id"));
+        assert!(!plan.prompt.contains("[REDACTED:ANTHROPIC_KEY]"));
+    }
+
+    #[test]
+    fn expression_planner_falls_back_to_static_when_both_fields_are_marker_only() {
+        let secret = "sk-ant-api03-QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"{secret}",
+                "name":"{secret}",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        assert!(!plan.prompt.contains(secret));
+        assert!(
+            plan.prompt.starts_with("You are Vivling."),
+            "static fallback must produce a usable handle; got: {}",
+            plan.prompt
+        );
+    }
+
+    #[test]
+    fn expression_planner_bounds_huge_name_and_keeps_source_line() {
+        let huge_name = "x".repeat(400);
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"{huge_name}",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        let plan = plan_expression_prompt(&body, make_now())
+            .expect("parse")
+            .expect("plan");
+        // The 400-char name never lands in full.
+        assert!(!plan.prompt.contains(&huge_name));
+        // The source line is preserved — the name cap did not push
+        // it past the prompt cap.
+        assert!(plan.prompt.contains("- refactor: verify first"));
+        // And the prompt overall is still within budget.
+        assert!(plan.prompt.chars().count() <= EXPRESSION_PROMPT_MAX_CHARS);
+    }
+
+    #[test]
+    fn dry_run_report_includes_expression_prompt_when_eligible() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"viv-1",
+                "name":"Aelia",
+                "hatched":true,
+                "self_voice":{{"text":"Io sono Aelia","language":"it","source_capsules_count":1,"version":1}},
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verify first","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        let plan = entry
+            .expression_prompt_plan
+            .as_ref()
+            .expect("expression plan present");
+        assert_eq!(plan.primary_source, ExpressionPlanPrimarySource::SelfVoice);
+        assert!(entry.expression_prompt_skipped.is_none());
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(json["entries"][0].get("expression_prompt_plan").is_some());
+        assert!(
+            json["entries"][0]
+                .get("expression_prompt_skipped")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn dry_run_report_omits_expression_prompt_when_skipped() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-1","name":"Aelia","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-1", &body);
+        let report = plan_dry_run(temp.path()).expect("plan");
+        let entry = &report.entries[0];
+        assert!(entry.expression_prompt_plan.is_none());
+        assert_eq!(
+            entry.expression_prompt_skipped.as_deref(),
+            Some("no source material")
+        );
+        let json = serde_json::to_value(&report).expect("serialise");
+        assert!(json["entries"][0].get("expression_prompt_plan").is_none());
+        assert_eq!(
+            json["entries"][0]["expression_prompt_skipped"],
+            "no source material"
+        );
     }
 
     #[test]
