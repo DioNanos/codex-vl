@@ -287,26 +287,37 @@ fn adult_direct_chat_is_role_focused_instead_of_generic() {
 }
 
 #[test]
-fn baby_chat_returns_local_ack_no_llm_dispatch() {
-    // Memory V2 Step 12.B.C: Baby `/vl` never reaches the LLM. The
-    // Vivling shows a bounded language-aware ack ("watches and
-    // learns") instead of the legacy templated chat reply.
+fn baby_chat_dispatches_via_llm_after_step_12_b_e_unlock() {
+    // Memory V2 Step 12.B.E (post-alpha smoke test): Baby `/vl` now
+    // reaches the LLM through `try_reserve_llm_call` + Chat dispatch,
+    // with `stage_guidance_section` modulating the tone to "tiny
+    // voice, observing, simple words". The previous local-ack path
+    // (Step 12.B.C) lost the "true value" of an LLM-driven companion
+    // on Baby — DAG feedback during the 0.132.1-alpha.0 smoke test.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
+    // freshly hatched = Baby stage; brain stays off (default).
 
-    let message = match vivling
+    let outcome = vivling
         .command(VivlingAction::Chat("ciao bello".to_string()), temp.path())
-        .expect("chat")
-    {
-        VivlingCommandOutcome::Message(message) => message,
-        other => panic!("unexpected outcome: {other:?}"),
-    };
-
-    assert!(
-        message.contains("watches and learns") || message.contains("osserva e impara"),
-        "Baby chat must surface the watches/learns ack: {message}"
-    );
-    assert!(!message.starts_with("Local fallback: "), "{message}");
+        .expect("chat");
+    match outcome {
+        VivlingCommandOutcome::DispatchAssist(request) => {
+            assert_eq!(
+                request.brain_target,
+                BrainTarget::SessionDefault,
+                "Baby brain-off must still inherit /model via SessionDefault"
+            );
+            // The reservation must have been billed against the daily
+            // Chat counter — proof the LLM path was taken instead of
+            // the legacy local-ack.
+            assert_eq!(
+                vivling.state.as_ref().expect("state").daily_llm_chat_calls,
+                1
+            );
+        }
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1105,28 +1116,37 @@ fn chat_falls_back_to_template_when_budget_exhausted() {
 }
 
 #[test]
-fn baby_chat_local_ack_is_language_aware_italian() {
+fn baby_chat_dispatches_llm_with_italian_language_context() {
+    // Memory V2 Step 12.B.E: Baby `/vl` dispatches via LLM regardless
+    // of `language_state`. The Italian language override is preserved
+    // in the prompt context (language_contract section) and consumed
+    // by the LLM at dispatch time — not by a local Italian-only ack
+    // path (which has been removed in 12.B.E).
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
-    // Pin Italian via override so the ack picks the IT branch.
     {
         let state = vivling.state.as_mut().expect("state");
         state.language_state.language_override = Some("it".to_string());
     }
-    let message = match vivling
+    let outcome = vivling
         .command(VivlingAction::Chat("ciao".to_string()), temp.path())
-        .expect("chat")
-    {
-        VivlingCommandOutcome::Message(message) => message,
-        other => panic!("expected Message, got {other:?}"),
+        .expect("chat");
+    let request = match outcome {
+        VivlingCommandOutcome::DispatchAssist(request) => request,
+        other => panic!("expected DispatchAssist, got {other:?}"),
     };
-    assert!(
-        message.contains("osserva e impara"),
-        "Italian Baby ack must use 'osserva e impara': {message}"
+    // The reservation counter must reflect the LLM dispatch.
+    assert_eq!(
+        vivling.state.as_ref().expect("state").daily_llm_chat_calls,
+        1
     );
+    // Language override flows through to the brain prompt context.
     assert!(
-        message.chars().count() <= 80,
-        "ack must be bounded to 80 chars"
+        request.prompt_context.contains("Italian")
+            || request.prompt_context.to_lowercase().contains("italian")
+            || request.prompt_context.contains("'it'"),
+        "Italian language hint must appear in the brain prompt context: {}",
+        &request.prompt_context.chars().take(400).collect::<String>()
     );
 }
 

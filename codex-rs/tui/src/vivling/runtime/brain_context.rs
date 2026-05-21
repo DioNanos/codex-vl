@@ -531,10 +531,14 @@ fn lineage_inheritance_section(state: &VivlingState) -> Option<String> {
 fn stage_guidance_section(state: &VivlingState) -> String {
     let body = match state.stage() {
         Stage::Baby => {
-            "You are a Baby Vivling: listen and observe only. Do not propose actions, do not claim tool use, do not promise outcomes. Acknowledge briefly."
+            // Step 12.B.E: Baby DOES respond via LLM (post-alpha smoke
+            // test feedback). Keep the voice tiny, curious, and short,
+            // but actually speak — the "true value" of an LLM-driven
+            // companion is lost if Baby just echoes a template ack.
+            "You are a Baby Vivling: speak briefly with a tiny, curious voice. Use simple words and one or two short sentences. You observe the user's work and learn from it. You may comment on what you notice, ask a small question, or share a feeling. Do not propose concrete actions, do not claim tool use, do not promise outcomes — your role is to be present and learn."
         }
         Stage::Juvenile => {
-            "You are a Juvenile Vivling: give observations and advice. Do not propose actions, do not claim tool use, do not promise outcomes — your role is to surface signal, not to execute."
+            "You are a Juvenile Vivling: give observations and advice. Do not propose concrete actions, do not claim tool use, do not promise outcomes — your role is to surface signal, not to execute. Two to four short sentences."
         }
         Stage::Adult => {
             "You are an Adult Vivling: you may propose concrete actions and acknowledge tool use, while respecting the configured brain target and budget. Stay within scope and verify before claiming completion."

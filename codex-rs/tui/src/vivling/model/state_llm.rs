@@ -93,12 +93,13 @@ impl VivlingState {
     ) -> Result<(), LlmCallSkipReason> {
         self.maybe_reset_daily_counters(now);
 
-        // (1) Stage eligibility. Baby `/vl` chat must take the
-        // local-ack path — refusing the reservation here is a
-        // defence-in-depth guardrail in case a future wiring forgets.
-        if matches!(kind, VivlingLlmCallKind::Chat) && self.stage() == Stage::Baby {
-            return Err(LlmCallSkipReason::NotEligibleStage);
-        }
+        // (1) Stage eligibility. Memory V2 Step 12.B.E removes the
+        // Baby+Chat refusal: every stage may dispatch `/vl` through
+        // the LLM, with `stage_guidance_section` modulating the tone
+        // (Baby = tiny voice, observing, simple words). The previous
+        // `NotEligibleStage` arm is preserved on the enum so future
+        // kinds (e.g. an Adult-only autonomous channel) can reuse it.
+        let _ = Stage::Baby; // anchor: legacy reference for the comment above.
 
         // (2) Expression mode opt-out. Chat / Assist / LoopTick are
         // not gated by `crt_brain_mode`: that flag governs only the
@@ -251,17 +252,18 @@ mod tests {
     }
 
     #[test]
-    fn reserve_baby_chat_returns_not_eligible_stage() {
+    fn reserve_baby_chat_succeeds_after_step_12_b_e_unlock() {
+        // Step 12.B.E (post-alpha smoke test): Baby+Chat is no longer
+        // a NotEligibleStage refusal. Baby answers `/vl` through the
+        // LLM with the `stage_guidance_section` tone modulation. The
+        // reservation primitive must therefore accept Baby+Chat as
+        // a normal billable call.
         let mut s = baby();
         let now = t("2026-05-21T10:00:00Z");
-        let err = s
-            .try_reserve_llm_call(VivlingLlmCallKind::Chat, now, None)
-            .unwrap_err();
-        assert_eq!(err, LlmCallSkipReason::NotEligibleStage);
-        assert_eq!(
-            s.daily_llm_call_count, 0,
-            "denied reservation must not bill"
-        );
+        s.try_reserve_llm_call(VivlingLlmCallKind::Chat, now, None)
+            .expect("Baby+Chat must be allowed post-12.B.E");
+        assert_eq!(s.daily_llm_chat_calls, 1);
+        assert_eq!(s.daily_llm_call_count, 1);
     }
 
     #[test]

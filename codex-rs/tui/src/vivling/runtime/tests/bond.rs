@@ -134,22 +134,28 @@ fn vivling_assist_failure_with_brain_disabled_does_not_record_bond() {
 }
 
 #[test]
-fn local_chat_fallback_without_brain_does_not_record_bond() {
-    // /vl on a non-adult Vivling falls back to local chat and never reaches
-    // prepare_chat_request, so bond should NOT increment.
+fn baby_chat_dispatch_records_bond_chat_after_step_12_b_e() {
+    // Memory V2 Step 12.B.E: Baby `/vl` no longer takes the local-ack
+    // path — it dispatches via LLM through `prepare_chat_request`,
+    // which records a Chat interaction on `bond`. The previous test
+    // (`local_chat_fallback_without_brain_does_not_record_bond`)
+    // asserted no-op on bond and is therefore obsolete; the new
+    // assertion proves the dispatch increments `chat_count`.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
-    // No PromoteAdult, no brain profile → local fallback path
     let before = vivling.state.as_ref().expect("state").bond.clone();
 
     let _ = vivling
         .command(VivlingAction::Chat("ciao".to_string()), temp.path())
-        .expect("chat fallback");
+        .expect("chat dispatch");
 
     let after = &vivling.state.as_ref().expect("state").bond;
-    assert_eq!(after.value, before.value);
-    assert_eq!(after.chat_count, before.chat_count);
-    assert!(after.last_interaction.is_none());
+    assert!(
+        after.value > before.value,
+        "Baby /vl dispatch must increment bond.value"
+    );
+    assert_eq!(after.chat_count, before.chat_count + 1);
+    assert!(after.last_interaction.is_some());
 }
 
 #[test]
