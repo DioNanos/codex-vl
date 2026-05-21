@@ -159,6 +159,32 @@ impl BottomPane {
         result
     }
 
+    pub(crate) fn record_vivling_expression_result_for(
+        &mut self,
+        config: &Config,
+        vivling_id: &str,
+        reply: &crate::vivling::VivlingExpressionResult,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), String> {
+        self.configure_vivling(config);
+        let result = self
+            .vivling
+            .record_expression_result_for(vivling_id, reply, now);
+        self.request_redraw();
+        result
+    }
+
+    pub(crate) fn record_vivling_expression_failure_for(
+        &mut self,
+        config: &Config,
+        vivling_id: &str,
+    ) -> Result<(), String> {
+        self.configure_vivling(config);
+        let result = self.vivling.record_expression_failure_for(vivling_id);
+        self.request_redraw();
+        result
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

@@ -308,3 +308,24 @@ pub(super) fn run_loop_tick(
         });
     });
 }
+
+/// Memory V2 Step 12.B.D.2 — spawn the async Expression LLM runner
+/// and forward the reply via `VlEvent::VivlingExpressionFinished`.
+/// `request.vivling_id` is cloned out before move so the Finished
+/// event can address the right Vivling even when the model returns
+/// an error.
+pub(super) fn run_expression(app: &mut App, request: crate::vivling::VivlingExpressionRequest) {
+    let app_event_tx = app.app_event_tx.clone();
+    let config = app.config.clone();
+    let session_telemetry = app.session_telemetry.clone();
+    tokio::spawn(async move {
+        let vivling_id = request.vivling_id.clone();
+        let result = crate::app::vivling_background::run_vivling_expression_request(
+            config,
+            session_telemetry,
+            request,
+        )
+        .await;
+        app_event_tx.send_vl(VlEvent::VivlingExpressionFinished { vivling_id, result });
+    });
+}

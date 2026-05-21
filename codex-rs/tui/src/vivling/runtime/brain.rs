@@ -478,6 +478,56 @@ impl Vivling {
         Ok(())
     }
 
+    /// Memory V2 Step 12.B.D.2 — apply a successful Expression LLM
+    /// reply to the cache slots of the Vivling identified by
+    /// `vivling_id`. The cache fields are `#[serde(skip)]` runtime-only
+    /// (Step 12.B.D.1), so the on-disk state is NOT rewritten here;
+    /// persistence happened pre-dispatch via `save_state` after the
+    /// `try_reserve_llm_call` reservation.
+    pub(crate) fn record_expression_result_for(
+        &mut self,
+        vivling_id: &str,
+        reply: &super::expression::VivlingExpressionResult,
+        now: DateTime<Utc>,
+    ) -> Result<(), String> {
+        if self.active_vivling_id.as_deref() == Some(vivling_id)
+            && let Some(state) = self.state.as_mut()
+        {
+            super::expression::record_expression_result(state, reply, now);
+            return Ok(());
+        }
+        // Non-active Vivling: the runtime caches live only on the
+        // active state struct, so there is nothing to write into a
+        // backing record. The reservation counter increment is
+        // already persisted on disk from the dispatch path. Treat
+        // this as a no-op success rather than an error so a stale
+        // background reply for a Vivling the user just switched away
+        // from does not surface as a UI failure.
+        let _ = vivling_id;
+        Ok(())
+    }
+
+    /// Memory V2 Step 12.B.D.2 — bump the persistent
+    /// `daily_llm_failure_count` for `vivling_id` after an Expression
+    /// LLM call failed (network / parser / model error). Persists via
+    /// `save_state_record`. The failure path deliberately does NOT
+    /// touch `brain_last_error` (the Expression channel is best-effort
+    /// background; failures must not pollute the user-visible error
+    /// surface used by `/vl chat` and `/vivling assist`).
+    pub(crate) fn record_expression_failure_for(&mut self, vivling_id: &str) -> Result<(), String> {
+        let mut state = self
+            .load_state_for_id(vivling_id)
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| format!("Vivling `{vivling_id}` is missing on disk."))?;
+        super::expression::record_expression_failure(&mut state);
+        self.save_state_record(&state, /*set_active*/ false, state.is_imported)
+            .map_err(|err| err.to_string())?;
+        if self.active_vivling_id.as_deref() == Some(vivling_id) {
+            self.state = Some(state);
+        }
+        Ok(())
+    }
+
     /// codex-vl bond: record the supplementary success bonus on the active
     /// Vivling when a Chat or Assist brain request returned a reply.
     /// Counters stay tied to dispatch — this only modifies `bond.value`.

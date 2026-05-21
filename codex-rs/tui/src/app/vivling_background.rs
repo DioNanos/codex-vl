@@ -28,6 +28,8 @@ use crate::legacy_core::config::ConfigOverrides;
 use crate::vivling::BrainTarget;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainRequestKind;
+use crate::vivling::VivlingExpressionRequest;
+use crate::vivling::VivlingExpressionResult;
 use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
 
@@ -237,6 +239,126 @@ pub(super) async fn run_vivling_loop_tick_request(
     }
     serde_json::from_str(trimmed)
         .map_err(|err| format!("Vivling loop tick returned invalid JSON: {err}"))
+}
+
+/// Memory V2 Step 12.B.D.2 — async runner for the Expression channel
+/// (CRT live phrase + proactive). Same `ModelClient` plumbing as the
+/// other Vivling background runners, but with two important tweaks:
+///
+/// 1. The model is forced into single-shot JSON mode via the system
+///    instruction — the runtime cache only consumes the validated
+///    payload returned by [`parse_expression_reply`].
+/// 2. On success returns a [`VivlingExpressionResult`] carrying the
+///    raw `crt_phrase` / `proactive` fields. Sanitization (redaction +
+///    bounding) lives in `record_expression_result` so this runner
+///    stays a pure transport layer.
+pub(super) async fn run_vivling_expression_request(
+    config: Config,
+    session_telemetry: SessionTelemetry,
+    request: VivlingExpressionRequest,
+) -> Result<VivlingExpressionResult, String> {
+    let (profile_config, model_name) =
+        resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
+
+    let auth_manager = Arc::new(
+        codex_login::AuthManager::new(
+            profile_config.codex_home.to_path_buf(),
+            false,
+            profile_config.cli_auth_credentials_store_mode,
+            Some(profile_config.chatgpt_base_url.clone()),
+        )
+        .await,
+    );
+    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
+    let model_info = models_manager
+        .get_model_info(&model_name, &profile_config.to_models_manager_config())
+        .await;
+
+    let client = ModelClient::new(
+        Some(auth_manager),
+        codex_protocol::SessionId::new(),
+        ThreadId::new(),
+        request.vivling_id.clone(),
+        profile_config.model_provider.clone(),
+        codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
+        profile_config.model_verbosity,
+        profile_config
+            .features
+            .enabled(Feature::EnableRequestCompression),
+        profile_config.features.enabled(Feature::RuntimeMetrics),
+        None,
+        None,
+    );
+
+    let mut prompt = Prompt::default();
+    prompt.input = vec![codex_protocol::models::ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![codex_protocol::models::ContentItem::InputText {
+            text: request.prompt.clone(),
+        }],
+        phase: None,
+    }];
+    prompt.base_instructions = codex_protocol::models::BaseInstructions {
+        text: format!(
+            "You are {} expressing yourself as a Vivling inside Codex. \
+Return a single JSON object on one line with two optional string fields: \
+`crt_phrase` (an extremely short footer phrase, max ~6 words, in {}) and \
+`proactive` (a short conversational message, max ~25 words, in {}). \
+Either or both fields may be omitted when nothing is worth saying. \
+Do not include markdown fences, code blocks, or commentary outside the JSON object.",
+            request.vivling_name, request.language, request.language
+        ),
+    };
+
+    let mut client_session = client.new_session();
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            profile_config.model_reasoning_effort,
+            profile_config.model_reasoning_summary.unwrap_or_default(),
+            profile_config.service_tier,
+            None,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .map_err(|err| format!("Vivling expression request failed: {err}"))?;
+
+    let mut raw = String::new();
+    while let Some(event) = stream
+        .next()
+        .await
+        .transpose()
+        .map_err(|err| err.to_string())?
+    {
+        match event {
+            ResponseEvent::OutputTextDelta(delta) => raw.push_str(&delta),
+            ResponseEvent::OutputItemDone(item) => {
+                if raw.is_empty()
+                    && let codex_protocol::models::ResponseItem::Message { content, .. } = item
+                    && let Some(text) = content_items_to_text(&content)
+                {
+                    raw.push_str(&text);
+                }
+            }
+            ResponseEvent::Completed { .. } => break,
+            _ => {}
+        }
+    }
+
+    if raw.trim().is_empty() {
+        return Err("Vivling expression returned no output.".to_string());
+    }
+    let (crt_phrase, proactive) = crate::vivling::parse_expression_reply(&raw)?;
+    Ok(VivlingExpressionResult {
+        vivling_id: request.vivling_id,
+        crt_phrase,
+        proactive,
+        prompt_hash: request.prompt_hash,
+        generated_at: request.generated_at,
+    })
 }
 
 /// Memory V2 §8.1 (P0.2) — resolve the brain backend `Config` + model

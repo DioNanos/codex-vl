@@ -181,6 +181,12 @@ impl App {
                 self.handle_vivling_loop_tick_finished(thread_id, job_id, result)
                     .await?;
             }
+            VlEvent::RunVivlingExpression { request } => {
+                self.run_vivling_expression(request);
+            }
+            VlEvent::VivlingExpressionFinished { vivling_id, result } => {
+                self.handle_vivling_expression_finished(vivling_id, result);
+            }
             VlEvent::SidebarPushMessage {
                 kind,
                 text,
@@ -191,6 +197,49 @@ impl App {
             }
         }
         Ok(AppRunControl::Continue)
+    }
+
+    /// Memory V2 Step 12.B.D.2 — apply or log an Expression LLM
+    /// reply. Ok: hand to the chat widget so the runtime CRT /
+    /// proactive caches refresh. Err: bump the persisted failure
+    /// counter and debug-log; intentionally does NOT touch
+    /// `brain_last_error` (the Expression channel is best-effort
+    /// background — failures must not pollute `/vl chat` /
+    /// `/vivling assist` error surfaces).
+    fn handle_vivling_expression_finished(
+        &mut self,
+        vivling_id: String,
+        result: Result<crate::vivling::VivlingExpressionResult, String>,
+    ) {
+        match result {
+            Ok(reply) => {
+                let now = chrono::Utc::now();
+                if let Err(err) =
+                    self.chat_widget
+                        .record_vivling_expression_result_for(&vivling_id, &reply, now)
+                {
+                    tracing::debug!(
+                        target: "vivling::expression",
+                        "failed to apply expression reply for {vivling_id}: {err}"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "vivling::expression",
+                    "Vivling {vivling_id} expression dispatch failed: {err}"
+                );
+                if let Err(persist_err) = self
+                    .chat_widget
+                    .record_vivling_expression_failure_for(&vivling_id)
+                {
+                    tracing::debug!(
+                        target: "vivling::expression",
+                        "failed to persist expression failure for {vivling_id}: {persist_err}"
+                    );
+                }
+            }
+        }
     }
 }
 

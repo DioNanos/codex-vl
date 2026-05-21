@@ -3,6 +3,7 @@ pub(crate) mod brain;
 pub(crate) mod brain_context;
 pub(crate) mod command;
 pub(crate) mod crt_insight;
+pub(crate) mod expression;
 pub(crate) mod lineage_echo;
 pub(crate) mod live_context;
 pub(crate) mod msa;
@@ -17,6 +18,8 @@ pub(crate) mod spawn_origin;
 mod tests;
 
 pub(crate) use action::VivlingAction;
+pub(crate) use expression::VivlingExpressionRequest;
+pub(crate) use expression::VivlingExpressionResult;
 pub(crate) use live_context::VivlingLiveContext;
 pub(crate) use msa::VivlingMsa;
 pub(crate) use panel::VivlingPanelData;

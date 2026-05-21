@@ -196,4 +196,15 @@ impl App {
     ) {
         vivling_delegation::run_loop_tick(self, thread_id, job_id, request);
     }
+
+    /// Memory V2 Step 12.B.D.2 — dispatch a Vivling Expression LLM
+    /// request. Spawns the background runner and forwards the result
+    /// via [`VlEvent::VivlingExpressionFinished`]. Reservation +
+    /// `save_state` must already have happened on the main thread.
+    pub(super) fn run_vivling_expression(
+        &mut self,
+        request: crate::vivling::VivlingExpressionRequest,
+    ) {
+        vivling_delegation::run_expression(self, request);
+    }
 }

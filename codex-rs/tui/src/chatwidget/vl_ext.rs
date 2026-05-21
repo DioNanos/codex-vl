@@ -54,6 +54,24 @@ impl ChatWidget {
             .record_vivling_brain_success(&self.config, kind)
     }
 
+    pub(crate) fn record_vivling_expression_result_for(
+        &mut self,
+        vivling_id: &str,
+        reply: &crate::vivling::VivlingExpressionResult,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), String> {
+        self.bottom_pane
+            .record_vivling_expression_result_for(&self.config, vivling_id, reply, now)
+    }
+
+    pub(crate) fn record_vivling_expression_failure_for(
+        &mut self,
+        vivling_id: &str,
+    ) -> Result<(), String> {
+        self.bottom_pane
+            .record_vivling_expression_failure_for(&self.config, vivling_id)
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

@@ -10,6 +10,8 @@ use super::sidebar::VivlingLogKind;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainProfileRequest;
 use crate::vivling::VivlingBrainRequestKind;
+use crate::vivling::VivlingExpressionRequest;
+use crate::vivling::VivlingExpressionResult;
 use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
 
@@ -87,6 +89,23 @@ pub(crate) enum VlEvent {
         thread_id: ThreadId,
         job_id: String,
         result: Result<VivlingLoopTickResult, String>,
+    },
+    /// Memory V2 Step 12.B.D.2 — start a background Expression LLM
+    /// dispatch (CRT live phrase + proactive). The request must
+    /// already have been reserved by
+    /// `maybe_dispatch_expression_refresh`; the caller is responsible
+    /// for `save_state` before emitting this event so the daily
+    /// counter increments survive a crash between reservation and
+    /// dispatch. Emitter sites land in Step 12.B.D.3
+    /// (`/vivling crt-brain` + post-turn refresh hook).
+    #[allow(dead_code)]
+    RunVivlingExpression { request: VivlingExpressionRequest },
+    /// Memory V2 Step 12.B.D.2 — async reply for an Expression
+    /// dispatch. `vivling_id` identifies the Vivling whose runtime
+    /// cache should receive the validated phrases.
+    VivlingExpressionFinished {
+        vivling_id: String,
+        result: Result<VivlingExpressionResult, String>,
     },
     /// Push a message into the Vivling sidebar log.
     SidebarPushMessage {

@@ -23,10 +23,13 @@ pub(crate) use runtime::VivlingBrainProfileRequest;
 pub(crate) use runtime::VivlingBrainProfileRequestKind;
 pub(crate) use runtime::VivlingBrainRequestKind;
 pub(crate) use runtime::VivlingCommandOutcome;
+pub(crate) use runtime::VivlingExpressionRequest;
+pub(crate) use runtime::VivlingExpressionResult;
 pub(crate) use runtime::VivlingLiveContext;
 pub(crate) use runtime::VivlingLoopTickRequest;
 pub(crate) use runtime::VivlingLoopTickResult;
 pub(crate) use runtime::VivlingPanelData;
+pub(crate) use runtime::expression::parse_expression_reply;
 
 #[cfg(test)]
 mod tests {
