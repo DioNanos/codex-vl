@@ -19,12 +19,76 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::types::Stage;
 use super::types::VivlingDistilledSummary;
 use super::types::VivlingLanguageState;
 use super::types::VivlingWorkMemoryEntry;
 use crate::redaction::redacted_semantic_text;
 
 use super::text_utils::truncate_summary;
+
+// --- Step 12.B.B: LLM call budget reservation primitives (pure) ---
+
+/// Kind of LLM call a Vivling is about to reserve. Used by
+/// `try_reserve_llm_call` (TUI side) both as eligibility gate and as
+/// observability counter selector.
+///
+/// `Chat`, `Assist`, `LoopTick` are user/loop initiated; `Expression`
+/// is the always-on CRT/proactive channel that obeys
+/// `VivlingExpressionMode` and pays the deduplication/throttle tax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VivlingLlmCallKind {
+    Chat,
+    Assist,
+    LoopTick,
+    Expression,
+}
+
+/// Why `try_reserve_llm_call` declined a reservation. Each variant
+/// maps to one of the `daily_llm_*_skips` counters on `VivlingState`,
+/// so the caller can fall back to template/local-ack with no further
+/// branching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlmCallSkipReason {
+    /// Within the 60s throttle window from the previous successful
+    /// reservation (anti-flood for the Expression channel).
+    Throttle,
+    /// Expression planner would emit the same prompt that already
+    /// produced the still-fresh `cached_*` entry.
+    Dedup,
+    /// `daily_llm_call_count >= stage_llm_budget(stage)`.
+    BudgetExhausted,
+    /// `crt_brain_mode == Off` and the kind is `Expression`.
+    OptOut,
+    /// Kind is structurally not eligible for the Vivling's current
+    /// stage (e.g. Baby trying a Chat LLM reservation — Baby `/vl`
+    /// routes to the local-ack path instead).
+    NotEligibleStage,
+}
+
+/// Memory V2 Step 12.B.B — per-stage daily cap on LLM reservations.
+///
+/// The cap covers *all* kinds together (Chat + Assist + LoopTick +
+/// Expression). 200/100/20 is a deliberate budget gradient: Adult
+/// Vivlings carry the most responsibility, Baby Vivlings only sip a
+/// few expression refreshes a day. The numbers are global constants
+/// rather than state fields so 12.B.C/D ship without growing
+/// `VivlingState` further; a `/vivling crt-brain-budget` override
+/// command is rinviato a Step 12.C.
+pub const fn stage_llm_budget(stage: Stage) -> u32 {
+    match stage {
+        Stage::Adult => 200,
+        Stage::Juvenile => 100,
+        Stage::Baby => 20,
+    }
+}
+
+/// Anti-flood window between two successful `Expression` reservations
+/// for the same Vivling, in seconds. Step 12.B.B keeps the throttle
+/// scoped to the Expression channel because Chat/Assist/LoopTick are
+/// user/loop initiated and should answer immediately (the daily
+/// budget alone caps them).
+pub const LLM_EXPRESSION_THROTTLE_SECONDS: i64 = 60;
 
 /// Expression-prompt schema version emitted by [`plan_expression_prompt`].
 /// Bumped only when the deterministic prompt template shape changes.

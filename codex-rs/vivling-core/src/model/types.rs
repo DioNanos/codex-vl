@@ -439,10 +439,23 @@ impl Default for ProvenanceSource {
 /// Cached CRT footer phrase produced live by the lightweight LLM
 /// (axis F). Volatile and reconstructible; `#[serde(skip)]` on the
 /// state field prevents the cache from polluting on-disk snapshots.
+///
+/// `prompt_hash` and `ttl_expires_at` were added in Step 12.B.B so
+/// `try_reserve_llm_call` can dedup when the expression planner would
+/// hand the same prompt to the LLM (no fresh signal to re-spend on)
+/// and so the CRT renderer can fall back to template-only output
+/// once the cache goes stale.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CachedCrtPhrase {
     pub text: String,
     pub generated_at: Option<DateTime<Utc>>,
+    /// Step 12.B.B — hash of the expression prompt that produced
+    /// `text`. Used by `try_reserve_llm_call` for dedup checks.
+    pub prompt_hash: Option<u64>,
+    /// Step 12.B.B — TTL boundary. When `Utc::now() > ttl_expires_at`,
+    /// the cache is stale and the CRT renderer should fall back to
+    /// the template chain.
+    pub ttl_expires_at: Option<DateTime<Utc>>,
 }
 
 /// Cached proactive message produced live by the lightweight LLM after
@@ -452,4 +465,10 @@ pub struct CachedCrtPhrase {
 pub struct CachedProactive {
     pub text: String,
     pub generated_at: Option<DateTime<Utc>>,
+    /// Step 12.B.B — same dedup/staleness contract as
+    /// [`CachedCrtPhrase::prompt_hash`].
+    pub prompt_hash: Option<u64>,
+    /// Step 12.B.B — same TTL contract as
+    /// [`CachedCrtPhrase::ttl_expires_at`].
+    pub ttl_expires_at: Option<DateTime<Utc>>,
 }

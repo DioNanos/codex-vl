@@ -3,6 +3,7 @@ pub(crate) mod gene;
 pub(crate) mod lineage;
 pub(crate) mod state_chat;
 pub(crate) mod state_init;
+pub(crate) mod state_llm;
 pub(crate) mod state_memory;
 pub(crate) mod state_unlock;
 pub(crate) mod state_xp;

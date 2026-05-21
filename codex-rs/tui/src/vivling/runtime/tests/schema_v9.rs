@@ -84,10 +84,14 @@ fn cached_crt_phrase_is_skipped_on_serialize() {
     state.cached_crt_phrase = Some(CachedCrtPhrase {
         text: "design V2 memoria".to_string(),
         generated_at: None,
+        prompt_hash: None,
+        ttl_expires_at: None,
     });
     state.cached_proactive = Some(CachedProactive {
         text: "monitor release codex".to_string(),
         generated_at: None,
+        prompt_hash: None,
+        ttl_expires_at: None,
     });
 
     let serialized = serde_json::to_string(&state).expect("serialize");
