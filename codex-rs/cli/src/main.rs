@@ -202,19 +202,37 @@ enum Subcommand {
 
 /// codex-vl Vivling memory agent CLI.
 ///
-/// Memory V2 Step 6.A only wires the **dry-run** verb: walk the Vivling
-/// roster on disk in a single batch, classify each state file, and emit
-/// a stable JSON report describing what a future live batch would do.
-/// The dry-run flag is required so the subcommand surface stays
-/// explicit about its scope — later steps will introduce a separate
-/// verb for live writes. Output is always JSON.
+/// Memory V2 Step 6.B exposes two mutually-exclusive batch modes:
+///
+/// - `--dry-run` (Step 6.A): walk the Vivling roster, classify each
+///   state file, emit a stable JSON report. Pure I/O, no mutation.
+/// - `--apply` (Step 6.B): same roster walk, but for each writeable
+///   state file the agent acquires the per-Vivling lock, takes the
+///   rotational last-write backup, and re-writes the JSON payload
+///   byte-for-byte via the same atomic-rename primitive used by the
+///   TUI save path. No LLM, no semantic mutation: Step 6.B is the
+///   transaction-pipeline harness only.
+///
+/// Output is always JSON.
 #[derive(Debug, Parser)]
+#[command(group(
+    clap::ArgGroup::new("vivling_memory_agent_mode")
+        .args(["dry_run", "apply"])
+        .required(true)
+        .multiple(false),
+))]
 pub(crate) struct VivlingMemoryAgentCommand {
-    /// Required for Step 6.A. Scans the roster batch once and emits a
-    /// JSON report on stdout; no state file is mutated. Live batches
-    /// land behind a separate verb in a later step.
-    #[arg(long = "dry-run", required = true)]
+    /// Dry-run mode (Step 6.A). Scans the roster batch once and emits
+    /// a JSON report on stdout; no state file is mutated.
+    #[arg(long = "dry-run", group = "vivling_memory_agent_mode")]
     pub(crate) dry_run: bool,
+
+    /// Live transaction-harness mode (Step 6.B). Acquires the
+    /// per-Vivling lock, takes a last-write backup, and re-writes the
+    /// state JSON byte-for-byte. No semantic mutation. Mutually
+    /// exclusive with `--dry-run`.
+    #[arg(long = "apply", group = "vivling_memory_agent_mode")]
+    pub(crate) apply: bool,
 
     /// Roster directory to scan. Defaults to `<CODEX_HOME>/vivlings`.
     #[arg(long = "roster-dir")]
@@ -1506,14 +1524,16 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// codex-vl Memory V2 Step 6.A — dry-run entry point.
+/// codex-vl Memory V2 Step 6.A/6.B — Vivling memory agent entry point.
 ///
 /// Resolves the roster directory (explicit `--roster-dir`, else
-/// `<CODEX_HOME>/vivlings`), runs `plan_dry_run`, and prints the
-/// report as pretty JSON on stdout. The crate guarantees no state
-/// mutation; this binder simply forwards the report.
+/// `<CODEX_HOME>/vivlings`), then dispatches to either `plan_dry_run`
+/// (Step 6.A) or `run_live_batch` (Step 6.B) based on which mode flag
+/// the clap `ArgGroup` accepted. Output is always pretty JSON on
+/// stdout.
 fn run_vivling_memory_agent(cmd: VivlingMemoryAgentCommand) -> anyhow::Result<()> {
     use codex_vivling_memory_agent::plan_dry_run;
+    use codex_vivling_memory_agent::run_live_batch;
 
     let roster_dir = match cmd.roster_dir {
         Some(path) => path,
@@ -1522,8 +1542,15 @@ fn run_vivling_memory_agent(cmd: VivlingMemoryAgentCommand) -> anyhow::Result<()
             codex_home.to_path_buf().join("vivlings")
         }
     };
-    let report = plan_dry_run(&roster_dir)?;
-    let json = serde_json::to_string_pretty(&report)?;
+    let json = if cmd.apply {
+        let report = run_live_batch(&roster_dir)?;
+        serde_json::to_string_pretty(&report)?
+    } else {
+        // `dry_run` is true here by virtue of the ArgGroup contract:
+        // one mode flag is always required.
+        let report = plan_dry_run(&roster_dir)?;
+        serde_json::to_string_pretty(&report)?
+    };
     println!("{json}");
     Ok(())
 }
