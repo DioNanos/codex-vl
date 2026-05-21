@@ -17,9 +17,32 @@ const INSIGHT_MAX_CHARS: usize = 28;
 
 /// Compute the bubble text for the CRT strip. Returns `None` only when the
 /// Vivling has nothing useful to say (no signals, no last message).
+///
+/// Wrapper around [`compute_insight_at`] that uses `Utc::now()` as the
+/// wall clock; tests should call `compute_insight_at` directly to pin
+/// the TTL check.
 pub(crate) fn compute_insight(
     state: &VivlingState,
     live_context: Option<&VivlingLiveContext>,
+) -> Option<String> {
+    compute_insight_at(state, live_context, chrono::Utc::now())
+}
+
+/// Memory V2 Step 12.B.D.1 — clock-injectable variant. Lets the CRT
+/// renderer read the cached LLM phrase produced by the Expression
+/// channel (Step 12.B.B `try_reserve_llm_call` + 12.B.D.2 dispatch)
+/// without making the chain non-deterministic in tests.
+///
+/// Cached phrase precedence is **middle of the chain**: safety
+/// templates (`brain_error_phrase`, `blocked_loop_phrase`,
+/// `active_loop_phrase`) always win so a stale LLM bubble cannot
+/// mask a current brain error or blocked loop. Below them, the fresh
+/// cached entry overrides the template fallbacks; once TTL expires
+/// the chain falls back to `proactive_next_phrase` and beyond.
+pub(crate) fn compute_insight_at(
+    state: &VivlingState,
+    live_context: Option<&VivlingLiveContext>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
     if let Some(phrase) = brain_error_phrase(state) {
         return Some(phrase);
@@ -30,7 +53,10 @@ pub(crate) fn compute_insight(
     if let Some(phrase) = active_loop_phrase(state) {
         return Some(phrase);
     }
-    if let Some(phrase) = proactive_next_phrase(state) {
+    if let Some(phrase) = cached_crt_phrase_at(state, now) {
+        return Some(phrase);
+    }
+    if let Some(phrase) = proactive_next_phrase_at(state, now) {
         return Some(phrase);
     }
     if let Some(phrase) = recent_memory_phrase(state) {
@@ -104,6 +130,50 @@ fn active_loop_phrase(state: &VivlingState) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+/// Memory V2 Step 12.B.D.1 — surface the LLM-written CRT bubble when
+/// it is still within its TTL. Returns `None` when the cache is
+/// absent, when the text trims to empty, or when `ttl_expires_at <=
+/// now`. The chain caller (`compute_insight_at`) keeps this slot in
+/// the *middle* of the priority list so safety templates above
+/// (brain error / blocked loop / active loop) cannot be masked by a
+/// stale or wrong cached phrase.
+fn cached_crt_phrase_at(
+    state: &VivlingState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let cached = state.cached_crt_phrase.as_ref()?;
+    let expires = cached.ttl_expires_at?;
+    if expires <= now {
+        return None;
+    }
+    let text = cached.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Memory V2 Step 12.B.D.1 — clock-injectable variant of
+/// [`proactive_next_phrase`]. Prefers the fresh `cached_proactive`
+/// payload (Expression channel) over the template fallback;
+/// stale/empty cache falls through to the existing deterministic
+/// template logic.
+fn proactive_next_phrase_at(
+    state: &VivlingState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    if let Some(cached) = state.cached_proactive.as_ref() {
+        let fresh = cached.ttl_expires_at.map(|exp| exp > now).unwrap_or(false);
+        if fresh {
+            let text = cached.text.trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    proactive_next_phrase(state)
 }
 
 fn proactive_next_phrase(state: &VivlingState) -> Option<String> {
@@ -705,5 +775,184 @@ mod tests {
         let plain = state_with_message("watching upstream");
 
         vec![churn, blocked, error, active, summary, focus, plain]
+    }
+}
+
+#[cfg(test)]
+mod step_12bd1_cache_tests {
+    use super::*;
+    use chrono::Duration as ChronoDuration;
+    use chrono::TimeZone;
+    use codex_vivling_core::model::CachedCrtPhrase;
+    use codex_vivling_core::model::CachedProactive;
+    use codex_vivling_core::model::WorkArchetype;
+
+    fn pin_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2026, 5, 21, 12, 0, 0).unwrap()
+    }
+
+    fn state_with_message(msg: &str) -> VivlingState {
+        let mut s = VivlingState::default();
+        s.last_message = Some(msg.to_string());
+        s
+    }
+
+    fn loop_blocked_memory(kind: &str) -> VivlingWorkMemoryEntry {
+        VivlingWorkMemoryEntry {
+            kind: kind.to_string(),
+            summary: "blocked".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 1,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    fn fresh_crt(text: &str, now: chrono::DateTime<chrono::Utc>) -> CachedCrtPhrase {
+        CachedCrtPhrase {
+            text: text.to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(7),
+            ttl_expires_at: Some(now + ChronoDuration::minutes(10)),
+        }
+    }
+
+    fn stale_crt(text: &str, now: chrono::DateTime<chrono::Utc>) -> CachedCrtPhrase {
+        CachedCrtPhrase {
+            text: text.to_string(),
+            generated_at: Some(now - ChronoDuration::hours(1)),
+            prompt_hash: Some(7),
+            ttl_expires_at: Some(now - ChronoDuration::minutes(5)),
+        }
+    }
+
+    #[test]
+    fn cached_crt_fresh_overrides_template_middle_chain() {
+        let now = pin_now();
+        let mut state = state_with_message("local fallback should not surface");
+        state.cached_crt_phrase = Some(fresh_crt("llm bubble live", now));
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_eq!(out, "llm bubble live");
+    }
+
+    #[test]
+    fn cached_crt_stale_falls_back_to_template_chain() {
+        let now = pin_now();
+        let mut state = state_with_message("template");
+        state.cached_crt_phrase = Some(stale_crt("expired bubble", now));
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "expired bubble");
+    }
+
+    #[test]
+    fn cached_crt_with_empty_text_is_ignored() {
+        let now = pin_now();
+        let mut state = state_with_message("template");
+        state.cached_crt_phrase = Some(CachedCrtPhrase {
+            text: "   ".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(7),
+            ttl_expires_at: Some(now + ChronoDuration::minutes(10)),
+        });
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "");
+        assert_ne!(out.trim(), "");
+    }
+
+    #[test]
+    fn cached_crt_with_no_ttl_is_treated_stale() {
+        let now = pin_now();
+        let mut state = state_with_message("template");
+        state.cached_crt_phrase = Some(CachedCrtPhrase {
+            text: "no ttl".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(7),
+            ttl_expires_at: None,
+        });
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "no ttl");
+    }
+
+    #[test]
+    fn brain_error_phrase_wins_over_cached_crt() {
+        let now = pin_now();
+        let mut state = VivlingState::default();
+        state.brain_last_error = Some("brain oops".to_string());
+        state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "should be masked");
+    }
+
+    #[test]
+    fn blocked_loop_phrase_wins_over_cached_crt() {
+        let now = pin_now();
+        let mut state = VivlingState::default();
+        state.loop_blocked_busy = 1;
+        state
+            .work_memory
+            .push(loop_blocked_memory("loop_blocked_busy"));
+        state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "should be masked");
+    }
+
+    /// Sonnet 4.6 P1 (Step 12.B.D.1 audit) — make the third safety
+    /// template's precedence over the cached LLM bubble explicit.
+    /// Without this test a future refactor could swap the ordering
+    /// between `active_loop_phrase` and `cached_crt_phrase_at`
+    /// without any unit test catching it.
+    #[test]
+    fn active_loop_phrase_wins_over_cached_crt() {
+        let now = pin_now();
+        let mut state = VivlingState::default();
+        // Active loop trigger: a `loop_runtime` work-memory entry
+        // whose summary contains "submitted" lets active_loop_phrase
+        // produce a non-None string.
+        state.work_memory.push(VivlingWorkMemoryEntry {
+            kind: "loop_runtime".to_string(),
+            summary: "loop submitted: ftri_check".to_string(),
+            archetype: WorkArchetype::Operator,
+            weight: 1,
+            created_at: chrono::Utc::now(),
+        });
+        // Cache a fresh LLM bubble that must NOT mask the active
+        // loop landing.
+        state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "should be masked");
+    }
+
+    #[test]
+    fn cached_proactive_fresh_overrides_template_proactive() {
+        let now = pin_now();
+        let mut state = state_with_message("freeform");
+        state.cached_proactive = Some(CachedProactive {
+            text: "live proactive footer".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(11),
+            ttl_expires_at: Some(now + ChronoDuration::minutes(20)),
+        });
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_eq!(out, "live proactive footer");
+    }
+
+    #[test]
+    fn cached_proactive_stale_falls_back_to_template() {
+        let now = pin_now();
+        let mut state = state_with_message("freeform");
+        state.cached_proactive = Some(CachedProactive {
+            text: "stale".to_string(),
+            generated_at: Some(now - ChronoDuration::hours(1)),
+            prompt_hash: Some(11),
+            ttl_expires_at: Some(now - ChronoDuration::minutes(5)),
+        });
+        let out = compute_insight_at(&state, None, now).expect("phrase");
+        assert_ne!(out, "stale");
+    }
+
+    #[test]
+    fn compute_insight_wrapper_uses_utc_now() {
+        let state = state_with_message("hello CRT");
+        let out = compute_insight(&state, None).expect("phrase");
+        assert!(!out.is_empty());
     }
 }
