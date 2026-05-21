@@ -2274,6 +2274,7 @@ dependencies = [
  "codex-utils-cargo-bin",
  "codex-utils-cli",
  "codex-utils-path",
+ "codex-vivling-memory-agent",
  "codex-windows-sandbox",
  "crossterm",
  "http 1.4.0",
@@ -4140,6 +4141,18 @@ dependencies = [
  "once_cell",
  "regex",
  "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "codex-vivling-memory-agent"
+version = "0.132.0"
+dependencies = [
+ "chrono",
+ "codex-vivling-core",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
 ]

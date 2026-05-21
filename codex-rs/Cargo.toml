@@ -104,6 +104,7 @@ members = [
     "utils/template",
     "vendor/msa-core",
     "vivling-core",
+    "vivling-memory-agent",
     "codex-client",
     "codex-api",
     "state",
@@ -215,6 +216,7 @@ codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tui = { path = "tui" }
 codex-vivling-core = { path = "vivling-core" }
+codex-vivling-memory-agent = { path = "vivling-memory-agent" }
 codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }

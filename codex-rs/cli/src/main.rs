@@ -194,6 +194,31 @@ enum Subcommand {
 
     /// Inspect feature flags.
     Features(FeaturesCli),
+
+    /// codex-vl Vivling memory agent (Step 6.A dry-run skeleton).
+    #[clap(name = "vivling-memory-agent")]
+    VivlingMemoryAgent(VivlingMemoryAgentCommand),
+}
+
+/// codex-vl Vivling memory agent CLI.
+///
+/// Memory V2 Step 6.A only wires the **dry-run** verb: walk the Vivling
+/// roster on disk in a single batch, classify each state file, and emit
+/// a stable JSON report describing what a future live batch would do.
+/// The dry-run flag is required so the subcommand surface stays
+/// explicit about its scope — later steps will introduce a separate
+/// verb for live writes. Output is always JSON.
+#[derive(Debug, Parser)]
+pub(crate) struct VivlingMemoryAgentCommand {
+    /// Required for Step 6.A. Scans the roster batch once and emits a
+    /// JSON report on stdout; no state file is mutated. Live batches
+    /// land behind a separate verb in a later step.
+    #[arg(long = "dry-run", required = true)]
+    pub(crate) dry_run: bool,
+
+    /// Roster directory to scan. Defaults to `<CODEX_HOME>/vivlings`.
+    #[arg(long = "roster-dir")]
+    pub(crate) roster_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -1468,8 +1493,38 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                 disable_feature_in_config(&interactive, &feature).await?;
             }
         },
+        Some(Subcommand::VivlingMemoryAgent(cmd)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "vivling-memory-agent",
+            )?;
+            run_vivling_memory_agent(cmd)?;
+        }
     }
 
+    Ok(())
+}
+
+/// codex-vl Memory V2 Step 6.A — dry-run entry point.
+///
+/// Resolves the roster directory (explicit `--roster-dir`, else
+/// `<CODEX_HOME>/vivlings`), runs `plan_dry_run`, and prints the
+/// report as pretty JSON on stdout. The crate guarantees no state
+/// mutation; this binder simply forwards the report.
+fn run_vivling_memory_agent(cmd: VivlingMemoryAgentCommand) -> anyhow::Result<()> {
+    use codex_vivling_memory_agent::plan_dry_run;
+
+    let roster_dir = match cmd.roster_dir {
+        Some(path) => path,
+        None => {
+            let codex_home = find_codex_home()?;
+            codex_home.to_path_buf().join("vivlings")
+        }
+    };
+    let report = plan_dry_run(&roster_dir)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    println!("{json}");
     Ok(())
 }
 
@@ -1912,6 +1967,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::StdioToUds(_)) => Some("stdio-to-uds"),
         Some(Subcommand::ExecServer(_)) => Some("exec-server"),
         Some(Subcommand::Features(_)) => Some("features"),
+        Some(Subcommand::VivlingMemoryAgent(_)) => Some("vivling-memory-agent"),
     }
 }
 

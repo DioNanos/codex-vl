@@ -55,6 +55,7 @@ codex-stdio-to-uds = { workspace = true }
 codex-terminal-detection = { workspace = true }
 codex-tui = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
+codex-vivling-memory-agent = { workspace = true }
 codex-utils-path = { workspace = true }
 crossterm = { workspace = true }
 http = { workspace = true }
