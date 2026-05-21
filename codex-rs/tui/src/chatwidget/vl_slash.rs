@@ -123,7 +123,7 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
                 cw.add_info_message("CRT brain: refresh dispatched.".to_string(), None);
             } else {
                 cw.add_info_message(
-                    "CRT brain: refresh skipped (mode off, budget exhausted, or planner had no signal).".to_string(),
+                    "CRT brain: refresh skipped (mode off, budget exhausted, content unchanged, or planner had no signal).".to_string(),
                     Some("Run `/vivling crt-brain show` for counters.".to_string()),
                 );
             }

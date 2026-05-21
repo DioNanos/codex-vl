@@ -230,11 +230,29 @@ pub(crate) fn try_plan_and_reserve_expression_forced(
     if state.crt_brain_mode == VivlingExpressionMode::Off {
         return None;
     }
-    // Clear the throttle anchor so the inner throttle gate stops
-    // refusing — opt-out / budget / dedup / planner-no-source still
-    // gate the dispatch, and on success `try_reserve_llm_call`
-    // re-stamps `last_llm_dispatch_at` to `now`.
+    // Save / clear / restore-on-failure pattern (Sonnet P1 fix
+    // 2026-05-21). The forced path clears `last_llm_dispatch_at`
+    // so the inner throttle gate stops refusing, but if the
+    // pipeline still refuses for any other reason (dedup, budget,
+    // planner no-source, opt-out via mode toggle race, …) we
+    // MUST restore the anchor. Otherwise the pre-flight throttle
+    // check inside `try_plan_and_reserve_expression` no longer
+    // short-circuits the per-frame `pre_draw_tick` idle hook —
+    // serde + planner would spin every frame until the next
+    // genuine dispatch resets the anchor.
+    let saved_dispatch_at = state.last_llm_dispatch_at;
     state.last_llm_dispatch_at = None;
+    let result = try_plan_forced_inner(state, now);
+    if result.is_none() {
+        state.last_llm_dispatch_at = saved_dispatch_at;
+    }
+    result
+}
+
+fn try_plan_forced_inner(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+) -> Option<VivlingExpressionRequest> {
     let body = serde_json::to_string(state).ok()?;
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
     let prompt_hash = fnv1a64(plan.prompt.as_bytes());
@@ -934,6 +952,44 @@ mod tests {
         assert_eq!(
             s.daily_llm_optout_skips, 0,
             "pre-flight skip must not bill the optout counter — only try_reserve does"
+        );
+    }
+
+    #[test]
+    fn forced_dispatch_restores_throttle_anchor_on_dedup_failure() {
+        // Memory V2 Step 12.B.H P1 (Sonnet 2026-05-21): the forced
+        // refresh path clears `last_llm_dispatch_at` to bypass the
+        // 60s throttle. If the pipeline still refuses (here: dedup
+        // against a still-fresh cached_crt_phrase that matches the
+        // planner prompt hash), the anchor MUST be restored, or
+        // `try_plan_and_reserve_expression`'s pre-flight throttle
+        // would no longer short-circuit per-frame idle calls —
+        // serde + planner would spin until the next real dispatch.
+        let mut s = adult_with_voice();
+        let saved = Some(t("2026-05-21T09:55:00Z"));
+        s.last_llm_dispatch_at = saved;
+        let now = t("2026-05-21T10:00:00Z");
+
+        // Prime the dedup gate: serialize-plan-hash the state once,
+        // then stuff a still-fresh cache entry with the same hash.
+        let body = serde_json::to_string(&s).expect("serialize state");
+        let plan = plan_expression_prompt(&body, now)
+            .expect("planner ok")
+            .expect("planner has source material");
+        let prompt_hash = fnv1a64(plan.prompt.as_bytes());
+        s.cached_crt_phrase = Some(CachedCrtPhrase {
+            text: "cached".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(prompt_hash),
+            ttl_expires_at: Some(now + Duration::minutes(10)),
+        });
+
+        let result = try_plan_and_reserve_expression_forced(&mut s, now);
+        assert!(result.is_none(), "dedup must refuse the forced dispatch");
+        assert_eq!(
+            s.last_llm_dispatch_at, saved,
+            "throttle anchor must be restored on failure so the pre-flight \
+             check in try_plan_and_reserve_expression keeps short-circuiting"
         );
     }
 
