@@ -4131,6 +4131,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-vivling-core"
+version = "0.132.0"
+dependencies = [
+ "libc",
+ "once_cell",
+ "regex",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "codex-windows-sandbox"
 version = "0.132.0"
 dependencies = [
