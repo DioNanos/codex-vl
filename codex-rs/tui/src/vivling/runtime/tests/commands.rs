@@ -91,6 +91,40 @@ fn action_parse_supports_spawn_transfer_and_roster_commands() {
 }
 
 #[test]
+fn action_parse_supports_crt_brain_subcommands() {
+    use super::super::action::CrtBrainAction;
+    assert_eq!(
+        VivlingAction::parse("crt-brain"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Show))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain show"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Show))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain on"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::On))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain off"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Off))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain default"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Default))
+    );
+    // Underscore + snake-case aliases must also work — keymap muscle
+    // memory tends to drop the dash.
+    assert_eq!(
+        VivlingAction::parse("crt_brain on"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::On))
+    );
+    // Unknown sub-argument must error rather than silently degrading
+    // to a chat message.
+    assert!(VivlingAction::parse("crt-brain wat").is_err());
+}
+
+#[test]
 fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = configured_vivling(temp.path());

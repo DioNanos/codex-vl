@@ -62,6 +62,12 @@ impl ChatWidget {
         self.sync_vivling_live_context();
         self.bottom_pane
             .record_vivling_turn_completed(&self.config, summary);
+        // Memory V2 Step 12.B.D.3 — post-turn Expression refresh.
+        // Best-effort: planner / reservation / save_state can all
+        // refuse and the helper silently drops the dispatch in that
+        // case. Wired here so the freshly-updated work memory has a
+        // chance to feed the next CRT phrase + proactive message.
+        self.maybe_trigger_vivling_expression_refresh();
     }
 
     #[allow(dead_code)]

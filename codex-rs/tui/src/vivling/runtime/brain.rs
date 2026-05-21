@@ -507,6 +507,33 @@ impl Vivling {
         Ok(())
     }
 
+    /// Memory V2 Step 12.B.D.3 — try to plan + reserve + persist a
+    /// fresh Expression dispatch for the active Vivling. Returns the
+    /// ready-to-spawn request, or `None` when there is nothing to
+    /// dispatch right now (no active state, planner refused, throttle
+    /// / dedup / budget / opt-out, save_state failed, …).
+    ///
+    /// Crash-safety: the daily LLM counter increments mutated by
+    /// [`super::expression::try_plan_and_reserve_expression`] are
+    /// flushed to disk via `save_state()` BEFORE returning, so the
+    /// caller can spawn the dispatch task without risking a re-bill
+    /// after a crash. If `save_state` fails the reservation is
+    /// abandoned (caller sees `None`) — the planner is deterministic
+    /// so a retry on the next turn produces the same prompt hash and
+    /// the dedup branch will then short-circuit if the cache happens
+    /// to be populated.
+    pub(crate) fn try_dispatch_expression_refresh(
+        &mut self,
+    ) -> Option<super::expression::VivlingExpressionRequest> {
+        let state = self.state.as_mut()?;
+        let now = Utc::now();
+        let request = super::expression::try_plan_and_reserve_expression(state, now)?;
+        if self.save_state().is_err() {
+            return None;
+        }
+        Some(request)
+    }
+
     /// Memory V2 Step 12.B.D.2 — bump the persistent
     /// `daily_llm_failure_count` for `vivling_id` after an Expression
     /// LLM call failed (network / parser / model error). Persists via

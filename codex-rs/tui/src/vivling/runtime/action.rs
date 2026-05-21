@@ -1,5 +1,22 @@
 use super::*;
 
+/// Memory V2 Step 12.B.D.3 — sub-actions for `/vivling crt-brain`.
+/// Tri-state opt-in (`Default`/`On`/`Off`) governs the live
+/// Expression channel (CRT footer phrase + proactive). `Show` prints
+/// the current mode + today's LLM call counters.
+#[derive(Debug, PartialEq)]
+pub(crate) enum CrtBrainAction {
+    /// `/vivling crt-brain` — print mode + today's counters.
+    Show,
+    /// `/vivling crt-brain on` — force the channel on regardless of stage.
+    On,
+    /// `/vivling crt-brain off` — mute the channel entirely.
+    Off,
+    /// `/vivling crt-brain default` — stage-driven (Adult/Juvenile run,
+    /// Baby rare-event only).
+    Default,
+}
+
 /// Memory V2 §8.2 (Step 5.B) — sub-actions for `/vivling language`.
 /// Kept on a dedicated enum so the `VivlingAction` surface does not
 /// sprout four new top-level variants.
@@ -50,6 +67,8 @@ pub(crate) enum VivlingAction {
     Zed,
     /// Memory V2 §8.2 — `/vivling language [...]`.
     Language(LanguageAction),
+    /// Memory V2 Step 12.B.D.3 — `/vivling crt-brain [...]`.
+    CrtBrain(CrtBrainAction),
 }
 
 impl VivlingAction {
@@ -124,6 +143,7 @@ impl VivlingAction {
                 .map(Self::Mode)
                 .ok_or_else(|| "Usage: /vivling mode <on|off>".to_string()),
             "language" => Self::parse_language_action(rest),
+            "crt-brain" | "crt_brain" | "crtbrain" => Self::parse_crt_brain_action(rest),
             "reset" => Ok(Self::Reset),
             _ => Ok(Self::DirectMessage(trimmed.to_string())),
         }
@@ -169,6 +189,20 @@ impl VivlingAction {
             provider,
             effort,
         })
+    }
+
+    fn parse_crt_brain_action(rest: &str) -> Result<Self, String> {
+        let trimmed = rest.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::CrtBrain(CrtBrainAction::Show));
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "show" | "status" => Ok(Self::CrtBrain(CrtBrainAction::Show)),
+            "on" => Ok(Self::CrtBrain(CrtBrainAction::On)),
+            "off" => Ok(Self::CrtBrain(CrtBrainAction::Off)),
+            "default" | "auto" | "clear" | "reset" => Ok(Self::CrtBrain(CrtBrainAction::Default)),
+            _ => Err("Usage: /vivling crt-brain [show|on|off|default]".to_string()),
+        }
     }
 
     fn parse_language_action(rest: &str) -> Result<Self, String> {

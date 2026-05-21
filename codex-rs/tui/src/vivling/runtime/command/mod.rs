@@ -1,4 +1,5 @@
 mod brain;
+mod crt_brain;
 mod hatch;
 mod import_export;
 mod language;
@@ -95,6 +96,20 @@ impl Vivling {
             VivlingAction::Zed => self
                 .open_zed_companion()
                 .map(VivlingCommandOutcome::OpenUpgrade),
+            VivlingAction::CrtBrain(crt_brain_action) => match crt_brain_action {
+                super::action::CrtBrainAction::Show => {
+                    self.crt_brain_show().map(VivlingCommandOutcome::Message)
+                }
+                super::action::CrtBrainAction::On => self
+                    .crt_brain_set(codex_vivling_core::model::VivlingExpressionMode::On)
+                    .map(VivlingCommandOutcome::Message),
+                super::action::CrtBrainAction::Off => self
+                    .crt_brain_set(codex_vivling_core::model::VivlingExpressionMode::Off)
+                    .map(VivlingCommandOutcome::Message),
+                super::action::CrtBrainAction::Default => self
+                    .crt_brain_set(codex_vivling_core::model::VivlingExpressionMode::Default)
+                    .map(VivlingCommandOutcome::Message),
+            },
             VivlingAction::Language(language_action) => match language_action {
                 super::action::LanguageAction::Show => self
                     .show_language_status()

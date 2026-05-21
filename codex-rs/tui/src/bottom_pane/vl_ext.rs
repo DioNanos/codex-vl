@@ -185,6 +185,23 @@ impl BottomPane {
         result
     }
 
+    /// Memory V2 Step 12.B.D.3 — best-effort post-turn / post-loop
+    /// trigger for the Expression channel. Forwards to the active
+    /// Vivling's reservation + planner pipeline; returns `None`
+    /// whenever there is nothing to dispatch (no active state,
+    /// planner refused, throttle / dedup / budget / opt-out, …).
+    pub(crate) fn try_dispatch_vivling_expression_refresh(
+        &mut self,
+        config: &Config,
+    ) -> Option<crate::vivling::VivlingExpressionRequest> {
+        self.configure_vivling(config);
+        let request = self.vivling.try_dispatch_expression_refresh();
+        if request.is_some() {
+            self.request_redraw();
+        }
+        request
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

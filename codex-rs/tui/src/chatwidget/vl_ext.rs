@@ -72,6 +72,22 @@ impl ChatWidget {
             .record_vivling_expression_failure_for(&self.config, vivling_id)
     }
 
+    /// Memory V2 Step 12.B.D.3 — best-effort Expression refresh
+    /// trigger called from `record_vivling_turn_completed` and the
+    /// loop-event hook. When the planner + reservation succeeds,
+    /// emits `VlEvent::RunVivlingExpression` so the background runner
+    /// can dispatch the LLM call. All failures are silent (no UI
+    /// surface) because the Expression channel is best-effort.
+    pub(crate) fn maybe_trigger_vivling_expression_refresh(&mut self) {
+        if let Some(request) = self
+            .bottom_pane
+            .try_dispatch_vivling_expression_refresh(&self.config)
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::RunVivlingExpression { request });
+        }
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

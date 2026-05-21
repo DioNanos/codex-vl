@@ -34,7 +34,10 @@ use chrono::Utc;
 use codex_vivling_core::model::CachedCrtPhrase;
 use codex_vivling_core::model::CachedProactive;
 use codex_vivling_core::model::Stage;
+use codex_vivling_core::model::VivlingExpressionMode;
 use codex_vivling_core::model::VivlingLlmCallKind;
+use codex_vivling_core::model::fnv1a64;
+use codex_vivling_core::model::plan_expression_prompt;
 use codex_vivling_core::model::truncate_summary;
 use codex_vivling_core::redaction::redact_secrets;
 use serde::Deserialize;
@@ -165,6 +168,75 @@ pub(crate) fn record_expression_result(
 /// expected to `save_state` after this mutation.
 pub(crate) fn record_expression_failure(state: &mut VivlingState) {
     state.daily_llm_failure_count = state.daily_llm_failure_count.saturating_add(1);
+}
+
+/// Memory V2 Step 12.B.D.3 — best-effort end-to-end planner +
+/// reservation. Serialize `state` to its on-disk JSON projection,
+/// hand it to the deterministic [`plan_expression_prompt`] in core,
+/// hash the planned prompt with FNV-1a, and try to reserve an
+/// Expression slot. Returns `None` whenever any step refuses
+/// (serialization failure, planner skipped, throttle / dedup /
+/// budget / opt-out, …) so post-turn callers can stay tolerant —
+/// every refusal is a normal outcome.
+///
+/// Caller MUST `save_state` BEFORE spawning the dispatch task: the
+/// daily LLM counters mutated by the reservation are persisted state
+/// and a crash between reservation and dispatch would otherwise
+/// allow the slot to be re-billed.
+pub(crate) fn try_plan_and_reserve_expression(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+) -> Option<VivlingExpressionRequest> {
+    // Cheap pre-flight: skip the planner entirely when the user has
+    // muted the channel. Saves a serialization + planner pass per
+    // turn for Vivlings the user opted out of.
+    if state.crt_brain_mode == VivlingExpressionMode::Off {
+        return None;
+    }
+    let body = serde_json::to_string(state).ok()?;
+    let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
+    let prompt_hash = fnv1a64(plan.prompt.as_bytes());
+    maybe_dispatch_expression_refresh(state, now, plan.prompt, plan.language, prompt_hash)
+}
+
+/// Memory V2 Step 12.B.D.3 — human-readable summary for
+/// `/vivling crt-brain` (and the inline status block of
+/// `/vivling crt-brain show`). Always returns something printable
+/// even for a brand-new Vivling with zero counters.
+pub(crate) fn format_crt_brain_status(state: &VivlingState) -> String {
+    let mode = match state.crt_brain_mode {
+        VivlingExpressionMode::Default => "default (stage-driven)",
+        VivlingExpressionMode::On => "on (forced)",
+        VivlingExpressionMode::Off => "off (muted)",
+    };
+    let day_key = if state.daily_llm_day_key.is_empty() {
+        "(no calls yet)"
+    } else {
+        state.daily_llm_day_key.as_str()
+    };
+    let mut lines = Vec::with_capacity(6);
+    lines.push(format!("CRT brain: {mode}"));
+    lines.push(format!("Day: {day_key}"));
+    lines.push(format!(
+        "Calls today: total {} (chat {}, assist {}, loop {}, expression {})",
+        state.daily_llm_call_count,
+        state.daily_llm_chat_calls,
+        state.daily_llm_assist_calls,
+        state.daily_llm_loop_tick_calls,
+        state.daily_llm_expression_calls,
+    ));
+    lines.push(format!(
+        "Skips today: throttle {}, dedup {}, budget {}, opt-out {}",
+        state.daily_llm_throttle_skips,
+        state.daily_llm_dedup_skips,
+        state.daily_llm_budget_skips,
+        state.daily_llm_optout_skips,
+    ));
+    lines.push(format!(
+        "Failures today: failures {}",
+        state.daily_llm_failure_count
+    ));
+    lines.join("\n")
 }
 
 fn sanitize_phrase(raw: Option<&str>, max_chars: usize) -> Option<String> {
@@ -555,6 +627,126 @@ mod tests {
             "Baby Expression eligible — caller decides rarity upstream"
         );
         assert_eq!(s.daily_llm_expression_calls, 1);
+    }
+
+    // ---- P1 recovery from Step 12.B.D.2 audit (Sonnet 4.6 Max) ----
+
+    #[test]
+    fn dispatch_returns_none_when_throttle_window_active() {
+        // P1.1 recovery: prove the 60s Expression throttle short-circuits
+        // the dispatch path even when the cache is empty (no dedup signal
+        // available). Seeds `last_llm_dispatch_at` 30s in the past so the
+        // try_reserve call hits the throttle branch.
+        let mut s = adult();
+        s.daily_llm_day_key = "2026-05-21".to_string();
+        s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z"));
+        let now = t("2026-05-21T10:00:00Z");
+        let req =
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1);
+        assert!(req.is_none(), "throttle window must refuse dispatch");
+        assert_eq!(s.daily_llm_throttle_skips, 1);
+        assert_eq!(
+            s.daily_llm_call_count, 0,
+            "throttle-rejected reservation must not bill"
+        );
+    }
+
+    #[test]
+    fn record_leaves_existing_crt_when_reply_only_has_proactive() {
+        // P1.2 recovery: symmetric counterpart of
+        // record_leaves_existing_proactive_when_reply_only_has_crt — a
+        // proactive-only reply must not wipe the CRT cache slot.
+        let mut s = adult();
+        let now = t("2026-05-21T10:00:00Z");
+        s.cached_crt_phrase = Some(CachedCrtPhrase {
+            text: "kept crt".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(99),
+            ttl_expires_at: Some(now + Duration::minutes(5)),
+        });
+        let reply = make_reply(None, Some("fresh proactive"), 1);
+        record_expression_result(&mut s, &reply, now);
+        assert_eq!(
+            s.cached_crt_phrase.as_ref().unwrap().text,
+            "kept crt",
+            "missing crt field must not wipe the existing cache slot"
+        );
+        assert_eq!(s.cached_proactive.as_ref().unwrap().text, "fresh proactive");
+    }
+
+    #[test]
+    fn record_truncates_overlong_crt_phrase() {
+        // P1.3 recovery: symmetric counterpart of
+        // record_truncates_overlong_proactive for the CRT slot. The CRT
+        // budget is small (28 chars), so an oversize string is the most
+        // realistic poisoning vector.
+        let mut s = adult();
+        let now = t("2026-05-21T10:00:00Z");
+        let long = "x".repeat(EXPRESSION_CRT_MAX * 3);
+        let reply = make_reply(Some(&long), None, 1);
+        record_expression_result(&mut s, &reply, now);
+        let crt = s.cached_crt_phrase.as_ref().expect("crt cached");
+        let count = crt.text.chars().count();
+        assert!(
+            count <= EXPRESSION_CRT_MAX + 3,
+            "crt cache must respect the budget (max + ellipsis), got {count} chars"
+        );
+        assert!(
+            count > EXPRESSION_CRT_MAX,
+            "this test feeds an oversize string; truncation suffix should fire, got {count} chars"
+        );
+        assert!(
+            crt.text.ends_with("..."),
+            "truncated crt must end with the truncation suffix"
+        );
+    }
+
+    // ---- 12.B.D.3 try_plan_and_reserve_expression ------------------
+
+    #[test]
+    fn try_plan_and_reserve_returns_none_when_mode_off_short_circuit() {
+        // Pre-flight optimization: muted mode must skip serialization
+        // and planner entirely, returning None without billing or
+        // touching the opt-out skip counter (the dispatcher arm runs
+        // only when try_reserve fires).
+        let mut s = adult();
+        s.crt_brain_mode = VivlingExpressionMode::Off;
+        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"));
+        assert!(req.is_none());
+        assert_eq!(
+            s.daily_llm_optout_skips, 0,
+            "pre-flight skip must not bill the optout counter — only try_reserve does"
+        );
+    }
+
+    #[test]
+    fn try_plan_and_reserve_returns_none_when_planner_has_no_source_material() {
+        // Fresh hatched Adult with empty self_voice / distilled / work
+        // memory: the planner refuses with `NoSourceMaterial`, so the
+        // helper must surface None without billing.
+        let mut s = adult();
+        s.hatched = true;
+        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"));
+        assert!(
+            req.is_none(),
+            "planner refusal must propagate as None without billing"
+        );
+        assert_eq!(s.daily_llm_call_count, 0);
+    }
+
+    // ---- format_crt_brain_status -----------------------------------
+
+    #[test]
+    fn format_crt_brain_status_pretty_prints_mode_labels_distinctly() {
+        let mut s = adult();
+        let default_text = format_crt_brain_status(&s);
+        s.crt_brain_mode = VivlingExpressionMode::On;
+        let on_text = format_crt_brain_status(&s);
+        s.crt_brain_mode = VivlingExpressionMode::Off;
+        let off_text = format_crt_brain_status(&s);
+        assert_ne!(default_text, on_text);
+        assert_ne!(default_text, off_text);
+        assert_ne!(on_text, off_text);
     }
 
     #[test]
