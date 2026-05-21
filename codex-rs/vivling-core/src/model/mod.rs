@@ -11,10 +11,15 @@
 
 pub mod constants;
 pub mod gene;
+pub mod language;
 pub mod text_utils;
 pub mod types;
 
 pub use constants::*;
 pub use gene::*;
+pub use language::MAX_RECENT_SAMPLES;
+pub use language::SUPPORTED_LANGS;
+pub use language::detect_language_code;
+pub use language::normalize_lang_env;
 pub use text_utils::*;
 pub use types::*;

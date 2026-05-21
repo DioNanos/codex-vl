@@ -4,6 +4,7 @@ mod care_decay;
 mod commands;
 mod common;
 mod import_export;
+mod language;
 mod lineage;
 mod lineage_echo_runtime;
 mod lineage_summary;

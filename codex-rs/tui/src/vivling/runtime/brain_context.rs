@@ -105,6 +105,7 @@ pub(crate) fn compose_brain_prompt(
         "Live state contract:\n{}",
         kind.live_state_contract()
     ));
+    sections.push(language_contract_section(state));
     if let BrainPromptKind::LoopTick {
         label,
         goal,
@@ -311,6 +312,40 @@ fn stale_signals_section(state: &VivlingState) -> Option<String> {
         ));
     }
     Some(lines.join("\n"))
+}
+
+/// Memory V2 Step 5.A — language steering hint for the brain.
+///
+/// The Vivling answers in the language inherited from the user (axis G).
+/// Mode controls the mix policy: `MirrorUser` rispecchia il mix utente,
+/// `Strict` blocca sulla prima detection, `DominantOnly` insiste sulla
+/// lingua dominante della finestra. La sezione viene aggiunta a tutti
+/// i path (Assist, Chat, LoopTick) cosi' anche l'automation parla nella
+/// lingua del proprietario.
+fn language_contract_section(state: &VivlingState) -> String {
+    let system_lang = std::env::var("LANG").ok();
+    let effective = state
+        .language_state
+        .effective_language(system_lang.as_deref());
+    let mode = match state.language_state.language_mode {
+        codex_vivling_core::model::VivlingLanguageMode::DominantOnly => "dominant-only",
+        codex_vivling_core::model::VivlingLanguageMode::MirrorUser => "mirror-user",
+        codex_vivling_core::model::VivlingLanguageMode::Strict => "strict",
+    };
+    let mode_rule = match state.language_state.language_mode {
+        codex_vivling_core::model::VivlingLanguageMode::MirrorUser => {
+            "Rispecchia lo stile dell'utente: se mischia lingue (es. italiano + termini tecnici inglesi), mantieni lo stesso mix. Non tradurre nomi propri, comandi, identificatori di codice."
+        }
+        codex_vivling_core::model::VivlingLanguageMode::DominantOnly => {
+            "Resta sulla lingua effettiva anche se l'utente introduce frammenti in un'altra lingua. Non tradurre nomi propri, comandi, identificatori di codice."
+        }
+        codex_vivling_core::model::VivlingLanguageMode::Strict => {
+            "La lingua di partenza non cambia per il resto della vita di questo Vivling. Non tradurre nomi propri, comandi, identificatori di codice."
+        }
+    };
+    format!(
+        "Language contract:\n- effective language: {effective}\n- mode: {mode}\n- rule: Rispondi in {effective}. {mode_rule}"
+    )
 }
 
 #[cfg(test)]

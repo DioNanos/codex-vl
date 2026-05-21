@@ -15,6 +15,12 @@ impl Vivling {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
+            // Memory V2 Step 5.A: feed the assist payload into the
+            // axis-G rolling sample window BEFORE composing the prompt,
+            // so the language contract reflects the very task the user
+            // just typed.
+            state.language_state.record_sample(now, task);
+            state.language_state.refresh_detected_language();
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Assist,
@@ -61,6 +67,10 @@ impl Vivling {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
+            // Memory V2 Step 5.A: same sampling hook as `prepare_assist_request`.
+            // LoopTick is automation and is intentionally skipped.
+            state.language_state.record_sample(now, text);
+            state.language_state.refresh_detected_language();
             let prompt_context = compose_brain_prompt(
                 state,
                 BrainPromptKind::Chat,
