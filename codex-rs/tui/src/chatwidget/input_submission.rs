@@ -358,6 +358,22 @@ impl ChatWidget {
             self.input_queue.user_turn_pending_start = true;
         }
 
+        // codex-vl Vivling V2 G — preserve on upstream merge
+        // Step 5.B round-2 fix: feed the ordinary user payload into the
+        // active Vivling's language-detection window only AFTER the turn
+        // has been accepted by `submit_op`. Doing it earlier would
+        // persist the sample for messages that fail the model/thread
+        // availability gate above and are restored to the composer.
+        // Slash commands (`/vl`, `/vivling …`) use a separate dispatch
+        // that already samples inside `prepare_chat_request` /
+        // `prepare_assist_request`, so the `trim_start().starts_with('/')`
+        // guard avoids double-counting even with leading whitespace.
+        // Failure is debug-logged and swallowed downstream.
+        if !text.trim().is_empty() && !text.trim_start().starts_with('/') {
+            self.bottom_pane
+                .record_vivling_user_language_sample(&self.config, &text);
+        }
+
         // Persist the submitted text to cross-session message history. Mentions are encoded into
         // placeholder syntax so recall can reconstruct the mention bindings in a future session.
         let encoded_mentions = mention_bindings

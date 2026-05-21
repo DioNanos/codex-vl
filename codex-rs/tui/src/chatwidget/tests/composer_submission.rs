@@ -1,4 +1,5 @@
 use super::*;
+use crate::vivling::VivlingAction;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -1326,4 +1327,178 @@ async fn interrupt_prepends_queued_messages_before_existing_composer_text() {
     );
 
     let _ = drain_insert_history(&mut rx);
+}
+
+// --- Memory V2 Step 5.B (round 2): chatwidget hook tests ---
+//
+// Validate that the generic-turn sampling added in `submit_user_message`
+// actually feeds the active Vivling AND only fires after the message has
+// been accepted by `submit_op`. The Step 5.A integration tests cover the
+// Vivling-side helper in isolation; these two close the loop on the
+// chatwidget side.
+
+#[tokio::test]
+async fn accepted_user_message_records_vivling_language_sample() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let thread_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        message_history: None,
+        network_proxy: None,
+        rollout_path: Some(rollout_file.path().to_path_buf()),
+    };
+    chat.handle_thread_session(configured);
+    drain_insert_history(&mut rx);
+
+    // Hatch the Vivling so `record_user_language_sample` has a state to
+    // mutate. Without this the sampling hook short-circuits on the
+    // `state.hatched` guard and the assertion below has nothing to read.
+    chat.bottom_pane
+        .run_vivling_command(&chat.config, VivlingAction::Hatch)
+        .expect("hatch vivling");
+
+    let text = "ciao come stai oggi davvero".to_string();
+    chat.bottom_pane
+        .set_composer_text(text.clone(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    // Drain the accepted UserTurn op so a later test cannot mistake it
+    // for noise.
+    let _ = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+
+    let state = chat
+        .bottom_pane
+        .vivling_for_tests()
+        .state
+        .as_ref()
+        .expect("vivling state present after sampling");
+    assert_eq!(
+        state.language_state.recent_samples.len(),
+        1,
+        "accepted user turn must record exactly one Vivling language sample"
+    );
+    assert_eq!(
+        state.language_state.detected_language, "it",
+        "italian payload must surface as detected language"
+    );
+}
+
+#[tokio::test]
+async fn slash_command_input_does_not_record_vivling_language_sample() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let thread_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    let configured = crate::session_state::ThreadSessionState {
+        thread_id,
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        message_history: None,
+        network_proxy: None,
+        rollout_path: Some(rollout_file.path().to_path_buf()),
+    };
+    chat.handle_thread_session(configured);
+    drain_insert_history(&mut rx);
+
+    // Inject a slash-prefixed payload directly through submit_user_message
+    // to verify the `trim_start().starts_with('/')` guard. The slash
+    // dispatcher normally hijacks these payloads before they reach
+    // submit_user_message, but the guard exists so a future regression
+    // that re-routes them through this code path still cannot poison
+    // the Vivling detector.
+    chat.submit_user_message(UserMessage {
+        text: "  /vivling status".to_string(),
+        text_elements: Vec::new(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        mention_bindings: Vec::new(),
+    });
+
+    // Drain any emitted op so it doesn't bleed into other tests.
+    let _ = op_rx.try_recv();
+    let _ = drain_insert_history(&mut rx);
+
+    assert!(
+        chat.bottom_pane.vivling_for_tests().state.is_none()
+            || chat
+                .bottom_pane
+                .vivling_for_tests()
+                .state
+                .as_ref()
+                .unwrap()
+                .language_state
+                .recent_samples
+                .is_empty(),
+        "slash-prefixed input must not record a Vivling language sample"
+    );
+}
+
+#[tokio::test]
+async fn blocked_submission_does_not_record_vivling_language_sample() {
+    // No `handle_thread_session` call → `effective_mode.model()` is the
+    // default empty string → submit_user_message returns early at the
+    // "model unavailable" gate, BEFORE Step 5.B's sampling hook. The
+    // pre-fix code recorded the sample anyway; this test pins the new
+    // ordering.
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.submit_user_message(UserMessage {
+        text: "ciao come stai oggi davvero".to_string(),
+        text_elements: Vec::new(),
+        local_images: Vec::new(),
+        remote_image_urls: Vec::new(),
+        mention_bindings: Vec::new(),
+    });
+
+    // Nothing should have been submitted to the model.
+    assert!(
+        op_rx.try_recv().is_err(),
+        "blocked submission must not emit a UserTurn op"
+    );
+    let _ = drain_insert_history(&mut rx);
+
+    assert!(
+        chat.bottom_pane.vivling_for_tests().state.is_none()
+            || chat
+                .bottom_pane
+                .vivling_for_tests()
+                .state
+                .as_ref()
+                .unwrap()
+                .language_state
+                .recent_samples
+                .is_empty(),
+        "blocked user turn must not persist a Vivling language sample"
+    );
 }

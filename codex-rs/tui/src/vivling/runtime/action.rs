@@ -1,5 +1,20 @@
 use super::*;
 
+/// Memory V2 §8.2 (Step 5.B) — sub-actions for `/vivling language`.
+/// Kept on a dedicated enum so the `VivlingAction` surface does not
+/// sprout four new top-level variants.
+#[derive(Debug, PartialEq)]
+pub(crate) enum LanguageAction {
+    /// `/vivling language` — show current effective / detected / override / mode.
+    Show,
+    /// `/vivling language auto` (or `clear`) — drop the explicit override.
+    Auto,
+    /// `/vivling language <code>` — pin one of the supported language codes.
+    Set(String),
+    /// `/vivling language mode <mirror-user|dominant-only|strict>`.
+    Mode(String),
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum VivlingAction {
     Hatch,
@@ -33,6 +48,8 @@ pub(crate) enum VivlingAction {
     DirectMessage(String),
     Reset,
     Zed,
+    /// Memory V2 §8.2 — `/vivling language [...]`.
+    Language(LanguageAction),
 }
 
 impl VivlingAction {
@@ -106,6 +123,7 @@ impl VivlingAction {
             "mode" => VivlingAiMode::parse(rest)
                 .map(Self::Mode)
                 .ok_or_else(|| "Usage: /vivling mode <on|off>".to_string()),
+            "language" => Self::parse_language_action(rest),
             "reset" => Ok(Self::Reset),
             _ => Ok(Self::DirectMessage(trimmed.to_string())),
         }
@@ -151,5 +169,39 @@ impl VivlingAction {
             provider,
             effort,
         })
+    }
+
+    fn parse_language_action(rest: &str) -> Result<Self, String> {
+        let trimmed = rest.trim();
+        if trimmed.is_empty() {
+            return Ok(Self::Language(LanguageAction::Show));
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        match lower.as_str() {
+            "show" | "status" => return Ok(Self::Language(LanguageAction::Show)),
+            "auto" | "clear" | "reset" | "default" => {
+                return Ok(Self::Language(LanguageAction::Auto));
+            }
+            _ => {}
+        }
+        let mut parts = trimmed.splitn(2, char::is_whitespace);
+        let head = parts.next().unwrap_or_default();
+        let tail = parts.next().unwrap_or_default().trim();
+        if head.eq_ignore_ascii_case("mode") {
+            if tail.is_empty() {
+                return Err(
+                    "Usage: /vivling language mode <mirror-user|dominant-only|strict>".to_string(),
+                );
+            }
+            return Ok(Self::Language(LanguageAction::Mode(tail.to_string())));
+        }
+        // Single token, not a sub-command: treat as a language code.
+        if tail.is_empty() {
+            return Ok(Self::Language(LanguageAction::Set(head.to_string())));
+        }
+        Err(
+            "Usage: /vivling language [auto|<code>|mode <mirror-user|dominant-only|strict>]"
+                .to_string(),
+        )
     }
 }

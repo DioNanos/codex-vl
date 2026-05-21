@@ -194,6 +194,16 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Memory V2 §8.2 (Step 5.B) — feed an ordinary user-turn payload
+    /// into the active Vivling's language detection window. Best-effort:
+    /// any failure is debug-logged and swallowed so the user input flow
+    /// never breaks on a missing Vivling or save error.
+    pub(crate) fn record_vivling_user_language_sample(&mut self, config: &Config, text: &str) {
+        self.configure_vivling(config);
+        self.vivling.record_user_language_sample(text);
+        self.request_redraw();
+    }
+
     pub(crate) fn toggle_vl_sidebar(&mut self) {
         self.vl_sidebar.toggle();
         self.request_redraw();
@@ -233,6 +243,15 @@ impl BottomPane {
 
     pub(crate) fn vivling_codex_home(&self) -> Option<std::path::PathBuf> {
         self.vivling.codex_home.clone()
+    }
+
+    /// Test-only accessor for the active Vivling. Kept behind
+    /// `#[cfg(test)]` so production callers must keep going through
+    /// the typed bridge methods (`record_vivling_*`, `prepare_vivling_*`,
+    /// `mark_vivling_*`, …) instead of poking at the field directly.
+    #[cfg(test)]
+    pub(crate) fn vivling_for_tests(&self) -> &crate::vivling::Vivling {
+        &self.vivling
     }
 
     pub(crate) fn vl_lifecycle_tick(

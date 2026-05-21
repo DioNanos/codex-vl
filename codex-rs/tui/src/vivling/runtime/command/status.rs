@@ -16,6 +16,11 @@ impl Vivling {
             "/vivling zed - open the ZED Companion panel (bond + gene snapshot)".to_string(),
             "/vivling assist <task> - ask the Vivling brain for adult help".to_string(),
             "/vivling brain <on|off> - enable or disable the Vivling brain".to_string(),
+            "/vivling language - show effective/detected language, override, mode".to_string(),
+            "/vivling language <it|en|es|fr|de> - pin a language override".to_string(),
+            "/vivling language auto - clear the override; fall back to detected/LANG".to_string(),
+            "/vivling language mode <mirror-user|dominant-only|strict> - change detection policy"
+                .to_string(),
             "/vivling model - show the current Vivling brain profile".to_string(),
             "/vivling model list - show assignable Vivling brain models".to_string(),
             "/vivling model <profile> - assign an existing config profile".to_string(),

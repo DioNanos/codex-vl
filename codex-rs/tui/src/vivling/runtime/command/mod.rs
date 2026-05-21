@@ -1,6 +1,7 @@
 mod brain;
 mod hatch;
 mod import_export;
+mod language;
 mod lineage;
 mod setup;
 mod state_ops;
@@ -94,6 +95,20 @@ impl Vivling {
             VivlingAction::Zed => self
                 .open_zed_companion()
                 .map(VivlingCommandOutcome::OpenUpgrade),
+            VivlingAction::Language(language_action) => match language_action {
+                super::action::LanguageAction::Show => self
+                    .show_language_status()
+                    .map(VivlingCommandOutcome::Message),
+                super::action::LanguageAction::Auto => self
+                    .set_language_override(None)
+                    .map(VivlingCommandOutcome::Message),
+                super::action::LanguageAction::Set(code) => self
+                    .set_language_override(Some(code))
+                    .map(VivlingCommandOutcome::Message),
+                super::action::LanguageAction::Mode(mode_str) => self
+                    .set_language_mode(&mode_str)
+                    .map(VivlingCommandOutcome::Message),
+            },
         }
     }
 }
