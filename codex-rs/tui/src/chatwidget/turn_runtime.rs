@@ -99,20 +99,24 @@ impl ChatWidget {
         {
             self.record_agent_markdown(message);
         }
+        // Memory V2 Step 3 / P0.1: compute the summary once, BEFORE the
+        // `saw_copy_source_this_turn` reset below, and reuse it for both
+        // the desktop notification payload and the Vivling turn capsule.
+        // The historical bug was that `record_vivling_turn_completed`
+        // was called with the raw `last_agent_message` argument, which is
+        // always `None` on the `TurnCompleted` notification path
+        // (chatwidget/protocol.rs:252). The result was 73% of turn
+        // capsules degenerating into the "completed a codex turn"
+        // fallback even though the transcript still held the real
+        // assistant markdown for the turn.
+        let copy_source_summary = compute_vivling_turn_summary(
+            sanitized_last_agent_message.as_deref(),
+            self.transcript.last_agent_markdown.as_deref(),
+            self.transcript.saw_copy_source_this_turn,
+        );
         // For desktop notifications: prefer the notification payload, fall back to
         // the item-level copy source if present, otherwise send an empty string.
-        let notification_response = sanitized_last_agent_message
-            .as_ref()
-            .filter(|message| !message.is_empty())
-            .cloned()
-            .or_else(|| {
-                if self.transcript.saw_copy_source_this_turn {
-                    self.transcript.last_agent_markdown.clone()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
+        let notification_response = copy_source_summary.clone().unwrap_or_default();
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
@@ -181,7 +185,7 @@ impl ChatWidget {
             self.maybe_prompt_plan_implementation();
         }
         if !from_replay {
-            self.record_vivling_turn_completed(last_agent_message.as_deref());
+            self.record_vivling_turn_completed(copy_source_summary.as_deref());
             self.vl_lifecycle_observe_worker_turn();
         }
         // Keep this flag for replayed completion events so a subsequent live TurnComplete can
@@ -489,5 +493,90 @@ impl ChatWidget {
         }
 
         "Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.".to_string()
+    }
+}
+
+/// Compute the summary string for the Vivling turn capsule recorded at
+/// `on_task_complete` time.
+///
+/// Memory V2 design §10.1 (P0.1) — the priority chain matches the one
+/// used for the desktop notification payload so a single turn always
+/// produces the same observable summary across both surfaces:
+///
+/// 1. Sanitized notification payload, when present and non-empty.
+/// 2. The transcript's `last_agent_markdown`, but only when an
+///    item-level event recorded markdown during this turn
+///    (`saw_copy_source_this_turn`). Without that guard a residual
+///    markdown from a previous turn could leak into the new capsule.
+/// 3. `None` — caller's responsibility to fall back to the
+///    "completed a codex turn" placeholder.
+fn compute_vivling_turn_summary(
+    sanitized_last_agent_message: Option<&str>,
+    transcript_last_agent_markdown: Option<&str>,
+    saw_copy_source_this_turn: bool,
+) -> Option<String> {
+    sanitized_last_agent_message
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            if saw_copy_source_this_turn {
+                transcript_last_agent_markdown
+                    .filter(|message| !message.is_empty())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        })
+}
+
+#[cfg(test)]
+mod vivling_turn_summary_tests {
+    use super::compute_vivling_turn_summary;
+
+    #[test]
+    fn uses_transcript_when_notification_none_and_saw_copy_source() {
+        let got = compute_vivling_turn_summary(
+            None,
+            Some("review delle migrazioni"),
+            /*saw_copy_source_this_turn*/ true,
+        );
+        assert_eq!(got.as_deref(), Some("review delle migrazioni"));
+    }
+
+    #[test]
+    fn falls_back_to_none_when_no_copy_source_this_turn() {
+        // Residual markdown from a previous turn must not leak into the
+        // current Vivling capsule when the guard says no item-level
+        // event happened this turn.
+        let got = compute_vivling_turn_summary(
+            None,
+            Some("residual content from previous turn"),
+            /*saw_copy_source_this_turn*/ false,
+        );
+        assert!(got.is_none(), "expected None, got {got:?}");
+    }
+
+    #[test]
+    fn prefers_notification_payload_over_transcript() {
+        let got = compute_vivling_turn_summary(
+            Some("from notification"),
+            Some("ignored transcript content"),
+            /*saw_copy_source_this_turn*/ true,
+        );
+        assert_eq!(got.as_deref(), Some("from notification"));
+    }
+
+    #[test]
+    fn empty_notification_payload_does_not_count_as_present() {
+        // An empty sanitized notification must not short-circuit the
+        // transcript fallback; otherwise an empty notification on a
+        // turn that did record item-level markdown would still produce
+        // the "completed a codex turn" placeholder.
+        let got = compute_vivling_turn_summary(
+            Some(""),
+            Some("real transcript markdown"),
+            /*saw_copy_source_this_turn*/ true,
+        );
+        assert_eq!(got.as_deref(), Some("real transcript markdown"));
     }
 }
