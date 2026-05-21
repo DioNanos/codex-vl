@@ -414,8 +414,17 @@ mod tests {
     }
 
     #[test]
-    fn streak_bonus_caps_at_2() {
+    fn streak_bonus_caps_at_3() {
         // 22 consecutive days starting 2026-05-01.
+        // Memory V2 Step 12.B.F: Chat base = 2, STREAK_BONUS_CAP raised
+        // 2 → 3. 22 days hit `floor(22 / 7) = 3` which equals the cap
+        // exactly (does not exceed it).
+        //
+        // Cumulative bond.value derivation from DEFAULT_BOND = 20:
+        //   days  1..=6   bonus 0  → +2 each (=12)  ⇒ 32
+        //   days  7..=13  bonus 1  → +3 each (=21)  ⇒ 53
+        //   days 14..=20  bonus 2  → +4 each (=28)  ⇒ 81
+        //   days 21..=22  bonus 3  → +5 each (=10)  ⇒ 91
         let mut bond = VivlingBond::default();
         let start = ts(2026, 5, 1, 10);
         for offset_days in 0..22i64 {
@@ -423,13 +432,8 @@ mod tests {
             bond.record_interaction(VivlingInteractionKind::Chat, day);
         }
         assert_eq!(bond.streak_days, 22);
-        // floor(22 / 7) = 3, capped at STREAK_BONUS_CAP = 2.
-        // Day 22 first-of-day adds base 1 + bonus 2 = 3.
-        // We assert no overflow and bond stays within range.
-        assert!(bond.value <= MAX_BOND);
-        // Sanity: 7th-day onward the bonus must already be at least 1.
-        // Without the cap, by day 22 the running bonus would have been 0+0+0+0+0+0+1+1+1+1+1+1+1+2+2+2+2+2+2+2+3+3,
-        // capped to 0..=2 → no value greater than 100, no underflow.
+        assert_eq!(bond.value, 91);
+        assert!(bond.value <= MAX_BOND, "bond must stay clamped to MAX_BOND");
     }
 
     #[test]
