@@ -3,6 +3,41 @@ use super::brain_context::BrainPromptKind;
 use super::brain_context::compose_brain_prompt;
 use super::request::brain_target_from_profile;
 use super::*;
+use codex_vivling_core::model::VivlingSkill;
+use codex_vivling_core::paths::skills_file_path;
+
+/// Memory V2 Step 9.A — load the planner-written `_skills.json`
+/// sidecar. Best-effort: missing file or malformed JSON yields an
+/// empty list, never an error. The brain prompt simply omits the
+/// `Skill library:` section when nothing usable is available, so a
+/// corrupt sidecar can never break Chat/Assist/LoopTick.
+fn load_vivling_skills(roster_dir: &Path, vivling_id: &str) -> Vec<VivlingSkill> {
+    let path = skills_file_path(roster_dir, vivling_id);
+    let body = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::debug!(
+                    target: "vivling::skills",
+                    "failed to read {}: {err}",
+                    path.display()
+                );
+            }
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<Vec<VivlingSkill>>(&body) {
+        Ok(list) => list,
+        Err(err) => {
+            tracing::debug!(
+                target: "vivling::skills",
+                "malformed skills sidecar at {}: {err}",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
+}
 
 impl Vivling {
     pub(crate) fn prepare_assist_request(
@@ -11,6 +46,14 @@ impl Vivling {
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
         let live_snapshot = self.live_context.borrow().clone();
+        // Memory V2 Step 9.A: load the planner-written skills sidecar
+        // (Step 8.B output) BEFORE composing the prompt. Best-effort —
+        // missing/malformed sidecar yields an empty list.
+        let roster_dir = self.roster_dir();
+        let skills = match (roster_dir.as_ref(), self.state.as_ref()) {
+            (Some(dir), Some(state)) => load_vivling_skills(dir, &state.vivling_id),
+            _ => Vec::new(),
+        };
         let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
@@ -27,6 +70,7 @@ impl Vivling {
                 task,
                 live_snapshot.as_ref(),
                 self.msa.as_deref(),
+                &skills,
             )?;
             // Memory V2 §8.1 (P0.2): inheritance rule. Absence of an
             // explicit profile means SessionDefault, not an error and
@@ -63,6 +107,12 @@ impl Vivling {
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
         let live_snapshot = self.live_context.borrow().clone();
+        // Memory V2 Step 9.A: same best-effort sidecar load as assist.
+        let roster_dir = self.roster_dir();
+        let skills = match (roster_dir.as_ref(), self.state.as_ref()) {
+            (Some(dir), Some(state)) => load_vivling_skills(dir, &state.vivling_id),
+            _ => Vec::new(),
+        };
         let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
@@ -77,6 +127,7 @@ impl Vivling {
                 text,
                 live_snapshot.as_ref(),
                 self.msa.as_deref(),
+                &skills,
             )?;
             // Memory V2 §8.1 (P0.2): same inheritance rule as Assist.
             let brain_target = brain_target_from_profile(state.brain_profile.as_deref());
@@ -148,6 +199,11 @@ impl Vivling {
             .unwrap_or(&job.prompt_text)
             .to_string();
         let live_snapshot = self.live_context.borrow().clone();
+        // Memory V2 Step 9.A: load owner's skills sidecar (best-effort).
+        let skills = self
+            .roster_dir()
+            .map(|dir| load_vivling_skills(&dir, owner_vivling_id))
+            .unwrap_or_default();
         let prompt_context = compose_brain_prompt(
             &state,
             BrainPromptKind::LoopTick {
@@ -159,6 +215,7 @@ impl Vivling {
             &job.prompt_text,
             live_snapshot.as_ref(),
             self.msa.as_deref(),
+            &skills,
         )?;
         Ok(VivlingLoopTickRequest {
             vivling_id: state.vivling_id.clone(),

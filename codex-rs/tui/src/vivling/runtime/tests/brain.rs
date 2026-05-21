@@ -486,6 +486,7 @@ fn assist_prompt_context_declares_memory_and_live_state_boundary() {
         "review this blocker",
         None,
         None,
+        &[],
     )
     .expect("prompt");
 
@@ -730,6 +731,130 @@ fn assert_msa_collection_has_tantivy_shard(msa_storage: &std::path::Path, vivlin
         "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
         collection_dir.display()
     );
+}
+
+// --- Step 9.A: prompt consumes _skills.json sidecar ---
+
+#[test]
+fn prepare_chat_loads_skills_sidecar_and_surfaces_skill_library() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+    let vivling_id = vivling.state.as_ref().expect("state").vivling_id.clone();
+    let roster_dir = vivling.roster_dir().expect("roster_dir");
+    let sidecar_path = codex_vivling_core::paths::skills_file_path(&roster_dir, &vivling_id);
+    let sidecar_body = serde_json::json!([
+        {
+            "name": "refactor-pipeline",
+            "description": "verify before commit",
+            "trigger_keywords": ["refactor", "pipeline"],
+            "step_sequence": [],
+            "success_count": 4,
+            "failure_count": 0,
+            "confidence": 0.8,
+            "version": 1,
+            "abstracted_from_capsules": ["refactor"]
+        }
+    ])
+    .to_string();
+    std::fs::write(&sidecar_path, sidecar_body).expect("seed sidecar");
+
+    let request = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::DispatchAssist(req) => req,
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    };
+    assert!(
+        request.prompt_context.contains("Skill library:"),
+        "skill library section missing"
+    );
+    assert!(request.prompt_context.contains("- refactor-pipeline"));
+    assert!(
+        request
+            .prompt_context
+            .contains("desc: verify before commit")
+    );
+}
+
+#[test]
+fn prepare_chat_with_huge_skills_sidecar_stays_within_prompt_bounds() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+    let vivling_id = vivling.state.as_ref().expect("state").vivling_id.clone();
+    let roster_dir = vivling.roster_dir().expect("roster_dir");
+    let sidecar_path = codex_vivling_core::paths::skills_file_path(&roster_dir, &vivling_id);
+    let huge_desc = "x".repeat(2_000);
+    let huge_trigger = "y".repeat(200);
+    let huge_step = "z".repeat(400);
+    let sidecar = serde_json::json!([
+        {
+            "name": "loop-tick",
+            "description": huge_desc,
+            "trigger_keywords": [huge_trigger, "real"],
+            "step_sequence": [huge_step, "stepB"],
+            "success_count": 1,
+            "failure_count": 0,
+            "confidence": 0.6,
+            "version": 1,
+            "abstracted_from_capsules": ["cap"]
+        }
+    ])
+    .to_string();
+    std::fs::write(&sidecar_path, sidecar).expect("seed huge sidecar");
+
+    let request = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::DispatchAssist(req) => req,
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    };
+    assert!(request.prompt_context.contains("Skill library:"));
+    assert!(request.prompt_context.contains("- loop-tick"));
+    // The 2000-char description must not have landed in full.
+    assert!(!request.prompt_context.contains(&huge_desc));
+    assert!(!request.prompt_context.contains(&huge_trigger));
+    assert!(!request.prompt_context.contains(&huge_step));
+}
+
+#[test]
+fn prepare_chat_with_malformed_skills_sidecar_does_not_fail() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+    let vivling_id = vivling.state.as_ref().expect("state").vivling_id.clone();
+    let roster_dir = vivling.roster_dir().expect("roster_dir");
+    let sidecar_path = codex_vivling_core::paths::skills_file_path(&roster_dir, &vivling_id);
+    std::fs::write(&sidecar_path, "not-json{").expect("seed broken sidecar");
+
+    let request = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::DispatchAssist(req) => req,
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    };
+    // Malformed sidecar must not break the chat path; prompt simply
+    // omits the Skill library section.
+    assert!(!request.prompt_context.contains("Skill library:"));
 }
 
 #[test]

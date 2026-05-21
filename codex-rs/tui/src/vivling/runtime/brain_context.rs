@@ -61,6 +61,7 @@ pub(crate) fn compose_brain_prompt(
     payload: &str,
     live: Option<&VivlingLiveContext>,
     msa: Option<&super::msa::VivlingMsa>,
+    skills: &[codex_vivling_core::model::VivlingSkill],
 ) -> Result<String, String> {
     if matches!(kind, BrainPromptKind::Assist) && state.stage() != Stage::Adult {
         return Err("`/vivling assist ...` unlocks only at level 60.".to_string());
@@ -85,6 +86,12 @@ pub(crate) fn compose_brain_prompt(
 
     let mut sections: Vec<String> = Vec::new();
     sections.push(identity_section(state, profile));
+    if let Some(section) = self_voice_section(state) {
+        sections.push(section);
+    }
+    if let Some(section) = skill_library_section(skills) {
+        sections.push(section);
+    }
     sections.push(stable_memory_section(state));
     sections.push(match msa {
         Some(msa) => retrieved_relevant_capsules_section(state, payload, msa),
@@ -322,6 +329,113 @@ fn stale_signals_section(state: &VivlingState) -> Option<String> {
 /// lingua dominante della finestra. La sezione viene aggiunta a tutti
 /// i path (Assist, Chat, LoopTick) cosi' anche l'automation parla nella
 /// lingua del proprietario.
+/// Memory V2 Step 9.A — bounds applied to artifacts the memory agent
+/// (Step 7.B / 8.B) writes into the prompt. The agent already runs
+/// `redact_secrets`, but it does not cap field length: a future
+/// LLM-enriched voice or a hand-edited sidecar could otherwise push
+/// the prompt budget past the model's context. These limits are
+/// deliberately conservative (a few sentences per field) so the
+/// brain reasons on a tight identity sketch instead of a wall of
+/// historical text.
+const SELF_VOICE_TEXT_MAX: usize = 512;
+const SKILL_NAME_MAX: usize = 80;
+const SKILL_DESCRIPTION_MAX: usize = 200;
+const SKILL_TRIGGER_MAX: usize = 32;
+const SKILL_TRIGGERS_LIMIT: usize = 6;
+const SKILL_STEP_MAX: usize = 96;
+const SKILL_STEPS_LIMIT: usize = 4;
+const SKILL_LIBRARY_LIMIT: usize = 5;
+
+/// Memory V2 Step 9.A — surface the planner-written `self_voice` to
+/// the brain prompt. Body is already redacted by the memory agent
+/// (Step 7.B); we additionally cap the text length so a future
+/// LLM-enriched voice cannot blow the prompt budget.
+fn self_voice_section(state: &VivlingState) -> Option<String> {
+    let voice = state.self_voice.as_ref()?;
+    let text = voice.text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let language = if voice.language.trim().is_empty() {
+        "(unset)".to_string()
+    } else {
+        voice.language.trim().to_string()
+    };
+    let bounded_text = truncate_summary(text, SELF_VOICE_TEXT_MAX);
+    Some(format!(
+        "Self voice ({language}, sources {count}):\n{bounded_text}",
+        count = voice.source_capsules_count,
+    ))
+}
+
+/// Memory V2 Step 9.A — bring in the skills sidecar produced by
+/// Step 8.B. Caps at five entries, sorted by confidence (desc) then
+/// by name (asc) for determinism. Each field is bounded so the
+/// section's contribution to the prompt budget stays predictable
+/// regardless of sidecar size. Skills whose name is empty after
+/// trim are skipped — they cannot give the brain a usable handle.
+fn skill_library_section(skills: &[codex_vivling_core::model::VivlingSkill]) -> Option<String> {
+    if skills.is_empty() {
+        return None;
+    }
+    let mut ordered: Vec<&codex_vivling_core::model::VivlingSkill> = skills
+        .iter()
+        .filter(|skill| !skill.name.trim().is_empty())
+        .collect();
+    if ordered.is_empty() {
+        return None;
+    }
+    ordered.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    let mut lines = vec!["Skill library:".to_string()];
+    for skill in ordered.into_iter().take(SKILL_LIBRARY_LIMIT) {
+        let name = truncate_summary(skill.name.trim(), SKILL_NAME_MAX);
+        let bounded_triggers: Vec<String> = skill
+            .trigger_keywords
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .take(SKILL_TRIGGERS_LIMIT)
+            .map(|t| truncate_summary(t, SKILL_TRIGGER_MAX))
+            .collect();
+        let triggers = if bounded_triggers.is_empty() {
+            "(none)".to_string()
+        } else {
+            bounded_triggers.join(", ")
+        };
+        let mut entry = format!(
+            "- {name} [triggers: {triggers} | conf {conf:.2} | runs {ok}/{ko}]",
+            conf = skill.confidence,
+            ok = skill.success_count,
+            ko = skill.failure_count,
+        );
+        let description = skill.description.trim();
+        if !description.is_empty() {
+            entry.push_str(&format!(
+                "\n  desc: {}",
+                truncate_summary(description, SKILL_DESCRIPTION_MAX)
+            ));
+        }
+        let bounded_steps: Vec<String> = skill
+            .step_sequence
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .take(SKILL_STEPS_LIMIT)
+            .map(|s| truncate_summary(s, SKILL_STEP_MAX))
+            .collect();
+        if !bounded_steps.is_empty() {
+            entry.push_str(&format!("\n  steps: {}", bounded_steps.join(" → ")));
+        }
+        lines.push(entry);
+    }
+    Some(lines.join("\n"))
+}
+
 fn language_contract_section(state: &VivlingState) -> String {
     let system_lang = std::env::var("LANG").ok();
     let effective = state
@@ -376,6 +490,7 @@ mod tests {
             "review blocker",
             None,
             None,
+            &[],
         )
         .expect("prompt");
         assert!(prompt.contains("Live state (now):"));
@@ -396,8 +511,15 @@ mod tests {
             cwd: Some("/workspace/codex-vl".to_string()),
             ..Default::default()
         };
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", Some(&live), None)
-            .expect("prompt");
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Chat,
+            "ciao",
+            Some(&live),
+            None,
+            &[],
+        )
+        .expect("prompt");
         assert!(prompt.contains("- run state: Working"));
         assert!(prompt.contains("- active agent: worker"));
         assert!(prompt.contains("- task progress: 12% (3/25)"));
@@ -426,8 +548,15 @@ mod tests {
             created_at: now,
         });
 
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None, None)
-            .expect("prompt");
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "next step",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
         // The volatile live capsule must not pretend to be observed work.
         assert!(!prompt.contains("- live_context ["));
         assert!(prompt.contains("- turn [builder]: shipped a small fix"));
@@ -436,15 +565,29 @@ mod tests {
     #[test]
     fn stale_signals_section_appears_only_with_history() {
         let state = adult_state_with_profile();
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Assist, "next step", None, None)
-            .expect("prompt");
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "next step",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
         assert!(!prompt.contains("Stale signals"));
 
         let mut noisy = adult_state_with_profile();
         noisy.loop_runtime_blocks = 3;
         noisy.loop_blocked_review = 2;
-        let prompt = compose_brain_prompt(&noisy, BrainPromptKind::Assist, "next step", None, None)
-            .expect("prompt");
+        let prompt = compose_brain_prompt(
+            &noisy,
+            BrainPromptKind::Assist,
+            "next step",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
         assert!(prompt.contains("Stale signals (history, not proof of current state):"));
         assert!(prompt.contains("loop_runtime_blocks: 3"));
         assert!(prompt.contains("loop_blocked_review: 2"));
@@ -468,6 +611,7 @@ mod tests {
             "check the PR queue",
             Some(&live),
             None,
+            &[],
         )
         .expect("prompt");
         assert!(prompt.contains("Loop:\n- label: babysit-pr"));
@@ -481,7 +625,7 @@ mod tests {
     fn assist_requires_adult_brain() {
         let mut state = adult_state_with_profile();
         state.level = 30;
-        let err = compose_brain_prompt(&state, BrainPromptKind::Assist, "task", None, None)
+        let err = compose_brain_prompt(&state, BrainPromptKind::Assist, "task", None, None, &[])
             .expect_err("must error");
         assert!(err.contains("level 60"));
     }
@@ -491,7 +635,7 @@ mod tests {
         let mut state = adult_state_with_profile();
         state.level = 30;
         state.brain_enabled = false;
-        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", None, None)
+        let prompt = compose_brain_prompt(&state, BrainPromptKind::Chat, "ciao", None, None, &[])
             .expect("chat prompt should be allowed without adult brain");
         assert!(prompt.contains("User message:\nciao"));
     }
@@ -526,9 +670,327 @@ mod tests {
             "blocco build",
             None,
             Some(&msa),
+            &[],
         )
         .expect("prompt");
         assert!(prompt.contains("Relevant memory:"));
         assert!(prompt.contains("blocco review build"));
+    }
+
+    // --- Step 9.A: self_voice + skill library prompt sections ---
+
+    use codex_vivling_core::model::VivlingSkill;
+    use codex_vivling_core::model::VivlingVoice;
+
+    #[test]
+    fn prompt_includes_self_voice_when_present() {
+        let mut state = adult_state_with_profile();
+        state.self_voice = Some(VivlingVoice {
+            text: "Io sono Aelia. Lavoro su pipeline.".to_string(),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 3,
+            version: 1,
+        });
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Self voice (it, sources 3):"));
+        assert!(prompt.contains("Io sono Aelia. Lavoro su pipeline."));
+    }
+
+    #[test]
+    fn prompt_omits_self_voice_section_when_absent_or_empty() {
+        let state = adult_state_with_profile();
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Self voice"));
+
+        let mut empty_voice = adult_state_with_profile();
+        empty_voice.self_voice = Some(VivlingVoice {
+            text: "   ".to_string(),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 0,
+            version: 1,
+        });
+        let prompt = compose_brain_prompt(
+            &empty_voice,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Self voice"));
+    }
+
+    #[test]
+    fn prompt_includes_skill_library_when_skills_non_empty() {
+        let state = adult_state_with_profile();
+        let skills = vec![
+            VivlingSkill {
+                name: "refactor-pipeline".to_string(),
+                description: "verify before commit".to_string(),
+                trigger_keywords: vec!["refactor".to_string(), "pipeline".to_string()],
+                step_sequence: Vec::new(),
+                success_count: 3,
+                failure_count: 0,
+                last_used_at: None,
+                confidence: 0.75,
+                version: 1,
+                abstracted_from_capsules: vec!["refactor".to_string()],
+                superseded_by: None,
+            },
+            VivlingSkill {
+                name: "loop-tick".to_string(),
+                description: "check ci".to_string(),
+                trigger_keywords: vec!["loop".to_string(), "tick".to_string()],
+                step_sequence: Vec::new(),
+                success_count: 2,
+                failure_count: 1,
+                last_used_at: None,
+                confidence: 0.4,
+                version: 1,
+                abstracted_from_capsules: vec!["loop".to_string()],
+                superseded_by: None,
+            },
+        ];
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &skills,
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Skill library:"));
+        // confidence-desc ordering: refactor-pipeline (0.75) precede loop-tick (0.4)
+        let refactor_pos = prompt.find("- refactor-pipeline").expect("refactor entry");
+        let loop_pos = prompt.find("- loop-tick").expect("loop entry");
+        assert!(refactor_pos < loop_pos);
+        assert!(prompt.contains("triggers: refactor, pipeline"));
+        assert!(prompt.contains("runs 3/0"));
+        assert!(prompt.contains("desc: verify before commit"));
+    }
+
+    #[test]
+    fn prompt_caps_skill_library_at_five_entries() {
+        let state = adult_state_with_profile();
+        let mut skills: Vec<VivlingSkill> = Vec::new();
+        for i in 0..8 {
+            skills.push(VivlingSkill {
+                name: format!("skill-{i}"),
+                description: format!("desc {i}"),
+                trigger_keywords: vec![format!("tag{i}")],
+                step_sequence: Vec::new(),
+                success_count: 1,
+                failure_count: 0,
+                last_used_at: None,
+                confidence: 0.9 - (i as f32) * 0.05,
+                version: 1,
+                abstracted_from_capsules: vec![format!("cap-{i}")],
+                superseded_by: None,
+            });
+        }
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &skills,
+        )
+        .expect("prompt");
+        let entries = prompt.matches("- skill-").count();
+        assert_eq!(entries, 5, "skill library must cap at five");
+        // Top-confidence entries (0..4) must appear; lower (5..7) excluded.
+        assert!(prompt.contains("- skill-0"));
+        assert!(!prompt.contains("- skill-5"));
+    }
+
+    #[test]
+    fn prompt_truncates_self_voice_text() {
+        let mut state = adult_state_with_profile();
+        // Build a > 1000-char voice body; the prompt must NOT carry
+        // the tail past SELF_VOICE_TEXT_MAX.
+        let long = "Io sono Aelia e parlo molto a lungo. ".repeat(60);
+        let tail_marker = "TAIL-AAAAAAAAAAAAAAAAAAAAAAAAA";
+        state.self_voice = Some(VivlingVoice {
+            text: format!("{long}{tail_marker}"),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 1,
+            version: 1,
+        });
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Self voice (it"));
+        assert!(
+            !prompt.contains(tail_marker),
+            "voice tail past cap leaked into prompt"
+        );
+    }
+
+    #[test]
+    fn prompt_bounds_skill_library_fields() {
+        let state = adult_state_with_profile();
+        let long_name = "x".repeat(200);
+        let long_desc = "description ".repeat(40);
+        let long_trigger = "y".repeat(100);
+        let long_step = "step ".repeat(40);
+        let too_many_triggers: Vec<String> = (0..10).map(|i| format!("trig-{i}")).collect();
+        let too_many_steps: Vec<String> = (0..8).map(|i| format!("step-{i}")).collect();
+        let mut combined_triggers = too_many_triggers.clone();
+        combined_triggers.push(long_trigger.clone());
+        let mut combined_steps = too_many_steps.clone();
+        combined_steps.push(long_step.clone());
+        let skills = vec![VivlingSkill {
+            name: long_name.clone(),
+            description: long_desc.clone(),
+            trigger_keywords: combined_triggers,
+            step_sequence: combined_steps,
+            success_count: 0,
+            failure_count: 0,
+            last_used_at: None,
+            confidence: 0.7,
+            version: 1,
+            abstracted_from_capsules: vec!["cap".to_string()],
+            superseded_by: None,
+        }];
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &skills,
+        )
+        .expect("prompt");
+        // Name must be capped — original 200-char string never lands in full.
+        assert!(!prompt.contains(&long_name));
+        // Description must be capped — original 480-char body never lands in full.
+        assert!(!prompt.contains(&long_desc));
+        // Triggers list is capped to SKILL_TRIGGERS_LIMIT (= 6): the
+        // 7th original trigger and any later one (incl. long_trigger)
+        // must NOT appear.
+        assert!(prompt.contains("trig-0"));
+        assert!(prompt.contains("trig-5"));
+        assert!(!prompt.contains("trig-6"));
+        assert!(!prompt.contains(&long_trigger));
+        // Same for steps (cap SKILL_STEPS_LIMIT = 4).
+        assert!(prompt.contains("step-0"));
+        assert!(prompt.contains("step-3"));
+        assert!(!prompt.contains("step-4"));
+        assert!(!prompt.contains(&long_step));
+    }
+
+    #[test]
+    fn prompt_skips_empty_skill_names() {
+        let state = adult_state_with_profile();
+        let skills = vec![
+            VivlingSkill {
+                name: "   ".to_string(),
+                description: "would-be-ghost".to_string(),
+                trigger_keywords: vec!["x".to_string()],
+                step_sequence: Vec::new(),
+                success_count: 1,
+                failure_count: 0,
+                last_used_at: None,
+                confidence: 0.9,
+                version: 1,
+                abstracted_from_capsules: vec!["cap".to_string()],
+                superseded_by: None,
+            },
+            VivlingSkill {
+                name: "loop-tick".to_string(),
+                description: "check ci".to_string(),
+                trigger_keywords: vec!["loop".to_string()],
+                step_sequence: Vec::new(),
+                success_count: 1,
+                failure_count: 0,
+                last_used_at: None,
+                confidence: 0.4,
+                version: 1,
+                abstracted_from_capsules: vec!["cap".to_string()],
+                superseded_by: None,
+            },
+        ];
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &skills,
+        )
+        .expect("prompt");
+        assert!(prompt.contains("- loop-tick"));
+        assert!(
+            !prompt.contains("would-be-ghost"),
+            "anonymous skill must be skipped, not emitted"
+        );
+
+        // All-empty list → whole section omitted.
+        let only_empty = vec![VivlingSkill {
+            name: "  ".to_string(),
+            description: "x".to_string(),
+            trigger_keywords: Vec::new(),
+            step_sequence: Vec::new(),
+            success_count: 0,
+            failure_count: 0,
+            last_used_at: None,
+            confidence: 0.5,
+            version: 1,
+            abstracted_from_capsules: Vec::new(),
+            superseded_by: None,
+        }];
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &only_empty,
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Skill library:"));
+    }
+
+    #[test]
+    fn prompt_omits_skill_library_section_when_skills_empty() {
+        let state = adult_state_with_profile();
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Skill library:"));
     }
 }
