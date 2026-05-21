@@ -89,6 +89,9 @@ pub(crate) fn compose_brain_prompt(
     if let Some(section) = self_voice_section(state) {
         sections.push(section);
     }
+    if let Some(section) = lineage_inheritance_section(state) {
+        sections.push(section);
+    }
     if let Some(section) = skill_library_section(skills) {
         sections.push(section);
     }
@@ -345,6 +348,9 @@ const SKILL_TRIGGERS_LIMIT: usize = 6;
 const SKILL_STEP_MAX: usize = 96;
 const SKILL_STEPS_LIMIT: usize = 4;
 const SKILL_LIBRARY_LIMIT: usize = 5;
+const LINEAGE_VOICE_FRAGMENT_MAX: usize = 240;
+const LINEAGE_PROFILE_MAX: usize = 80;
+const LINEAGE_INHERITED_SKILLS_LIMIT: usize = 3;
 
 /// Memory V2 Step 9.A — surface the planner-written `self_voice` to
 /// the brain prompt. Body is already redacted by the memory agent
@@ -432,6 +438,81 @@ fn skill_library_section(skills: &[codex_vivling_core::model::VivlingSkill]) -> 
             entry.push_str(&format!("\n  steps: {}", bounded_steps.join(" → ")));
         }
         lines.push(entry);
+    }
+    Some(lines.join("\n"))
+}
+
+/// Memory V2 Step 10.B — Axis D lineage inheritance.
+///
+/// Surfaces the parent's identity seed the child carries from
+/// `create_spawned_offspring` (Step 10.A). The section is bounded,
+/// optional, and never duplicates Step 9.A's `Self voice:` or
+/// `Skill library:` content — those describe the *child's own* state,
+/// this one describes what the child *inherited but has not yet
+/// claimed as its own*.
+///
+/// Returns `None` when no signal would land in the prompt: no seed
+/// at all, or a seed whose every field is empty/default. This keeps
+/// child Vivlings without a meaningful lineage byte-identical to the
+/// pre-Step-10.B prompt.
+fn lineage_inheritance_section(state: &VivlingState) -> Option<String> {
+    let seed = state.lineage_inheritance.as_ref()?;
+
+    let voice_fragment = seed
+        .voice_fragment
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate_summary(s, LINEAGE_VOICE_FRAGMENT_MAX));
+
+    let suggested_profile = seed
+        .suggested_brain_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate_summary(s, LINEAGE_PROFILE_MAX));
+
+    let caution = seed.preference_seed.caution_bias_seed;
+    let verification = seed.preference_seed.verification_bias_seed;
+    let archetype = seed.preference_seed.preferred_archetype;
+    let archetype_default = archetype == codex_vivling_core::model::WorkArchetype::default();
+    let preference_signal = caution > 0 || verification > 0 || !archetype_default;
+
+    let inherited_skill_names: Vec<String> = seed
+        .skills
+        .iter()
+        .map(|skill| skill.name.trim())
+        .filter(|name| !name.is_empty())
+        .take(LINEAGE_INHERITED_SKILLS_LIMIT)
+        .map(|name| truncate_summary(name, SKILL_NAME_MAX))
+        .collect();
+
+    if voice_fragment.is_none()
+        && suggested_profile.is_none()
+        && !preference_signal
+        && inherited_skill_names.is_empty()
+    {
+        return None;
+    }
+
+    let mut lines = vec!["Lineage inheritance:".to_string()];
+    if let Some(fragment) = voice_fragment {
+        lines.push(format!("- voice fragment: {fragment}"));
+    }
+    if let Some(profile) = suggested_profile {
+        lines.push(format!("- suggested brain profile: {profile}"));
+    }
+    if preference_signal {
+        lines.push(format!(
+            "- preference seed: caution {caution}, verification {verification}, archetype {label}",
+            label = archetype.label(),
+        ));
+    }
+    if !inherited_skill_names.is_empty() {
+        lines.push(format!(
+            "- inherited skills: {}",
+            inherited_skill_names.join(", ")
+        ));
     }
     Some(lines.join("\n"))
 }
@@ -977,6 +1058,148 @@ mod tests {
         )
         .expect("prompt");
         assert!(!prompt.contains("Skill library:"));
+    }
+
+    // --- Step 10.B: lineage_inheritance_section tests ---
+
+    use codex_vivling_core::model::LineageInheritance;
+    use codex_vivling_core::model::VivlingPreferenceSeed;
+
+    #[test]
+    fn prompt_includes_lineage_inheritance_when_seed_present() {
+        let mut state = adult_state_with_profile();
+        state.lineage_inheritance = Some(LineageInheritance {
+            voice_fragment: Some("Sono Aelia. Verifico prima di committare.".to_string()),
+            skills: Vec::new(),
+            preference_seed: VivlingPreferenceSeed {
+                caution_bias_seed: 11,
+                verification_bias_seed: 18,
+                preferred_archetype: WorkArchetype::Builder,
+            },
+            suggested_brain_profile: Some("vivling-spark".to_string()),
+        });
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Lineage inheritance:"));
+        assert!(prompt.contains("- voice fragment: Sono Aelia. Verifico prima di committare."));
+        assert!(prompt.contains("- suggested brain profile: vivling-spark"));
+        assert!(prompt.contains("- preference seed: caution 11, verification 18, archetype"));
+    }
+
+    #[test]
+    fn prompt_omits_lineage_inheritance_when_absent_or_empty() {
+        let mut state = adult_state_with_profile();
+        // None → omit
+        state.lineage_inheritance = None;
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Lineage inheritance:"));
+
+        // Some(Default::default()) → omit (no signal anywhere)
+        state.lineage_inheritance = Some(LineageInheritance::default());
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Lineage inheritance:"));
+
+        // Some with only whitespace voice_fragment → omit
+        state.lineage_inheritance = Some(LineageInheritance {
+            voice_fragment: Some("   \n  ".to_string()),
+            skills: Vec::new(),
+            preference_seed: VivlingPreferenceSeed::default(),
+            suggested_brain_profile: Some("   ".to_string()),
+        });
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(!prompt.contains("Lineage inheritance:"));
+    }
+
+    #[test]
+    fn prompt_bounds_lineage_inheritance_fields() {
+        let mut state = adult_state_with_profile();
+        let huge_voice = "x".repeat(600);
+        let huge_profile = "y".repeat(300);
+        let mut huge_skills: Vec<codex_vivling_core::model::VivlingSkill> = (0..8)
+            .map(|i| codex_vivling_core::model::VivlingSkill {
+                name: format!("inh-skill-{i}"),
+                description: "ignored".to_string(),
+                trigger_keywords: Vec::new(),
+                step_sequence: Vec::new(),
+                success_count: 0,
+                failure_count: 0,
+                last_used_at: None,
+                confidence: 0.5,
+                version: 1,
+                abstracted_from_capsules: Vec::new(),
+                superseded_by: None,
+            })
+            .collect();
+        huge_skills.push(codex_vivling_core::model::VivlingSkill {
+            name: "z".repeat(200),
+            description: String::new(),
+            trigger_keywords: Vec::new(),
+            step_sequence: Vec::new(),
+            success_count: 0,
+            failure_count: 0,
+            last_used_at: None,
+            confidence: 0.4,
+            version: 1,
+            abstracted_from_capsules: Vec::new(),
+            superseded_by: None,
+        });
+        state.lineage_inheritance = Some(LineageInheritance {
+            voice_fragment: Some(huge_voice.clone()),
+            skills: huge_skills,
+            preference_seed: VivlingPreferenceSeed::default(),
+            suggested_brain_profile: Some(huge_profile.clone()),
+        });
+        let prompt = compose_brain_prompt(
+            &state,
+            BrainPromptKind::Assist,
+            "review blocker",
+            None,
+            None,
+            &[],
+        )
+        .expect("prompt");
+        assert!(prompt.contains("Lineage inheritance:"));
+        // The 600-char voice / 300-char profile / 200-char skill name
+        // must not land in full.
+        assert!(!prompt.contains(&huge_voice));
+        assert!(!prompt.contains(&huge_profile));
+        assert!(!prompt.contains(&"z".repeat(200)));
+        // Skills capped to LINEAGE_INHERITED_SKILLS_LIMIT (= 3).
+        assert!(prompt.contains("inh-skill-0"));
+        assert!(prompt.contains("inh-skill-1"));
+        assert!(prompt.contains("inh-skill-2"));
+        assert!(!prompt.contains("inh-skill-3"));
     }
 
     #[test]
