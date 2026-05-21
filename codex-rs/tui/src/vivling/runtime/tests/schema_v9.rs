@@ -14,8 +14,12 @@ use codex_vivling_core::model::VERSION as CURRENT_STATE_VERSION;
 use codex_vivling_core::model::VivlingLanguageMode;
 
 #[test]
-fn new_state_uses_version_9() {
-    assert_eq!(CURRENT_STATE_VERSION, 9);
+fn new_state_uses_current_schema_version() {
+    // Memory V2 Step 12.B.A bumped the schema to 10. Step 2.A's earlier
+    // pin of `CURRENT_STATE_VERSION == 9` is now obsolete; this test
+    // just pins that newly-spawned Vivlings stamp whatever the current
+    // schema version is. The exact value is checked from
+    // `schema_v10::current_schema_version_is_10`.
     let state = seeded_state();
     assert_eq!(state.version, CURRENT_STATE_VERSION);
 }

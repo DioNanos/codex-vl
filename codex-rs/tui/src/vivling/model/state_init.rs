@@ -123,6 +123,20 @@ impl VivlingState {
             recent_bias: codex_vivling_core::model::BiasCounters::default(),
             cached_crt_phrase: None,
             cached_proactive: None,
+            // Memory V2 Step 12.B.A: V10 scaffolding defaults.
+            crt_brain_mode: codex_vivling_core::model::VivlingExpressionMode::default(),
+            daily_llm_call_count: 0,
+            daily_llm_chat_calls: 0,
+            daily_llm_assist_calls: 0,
+            daily_llm_loop_tick_calls: 0,
+            daily_llm_expression_calls: 0,
+            daily_llm_failure_count: 0,
+            daily_llm_throttle_skips: 0,
+            daily_llm_dedup_skips: 0,
+            daily_llm_budget_skips: 0,
+            daily_llm_optout_skips: 0,
+            daily_llm_day_key: String::new(),
+            last_llm_dispatch_at: None,
         };
         state.normalize_unlocked_species();
         state.recompute_level();

@@ -231,6 +231,75 @@ pub(crate) struct VivlingState {
     #[serde(skip)]
     #[allow(dead_code)]
     pub(crate) cached_proactive: Option<codex_vivling_core::model::CachedProactive>,
+
+    // --- Memory V2 Step 12.B.A: V10 scaffolding ---
+    //
+    // Tri-state opt-in for the CRT/proactive expression channel.
+    // Decoupled from `brain_enabled`: `brain_enabled` gates assist /
+    // loop-tick LLM, this gates the always-on expression surface.
+    // Default = stage-driven (Adult/Juvenile run, Baby on rare events).
+    /// Memory V2 Step 12.B.A — expression LLM opt-in mode.
+    #[serde(default)]
+    pub(crate) crt_brain_mode: codex_vivling_core::model::VivlingExpressionMode,
+
+    // Step 12.B.A — daily LLM call budget counters. Reservation
+    // happens in main-thread `try_reserve_llm_call` (Step 12.B.B); the
+    // increments persist here so a crash/restart cannot let the
+    // Vivling spend past its daily cap. `day_key` is `YYYY-MM-DD` in
+    // UTC; the counters reset the first time a reservation is
+    // attempted on a different day.
+    /// Step 12.B.A — total LLM calls reserved today (Chat + Assist +
+    /// LoopTick + Expression). Increment is unconditional once the
+    /// reservation passes guards; failure counts via
+    /// `daily_llm_failure_count`.
+    #[serde(default)]
+    pub(crate) daily_llm_call_count: u32,
+    /// Step 12.B.A — `Chat` kind breakdown.
+    #[serde(default)]
+    pub(crate) daily_llm_chat_calls: u32,
+    /// Step 12.B.A — `Assist` kind breakdown.
+    #[serde(default)]
+    pub(crate) daily_llm_assist_calls: u32,
+    /// Step 12.B.A — `LoopTick` kind breakdown. Tracked separately so
+    /// loop owners' LLM consumption stays observable.
+    #[serde(default)]
+    pub(crate) daily_llm_loop_tick_calls: u32,
+    /// Step 12.B.A — `Expression` kind breakdown.
+    #[serde(default)]
+    pub(crate) daily_llm_expression_calls: u32,
+    /// Step 12.B.A — count of reservations where the post-dispatch
+    /// result returned an error / invalid JSON / empty payload.
+    /// Does not subtract from `daily_llm_call_count` (reservation
+    /// already paid for the slot).
+    #[serde(default)]
+    pub(crate) daily_llm_failure_count: u32,
+    /// Step 12.B.A — reservation rejected because we are within the
+    /// 60s throttle window from `last_llm_dispatch_at`.
+    #[serde(default)]
+    pub(crate) daily_llm_throttle_skips: u32,
+    /// Step 12.B.A — reservation rejected because the planner's
+    /// prompt hash matches the cached entry's hash (no new signal).
+    #[serde(default)]
+    pub(crate) daily_llm_dedup_skips: u32,
+    /// Step 12.B.A — reservation rejected because the daily budget
+    /// for this Vivling's stage was already reached.
+    #[serde(default)]
+    pub(crate) daily_llm_budget_skips: u32,
+    /// Step 12.B.A — reservation rejected because the Vivling's
+    /// `crt_brain_mode` is `Off` (only counted for `Expression` kind;
+    /// `/vl` chat is governed by stage policy, not by `crt_brain_mode`).
+    #[serde(default)]
+    pub(crate) daily_llm_optout_skips: u32,
+    /// Step 12.B.A — UTC day boundary key (`YYYY-MM-DD`). Counters
+    /// reset the first time `try_reserve_llm_call` runs on a fresh
+    /// day. Empty string at V9→V10 migration; gets populated on the
+    /// next reservation attempt.
+    #[serde(default)]
+    pub(crate) daily_llm_day_key: String,
+    /// Step 12.B.A — timestamp of the last successful reservation,
+    /// used by the 60s throttle. None at migration time.
+    #[serde(default)]
+    pub(crate) last_llm_dispatch_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Clone)]

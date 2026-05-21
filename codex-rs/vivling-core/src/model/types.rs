@@ -278,6 +278,30 @@ impl Default for VivlingLanguageMode {
     }
 }
 
+/// Memory V2 Step 12.B.A — tri-state opt-in for the *expression* LLM
+/// channel (CRT live phrase + proactive footer). Decoupled from
+/// `brain_enabled` on purpose: `brain_enabled` gates `/vivling assist`
+/// and loop-tick LLM ownership, this gates only the always-on
+/// "Vivling speaks" surface.
+///
+/// `Default` is stage-driven: Adult/Juvenile run normally, Baby fires
+/// only on rare events (e.g. `turn_complete`). `On` forces the channel
+/// on regardless of stage; `Off` mutes it entirely for this Vivling.
+/// Persisted as part of the V10 schema.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VivlingExpressionMode {
+    Default,
+    On,
+    Off,
+}
+
+impl Default for VivlingExpressionMode {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
 /// Detected/override language state for the Vivling. Memory agent will
 /// refresh `detected_language` from the rolling `recent_samples` window;
 /// `language_override` is set explicitly by `/vivling language <code>`.

@@ -21,10 +21,11 @@ fn fresh_state_has_default_bond_20() {
 fn version_is_current_after_init() {
     let state = seeded_state();
     assert_eq!(state.version, VERSION);
-    // Memory V2 Step 2.A bumped the schema to 9. The exact value is also
-    // pinned by `schema_v9::new_state_uses_version_9`; this assertion
-    // stays here so the bond-suite catches an out-of-band schema bump.
-    assert_eq!(VERSION, 9);
+    // Memory V2 Step 12.B.A bumped the schema to 10. The exact value
+    // is also pinned by `schema_v10::new_state_uses_version_10`; this
+    // assertion stays here so the bond-suite catches an out-of-band
+    // schema bump.
+    assert_eq!(VERSION, 10);
 }
 
 #[test]

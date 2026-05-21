@@ -1,9 +1,15 @@
-/// State schema version. Bumped to 9 in Memory V2 Step 2.A; the only
-/// observable difference vs version 8 is the presence of new
-/// `#[serde(default)]` fields on `VivlingState` (and the matching pure
-/// data types in `codex_vivling_core::model`). V8 JSON loads unchanged
-/// into a V9 binary because every new field has an explicit default.
-pub const VERSION: u32 = 9;
+/// State schema version. Bumped to 10 in Memory V2 Step 12.B.A; the
+/// only observable difference vs version 9 is the presence of new
+/// `#[serde(default)]` fields on `VivlingState`:
+///   - `crt_brain_mode: VivlingExpressionMode` (tri-state Default/On/Off)
+///   - `daily_llm_*` counters + `daily_llm_day_key`
+///   - `last_llm_dispatch_at`
+/// V9 (and transitively V8) JSON loads unchanged into a V10 binary
+/// because every new field has an explicit default. The save path
+/// (Step 1.C/2.B) records a one-shot `.v9.bak` snapshot the first time
+/// a V9 file is rewritten as V10, mirroring the V8→V9 pre-migration
+/// backup contract.
+pub const VERSION: u32 = 10;
 pub const MAX_LEVEL: u64 = 99;
 pub const JUVENILE_LEVEL: u64 = 30;
 pub const ADULT_LEVEL: u64 = 60;
