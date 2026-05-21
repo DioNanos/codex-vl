@@ -15,6 +15,7 @@ pub(crate) use model::Stage;
 pub(crate) use model::VivlingLoopEvent;
 pub(crate) use model::VivlingLoopEventKind;
 pub(crate) use model::VivlingLoopEventSource;
+pub(crate) use runtime::BrainTarget;
 pub(crate) use runtime::Vivling;
 pub(crate) use runtime::VivlingAction;
 pub(crate) use runtime::VivlingAssistRequest;

@@ -1,6 +1,7 @@
 use super::super::model::VivlingWorkMemoryEntry;
 use super::brain_context::BrainPromptKind;
 use super::brain_context::compose_brain_prompt;
+use super::request::brain_target_from_profile;
 use super::*;
 
 impl Vivling {
@@ -10,7 +11,7 @@ impl Vivling {
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
         let live_snapshot = self.live_context.borrow().clone();
-        let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
+        let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
@@ -21,9 +22,11 @@ impl Vivling {
                 live_snapshot.as_ref(),
                 self.msa.as_deref(),
             )?;
-            let brain_profile = state.brain_profile.clone().ok_or_else(|| {
-                "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
-            })?;
+            // Memory V2 §8.1 (P0.2): inheritance rule. Absence of an
+            // explicit profile means SessionDefault, not an error and
+            // not a synthetic profile. `brain_enabled` stays a feature
+            // gate and is still enforced by `compose_brain_prompt`.
+            let brain_target = brain_target_from_profile(state.brain_profile.as_deref());
             // codex-vl bond: only credit Assist after pre-dispatch validation
             // succeeds, so a failed precondition does not mutate bond state.
             state
@@ -32,7 +35,7 @@ impl Vivling {
             (
                 state.vivling_id.clone(),
                 state.name.clone(),
-                brain_profile,
+                brain_target,
                 prompt_context,
                 task.trim().to_string(),
             )
@@ -41,7 +44,7 @@ impl Vivling {
         Ok(VivlingAssistRequest {
             vivling_id,
             vivling_name,
-            brain_profile,
+            brain_target,
             kind: VivlingBrainRequestKind::Assist,
             task,
             prompt_context,
@@ -54,7 +57,7 @@ impl Vivling {
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
         let live_snapshot = self.live_context.borrow().clone();
-        let (vivling_id, vivling_name, brain_profile, prompt_context, task) = {
+        let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
             let state = self.state.as_mut().expect("state checked");
             let now = Utc::now();
             state.apply_decay(now);
@@ -65,9 +68,8 @@ impl Vivling {
                 live_snapshot.as_ref(),
                 self.msa.as_deref(),
             )?;
-            let brain_profile = state.brain_profile.clone().ok_or_else(|| {
-                "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
-            })?;
+            // Memory V2 §8.1 (P0.2): same inheritance rule as Assist.
+            let brain_target = brain_target_from_profile(state.brain_profile.as_deref());
             // codex-vl bond: only credit Chat after pre-dispatch validation
             // succeeds, so a failed precondition does not mutate bond state.
             state
@@ -76,7 +78,7 @@ impl Vivling {
             (
                 state.vivling_id.clone(),
                 state.name.clone(),
-                brain_profile,
+                brain_target,
                 prompt_context,
                 text.trim().to_string(),
             )
@@ -85,7 +87,7 @@ impl Vivling {
         Ok(VivlingAssistRequest {
             vivling_id,
             vivling_name,
-            brain_profile,
+            brain_target,
             kind: VivlingBrainRequestKind::Chat,
             task,
             prompt_context,
@@ -102,9 +104,9 @@ impl Vivling {
         if !state.brain_enabled {
             return Err("Enable the Vivling brain first with `/vivling brain on`.".to_string());
         }
-        if state.brain_profile.is_none() {
-            return Err("Set a Vivling brain profile first with `/vivling model ...`.".to_string());
-        }
+        // Memory V2 §8.1 (P0.2): a missing `brain_profile` no longer
+        // blocks loop ownership. The dispatcher will fall back to
+        // SessionDefault and read `config.model` at run time.
         Ok((state.vivling_id.clone(), state.name.clone()))
     }
 
@@ -126,12 +128,9 @@ impl Vivling {
                 state.name
             ));
         }
-        let brain_profile = state.brain_profile.clone().ok_or_else(|| {
-            format!(
-                "Vivling owner `{}` has no brain profile configured.",
-                state.name
-            )
-        })?;
+        // Memory V2 §8.1 (P0.2): inheritance rule. SessionDefault when
+        // no profile is pinned; the dispatcher resolves to `config.model`.
+        let brain_target = brain_target_from_profile(state.brain_profile.as_deref());
         let goal = job
             .goal_text
             .as_deref()
@@ -154,7 +153,7 @@ impl Vivling {
         Ok(VivlingLoopTickRequest {
             vivling_id: state.vivling_id.clone(),
             vivling_name: state.name.clone(),
-            brain_profile,
+            brain_target,
             loop_label: job.label.clone(),
             loop_goal: goal,
             prompt_text: job.prompt_text.clone(),

@@ -100,24 +100,31 @@ fn vivling_assist_dispatch_records_bond_assist() {
 }
 
 #[test]
-fn vivling_assist_failure_without_brain_profile_does_not_record_bond() {
-    // /vivling assist on an Adult Vivling WITHOUT brain profile must fail in
-    // prepare_assist_request after compose_brain_prompt but at the brain_profile
-    // check. The fix moves record_interaction AFTER all validation so bond
-    // state must stay unchanged on failure.
+fn vivling_assist_failure_with_brain_disabled_does_not_record_bond() {
+    // V2 §8.1 (P0.2): the bond-on-failure invariant must hold for
+    // *any* prepare-time validation failure, not just the (now
+    // removed) missing-profile guard. With Memory V2 the missing
+    // brain_profile path actually succeeds via SessionDefault, so we
+    // exercise the invariant against the still-blocking guard:
+    // `brain_enabled = false` makes compose_brain_prompt error out
+    // for Assist before the bond credit lands.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
     let _ = vivling
         .command(VivlingAction::PromoteAdult, temp.path())
         .expect("promote adult");
-    // No assign_brain_profile — assist will fail.
+    // brain stays disabled — assist must fail.
+    assert!(!vivling.state.as_ref().expect("state").brain_enabled);
     let before = vivling.state.as_ref().expect("state").bond.clone();
 
     let result = vivling.command(
         VivlingAction::Assist("review this blocker".to_string()),
         temp.path(),
     );
-    assert!(result.is_err(), "expected assist to fail without profile");
+    assert!(
+        result.is_err(),
+        "expected assist to fail with brain disabled"
+    );
 
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.value, before.value);

@@ -68,9 +68,12 @@ pub(crate) fn compose_brain_prompt(
     if matches!(kind, BrainPromptKind::Assist) && !state.brain_enabled {
         return Err("Enable the Vivling brain first with `/vivling brain on`.".to_string());
     }
-    let profile = state.brain_profile.as_deref().ok_or_else(|| {
-        "Set a Vivling brain profile first with `/vivling model ...`.".to_string()
-    })?;
+    // Memory V2 §8.1 (P0.2): the prompt's `profile` field is only a
+    // display label inside `identity_section`. When the Vivling has no
+    // explicit profile, surface the inheritance choice as
+    // "session-default" instead of erroring out — the dispatcher resolves
+    // the actual model via `BrainTarget::SessionDefault` downstream.
+    let profile = state.brain_profile.as_deref().unwrap_or("session-default");
     let payload = payload.trim();
     if payload.is_empty() {
         return Err(match kind {

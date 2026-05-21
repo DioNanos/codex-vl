@@ -44,15 +44,19 @@ impl Vivling {
                 state.lineage_role_label()
             ));
             lines.push(state.brain_summary());
-            let loop_owner_ready = if state.stage() == Stage::Adult
-                && state.brain_enabled
-                && state.brain_profile.is_some()
-            {
-                "loop-owner eligible: yes"
-            } else {
-                "loop-owner eligible: no"
-            };
-            lines.push(loop_owner_ready.to_string());
+            // Memory V2 §8.1 (P0.2): loop ownership readiness is gated
+            // on adult + brain enabled. Missing `brain_profile` no
+            // longer blocks readiness — the dispatcher falls back to
+            // SessionDefault. Mirror the runtime's `active_loop_owner_identity`.
+            let loop_owner_ready = state.stage() == Stage::Adult && state.brain_enabled;
+            lines.push(
+                if loop_owner_ready {
+                    "loop-owner eligible: yes"
+                } else {
+                    "loop-owner eligible: no"
+                }
+                .to_string(),
+            );
         }
 
         lines.join("\n")
@@ -121,9 +125,11 @@ impl Vivling {
             self.top_level_slot_usage().map_err(|err| err.to_string())?,
             EXTERNAL_SLOT_LIMIT
         );
-        let loop_owner_ready = snapshot.stage() == Stage::Adult
-            && snapshot.brain_enabled
-            && snapshot.brain_profile.is_some();
+        // Memory V2 §8.1 (P0.2): loop ownership readiness mirrors
+        // `active_loop_owner_identity` — adult + brain_enabled is
+        // sufficient. `brain_profile = None` resolves to
+        // `BrainTarget::SessionDefault` at dispatch time.
+        let loop_owner_ready = snapshot.stage() == Stage::Adult && snapshot.brain_enabled;
         status.push_str(if loop_owner_ready {
             " - loop owner ready"
         } else {

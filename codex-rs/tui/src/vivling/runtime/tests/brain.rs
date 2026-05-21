@@ -164,7 +164,11 @@ fn model_show_without_profile_explains_creation_when_no_profiles_exist() {
 }
 
 #[test]
-fn brain_on_without_profile_lists_configured_profiles() {
+fn brain_on_without_profile_enables_with_inheritance_note_and_profile_list() {
+    // V2 §8.1 (P0.2): `/vivling brain on` without a pinned profile now
+    // SUCCEEDS and surfaces a note that the brain inherits the
+    // session model. We still surface the configured profiles so the
+    // user can pin one with `/vivling model <profile>` if they want.
     let temp = TempDir::new().expect("tempdir");
     fs::write(
         temp.path().join(CONFIG_TOML_FILE),
@@ -193,15 +197,22 @@ model_provider = "lm-studio"
         other => panic!("unexpected outcome: {other:?}"),
     };
 
-    assert!(message.contains("Select a Vivling brain profile before enabling the brain."));
-    assert!(message.contains("Use `/vivling model <profile>`"));
+    assert!(vivling.state.as_ref().expect("state").brain_enabled);
+    assert!(
+        message.contains("inherit") || message.contains("session"),
+        "inheritance hint missing: {message}"
+    );
+    assert!(message.contains("/vivling model <profile>"));
     assert!(message.contains("- vivling-spark -> model gpt-5.3-codex-spark"));
     assert!(message.contains("- local-ollama -> model glm-5.1:cloud"));
-    assert!(!vivling.state.as_ref().expect("state").brain_enabled);
 }
 
 #[test]
-fn brain_on_without_profile_explains_creation_when_no_profiles_exist() {
+fn brain_on_without_profile_enables_even_when_no_profiles_exist() {
+    // V2 §8.1 (P0.2): missing-profile path must reach SessionDefault
+    // even on a fresh codex_home with zero profiles configured. The
+    // V1 hard block ("Create one with `/vivling model …`") would
+    // have made the inheritance path unreachable here.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
     let _ = vivling
@@ -216,9 +227,11 @@ fn brain_on_without_profile_explains_creation_when_no_profiles_exist() {
         other => panic!("unexpected outcome: {other:?}"),
     };
 
-    assert!(message.contains("Select a Vivling brain profile before enabling the brain."));
-    assert!(message.contains("Create one with `/vivling model <model> [provider] [effort]`."));
-    assert!(message.contains("No models are configured"));
+    assert!(vivling.state.as_ref().expect("state").brain_enabled);
+    assert!(
+        message.contains("inherit") || message.contains("session"),
+        "inheritance hint missing: {message}"
+    );
 }
 
 #[test]
@@ -287,12 +300,17 @@ fn chat_falls_back_to_direct_reply_without_ready_brain() {
 }
 
 #[test]
-fn adult_chat_without_brain_profile_is_explicit_local_fallback() {
+fn adult_chat_with_brain_disabled_is_explicit_local_fallback() {
+    // V2 §8.1 (P0.2): the only blockers for brain dispatch are
+    // adulthood and `brain_enabled`. A missing brain_profile is no
+    // longer a blocker — it just routes to BrainTarget::SessionDefault.
+    // Brain disabled still falls back to the local templated reply.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
     let _ = vivling
         .command(VivlingAction::PromoteAdult, temp.path())
         .expect("promote adult");
+    // brain stays disabled (default for a freshly hatched Vivling).
 
     let message = match vivling
         .command(
@@ -307,6 +325,69 @@ fn adult_chat_without_brain_profile_is_explicit_local_fallback() {
 
     assert!(message.starts_with("Local fallback: "), "{message}");
     assert!(!message.contains("brain is thinking"), "{message}");
+}
+
+#[test]
+fn adult_chat_with_brain_enabled_and_no_profile_dispatches_session_default() {
+    // V2 §8.1 (P0.2) inheritance reachability check: the user enabled
+    // the brain but never pinned a profile. The dispatcher must build
+    // a real chat request with `BrainTarget::SessionDefault`, not fall
+    // back to the local templated reply.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain without profile");
+    assert!(vivling.state.as_ref().expect("state").brain_enabled);
+    assert!(
+        vivling
+            .state
+            .as_ref()
+            .expect("state")
+            .brain_profile
+            .is_none()
+    );
+
+    let request = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::DispatchAssist(req) => req,
+        other => panic!("expected DispatchAssist, got: {other:?}"),
+    };
+    assert_eq!(request.kind, VivlingBrainRequestKind::Chat);
+    assert_eq!(request.task, "ciao");
+    assert_eq!(
+        request.brain_target,
+        crate::vivling::BrainTarget::SessionDefault,
+        "no pinned profile must inherit the session model"
+    );
+}
+
+#[test]
+fn brain_enable_on_adult_without_profile_succeeds_with_inheritance_note() {
+    // V2 §8.1 (P0.2): `/vivling brain on` must succeed even when no
+    // profile is pinned, leaving the dispatcher free to use
+    // SessionDefault. The previous "Select a brain profile first"
+    // hard block made the inheritance path unreachable.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+
+    let message = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("brain enable must succeed without a pinned profile");
+
+    assert!(vivling.state.as_ref().expect("state").brain_enabled);
+    assert!(
+        message.contains("session"),
+        "user must be told the brain inherits the session model; got: {message}"
+    );
 }
 
 #[test]
@@ -330,7 +411,14 @@ fn adult_chat_with_ready_brain_dispatches_chat_request() {
 
     assert_eq!(request.kind, VivlingBrainRequestKind::Chat);
     assert_eq!(request.task, "ciao bello");
-    assert_eq!(request.brain_profile, "vivling-spark");
+    // Memory V2 §8.1 (P0.2): the request now carries a BrainTarget
+    // enum instead of the raw profile string. The Vivling has the
+    // "vivling-spark" profile pinned, so the dispatcher should see
+    // `Profile("vivling-spark")` and not fall back to SessionDefault.
+    assert_eq!(
+        request.brain_target,
+        crate::vivling::BrainTarget::Profile("vivling-spark".to_string())
+    );
     assert!(request.prompt_context.contains("User message:\nciao bello"));
     assert!(request.prompt_context.contains("Live state contract:"));
 }
@@ -641,5 +729,40 @@ fn assert_msa_collection_has_tantivy_shard(msa_storage: &std::path::Path, vivlin
         has_tantivy_shard,
         "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
         collection_dir.display()
+    );
+}
+
+#[test]
+fn status_loop_owner_ready_with_brain_enabled_and_no_profile() {
+    // V2 §8.1 (P0.2): the status surface must report loop-owner
+    // readiness based on adult + brain_enabled only, mirroring
+    // `active_loop_owner_identity`. A pinned profile is no longer
+    // a prerequisite — SessionDefault is a valid target.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain without profile");
+
+    let status = vivling.status().expect("status");
+    assert!(
+        status.contains("loop owner ready"),
+        "adult + brain_enabled with no profile must show loop owner ready; got: {status}"
+    );
+
+    let help = vivling.help_message();
+    assert!(
+        help.contains("loop-owner eligible: yes"),
+        "help must mark loop-owner eligible: yes; got: {help}"
+    );
+
+    // active_loop_owner_identity must agree.
+    let identity = vivling.active_loop_owner_identity();
+    assert!(
+        identity.is_ok(),
+        "active_loop_owner_identity must accept brain_profile None; got: {identity:?}"
     );
 }

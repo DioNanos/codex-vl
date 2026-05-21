@@ -222,16 +222,13 @@ impl VivlingState {
     }
 
     pub(crate) fn set_brain_enabled(&mut self, enabled: bool) -> Result<String, String> {
-        if enabled {
-            if self.stage() != Stage::Adult {
-                return Err("Vivling brain unlocks only at level 60.".to_string());
-            }
-            if self.brain_profile.is_none() {
-                return Err(
-                    "Set a Vivling brain profile first with `/vivling model ...`.".to_string(),
-                );
-            }
+        if enabled && self.stage() != Stage::Adult {
+            return Err("Vivling brain unlocks only at level 60.".to_string());
         }
+        // Memory V2 §8.1 (P0.2): a missing brain_profile no longer
+        // blocks brain enable. The dispatcher resolves it to
+        // BrainTarget::SessionDefault and reads the active session's
+        // `config.model` at run time.
         self.brain_enabled = enabled;
         self.brain_last_error = None;
         let message = format!(

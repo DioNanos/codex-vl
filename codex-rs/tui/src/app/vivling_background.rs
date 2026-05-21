@@ -25,6 +25,7 @@ use tokio_stream::StreamExt;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
+use crate::vivling::BrainTarget;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainRequestKind;
 use crate::vivling::VivlingLoopTickRequest;
@@ -36,7 +37,7 @@ pub(super) async fn run_vivling_assist_request(
     request: VivlingAssistRequest,
 ) -> Result<String, String> {
     let (profile_config, model_name) =
-        resolve_vivling_brain_profile_config(&config, &request.brain_profile).await?;
+        resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -145,7 +146,7 @@ pub(super) async fn run_vivling_loop_tick_request(
     request: VivlingLoopTickRequest,
 ) -> Result<VivlingLoopTickResult, String> {
     let (profile_config, model_name) =
-        resolve_vivling_brain_profile_config(&config, &request.brain_profile).await?;
+        resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -238,28 +239,99 @@ pub(super) async fn run_vivling_loop_tick_request(
         .map_err(|err| format!("Vivling loop tick returned invalid JSON: {err}"))
 }
 
-async fn resolve_vivling_brain_profile_config(
+/// Memory V2 §8.1 (P0.2) — resolve the brain backend `Config` + model
+/// name from a `BrainTarget`. `SessionDefault` inherits the session's
+/// `Config` as-is (no `ConfigBuilder` rebuild) and reads `config.model`;
+/// `Profile(p)` rebuilds through the standard `ConfigBuilder` so the
+/// profile's model/provider/effort overrides take effect.
+async fn resolve_vivling_brain_target_config(
     config: &Config,
-    brain_profile: &str,
+    target: &BrainTarget,
 ) -> Result<(Config, String), String> {
-    let profile_config = ConfigBuilder::default()
-        .codex_home(config.codex_home.to_path_buf())
-        .harness_overrides(ConfigOverrides {
-            cwd: Some(config.cwd.to_path_buf()),
-            config_profile: Some(brain_profile.to_string()),
-            ..ConfigOverrides::default()
-        })
-        .build()
-        .await
-        .map_err(|err| {
-            format!(
-                "Vivling brain profile `{brain_profile}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying."
-            )
-        })?;
-    let model_name = profile_config.model.clone().ok_or_else(|| {
-        format!(
-            "Vivling brain profile `{brain_profile}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`."
-        )
-    })?;
-    Ok((profile_config, model_name))
+    match target {
+        BrainTarget::SessionDefault => {
+            let model_name = config.model.clone().ok_or_else(|| {
+                "Vivling brain inherits from the active session, but the session has no default \
+                 model configured. Set `model = \"…\"` in ~/.codex/config.toml or pin a profile \
+                 with `/vivling model <profile>`."
+                    .to_string()
+            })?;
+            Ok((config.clone(), model_name))
+        }
+        BrainTarget::Profile(brain_profile) => {
+            let profile_config = ConfigBuilder::default()
+                .codex_home(config.codex_home.to_path_buf())
+                .harness_overrides(ConfigOverrides {
+                    cwd: Some(config.cwd.to_path_buf()),
+                    config_profile: Some(brain_profile.clone()),
+                    ..ConfigOverrides::default()
+                })
+                .build()
+                .await
+                .map_err(|err| {
+                    format!(
+                        "Vivling brain profile `{brain_profile}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying."
+                    )
+                })?;
+            let model_name = profile_config.model.clone().ok_or_else(|| {
+                format!(
+                    "Vivling brain profile `{brain_profile}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`."
+                )
+            })?;
+            Ok((profile_config, model_name))
+        }
+    }
+}
+
+#[cfg(test)]
+mod resolve_brain_target_tests {
+    //! Memory V2 §8.1 (P0.2) — focused tests for the SessionDefault
+    //! inheritance arm of `resolve_vivling_brain_target_config`.
+    //!
+    //! The `Profile(...)` arm is intentionally not exercised here: it
+    //! is a near-verbatim port of the previous
+    //! `resolve_vivling_brain_profile_config` and exercising it would
+    //! require a full `config.toml` profile fixture on disk. The
+    //! inheritance rule is the new contract introduced by Step 4 and
+    //! is the only one that needs end-to-end coverage at this layer.
+    use super::*;
+
+    async fn config_with_model(model: Option<&str>) -> Config {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let cfg_path = tempdir.path().join("config.toml");
+        if let Some(m) = model {
+            std::fs::write(&cfg_path, format!("model = \"{m}\"\n")).expect("write config");
+        }
+        let cwd = std::env::current_dir().expect("cwd");
+        ConfigBuilder::default()
+            .codex_home(tempdir.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(cwd),
+                ..ConfigOverrides::default()
+            })
+            .build()
+            .await
+            .expect("build config")
+    }
+
+    #[tokio::test]
+    async fn session_default_uses_config_model() {
+        let config = config_with_model(Some("openai/test-model")).await;
+        let (_, model) = resolve_vivling_brain_target_config(&config, &BrainTarget::SessionDefault)
+            .await
+            .expect("resolve session default");
+        assert_eq!(model, "openai/test-model");
+    }
+
+    #[tokio::test]
+    async fn session_default_errors_when_no_model_configured() {
+        let config = config_with_model(None).await;
+        let err = resolve_vivling_brain_target_config(&config, &BrainTarget::SessionDefault)
+            .await
+            .expect_err("session default with no model must error");
+        assert!(
+            err.contains("session has no default model"),
+            "error must explain inheritance + missing model, got: {err}"
+        );
+    }
 }
