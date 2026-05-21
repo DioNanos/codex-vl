@@ -481,3 +481,162 @@ fn spawn_offspring_starts_at_baby_stage_with_join_message() {
         Some("joined the roster from a local spawn"),
     );
 }
+
+// --- Memory V2 Step 10.A: Axis D lineage inheritance seed tests ---
+
+#[test]
+fn spawn_offspring_sets_lineage_inheritance_seed() {
+    use codex_vivling_core::model::VivlingVoice;
+
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let (_parent, child) = spawn_a_baby(&mut vivling, temp.path(), |parent| {
+        parent.self_voice = Some(VivlingVoice {
+            text: "Io sono Aelia. Verifico prima di committare.".to_string(),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 3,
+            version: 1,
+        });
+        parent.brain_profile = Some("vivling-spark".to_string());
+        parent.accumulated_bias.caution = 12;
+        parent.accumulated_bias.verification = 18;
+        parent.identity_profile.caution_bias = 5;
+        parent.identity_profile.verification_bias = 7;
+    });
+
+    let seed = child
+        .lineage_inheritance
+        .as_ref()
+        .expect("lineage_inheritance must be populated at spawn time");
+    assert_eq!(
+        seed.voice_fragment.as_deref(),
+        Some("Io sono Aelia. Verifico prima di committare.")
+    );
+    assert_eq!(
+        seed.suggested_brain_profile.as_deref(),
+        Some("vivling-spark")
+    );
+    // Accumulated bias wins over identity_profile when > 0.
+    assert_eq!(seed.preference_seed.caution_bias_seed, 12);
+    assert_eq!(seed.preference_seed.verification_bias_seed, 18);
+    // Step 10.A: skills slot intentionally empty until a future
+    // runtime-level step hydrates it from the parent's _skills.json.
+    assert!(seed.skills.is_empty());
+}
+
+#[test]
+fn spawn_offspring_does_not_copy_parent_voice_or_bias_counters() {
+    use codex_vivling_core::model::VivlingVoice;
+
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let (_parent, child) = spawn_a_baby(&mut vivling, temp.path(), |parent| {
+        parent.self_voice = Some(VivlingVoice {
+            text: "parent voice".to_string(),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 1,
+            version: 1,
+        });
+        parent.accumulated_bias.caution = 42;
+        parent.accumulated_bias.verification = 33;
+        parent.recent_bias.caution = 7;
+        parent.recent_bias.verification = 9;
+    });
+
+    // The child never inherits the parent's voice as its own — it
+    // only carries it as a lineage seed.
+    assert!(child.self_voice.is_none());
+    // Bias counters reset to default in the child; the parent's
+    // emphasis lives only in lineage_inheritance.preference_seed.
+    assert_eq!(child.accumulated_bias.caution, 0);
+    assert_eq!(child.accumulated_bias.verification, 0);
+    assert_eq!(child.recent_bias.caution, 0);
+    assert_eq!(child.recent_bias.verification, 0);
+    // But the lineage seed still carries the parent's accumulated bias.
+    let seed = child
+        .lineage_inheritance
+        .as_ref()
+        .expect("lineage seed populated");
+    assert_eq!(seed.preference_seed.caution_bias_seed, 42);
+    assert_eq!(seed.preference_seed.verification_bias_seed, 33);
+}
+
+#[test]
+fn spawn_offspring_lineage_inheritance_omits_empty_voice_fragment() {
+    use codex_vivling_core::model::VivlingVoice;
+
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let (_parent, child) = spawn_a_baby(&mut vivling, temp.path(), |parent| {
+        parent.self_voice = Some(VivlingVoice {
+            text: "   \t\n   ".to_string(),
+            language: "it".to_string(),
+            generated_at: None,
+            source_capsules_count: 0,
+            version: 1,
+        });
+    });
+
+    let seed = child
+        .lineage_inheritance
+        .as_ref()
+        .expect("lineage seed populated");
+    assert!(
+        seed.voice_fragment.is_none(),
+        "whitespace-only voice must not become a fragment: {seed:?}"
+    );
+}
+
+#[test]
+fn spawn_offspring_lineage_inheritance_falls_back_to_identity_profile_bias() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let (_parent, child) = spawn_a_baby(&mut vivling, temp.path(), |parent| {
+        // Accumulated counters zero -> fall back to identity_profile.
+        parent.accumulated_bias.caution = 0;
+        parent.accumulated_bias.verification = 0;
+        parent.identity_profile.caution_bias = 11;
+        parent.identity_profile.verification_bias = 14;
+    });
+
+    let seed = child
+        .lineage_inheritance
+        .as_ref()
+        .expect("lineage seed populated");
+    assert_eq!(seed.preference_seed.caution_bias_seed, 11);
+    assert_eq!(seed.preference_seed.verification_bias_seed, 14);
+}
+
+#[test]
+fn spawn_offspring_does_not_copy_parent_language_state() {
+    use chrono::Utc;
+    use codex_vivling_core::model::VivlingLanguageMode;
+
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let (_parent, child) = spawn_a_baby(&mut vivling, temp.path(), |parent| {
+        parent.language_state.detected_language = "it".to_string();
+        parent.language_state.language_override = Some("es".to_string());
+        parent.language_state.language_mode = VivlingLanguageMode::Strict;
+        parent
+            .language_state
+            .record_sample(Utc::now(), "ciao come stai oggi davvero");
+    });
+
+    // Round-2 fix: child must not adopt the parent's language window
+    // as its own. A freshly hatched offspring has never heard its
+    // owner speak — its `language_state` resets to default.
+    assert_eq!(child.language_state.detected_language, "");
+    assert!(child.language_state.language_override.is_none());
+    assert_eq!(
+        child.language_state.language_mode,
+        VivlingLanguageMode::MirrorUser
+    );
+    assert!(child.language_state.recent_samples.is_empty());
+
+    // Lineage seed still populated — the reset only affects the
+    // child's *own* live state.
+    assert!(child.lineage_inheritance.is_some());
+}

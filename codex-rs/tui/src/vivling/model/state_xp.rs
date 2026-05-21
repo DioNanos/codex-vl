@@ -115,6 +115,38 @@ impl VivlingState {
         spawned.cultural_parent_vivling_id = Some(self.vivling_id.clone());
         spawned.lineage_blessed = false;
 
+        // Memory V2 Step 10.A — Axis D lineage inheritance seed.
+        //
+        // The child carries a snapshot of the parent's identity in a
+        // dedicated field instead of inheriting voice/bias/cache/lang
+        // as its own values. This lets a future runtime read the seed
+        // and decide *how much* of the parent to honour, without
+        // pretending the child has already lived the parent's life.
+        //
+        // The child therefore explicitly drops the V2 fields:
+        //   - `self_voice` (parent's auto-written paragraph lives in
+        //     `lineage_inheritance.voice_fragment` instead);
+        //   - `accumulated_bias` / `recent_bias` counters (parent's
+        //     emphasis lives in `lineage_inheritance.preference_seed`
+        //     bias seeds);
+        //   - `language_state` (detected language, language_override,
+        //     mode, recent user samples). Round-2 fix: the previous
+        //     build let the clone carry the parent's samples and
+        //     override into the child, so a freshly hatched offspring
+        //     would have inherited Strict/Spanish without ever having
+        //     heard its owner speak. Language/culture inheritance
+        //     runtime can hydrate from the seed in a later step.
+        //   - the volatile CRT / proactive caches (already
+        //     `#[serde(skip)]`, but we reset them so a clone-time
+        //     value cannot leak across).
+        spawned.lineage_inheritance = Some(build_lineage_inheritance_seed(self));
+        spawned.self_voice = None;
+        spawned.accumulated_bias = codex_vivling_core::model::BiasCounters::default();
+        spawned.recent_bias = codex_vivling_core::model::BiasCounters::default();
+        spawned.language_state = codex_vivling_core::model::VivlingLanguageState::default();
+        spawned.cached_crt_phrase = None;
+        spawned.cached_proactive = None;
+
         // codex-vl: lineage rarity pressure — dentro-specie quality roll.
         // Never swaps species (kept inherited via clone). May lift gene
         // temperaments and brain_potential when the deterministic trigger
@@ -616,6 +648,49 @@ impl VivlingState {
             strongest_summaries,
             strongest_paths
         )
+    }
+}
+
+/// Memory V2 Step 10.A — build the lineage inheritance seed a freshly
+/// spawned child carries from its cultural parent.
+///
+/// Pure: no I/O, no schema bump. The `skills` slot is left empty by
+/// design — `_skills.json` lives outside the model layer and a future
+/// runtime-level step can hydrate it without changing this signature.
+/// `voice_fragment` is bounded to 240 characters so a future
+/// LLM-enriched voice cannot bloat a child's state file.
+fn build_lineage_inheritance_seed(
+    parent: &VivlingState,
+) -> codex_vivling_core::model::LineageInheritance {
+    use codex_vivling_core::model::LineageInheritance;
+    use codex_vivling_core::model::VivlingPreferenceSeed;
+
+    let voice_fragment = parent
+        .self_voice
+        .as_ref()
+        .map(|voice| truncate_summary(voice.text.trim(), 240))
+        .filter(|fragment| !fragment.trim().is_empty());
+
+    let caution_bias_seed = if parent.accumulated_bias.caution > 0 {
+        parent.accumulated_bias.caution
+    } else {
+        parent.identity_profile.caution_bias
+    };
+    let verification_bias_seed = if parent.accumulated_bias.verification > 0 {
+        parent.accumulated_bias.verification
+    } else {
+        parent.identity_profile.verification_bias
+    };
+
+    LineageInheritance {
+        voice_fragment,
+        skills: Vec::new(),
+        preference_seed: VivlingPreferenceSeed {
+            caution_bias_seed,
+            verification_bias_seed,
+            preferred_archetype: parent.dominant_archetype(),
+        },
+        suggested_brain_profile: parent.brain_profile.clone(),
     }
 }
 
