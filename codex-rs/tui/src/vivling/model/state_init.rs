@@ -211,14 +211,36 @@ impl VivlingState {
     }
 
     pub(crate) fn brain_summary(&self) -> String {
-        let profile = self.brain_profile.as_deref().unwrap_or("none");
         let status = if self.brain_enabled { "on" } else { "off" };
         let last = self
             .brain_last_error
             .as_deref()
             .map(|err| format!(" - last_error {}", truncate_summary(err, 64)))
             .unwrap_or_default();
-        format!("brain {status} - profile {profile}{last}")
+        // Memory V2 Step 11.A — stage-aware brain target line. Replaces
+        // the previous `profile <name|none>` suffix with a description
+        // that matches the actual dispatch resolution at runtime:
+        //   - Baby / Juvenile: brain dispatch is locked until adult.
+        //   - Adult + pinned profile: the profile is shown.
+        //   - Adult + no profile: BrainTarget::SessionDefault — the
+        //     dispatcher inherits the session's model, so the line
+        //     spells "inherits session default" instead of "none".
+        // This is guidance only; routing semantics are unchanged.
+        let target = self.brain_target_label();
+        format!("brain {status} - {target}{last}")
+    }
+
+    /// Memory V2 Step 11.A — stage-aware human-readable label for the
+    /// brain target a runtime dispatch would resolve to today. Pure;
+    /// reads only the fields that already participate in dispatch.
+    pub(crate) fn brain_target_label(&self) -> String {
+        if self.stage() != Stage::Adult {
+            return "brain locked (unlocks at level 60)".to_string();
+        }
+        match self.brain_profile.as_deref().map(str::trim) {
+            Some(profile) if !profile.is_empty() => format!("profile {profile}"),
+            _ => "inherits session default".to_string(),
+        }
     }
 
     pub(crate) fn set_brain_enabled(&mut self, enabled: bool) -> Result<String, String> {

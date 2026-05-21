@@ -138,7 +138,11 @@ model_provider = "lm-studio"
         other => panic!("unexpected outcome: {other:?}"),
     };
 
-    assert!(message.contains("profile none"));
+    // Step 11.A — pre-fix this test asserted "profile none". The new
+    // stage-aware label spells out the locked status for non-adult
+    // Vivlings; the rest of the model_show output (profile picker
+    // hints) is unchanged.
+    assert!(message.contains("brain locked (unlocks at level 60)"));
     assert!(message.contains("No Vivling brain profile is selected."));
     assert!(message.contains("Select one with `/vivling model <profile>`."));
     assert!(message.contains("- vivling-spark -> model gpt-5.3-codex-spark"));
@@ -890,4 +894,77 @@ fn status_loop_owner_ready_with_brain_enabled_and_no_profile() {
         identity.is_ok(),
         "active_loop_owner_identity must accept brain_profile None; got: {identity:?}"
     );
+}
+
+// --- Memory V2 Step 11.A: stage-aware brain guidance ---
+
+#[test]
+fn brain_summary_baby_or_juvenile_shows_locked_target() {
+    let temp = TempDir::new().expect("tempdir");
+    let vivling = hatched_vivling(temp.path());
+    let state = vivling.state.as_ref().expect("state");
+    let summary = state.brain_summary();
+    assert!(
+        summary.contains("brain locked (unlocks at level 60)"),
+        "non-adult brain target must say locked; got: {summary}"
+    );
+    assert!(!summary.contains("inherits session default"));
+    assert!(!summary.contains("profile vivling-"));
+}
+
+#[test]
+fn brain_summary_adult_no_profile_shows_inherits_session_default() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+    let state = vivling.state.as_ref().expect("state");
+    let summary = state.brain_summary();
+    assert!(
+        summary.contains("brain on - inherits session default"),
+        "adult+no-profile must inherit session model; got: {summary}"
+    );
+    assert!(!summary.contains("brain locked"));
+}
+
+#[test]
+fn brain_summary_adult_with_pinned_profile_shows_profile_name() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign");
+    let state = vivling.state.as_ref().expect("state");
+    let summary = state.brain_summary();
+    assert!(
+        summary.contains("profile vivling-spark"),
+        "adult+pinned profile must surface the name; got: {summary}"
+    );
+    assert!(!summary.contains("inherits session default"));
+    assert!(!summary.contains("brain locked"));
+}
+
+#[test]
+fn brain_summary_adult_brain_off_still_describes_target_correctly() {
+    // brain off + adult + no profile -> target is still "inherits session
+    // default" (i.e. what /vivling brain on would resolve to), prefixed by
+    // "brain off". The label describes the target, not the current
+    // enable flag.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let state = vivling.state.as_ref().expect("state");
+    assert!(!state.brain_enabled);
+    let summary = state.brain_summary();
+    assert!(summary.starts_with("brain off"));
+    assert!(summary.contains("inherits session default"));
 }
