@@ -116,6 +116,7 @@ pub(crate) fn compose_brain_prompt(
         kind.live_state_contract()
     ));
     sections.push(language_contract_section(state));
+    sections.push(stage_guidance_section(state));
     if let BrainPromptKind::LoopTick {
         label,
         goal,
@@ -515,6 +516,31 @@ fn lineage_inheritance_section(state: &VivlingState) -> Option<String> {
         ));
     }
     Some(lines.join("\n"))
+}
+
+/// Memory V2 Step 12.B.C — stage-aware operating envelope for the
+/// brain prompt. Sits after the `Language contract:` section so the
+/// model sees both rules together: speak in the user's language, but
+/// only propose actions/tool use when the Vivling's stage actually
+/// allows it.
+///
+/// Kept in English on purpose: the user-visible answer is governed
+/// by the `Language contract:` section a few lines above. The
+/// operating-envelope rules are stable system instructions and
+/// providers parse them more reliably in English.
+fn stage_guidance_section(state: &VivlingState) -> String {
+    let body = match state.stage() {
+        Stage::Baby => {
+            "You are a Baby Vivling: listen and observe only. Do not propose actions, do not claim tool use, do not promise outcomes. Acknowledge briefly."
+        }
+        Stage::Juvenile => {
+            "You are a Juvenile Vivling: give observations and advice. Do not propose actions, do not claim tool use, do not promise outcomes — your role is to surface signal, not to execute."
+        }
+        Stage::Adult => {
+            "You are an Adult Vivling: you may propose concrete actions and acknowledge tool use, while respecting the configured brain target and budget. Stay within scope and verify before claiming completion."
+        }
+    };
+    format!("Stage guidance:\n{body}")
 }
 
 fn language_contract_section(state: &VivlingState) -> String {

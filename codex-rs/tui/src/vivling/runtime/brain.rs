@@ -2,6 +2,7 @@ use super::super::model::VivlingWorkMemoryEntry;
 use super::brain_context::BrainPromptKind;
 use super::brain_context::compose_brain_prompt;
 use super::request::brain_target_from_profile;
+use super::request::resolve_expression_target;
 use super::*;
 use codex_vivling_core::model::VivlingSkill;
 use codex_vivling_core::paths::skills_file_path;
@@ -129,8 +130,13 @@ impl Vivling {
                 self.msa.as_deref(),
                 &skills,
             )?;
-            // Memory V2 §8.1 (P0.2): same inheritance rule as Assist.
-            let brain_target = brain_target_from_profile(state.brain_profile.as_deref());
+            // Memory V2 Step 12.B.C: `/vl` chat uses the Expression
+            // brain target — a pinned profile overrides the session
+            // model only when `brain_enabled` is true; otherwise we
+            // always inherit `/model` (matches DAG's "STESSO MODELLO
+            // CHAT" contract).
+            let brain_target =
+                resolve_expression_target(state.brain_enabled, state.brain_profile.as_deref());
             // codex-vl bond: only credit Chat after pre-dispatch validation
             // succeeds, so a failed precondition does not mutate bond state.
             state

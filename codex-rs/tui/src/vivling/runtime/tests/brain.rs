@@ -287,7 +287,10 @@ fn adult_direct_chat_is_role_focused_instead_of_generic() {
 }
 
 #[test]
-fn chat_falls_back_to_direct_reply_without_ready_brain() {
+fn baby_chat_returns_local_ack_no_llm_dispatch() {
+    // Memory V2 Step 12.B.C: Baby `/vl` never reaches the LLM. The
+    // Vivling shows a bounded language-aware ack ("watches and
+    // learns") instead of the legacy templated chat reply.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
 
@@ -299,16 +302,22 @@ fn chat_falls_back_to_direct_reply_without_ready_brain() {
         other => panic!("unexpected outcome: {other:?}"),
     };
 
-    assert!(message.starts_with("Local fallback: "), "{message}");
-    assert!(message.contains("I'm ") || message.contains("As "));
+    assert!(
+        message.contains("watches and learns") || message.contains("osserva e impara"),
+        "Baby chat must surface the watches/learns ack: {message}"
+    );
+    assert!(!message.starts_with("Local fallback: "), "{message}");
 }
 
 #[test]
-fn adult_chat_with_brain_disabled_is_explicit_local_fallback() {
-    // V2 §8.1 (P0.2): the only blockers for brain dispatch are
-    // adulthood and `brain_enabled`. A missing brain_profile is no
-    // longer a blocker — it just routes to BrainTarget::SessionDefault.
-    // Brain disabled still falls back to the local templated reply.
+fn adult_chat_with_brain_disabled_dispatches_via_session_default() {
+    // Memory V2 Step 12.B.C: `/vl` chat is decoupled from
+    // `brain_enabled`. An Adult Vivling with brain off still
+    // reserves a Chat LLM call and dispatches through the brain;
+    // `resolve_expression_target` picks `SessionDefault` so the
+    // dispatcher inherits `/model`. (Step 4 P0.2 already routed a
+    // missing profile to SessionDefault; Step 12.B.C extends the
+    // same rule to brain-off Adults.)
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
     let _ = vivling
@@ -316,19 +325,23 @@ fn adult_chat_with_brain_disabled_is_explicit_local_fallback() {
         .expect("promote adult");
     // brain stays disabled (default for a freshly hatched Vivling).
 
-    let message = match vivling
+    let outcome = vivling
         .command(
             VivlingAction::Chat("what should we check?".to_string()),
             temp.path(),
         )
-        .expect("chat")
-    {
-        VivlingCommandOutcome::Message(message) => message,
-        other => panic!("unexpected outcome: {other:?}"),
-    };
-
-    assert!(message.starts_with("Local fallback: "), "{message}");
-    assert!(!message.contains("brain is thinking"), "{message}");
+        .expect("chat");
+    match outcome {
+        VivlingCommandOutcome::DispatchAssist(request) => {
+            assert_eq!(
+                request.brain_target,
+                BrainTarget::SessionDefault,
+                "brain off must inherit /model via SessionDefault"
+            );
+            return;
+        }
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    }
 }
 
 #[test]
@@ -967,4 +980,211 @@ fn brain_summary_adult_brain_off_still_describes_target_correctly() {
     let summary = state.brain_summary();
     assert!(summary.starts_with("brain off"));
     assert!(summary.contains("inherits session default"));
+}
+
+// --- Memory V2 Step 12.B.C: /vl chat decoupled + Baby ack + stage guidance ---
+
+#[test]
+fn resolve_expression_target_brain_off_returns_session_default() {
+    use crate::vivling::runtime::request::BrainTarget;
+    use crate::vivling::runtime::request::resolve_expression_target;
+    // Profile pinned but brain off -> SessionDefault (matches DAG
+    // "STESSO MODELLO CHAT" contract).
+    assert_eq!(
+        resolve_expression_target(false, Some("vivling-spark")),
+        BrainTarget::SessionDefault
+    );
+    assert_eq!(
+        resolve_expression_target(false, None),
+        BrainTarget::SessionDefault
+    );
+}
+
+#[test]
+fn resolve_expression_target_brain_on_with_profile_returns_profile() {
+    use crate::vivling::runtime::request::BrainTarget;
+    use crate::vivling::runtime::request::resolve_expression_target;
+    assert_eq!(
+        resolve_expression_target(true, Some("vivling-spark")),
+        BrainTarget::Profile("vivling-spark".to_string())
+    );
+    // Empty/whitespace profile must still degrade to SessionDefault.
+    assert_eq!(
+        resolve_expression_target(true, Some("   ")),
+        BrainTarget::SessionDefault
+    );
+    assert_eq!(
+        resolve_expression_target(true, None),
+        BrainTarget::SessionDefault
+    );
+}
+
+#[test]
+fn juvenile_chat_dispatches_via_session_default_when_brain_off() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    // PromoteAdult lifts straight to Adult; for Juvenile path we bump
+    // level to JUVENILE manually so the chat path goes through the
+    // LLM-eligible branch without reaching Adult.
+    {
+        let state = vivling.state.as_mut().expect("state");
+        state.level = codex_vivling_core::model::JUVENILE_LEVEL;
+        assert_eq!(state.stage(), codex_vivling_core::model::Stage::Juvenile);
+    }
+    let outcome = vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat");
+    match outcome {
+        VivlingCommandOutcome::DispatchAssist(request) => {
+            assert_eq!(
+                request.brain_target,
+                BrainTarget::SessionDefault,
+                "Juvenile + brain off must inherit /model via SessionDefault"
+            );
+        }
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    }
+}
+
+#[test]
+fn adult_chat_with_brain_on_and_profile_uses_profile_target() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+
+    let outcome = vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat");
+    match outcome {
+        VivlingCommandOutcome::DispatchAssist(request) => {
+            assert_eq!(
+                request.brain_target,
+                BrainTarget::Profile("vivling-spark".to_string()),
+                "brain on + profile must override SessionDefault"
+            );
+        }
+        other => panic!("expected DispatchAssist, got {other:?}"),
+    }
+}
+
+#[test]
+fn chat_falls_back_to_template_when_budget_exhausted() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    // Saturate the Adult daily budget so the next Chat reservation
+    // returns BudgetExhausted and `chat()` must fall back to the
+    // local templated reply.
+    {
+        let state = vivling.state.as_mut().expect("state");
+        state.daily_llm_day_key = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        state.daily_llm_call_count =
+            codex_vivling_core::model::stage_llm_budget(codex_vivling_core::model::Stage::Adult);
+    }
+    let message = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("expected Message, got {other:?}"),
+    };
+    assert!(
+        message.starts_with("Local fallback: "),
+        "budget-exhausted Chat must surface the local fallback marker: {message}"
+    );
+}
+
+#[test]
+fn baby_chat_local_ack_is_language_aware_italian() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    // Pin Italian via override so the ack picks the IT branch.
+    {
+        let state = vivling.state.as_mut().expect("state");
+        state.language_state.language_override = Some("it".to_string());
+    }
+    let message = match vivling
+        .command(VivlingAction::Chat("ciao".to_string()), temp.path())
+        .expect("chat")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("expected Message, got {other:?}"),
+    };
+    assert!(
+        message.contains("osserva e impara"),
+        "Italian Baby ack must use 'osserva e impara': {message}"
+    );
+    assert!(
+        message.chars().count() <= 80,
+        "ack must be bounded to 80 chars"
+    );
+}
+
+#[test]
+fn stage_guidance_section_distinguishes_baby_juvenile_adult() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+
+    // Baby
+    let mut state = vivling.state.clone().expect("state");
+    state.brain_enabled = true; // bypass Adult/brain gate inside compose for Chat test
+    state.level = 1;
+    let prompt_baby = crate::vivling::runtime::brain_context::compose_brain_prompt(
+        &state,
+        crate::vivling::runtime::brain_context::BrainPromptKind::Chat,
+        "ciao",
+        None,
+        None,
+        &[],
+    )
+    .expect("baby prompt");
+    assert!(prompt_baby.contains("Stage guidance:"));
+    assert!(prompt_baby.contains("Baby Vivling"));
+
+    // Juvenile
+    let mut state = vivling.state.clone().expect("state");
+    state.brain_enabled = true;
+    state.level = codex_vivling_core::model::JUVENILE_LEVEL;
+    let prompt_juvenile = crate::vivling::runtime::brain_context::compose_brain_prompt(
+        &state,
+        crate::vivling::runtime::brain_context::BrainPromptKind::Chat,
+        "ciao",
+        None,
+        None,
+        &[],
+    )
+    .expect("juvenile prompt");
+    assert!(prompt_juvenile.contains("Juvenile Vivling"));
+    assert!(!prompt_juvenile.contains("Baby Vivling"));
+
+    // Adult
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain");
+    let state = vivling.state.clone().expect("state");
+    let prompt_adult = crate::vivling::runtime::brain_context::compose_brain_prompt(
+        &state,
+        crate::vivling::runtime::brain_context::BrainPromptKind::Chat,
+        "ciao",
+        None,
+        None,
+        &[],
+    )
+    .expect("adult prompt");
+    assert!(prompt_adult.contains("Adult Vivling"));
+    assert!(!prompt_adult.contains("Baby Vivling"));
+    assert!(!prompt_adult.contains("Juvenile Vivling"));
 }

@@ -25,22 +25,65 @@ impl Vivling {
 
     pub(crate) fn chat(&mut self, text: &str) -> Result<VivlingCommandOutcome, String> {
         self.ensure_hatched()?;
-        // Memory V2 §8.1 (P0.2): the brain dispatch gate is adult + brain
-        // enabled. A missing `brain_profile` is no longer a blocker: the
-        // dispatcher falls back to `BrainTarget::SessionDefault` and
-        // reads the session's `config.model` at run time.
-        let should_use_brain = {
-            let state = self.state.as_ref().expect("state checked");
-            state.stage() == Stage::Adult && state.brain_enabled
-        };
-        if should_use_brain {
-            self.prepare_chat_request(text)
-                .map(VivlingCommandOutcome::DispatchAssist)
-        } else {
-            self.update_existing_result(|state| state.direct_chat_reply(text))
-                .map(|reply| format!("Local fallback: {reply}"))
-                .map(VivlingCommandOutcome::Message)
+        // Memory V2 Step 12.B.C: `/vl` chat decoupled from
+        // `brain_enabled`. Stage decides the path:
+        //   - Baby: local-ack, no LLM (the Vivling watches and learns).
+        //   - Juvenile/Adult: try to reserve a Chat-kind LLM call;
+        //     on success dispatch through the brain (session model
+        //     unless `brain on` + pinned profile); on Err
+        //     (budget/throttle/etc.) fall back to the local template
+        //     so chat never silently fails.
+        let stage = self.state.as_ref().expect("state checked").stage();
+        if stage == Stage::Baby {
+            return self
+                .update_existing_result(|state| {
+                    let language = state.language_state.effective_language(None);
+                    Ok(Self::baby_local_ack(&state.name, &language))
+                })
+                .map(VivlingCommandOutcome::Message);
         }
+
+        let now = Utc::now();
+        let reservation = {
+            let state = self.state.as_mut().expect("state checked");
+            state.try_reserve_llm_call(
+                codex_vivling_core::model::VivlingLlmCallKind::Chat,
+                now,
+                None,
+            )
+        };
+        match reservation {
+            Ok(()) => {
+                // Persist the reservation before dispatch so a crash
+                // between here and the response handler cannot let
+                // the Vivling spend past its daily budget.
+                self.save_state().map_err(|err| err.to_string())?;
+                self.prepare_chat_request(text)
+                    .map(VivlingCommandOutcome::DispatchAssist)
+            }
+            Err(_reason) => self
+                .update_existing_result(|state| state.direct_chat_reply(text))
+                .map(|reply| format!("Local fallback: {reply}"))
+                .map(VivlingCommandOutcome::Message),
+        }
+    }
+
+    /// Memory V2 Step 12.B.C — bounded language-aware local reply
+    /// the Baby Vivling shows for every `/vl <text>` (no LLM spend).
+    /// Bounded to 80 chars so the chat panel never overflows.
+    fn baby_local_ack(name: &str, language: &str) -> String {
+        // Note: the `name` is already redacted upstream (V8→V9 save
+        // path normalises it); we still keep this output bounded to
+        // 80 chars as defence in depth against future state-mutation
+        // bugs.
+        let raw = match language {
+            "it" => format!("{name} osserva e impara."),
+            "es" => format!("{name} observa y aprende."),
+            "fr" => format!("{name} observe et apprend."),
+            "de" => format!("{name} beobachtet und lernt."),
+            _ => format!("{name} watches and learns."),
+        };
+        codex_vivling_core::model::truncate_summary(&raw, 80)
     }
 
     pub(crate) fn set_brain_enabled_with_guidance(

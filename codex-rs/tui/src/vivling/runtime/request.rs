@@ -37,6 +37,36 @@ pub(crate) fn brain_target_from_profile(profile: Option<&str>) -> BrainTarget {
     }
 }
 
+/// Memory V2 Step 12.B.C — pick the LLM brain target for the
+/// `/vl` chat + Expression channels.
+///
+/// Distinct from [`brain_target_from_profile`] because `/vl` chat is
+/// decoupled from `brain_enabled` (DAG: "STESSO MODELLO CHAT — se
+/// parto con codex-vl uso il modello /model; A MENO che non ho
+/// settato il brain ALLORA usa il modello BRAIN"). A pinned profile
+/// overrides the session model *only* when the user has explicitly
+/// turned the brain on; otherwise we always fall back to whatever
+/// `/model` (or the wrapper) selected for the session.
+pub(crate) fn resolve_expression_target(
+    brain_enabled: bool,
+    brain_profile: Option<&str>,
+) -> BrainTarget {
+    match (
+        brain_enabled,
+        brain_profile.and_then(|p| {
+            let trimmed = p.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }),
+    ) {
+        (true, Some(name)) => BrainTarget::Profile(name),
+        _ => BrainTarget::SessionDefault,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VivlingAssistRequest {
     pub(crate) vivling_id: String,
