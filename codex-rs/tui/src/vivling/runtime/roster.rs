@@ -1,5 +1,34 @@
 use super::*;
 
+/// Per-Vivling save-path lock timeout. Short by design: the TUI save path
+/// is on the user-interaction hot path, so we prefer to fail fast and let
+/// the caller retry rather than block the UI. The memory-agent batch holds
+/// a much longer 30s lock; that asymmetry is intentional.
+const VIVLING_SAVE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Acquire the per-Vivling advisory file lock used to serialize the TUI
+/// save path against the memory-agent batch. The lock file lives next to
+/// the state JSON in `roster_dir`.
+fn acquire_vivling_save_lock(roster_dir: &Path, vivling_id: &str) -> io::Result<VivlingLockGuard> {
+    let lock_path = lock_file_path(roster_dir, vivling_id);
+    acquire_lock(&lock_path, VIVLING_SAVE_LOCK_TIMEOUT).map_err(safety_io_err)
+}
+
+/// Convert a `codex_vivling_core::safety::SafetyError` into a `std::io::Error`
+/// so the existing `io::Result<()>` save signatures stay untouched.
+fn safety_io_err(err: SafetyError) -> io::Error {
+    match err {
+        SafetyError::Io { source, .. } => source,
+        SafetyError::LockTimeout { path, waited } => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "vivling save lock timed out after {waited:?} on {}",
+                path.display()
+            ),
+        ),
+    }
+}
+
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub(crate) struct VivlingRoster {
     #[serde(default)]
@@ -359,13 +388,12 @@ impl Vivling {
         };
         let mut roster = roster.clone();
         roster.normalize_ids();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let text = serde_json::to_string_pretty(&roster).map_err(io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, &text)?;
-        fs::rename(&tmp, &path)
+        // roster.json is the aggregate index across all Vivlings; we use
+        // atomic write to avoid partial files on crash but intentionally
+        // skip the per-Vivling lock (no per-Vivling identity to lock on)
+        // and the rotational backup (high churn, low payoff vs disk cost).
+        write_atomic(&path, text.as_bytes()).map_err(safety_io_err)
     }
 
     pub(crate) fn remove_from_roster(&self, vivling_id: &str) -> io::Result<()> {
@@ -504,12 +532,14 @@ impl Vivling {
         let Some(path) = self.active_state_path() else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let Some(state) = &self.state else {
             return Ok(());
         };
+        let Some(roster_dir) = self.roster_dir() else {
+            return Ok(());
+        };
+        let _guard = acquire_vivling_save_lock(&roster_dir, &state.vivling_id)?;
+
         let mut roster = self.load_roster()?;
         if !roster
             .vivling_ids
@@ -530,9 +560,9 @@ impl Vivling {
         roster.active_vivling_id = Some(state.vivling_id.clone());
         self.save_roster(&roster)?;
         let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, &text)?;
-        fs::rename(&tmp, &path)
+        let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
+        backup_last_write(&path, &backup).map_err(safety_io_err)?;
+        write_atomic(&path, text.as_bytes()).map_err(safety_io_err)
     }
 
     pub(crate) fn save_state_record(
@@ -544,9 +574,11 @@ impl Vivling {
         let Some(path) = self.state_path_for_id(&state.vivling_id) else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let Some(roster_dir) = self.roster_dir() else {
+            return Ok(());
+        };
+        let _guard = acquire_vivling_save_lock(&roster_dir, &state.vivling_id)?;
+
         let mut roster = self.load_roster()?;
         if !roster
             .vivling_ids
@@ -569,9 +601,9 @@ impl Vivling {
         }
         self.save_roster(&roster)?;
         let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, &text)?;
-        fs::rename(&tmp, &path)
+        let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
+        backup_last_write(&path, &backup).map_err(safety_io_err)?;
+        write_atomic(&path, text.as_bytes()).map_err(safety_io_err)
     }
 
     pub(crate) fn resolve_vivling_target(&self, target: &str) -> io::Result<Option<String>> {
