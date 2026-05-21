@@ -88,6 +88,20 @@ impl ChatWidget {
         }
     }
 
+    /// Memory V2 Step 12.B.D.4 — loop-event hook variant. Wired
+    /// into `record_vivling_loop_event` with extra anti-burn
+    /// gating (Adult-only + 5min throttle + 50% budget headroom)
+    /// so long-running loops cannot drain the Expression channel.
+    pub(crate) fn maybe_trigger_vivling_loop_expression_refresh(&mut self) {
+        if let Some(request) = self
+            .bottom_pane
+            .try_dispatch_vivling_loop_expression_refresh(&self.config)
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::RunVivlingExpression { request });
+        }
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

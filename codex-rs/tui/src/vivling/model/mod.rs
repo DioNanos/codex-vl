@@ -301,6 +301,14 @@ pub(crate) struct VivlingState {
     /// used by the 60s throttle. None at migration time.
     #[serde(default)]
     pub(crate) last_llm_dispatch_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Memory V2 Step 12.B.D.4 — timestamp of the last successful
+    /// loop-triggered Expression dispatch. Independent from
+    /// `last_llm_dispatch_at` so the dedicated 5-minute anti-burn
+    /// floor only applies to loop-event hooks; turn-driven refresh
+    /// keeps the standard 60s window. Additive `#[serde(default)]`,
+    /// NO schema bump (still V10).
+    #[serde(default)]
+    pub(crate) last_loop_expression_dispatch_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Clone)]

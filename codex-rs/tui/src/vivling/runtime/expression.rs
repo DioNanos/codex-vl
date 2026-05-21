@@ -33,11 +33,14 @@ use chrono::Duration;
 use chrono::Utc;
 use codex_vivling_core::model::CachedCrtPhrase;
 use codex_vivling_core::model::CachedProactive;
+use codex_vivling_core::model::LOOP_EXPRESSION_HEADROOM_DENOMINATOR;
+use codex_vivling_core::model::LOOP_EXPRESSION_THROTTLE_SECONDS;
 use codex_vivling_core::model::Stage;
 use codex_vivling_core::model::VivlingExpressionMode;
 use codex_vivling_core::model::VivlingLlmCallKind;
 use codex_vivling_core::model::fnv1a64;
 use codex_vivling_core::model::plan_expression_prompt;
+use codex_vivling_core::model::stage_llm_budget;
 use codex_vivling_core::model::truncate_summary;
 use codex_vivling_core::redaction::redact_secrets;
 use serde::Deserialize;
@@ -197,6 +200,53 @@ pub(crate) fn try_plan_and_reserve_expression(
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
     let prompt_hash = fnv1a64(plan.prompt.as_bytes());
     maybe_dispatch_expression_refresh(state, now, plan.prompt, plan.language, prompt_hash)
+}
+
+/// Memory V2 Step 12.B.D.4 — anti-burn variant of
+/// [`try_plan_and_reserve_expression`] for loop-event hooks. Loop
+/// ticks fire much more frequently than turn completions; this
+/// helper layers three extra refusal gates on top of the standard
+/// reservation pipeline:
+///
+/// 1. **Stage gate** — only `Adult` Vivlings receive loop-driven
+///    refreshes. Baby + Juvenile loop events are too noisy and
+///    short-on-context to spend an LLM call on.
+/// 2. **Dedicated 5-minute throttle** — `last_loop_expression_dispatch_at`
+///    is independent from `last_llm_dispatch_at`, so turn-driven
+///    refreshes keep their standard 60s window while loop hooks pay
+///    a stricter floor.
+/// 3. **Budget headroom 50%** — when ≥ 50% of today's stage budget
+///    is already consumed, the loop hook stops triggering so the
+///    remaining headroom is reserved for turn-driven refreshes
+///    (editorial choice: turn snapshots carry fresher signal).
+///
+/// On `Some(_)`, `last_loop_expression_dispatch_at` is set to `now`
+/// BEFORE returning so the caller's `save_state` persists both the
+/// `try_reserve` mutation and the loop throttle bookkeeping in one
+/// atomic write.
+pub(crate) fn try_plan_and_reserve_expression_for_loop(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+) -> Option<VivlingExpressionRequest> {
+    if !matches!(state.stage(), Stage::Adult) {
+        return None;
+    }
+    if let Some(prev) = state.last_loop_expression_dispatch_at
+        && now.signed_duration_since(prev).num_seconds() < LOOP_EXPRESSION_THROTTLE_SECONDS
+    {
+        return None;
+    }
+    let cap = stage_llm_budget(state.stage());
+    if state
+        .daily_llm_call_count
+        .saturating_mul(LOOP_EXPRESSION_HEADROOM_DENOMINATOR)
+        > cap
+    {
+        return None;
+    }
+    let request = try_plan_and_reserve_expression(state, now)?;
+    state.last_loop_expression_dispatch_at = Some(now);
+    Some(request)
 }
 
 /// Memory V2 Step 12.B.D.3 — human-readable summary for
@@ -699,6 +749,135 @@ mod tests {
             crt.text.ends_with("..."),
             "truncated crt must end with the truncation suffix"
         );
+    }
+
+    // ---- 12.B.D.4 try_plan_and_reserve_expression_for_loop --------
+
+    fn adult_with_voice() -> VivlingState {
+        // Make the planner produce a prompt: set self_voice non-empty
+        // so the source-material gate inside plan_expression_prompt
+        // is satisfied.
+        let mut s = adult();
+        s.hatched = true;
+        s.self_voice = Some(codex_vivling_core::model::VivlingVoice {
+            text: "I keep watch over the build pipeline.".to_string(),
+            language: "en".to_string(),
+            generated_at: Some(t("2026-05-21T09:00:00Z")),
+            source_capsules_count: 5,
+            version: 1,
+        });
+        s
+    }
+
+    #[test]
+    fn loop_dispatch_returns_none_for_baby_stage() {
+        let mut s = baby();
+        s.hatched = true;
+        s.self_voice = Some(codex_vivling_core::model::VivlingVoice {
+            text: "tiny voice".to_string(),
+            language: "en".to_string(),
+            generated_at: None,
+            source_capsules_count: 1,
+            version: 1,
+        });
+        assert!(
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z")).is_none()
+        );
+        assert_eq!(s.daily_llm_expression_calls, 0, "stage gate must not bill");
+    }
+
+    #[test]
+    fn loop_dispatch_returns_none_for_juvenile_stage() {
+        let mut s = juvenile();
+        s.hatched = true;
+        s.self_voice = Some(codex_vivling_core::model::VivlingVoice {
+            text: "growing voice".to_string(),
+            language: "en".to_string(),
+            generated_at: None,
+            source_capsules_count: 1,
+            version: 1,
+        });
+        assert!(
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z")).is_none()
+        );
+    }
+
+    #[test]
+    fn loop_dispatch_returns_some_for_adult_first_call() {
+        let mut s = adult_with_voice();
+        let now = t("2026-05-21T10:00:00Z");
+        let req = try_plan_and_reserve_expression_for_loop(&mut s, now);
+        assert!(req.is_some(), "Adult first loop dispatch should succeed");
+        assert_eq!(s.last_loop_expression_dispatch_at, Some(now));
+        assert_eq!(s.daily_llm_expression_calls, 1);
+    }
+
+    #[test]
+    fn loop_dispatch_returns_none_within_5min_throttle() {
+        let mut s = adult_with_voice();
+        s.last_loop_expression_dispatch_at = Some(t("2026-05-21T09:58:00Z"));
+        s.daily_llm_day_key = "2026-05-21".to_string();
+        // 2 minutes later — well inside the 5-minute floor.
+        let now = t("2026-05-21T10:00:00Z");
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_none());
+        assert_eq!(s.daily_llm_expression_calls, 0);
+    }
+
+    #[test]
+    fn loop_dispatch_allows_after_5min_throttle_expires() {
+        let mut s = adult_with_voice();
+        s.last_loop_expression_dispatch_at = Some(t("2026-05-21T09:54:00Z"));
+        let now = t("2026-05-21T10:00:00Z"); // 6 minutes later
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_some());
+    }
+
+    #[test]
+    fn loop_dispatch_returns_none_when_budget_over_50_percent() {
+        let mut s = adult_with_voice();
+        let cap = stage_llm_budget(Stage::Adult);
+        // Seed counter at exactly 50% + 1 so the headroom gate fires.
+        s.daily_llm_call_count = cap / 2 + 1;
+        s.daily_llm_day_key = "2026-05-21".to_string();
+        let now = t("2026-05-21T10:00:00Z");
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_none());
+        assert_eq!(
+            s.daily_llm_expression_calls, 0,
+            "headroom gate must not bill"
+        );
+    }
+
+    #[test]
+    fn loop_dispatch_allows_at_exactly_50_percent_budget() {
+        let mut s = adult_with_voice();
+        let cap = stage_llm_budget(Stage::Adult);
+        // Exactly at 50% — the gate is `> cap` (after `*2`), so equal
+        // must still pass.
+        s.daily_llm_call_count = cap / 2;
+        s.daily_llm_day_key = "2026-05-21".to_string();
+        let now = t("2026-05-21T10:00:00Z");
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_some());
+    }
+
+    #[test]
+    fn loop_dispatch_independent_from_turn_throttle_window() {
+        // last_llm_dispatch_at (turn-driven) within 60s should NOT
+        // block the loop helper directly — the loop helper has its
+        // own dedicated 5min throttle. The shared 60s window inside
+        // try_reserve will still fire downstream, however, because
+        // both paths funnel through the same reservation primitive.
+        let mut s = adult_with_voice();
+        s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z"));
+        let now = t("2026-05-21T10:00:00Z"); // 30s later
+        let req = try_plan_and_reserve_expression_for_loop(&mut s, now);
+        assert!(
+            req.is_none(),
+            "shared 60s throttle inside try_reserve should still refuse — \
+             loop-specific gates pass, but inner reservation does not"
+        );
+        // The refusal must come from the inner throttle, not the loop
+        // helper's own bookkeeping — last_loop_expression_dispatch_at
+        // must stay None.
+        assert_eq!(s.last_loop_expression_dispatch_at, None);
     }
 
     // ---- 12.B.D.3 try_plan_and_reserve_expression ------------------

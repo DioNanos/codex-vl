@@ -90,6 +90,22 @@ pub const fn stage_llm_budget(stage: Stage) -> u32 {
 /// budget alone caps them).
 pub const LLM_EXPRESSION_THROTTLE_SECONDS: i64 = 60;
 
+/// Memory V2 Step 12.B.D.4 — extra anti-burn window dedicated to
+/// loop-event triggered Expression refreshes. Loop ticks fire much
+/// more frequently than turn completions; a 5-minute floor prevents
+/// long-running loops from draining the Expression budget while
+/// turn-driven refreshes still answer within the standard 60s.
+pub const LOOP_EXPRESSION_THROTTLE_SECONDS: i64 = 300;
+
+/// Memory V2 Step 12.B.D.4 — loop-trigger budget saturation gate.
+/// When `daily_llm_call_count * 2 > stage_llm_budget` (i.e. ≥ 50%
+/// of today's budget is already gone) the loop hook stops triggering
+/// new refreshes; turn-driven refreshes can still consume the
+/// remaining headroom. The 50% bias reflects the editorial choice
+/// that turn-driven snapshots carry more fresh signal than mid-loop
+/// snapshots.
+pub const LOOP_EXPRESSION_HEADROOM_DENOMINATOR: u32 = 2;
+
 /// Expression-prompt schema version emitted by [`plan_expression_prompt`].
 /// Bumped only when the deterministic prompt template shape changes.
 pub const EXPRESSION_PROMPT_VERSION: u32 = 1;

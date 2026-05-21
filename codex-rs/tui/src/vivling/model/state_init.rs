@@ -137,6 +137,7 @@ impl VivlingState {
             daily_llm_optout_skips: 0,
             daily_llm_day_key: String::new(),
             last_llm_dispatch_at: None,
+            last_loop_expression_dispatch_at: None,
         };
         state.normalize_unlocked_species();
         state.recompute_level();

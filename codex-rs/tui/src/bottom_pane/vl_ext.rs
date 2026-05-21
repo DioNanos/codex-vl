@@ -202,6 +202,21 @@ impl BottomPane {
         request
     }
 
+    /// Memory V2 Step 12.B.D.4 — loop-event variant. Layers
+    /// Adult-only + 5min throttle + 50% budget headroom on top of
+    /// the standard turn-driven pipeline.
+    pub(crate) fn try_dispatch_vivling_loop_expression_refresh(
+        &mut self,
+        config: &Config,
+    ) -> Option<crate::vivling::VivlingExpressionRequest> {
+        self.configure_vivling(config);
+        let request = self.vivling.try_dispatch_loop_expression_refresh();
+        if request.is_some() {
+            self.request_redraw();
+        }
+        request
+    }
+
     pub(crate) fn active_vivling_loop_owner_identity(
         &mut self,
         config: &Config,

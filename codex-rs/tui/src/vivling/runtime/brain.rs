@@ -534,6 +534,23 @@ impl Vivling {
         Some(request)
     }
 
+    /// Memory V2 Step 12.B.D.4 — loop-event variant of
+    /// `try_dispatch_expression_refresh`. Layers Adult-only + 5min
+    /// throttle + 50% budget headroom on top of the standard
+    /// pipeline. Save-state-before-spawn contract identical to the
+    /// turn-driven helper.
+    pub(crate) fn try_dispatch_loop_expression_refresh(
+        &mut self,
+    ) -> Option<super::expression::VivlingExpressionRequest> {
+        let state = self.state.as_mut()?;
+        let now = Utc::now();
+        let request = super::expression::try_plan_and_reserve_expression_for_loop(state, now)?;
+        if self.save_state().is_err() {
+            return None;
+        }
+        Some(request)
+    }
+
     /// Memory V2 Step 12.B.D.2 — bump the persistent
     /// `daily_llm_failure_count` for `vivling_id` after an Expression
     /// LLM call failed (network / parser / model error). Persists via

@@ -56,6 +56,13 @@ impl ChatWidget {
                 goal: goal.map(str::to_string),
             },
         );
+        // Memory V2 Step 12.B.D.4 — post-loop Expression refresh.
+        // Stricter than the turn hook: Adult-only + 5min throttle +
+        // 50% budget headroom. Best-effort: every refusal layer can
+        // drop the dispatch silently. Closes the gap Gemini 3.1 Pro
+        // flagged in the 12.B.D.3 audit ("feature limitante, non
+        // bug, appropriata per coprire lo scope D.4 futuro").
+        self.maybe_trigger_vivling_loop_expression_refresh();
     }
 
     pub(crate) fn record_vivling_turn_completed(&mut self, summary: Option<&str>) {
