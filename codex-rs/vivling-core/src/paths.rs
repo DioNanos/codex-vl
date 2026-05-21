@@ -35,6 +35,14 @@ pub fn last_write_backup_path(roster_dir: &Path, vivling_id: &str) -> PathBuf {
     roster_dir.join(format!("{vivling_id}.json.bak"))
 }
 
+/// Rotational last-write backup for the `<vivling_id>_skills.json`
+/// sidecar (Memory V2 Step 8.B). Distinct from
+/// [`last_write_backup_path`] so the state and skills backups never
+/// shadow each other and either can be inspected on its own.
+pub fn skills_last_write_backup_path(roster_dir: &Path, vivling_id: &str) -> PathBuf {
+    roster_dir.join(format!("{vivling_id}_skills.json.bak"))
+}
+
 /// Per-Vivling advisory lock file path. Held during the entire memory-agent
 /// transaction to prevent races with the TUI save path.
 pub fn lock_file_path(roster_dir: &Path, vivling_id: &str) -> PathBuf {
@@ -84,6 +92,20 @@ mod tests {
         assert_ne!(lw, lk);
         assert!(lw.to_string_lossy().ends_with(".json.bak"));
         assert!(lk.to_string_lossy().ends_with(".json.lock"));
+    }
+
+    #[test]
+    fn skills_last_write_backup_path_is_distinct_from_state_backup() {
+        let state_bak = last_write_backup_path(&roster(), "viv-13ba0093");
+        let skills_bak = skills_last_write_backup_path(&roster(), "viv-13ba0093");
+        assert_ne!(
+            state_bak, skills_bak,
+            "state and skills backups must never shadow each other"
+        );
+        assert_eq!(
+            skills_bak,
+            PathBuf::from("/tmp/codex_vivlings/viv-13ba0093_skills.json.bak")
+        );
     }
 
     #[test]

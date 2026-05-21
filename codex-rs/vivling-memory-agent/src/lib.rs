@@ -26,6 +26,8 @@ use codex_vivling_core::model::VivlingWorkMemoryEntry;
 use codex_vivling_core::paths::last_write_backup_path;
 use codex_vivling_core::paths::lock_file_path;
 use codex_vivling_core::paths::pre_migration_backup_path;
+use codex_vivling_core::paths::skills_file_path;
+use codex_vivling_core::paths::skills_last_write_backup_path;
 use codex_vivling_core::paths::voice_file_path;
 use codex_vivling_core::redaction::redact_secrets;
 use codex_vivling_core::safety::SafetyError;
@@ -367,6 +369,12 @@ pub enum LiveBatchActionKind {
         wrote: bool,
         #[serde(default)]
         voice_written: bool,
+        /// Step 8.B — `true` when the live batch wrote the planned
+        /// `<vivling_id>_skills.json` sidecar. `#[serde(default)]`
+        /// keeps the field backward-compatible with reports emitted
+        /// before Step 8.B.
+        #[serde(default)]
+        skills_written: bool,
     },
     /// Entry was not eligible for a live write (stale schema,
     /// unhatched egg, sidecar JSON…). Mirrors the dry-run
@@ -500,19 +508,22 @@ fn run_live_batch_inner(
 
         // --- transaction pipeline (still under lock) ---
         //
-        // Step 7.B: plan the voice update on the fresh body, then
-        // prepare the state-with-voice payload AND the sidecar bytes
-        // in memory BEFORE touching any file. This lets us back up
-        // the live state (capturing the pre-voice snapshot for
-        // manual rollback) and write the two outputs in a
-        // predictable order:
-        //   1. backup_last_write  -> .json.bak
-        //   2. write_atomic state -> the .json with self_voice merged
-        //   3. write_atomic voice sidecar -> _voice.md
-        // If the sidecar write fails after the state write, the
-        // `.bak` still allows manual recovery to the previous state.
-        let voice_outcome = plan_voice_update(&fresh_body, Utc::now());
-        let (state_payload, sidecar_payload, voice_written) =
+        // Step 8.B ordering (extends Step 7.B):
+        //   plan voice + skills on fresh body
+        //   -> prepare state_payload (state JSON with self_voice merged
+        //      if any), voice_sidecar_payload (markdown), skills_sidecar_payload
+        //      (Vec<VivlingSkill> JSON) in memory
+        //   -> backup state (.json.bak) so manual rollback to the pre-voice
+        //      state remains possible
+        //   -> backup the existing skills sidecar (._skills.json.bak)
+        //      BEFORE we mutate state — if this step fails we want
+        //      `bail` rather than a torn state + missing skills history
+        //   -> write_atomic state
+        //   -> write_atomic voice sidecar (if any)
+        //   -> write_atomic skills sidecar (if any)
+        let now = Utc::now();
+        let voice_outcome = plan_voice_update(&fresh_body, now);
+        let (state_payload, voice_sidecar_payload, voice_written) =
             match voice_outcome {
                 Ok(Ok(plan)) => {
                     let merged = merge_self_voice_into_state_body(&fresh_body, &plan.voice)
@@ -526,6 +537,21 @@ fn run_live_batch_inner(
                 _ => (fresh_body.clone(), None, false),
             };
 
+        let skills_outcome = plan_skill_updates(&fresh_body, now);
+        let (skills_sidecar_payload, skills_written) = match skills_outcome {
+            Ok(Ok(plans)) if !plans.is_empty() => {
+                let skills: Vec<VivlingSkill> = plans.into_iter().map(|plan| plan.skill).collect();
+                let json = serde_json::to_string_pretty(&skills).map_err(|err| {
+                    MemoryAgentError::InvalidStateJson {
+                        path: path.clone(),
+                        source: err,
+                    }
+                })?;
+                (Some(json), true)
+            }
+            _ => (None, false),
+        };
+
         let backup_path = last_write_backup_path(roster_dir, &fresh_header.vivling_id);
         backup_last_write(&path, &backup_path).map_err(|err| {
             MemoryAgentError::LiveBatchSafety {
@@ -534,6 +560,22 @@ fn run_live_batch_inner(
                 source: err,
             }
         })?;
+        // Step 8.B: backup the existing skills sidecar BEFORE mutating
+        // any state file. `backup_last_write` is a no-op when the
+        // source path does not exist, so first-write Vivlings simply
+        // produce no `.bak` here.
+        let skills_path = skills_file_path(roster_dir, &fresh_header.vivling_id);
+        if skills_sidecar_payload.is_some() {
+            let skills_backup_path =
+                skills_last_write_backup_path(roster_dir, &fresh_header.vivling_id);
+            backup_last_write(&skills_path, &skills_backup_path).map_err(|err| {
+                MemoryAgentError::LiveBatchSafety {
+                    vivling_id: fresh_header.vivling_id.clone(),
+                    path: skills_path.clone(),
+                    source: err,
+                }
+            })?;
+        }
         write_atomic(&path, state_payload.as_bytes()).map_err(|err| {
             MemoryAgentError::LiveBatchSafety {
                 vivling_id: fresh_header.vivling_id.clone(),
@@ -541,12 +583,21 @@ fn run_live_batch_inner(
                 source: err,
             }
         })?;
-        if let Some(sidecar) = sidecar_payload {
+        if let Some(sidecar) = voice_sidecar_payload {
             let sidecar_path = voice_file_path(roster_dir, &fresh_header.vivling_id);
             write_atomic(&sidecar_path, sidecar.as_bytes()).map_err(|err| {
                 MemoryAgentError::LiveBatchSafety {
                     vivling_id: fresh_header.vivling_id.clone(),
                     path: sidecar_path.clone(),
+                    source: err,
+                }
+            })?;
+        }
+        if let Some(skills_json) = skills_sidecar_payload {
+            write_atomic(&skills_path, skills_json.as_bytes()).map_err(|err| {
+                MemoryAgentError::LiveBatchSafety {
+                    vivling_id: fresh_header.vivling_id.clone(),
+                    path: skills_path.clone(),
                     source: err,
                 }
             })?;
@@ -558,6 +609,7 @@ fn run_live_batch_inner(
             kind: LiveBatchActionKind::NoopTransaction {
                 wrote: true,
                 voice_written,
+                skills_written,
             },
         });
     }
@@ -2143,6 +2195,7 @@ mod tests {
             LiveBatchActionKind::NoopTransaction {
                 wrote: true,
                 voice_written: true,
+                ..
             } => {}
             other => panic!("expected NoopTransaction with voice_written=true, got: {other:?}"),
         }
@@ -2224,6 +2277,7 @@ mod tests {
             LiveBatchActionKind::NoopTransaction {
                 wrote: true,
                 voice_written: false,
+                ..
             } => {}
             other => panic!("expected voice_written=false noop, got: {other:?}"),
         }
@@ -2817,31 +2871,195 @@ mod tests {
         assert!(serialised.contains("no source material"));
     }
 
-    #[test]
-    fn live_batch_does_not_write_skills_sidecar_in_step_8a() {
-        // Step 8.A keeps the live batch invariant from 7.B: only
-        // `self_voice` + `_voice.md` ever land on disk. The future
-        // `_skills.json` sidecar is Step 8.B.
-        let temp = TempDir::new().expect("tempdir");
+    // --- Step 8.B: live skills sidecar tests ---
+
+    use codex_vivling_core::paths::skills_file_path as core_skills_file_path;
+    use codex_vivling_core::paths::skills_last_write_backup_path as core_skills_last_write_backup_path;
+
+    fn write_state_with_skill_source(temp_dir: &Path, stem: &str) -> PathBuf {
         let body = format!(
             r#"{{
                 "version":{},
-                "vivling_id":"viv-skills",
+                "vivling_id":"{stem}",
                 "name":"Aelia",
                 "hatched":true,
                 "distilled_summaries":[
-                    {{"topic":"loop tick","summary":"check ci","total_weight":3,"observations":2}}
+                    {{"topic":"refactor pipeline","summary":"verify first","total_weight":5,"observations":3}}
                 ]
             }}"#,
+            SUPPORTED_STATE_VERSION,
+            stem = stem
+        );
+        write_state(temp_dir, stem, &body)
+    }
+
+    #[test]
+    fn live_batch_writes_skills_sidecar_when_plan_available() {
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_skill_source(temp.path(), "viv-skills");
+
+        let report = run_live_batch(temp.path()).expect("live batch");
+        assert_eq!(report.wrote_count, 1);
+        match &report.actions[0].kind {
+            LiveBatchActionKind::NoopTransaction {
+                wrote: true,
+                voice_written: true,
+                skills_written: true,
+            } => {}
+            other => panic!("expected skills_written=true noop, got: {other:?}"),
+        }
+
+        let sidecar = core_skills_file_path(temp.path(), "viv-skills");
+        assert!(
+            sidecar.exists(),
+            "skills sidecar must land: {}",
+            sidecar.display()
+        );
+        let body = fs::read_to_string(&sidecar).expect("read sidecar");
+        let skills: Vec<serde_json::Value> = serde_json::from_str(&body).expect("parse skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0]["name"], "refactor-pipeline");
+    }
+
+    #[test]
+    fn live_batch_does_not_write_skills_sidecar_when_no_source_material() {
+        let temp = TempDir::new().expect("tempdir");
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-mute","name":"Mute","hatched":true}}"#,
             SUPPORTED_STATE_VERSION
         );
-        write_state(temp.path(), "viv-skills", &body);
-        let _ = run_live_batch(temp.path()).expect("live batch");
-        let skills_sidecar = temp.path().join("viv-skills_skills.json");
+        write_state(temp.path(), "viv-mute", &body);
+
+        let report = run_live_batch(temp.path()).expect("live batch");
+        match &report.actions[0].kind {
+            LiveBatchActionKind::NoopTransaction {
+                wrote: true,
+                voice_written: false,
+                skills_written: false,
+            } => {}
+            other => panic!("expected skills_written=false noop, got: {other:?}"),
+        }
+        let sidecar = core_skills_file_path(temp.path(), "viv-mute");
         assert!(
-            !skills_sidecar.exists(),
-            "Step 8.A must not write the skills sidecar yet"
+            !sidecar.exists(),
+            "no source must mean no skills sidecar: {}",
+            sidecar.display()
         );
+    }
+
+    #[test]
+    fn live_batch_skills_sidecar_redacts_secret_and_skips_marker_only() {
+        let secret = "sk-ant-api03-MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM";
+        let temp = TempDir::new().expect("tempdir");
+        // Mixed text + secret -> sidecar written, secret NOT present.
+        let body_mixed = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-mixed",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"debug pipeline {secret}","summary":"trace step {secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        write_state(temp.path(), "viv-mixed", &body_mixed);
+        let _ = run_live_batch(temp.path()).expect("live batch");
+        let mixed_sidecar = core_skills_file_path(temp.path(), "viv-mixed");
+        assert!(mixed_sidecar.exists());
+        let mixed_body = fs::read_to_string(&mixed_sidecar).expect("read sidecar");
+        assert!(!mixed_body.contains(secret));
+
+        // Marker-only source -> no sidecar written.
+        let body_only = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-only",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"{secret}","summary":"{secret}","total_weight":3,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        write_state(temp.path(), "viv-only", &body_only);
+        let _ = run_live_batch(temp.path()).expect("live batch");
+        let only_sidecar = core_skills_file_path(temp.path(), "viv-only");
+        assert!(
+            !only_sidecar.exists(),
+            "marker-only source must not produce a skills sidecar: {}",
+            only_sidecar.display()
+        );
+    }
+
+    #[test]
+    fn live_batch_creates_backup_for_existing_skills_sidecar() {
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_skill_source(temp.path(), "viv-rot");
+        // Seed an "old" skills sidecar so the rotational backup has
+        // pre-existing content to capture.
+        let sidecar = core_skills_file_path(temp.path(), "viv-rot");
+        let old_content =
+            r#"[{"name":"old-skill","description":"prior catalogue","trigger_keywords":["old"]}]"#;
+        fs::write(&sidecar, old_content).expect("seed sidecar");
+
+        let _ = run_live_batch(temp.path()).expect("live batch");
+
+        let backup = core_skills_last_write_backup_path(temp.path(), "viv-rot");
+        assert!(backup.exists(), "skills sidecar backup must land");
+        assert_eq!(
+            fs::read_to_string(&backup).expect("read backup"),
+            old_content,
+            "skills backup must preserve the prior sidecar content"
+        );
+        // Post-write sidecar holds the fresh plan, not the old content.
+        let after = fs::read_to_string(&sidecar).expect("read sidecar");
+        assert!(after.contains("refactor-pipeline"));
+    }
+
+    #[test]
+    fn live_batch_action_reports_skills_and_voice_flags_independently() {
+        // Vivling whose source produces a voice but no skill plan
+        // (very short summary that fails the skill name filter only
+        // when planner declines). Here we use a hatched Vivling with
+        // a single distilled summary that DOES produce both a voice
+        // and a skill — and a second Vivling with no source at all so
+        // both flags collapse to false. The point of the test is to
+        // pin the wire-shape independence of the two flags.
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_skill_source(temp.path(), "viv-both");
+        let body_none = format!(
+            r#"{{"version":{},"vivling_id":"viv-none","name":"None","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-none", &body_none);
+
+        let report = run_live_batch(temp.path()).expect("live batch");
+        let by_id: std::collections::HashMap<String, &LiveBatchAction> = report
+            .actions
+            .iter()
+            .map(|a| (a.vivling_id.clone(), a))
+            .collect();
+        match &by_id["viv-both"].kind {
+            LiveBatchActionKind::NoopTransaction {
+                voice_written: true,
+                skills_written: true,
+                ..
+            } => {}
+            other => panic!("expected both flags true for viv-both, got: {other:?}"),
+        }
+        match &by_id["viv-none"].kind {
+            LiveBatchActionKind::NoopTransaction {
+                voice_written: false,
+                skills_written: false,
+                ..
+            } => {}
+            other => panic!("expected both flags false for viv-none, got: {other:?}"),
+        }
     }
 
     #[test]
