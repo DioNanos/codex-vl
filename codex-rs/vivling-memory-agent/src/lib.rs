@@ -25,6 +25,7 @@ use codex_vivling_core::model::VivlingWorkMemoryEntry;
 use codex_vivling_core::paths::last_write_backup_path;
 use codex_vivling_core::paths::lock_file_path;
 use codex_vivling_core::paths::pre_migration_backup_path;
+use codex_vivling_core::paths::voice_file_path;
 use codex_vivling_core::redaction::redact_secrets;
 use codex_vivling_core::safety::SafetyError;
 use codex_vivling_core::safety::acquire_lock;
@@ -329,9 +330,19 @@ fn collect_state_candidates(roster_dir: &Path) -> Result<Vec<PathBuf>, MemoryAge
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveBatchActionKind {
-    /// Lock acquired, last-write backup taken, payload re-written
-    /// byte-for-byte. Pure transaction-pipeline exercise.
-    NoopTransaction { wrote: bool },
+    /// Lock acquired, last-write backup taken, payload re-written.
+    /// Step 6.B introduced this as a byte-identical no-op so the
+    /// transaction pipeline could be tested in isolation. Step 7.B
+    /// extends the same action with `voice_written`: when the
+    /// planner produces a valid voice, the agent updates the JSON
+    /// `self_voice` field and writes the markdown sidecar under the
+    /// same lock; the action records both writes via a single
+    /// `voice_written: true` flag for stable shape.
+    NoopTransaction {
+        wrote: bool,
+        #[serde(default)]
+        voice_written: bool,
+    },
     /// Entry was not eligible for a live write (stale schema,
     /// unhatched egg, sidecar JSON…). Mirrors the dry-run
     /// `skip_reason` field for shape coherence.
@@ -463,6 +474,33 @@ fn run_live_batch_inner(
         }
 
         // --- transaction pipeline (still under lock) ---
+        //
+        // Step 7.B: plan the voice update on the fresh body, then
+        // prepare the state-with-voice payload AND the sidecar bytes
+        // in memory BEFORE touching any file. This lets us back up
+        // the live state (capturing the pre-voice snapshot for
+        // manual rollback) and write the two outputs in a
+        // predictable order:
+        //   1. backup_last_write  -> .json.bak
+        //   2. write_atomic state -> the .json with self_voice merged
+        //   3. write_atomic voice sidecar -> _voice.md
+        // If the sidecar write fails after the state write, the
+        // `.bak` still allows manual recovery to the previous state.
+        let voice_outcome = plan_voice_update(&fresh_body, Utc::now());
+        let (state_payload, sidecar_payload, voice_written) =
+            match voice_outcome {
+                Ok(Ok(plan)) => {
+                    let merged = merge_self_voice_into_state_body(&fresh_body, &plan.voice)
+                        .map_err(|err| MemoryAgentError::InvalidStateJson {
+                            path: path.clone(),
+                            source: err,
+                        })?;
+                    let sidecar = render_voice_sidecar_markdown(&plan.voice);
+                    (merged, Some(sidecar), true)
+                }
+                _ => (fresh_body.clone(), None, false),
+            };
+
         let backup_path = last_write_backup_path(roster_dir, &fresh_header.vivling_id);
         backup_last_write(&path, &backup_path).map_err(|err| {
             MemoryAgentError::LiveBatchSafety {
@@ -471,18 +509,31 @@ fn run_live_batch_inner(
                 source: err,
             }
         })?;
-        write_atomic(&path, fresh_body.as_bytes()).map_err(|err| {
+        write_atomic(&path, state_payload.as_bytes()).map_err(|err| {
             MemoryAgentError::LiveBatchSafety {
                 vivling_id: fresh_header.vivling_id.clone(),
                 path: path.clone(),
                 source: err,
             }
         })?;
+        if let Some(sidecar) = sidecar_payload {
+            let sidecar_path = voice_file_path(roster_dir, &fresh_header.vivling_id);
+            write_atomic(&sidecar_path, sidecar.as_bytes()).map_err(|err| {
+                MemoryAgentError::LiveBatchSafety {
+                    vivling_id: fresh_header.vivling_id.clone(),
+                    path: sidecar_path.clone(),
+                    source: err,
+                }
+            })?;
+        }
         // Guard drops here → lock released.
         actions.push(LiveBatchAction {
             vivling_id: fresh_header.vivling_id,
             state_path: path,
-            kind: LiveBatchActionKind::NoopTransaction { wrote: true },
+            kind: LiveBatchActionKind::NoopTransaction {
+                wrote: true,
+                voice_written,
+            },
         });
     }
 
@@ -492,7 +543,7 @@ fn run_live_batch_inner(
         .filter(|action| {
             matches!(
                 action.kind,
-                LiveBatchActionKind::NoopTransaction { wrote: true }
+                LiveBatchActionKind::NoopTransaction { wrote: true, .. }
             )
         })
         .count();
@@ -742,6 +793,43 @@ fn render_voice_paragraph(language: &str, name: &str, topic: &str, pattern: &str
         parts.push(clause);
     }
     parts.join(" ")
+}
+
+/// Merge a planned `VivlingVoice` into an existing state JSON body
+/// without disturbing fields the agent does not model. The state file
+/// can carry V9 scaffolding fields (cached_*, lineage_inheritance, …)
+/// or future-proof additions that the memory-agent crate intentionally
+/// has no knowledge of; round-tripping through a typed `VivlingState`
+/// here would silently drop them. Using `serde_json::Value` preserves
+/// every key.
+fn merge_self_voice_into_state_body(
+    body: &str,
+    voice: &VivlingVoice,
+) -> Result<String, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let serde_json::Value::Object(map) = &mut value {
+        let voice_json = serde_json::to_value(voice)?;
+        map.insert("self_voice".to_string(), voice_json);
+    }
+    serde_json::to_string_pretty(&value)
+}
+
+/// Stable markdown serialisation of the planned voice. Mirrors what
+/// the live batch writes to `<vivling_id>_voice.md`. The format is
+/// minimal on purpose: the file is meant for human inspection, not as
+/// a parser surface.
+fn render_voice_sidecar_markdown(voice: &VivlingVoice) -> String {
+    let generated_at = voice
+        .generated_at
+        .map(|ts| ts.to_rfc3339())
+        .unwrap_or_else(|| "(unset)".to_string());
+    format!(
+        "{text}\n\n<!-- voice metadata -->\n- language: {lang}\n- generated_at: {generated_at}\n- source_capsules_count: {count}\n- version: {version}\n",
+        text = voice.text,
+        lang = voice.language,
+        count = voice.source_capsules_count,
+        version = voice.version,
+    )
 }
 
 fn classify_entry(header: &VivlingStateHeader) -> (bool, Option<String>) {
@@ -1649,6 +1737,182 @@ mod tests {
         assert_eq!(
             json["entries"][0]["voice_plan_skipped"],
             "no source material"
+        );
+    }
+
+    // --- Step 7.B: live voice write + sidecar tests ---
+
+    use codex_vivling_core::paths::voice_file_path as core_voice_file_path;
+
+    fn write_state_with_voice_source(temp_dir: &Path, stem: &str) -> PathBuf {
+        let body = format!(
+            r#"{{
+                "version":{},
+                "vivling_id":"{stem}",
+                "name":"Aelia",
+                "hatched":true,
+                "extra_field":"keep-me",
+                "language_state":{{"detected_language":"it","language_mode":"mirror_user","recent_samples":[],"language_override":null}},
+                "distilled_summaries":[
+                    {{"topic":"refactor","summary":"verifica prima","total_weight":5,"observations":3}}
+                ]
+            }}"#,
+            SUPPORTED_STATE_VERSION,
+            stem = stem
+        );
+        write_state(temp_dir, stem, &body)
+    }
+
+    #[test]
+    fn live_batch_writes_self_voice_when_plan_available() {
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_voice_source(temp.path(), "viv-7b");
+
+        let report = run_live_batch(temp.path()).expect("live batch");
+        assert_eq!(report.wrote_count, 1);
+        match &report.actions[0].kind {
+            LiveBatchActionKind::NoopTransaction {
+                wrote: true,
+                voice_written: true,
+            } => {}
+            other => panic!("expected NoopTransaction with voice_written=true, got: {other:?}"),
+        }
+
+        let body = fs::read_to_string(temp.path().join("viv-7b.json")).expect("read state");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("parse");
+        let voice = value
+            .get("self_voice")
+            .expect("self_voice must be merged into the state JSON");
+        assert_eq!(voice["language"], "it");
+        assert!(voice["text"].as_str().unwrap().contains("refactor"));
+    }
+
+    #[test]
+    fn live_batch_writes_voice_sidecar_md() {
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_voice_source(temp.path(), "viv-7b");
+        let _ = run_live_batch(temp.path()).expect("live batch");
+
+        let sidecar = core_voice_file_path(temp.path(), "viv-7b");
+        assert!(
+            sidecar.exists(),
+            "voice sidecar must exist: {}",
+            sidecar.display()
+        );
+        let md = fs::read_to_string(&sidecar).expect("read sidecar");
+        assert!(md.contains("Io sono Aelia"));
+        assert!(md.contains("language: it"));
+        assert!(md.contains("source_capsules_count:"));
+        assert!(md.contains("version: 1"));
+    }
+
+    #[test]
+    fn live_batch_backup_contains_pre_voice_state() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = write_state_with_voice_source(temp.path(), "viv-7b");
+        let pre = fs::read_to_string(&path).expect("read pre");
+        let _ = run_live_batch(temp.path()).expect("live batch");
+
+        let backup = core_last_write_backup_path(temp.path(), "viv-7b");
+        let backup_body = fs::read_to_string(&backup).expect("read backup");
+        assert_eq!(
+            backup_body, pre,
+            "last-write backup must capture the state before self_voice was merged"
+        );
+        // And the post-write file must NOT match the pre-write file:
+        // the voice merge has landed.
+        let post = fs::read_to_string(&path).expect("read post");
+        assert_ne!(post, pre);
+        assert!(post.contains("\"self_voice\""));
+    }
+
+    #[test]
+    fn live_batch_voice_write_preserves_unrelated_json_fields() {
+        let temp = TempDir::new().expect("tempdir");
+        write_state_with_voice_source(temp.path(), "viv-7b");
+        let _ = run_live_batch(temp.path()).expect("live batch");
+
+        let body = fs::read_to_string(temp.path().join("viv-7b.json")).expect("read state");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("parse");
+        // Round-trip through serde_json::Value must preserve fields the
+        // memory-agent does not model (here: `extra_field`).
+        assert_eq!(value["extra_field"], "keep-me");
+        assert!(value.get("self_voice").is_some());
+    }
+
+    #[test]
+    fn live_batch_skip_no_source_does_not_write_self_voice_or_sidecar() {
+        let temp = TempDir::new().expect("tempdir");
+        // Hatched + current schema, but no voice source material.
+        let body = format!(
+            r#"{{"version":{},"vivling_id":"viv-mute","name":"Mute","hatched":true}}"#,
+            SUPPORTED_STATE_VERSION
+        );
+        write_state(temp.path(), "viv-mute", &body);
+
+        let report = run_live_batch(temp.path()).expect("live batch");
+        match &report.actions[0].kind {
+            LiveBatchActionKind::NoopTransaction {
+                wrote: true,
+                voice_written: false,
+            } => {}
+            other => panic!("expected voice_written=false noop, got: {other:?}"),
+        }
+
+        let state_after =
+            fs::read_to_string(temp.path().join("viv-mute.json")).expect("read state");
+        assert!(
+            !state_after.contains("\"self_voice\""),
+            "no voice source must mean no self_voice merge"
+        );
+        let sidecar = core_voice_file_path(temp.path(), "viv-mute");
+        assert!(
+            !sidecar.exists(),
+            "no voice plan must mean no sidecar at {}",
+            sidecar.display()
+        );
+    }
+
+    #[test]
+    fn live_batch_voice_redacts_secret_in_state_and_sidecar() {
+        let temp = TempDir::new().expect("tempdir");
+        let secret = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        let body = format!(
+            r#"{{
+                "version":{ver},
+                "vivling_id":"viv-redact",
+                "name":"Aelia",
+                "hatched":true,
+                "distilled_summaries":[
+                    {{"topic":"auth debug","summary":"key seen: {secret}","total_weight":4,"observations":2}}
+                ]
+            }}"#,
+            ver = SUPPORTED_STATE_VERSION,
+            secret = secret
+        );
+        write_state(temp.path(), "viv-redact", &body);
+
+        let _ = run_live_batch(temp.path()).expect("live batch");
+
+        let state_after =
+            fs::read_to_string(temp.path().join("viv-redact.json")).expect("read state");
+        let sidecar_path = core_voice_file_path(temp.path(), "viv-redact");
+        let sidecar = fs::read_to_string(&sidecar_path).expect("read sidecar");
+
+        // The secret survives in the work_memory / distilled summary
+        // fields (those are the *source* truth and Step 7.B does not
+        // mutate the original summary text), but it must NEVER leak
+        // into self_voice or the sidecar — the planner is supposed
+        // to scrub the voice text before it lands.
+        let value: serde_json::Value = serde_json::from_str(&state_after).expect("parse");
+        let voice_text = value["self_voice"]["text"].as_str().expect("voice text");
+        assert!(
+            !voice_text.contains(secret),
+            "secret leaked into self_voice.text: {voice_text}"
+        );
+        assert!(
+            !sidecar.contains(secret),
+            "secret leaked into voice sidecar markdown"
         );
     }
 
