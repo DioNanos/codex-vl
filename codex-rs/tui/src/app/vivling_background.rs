@@ -299,9 +299,22 @@ pub(super) async fn run_vivling_expression_request(
         }],
         phase: None,
     }];
+    // Memory V2 Step 12.B.J — focus-aware Expression system
+    // instruction. When the chatwidget supplies a live focus hint
+    // (current task, active loop label, agent label, bond tone),
+    // fold it into the system prompt so the CRT footer reflects
+    // what the Vivling is observing right now instead of generic
+    // platitudes like "loops breathe, work hums".
+    let focus_line = match request.focus_hint.as_deref() {
+        Some(hint) if !hint.trim().is_empty() => format!(
+            "Current focus: {hint}. Reflect THIS focus concretely in `crt_phrase` — avoid generic platitudes like 'work hums' or 'loops breathe'. ",
+        ),
+        _ => String::new(),
+    };
     prompt.base_instructions = codex_protocol::models::BaseInstructions {
         text: format!(
             "You are {} expressing yourself as a Vivling inside Codex. \
+{focus_line}\
 Return a single JSON object on one line with two optional string fields: \
 `crt_phrase` (an extremely short footer phrase, max ~6 words, in {}) and \
 `proactive` (a short conversational message, max ~25 words, in {}). \

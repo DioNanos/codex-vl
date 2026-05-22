@@ -71,6 +71,15 @@ pub(crate) struct VivlingExpressionRequest {
     pub(crate) language: String,
     pub(crate) prompt_hash: u64,
     pub(crate) generated_at: DateTime<Utc>,
+    /// Memory V2 Step 12.B.J — focus hint derived from the live
+    /// context (current task, active loop label, agent label, bond
+    /// tone). When `Some(_)`, the async runner appends it to the
+    /// Expression system instruction so the CRT footer can reflect
+    /// what the Vivling is observing RIGHT NOW (e.g. `"merge upstream
+    /// watch"`, `"vps3 bootstrap focus"`) instead of generic platitudes
+    /// (`"loops breathe, work hums"`). Hashed into `prompt_hash` so a
+    /// focus shift triggers a fresh dispatch, not a dedup skip.
+    pub(crate) focus_hint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +121,7 @@ pub(crate) fn maybe_dispatch_expression_refresh(
     prompt: String,
     language: String,
     prompt_hash: u64,
+    focus_hint: Option<String>,
 ) -> Option<VivlingExpressionRequest> {
     state
         .try_reserve_llm_call(VivlingLlmCallKind::Expression, now, Some(prompt_hash))
@@ -126,6 +136,7 @@ pub(crate) fn maybe_dispatch_expression_refresh(
         language,
         prompt_hash,
         generated_at: now,
+        focus_hint,
     })
 }
 
@@ -187,9 +198,59 @@ pub(crate) fn record_expression_failure(state: &mut VivlingState) {
 /// daily LLM counters mutated by the reservation are persisted state
 /// and a crash between reservation and dispatch would otherwise
 /// allow the slot to be re-billed.
+/// Memory V2 Step 12.B.J — build a short focus hint string from the
+/// live context + Vivling bond tone. Returns `None` when nothing
+/// concrete is available (live_context empty, no active task).
+/// Bounded to ~160 chars so the focus line cannot crowd the
+/// Expression system instruction.
+pub(crate) fn build_focus_hint(
+    state: &VivlingState,
+    live: Option<&super::live_context::VivlingLiveContext>,
+) -> Option<String> {
+    let live = live?;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(task) = live
+        .task_progress
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("task `{}`", truncate_summary(task, 80)));
+    }
+    if let Some(agent) = live
+        .active_agent_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("agent `{}`", truncate_summary(agent, 40)));
+    }
+    if let Some(thread) = live
+        .thread_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        parts.push(format!("thread `{}`", truncate_summary(thread, 40)));
+    }
+    // Bond tone modulates voice register but does not gate inclusion.
+    let tone_label = match state.bond.tone() {
+        crate::vivling::BondTone::Neutral => "neutral",
+        crate::vivling::BondTone::Warm => "warm",
+        crate::vivling::BondTone::Familiar => "familiar",
+    };
+    if parts.is_empty() {
+        return None;
+    }
+    let joined = parts.join(", ");
+    let bounded = truncate_summary(&joined, 140);
+    Some(format!("{bounded} · tone {tone_label}"))
+}
+
 pub(crate) fn try_plan_and_reserve_expression(
     state: &mut VivlingState,
     now: DateTime<Utc>,
+    focus_hint: Option<String>,
 ) -> Option<VivlingExpressionRequest> {
     // Cheap pre-flight: skip the planner entirely when the user has
     // muted the channel. Saves a serialization + planner pass per
@@ -229,8 +290,24 @@ pub(crate) fn try_plan_and_reserve_expression(
     }
     let body = serde_json::to_string(state).ok()?;
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
-    let prompt_hash = fnv1a64(plan.prompt.as_bytes());
-    maybe_dispatch_expression_refresh(state, now, plan.prompt, plan.language, prompt_hash)
+    // Memory V2 Step 12.B.J — fold the focus hint into the prompt
+    // hash so a focus shift (e.g. user switches task) triggers a
+    // fresh dispatch instead of a dedup skip against the previous
+    // generic phrase.
+    let mut hash_bytes = plan.prompt.as_bytes().to_vec();
+    if let Some(focus) = focus_hint.as_deref() {
+        hash_bytes.push(b'\0');
+        hash_bytes.extend_from_slice(focus.as_bytes());
+    }
+    let prompt_hash = fnv1a64(&hash_bytes);
+    maybe_dispatch_expression_refresh(
+        state,
+        now,
+        plan.prompt,
+        plan.language,
+        prompt_hash,
+        focus_hint,
+    )
 }
 
 /// Memory V2 Step 12.B.H — force-refresh variant of
@@ -245,6 +322,7 @@ pub(crate) fn try_plan_and_reserve_expression(
 pub(crate) fn try_plan_and_reserve_expression_forced(
     state: &mut VivlingState,
     now: DateTime<Utc>,
+    focus_hint: Option<String>,
 ) -> Option<VivlingExpressionRequest> {
     if state.crt_brain_mode == VivlingExpressionMode::Off {
         return None;
@@ -261,7 +339,7 @@ pub(crate) fn try_plan_and_reserve_expression_forced(
     // genuine dispatch resets the anchor.
     let saved_dispatch_at = state.last_llm_dispatch_at;
     state.last_llm_dispatch_at = None;
-    let result = try_plan_forced_inner(state, now);
+    let result = try_plan_forced_inner(state, now, focus_hint);
     if result.is_none() {
         state.last_llm_dispatch_at = saved_dispatch_at;
     }
@@ -271,11 +349,24 @@ pub(crate) fn try_plan_and_reserve_expression_forced(
 fn try_plan_forced_inner(
     state: &mut VivlingState,
     now: DateTime<Utc>,
+    focus_hint: Option<String>,
 ) -> Option<VivlingExpressionRequest> {
     let body = serde_json::to_string(state).ok()?;
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
-    let prompt_hash = fnv1a64(plan.prompt.as_bytes());
-    maybe_dispatch_expression_refresh(state, now, plan.prompt, plan.language, prompt_hash)
+    let mut hash_bytes = plan.prompt.as_bytes().to_vec();
+    if let Some(focus) = focus_hint.as_deref() {
+        hash_bytes.push(b'\0');
+        hash_bytes.extend_from_slice(focus.as_bytes());
+    }
+    let prompt_hash = fnv1a64(&hash_bytes);
+    maybe_dispatch_expression_refresh(
+        state,
+        now,
+        plan.prompt,
+        plan.language,
+        prompt_hash,
+        focus_hint,
+    )
 }
 
 /// Memory V2 Step 12.B.D.4 — anti-burn variant of
@@ -303,6 +394,7 @@ fn try_plan_forced_inner(
 pub(crate) fn try_plan_and_reserve_expression_for_loop(
     state: &mut VivlingState,
     now: DateTime<Utc>,
+    focus_hint: Option<String>,
 ) -> Option<VivlingExpressionRequest> {
     if !matches!(state.stage(), Stage::Adult) {
         return None;
@@ -320,7 +412,7 @@ pub(crate) fn try_plan_and_reserve_expression_for_loop(
     {
         return None;
     }
-    let request = try_plan_and_reserve_expression(state, now)?;
+    let request = try_plan_and_reserve_expression(state, now, focus_hint)?;
     state.last_loop_expression_dispatch_at = Some(now);
     Some(request)
 }
@@ -686,6 +778,7 @@ mod tests {
             "hello prompt".to_string(),
             "en".to_string(),
             42,
+            None,
         )
         .expect("Adult Expression dispatch should reserve");
         assert_eq!(req.prompt, "hello prompt");
@@ -703,7 +796,7 @@ mod tests {
         s.crt_brain_mode = VivlingExpressionMode::Off;
         let now = t("2026-05-21T10:00:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1);
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
         assert!(req.is_none(), "Off mode must refuse dispatch");
         assert_eq!(s.daily_llm_optout_skips, 1);
         assert_eq!(s.daily_llm_call_count, 0);
@@ -716,7 +809,7 @@ mod tests {
         s.daily_llm_day_key = "2026-05-21".to_string();
         let now = t("2026-05-21T10:00:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1);
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
         assert!(req.is_none(), "budget cap must refuse dispatch");
         assert_eq!(s.daily_llm_budget_skips, 1);
     }
@@ -734,7 +827,7 @@ mod tests {
         // Past the 60s throttle so the dedup branch is reached.
         let later = t("2026-05-21T10:02:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, later, "p".to_string(), "en".to_string(), 7);
+            maybe_dispatch_expression_refresh(&mut s, later, "p".to_string(), "en".to_string(), 7, None);
         assert!(req.is_none(), "matching fresh cache must dedup");
         assert_eq!(s.daily_llm_dedup_skips, 1);
     }
@@ -747,7 +840,7 @@ mod tests {
         let mut s = baby();
         let now = t("2026-05-21T10:00:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1);
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
         assert!(
             req.is_some(),
             "Baby Expression eligible — caller decides rarity upstream"
@@ -768,7 +861,7 @@ mod tests {
         s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z"));
         let now = t("2026-05-21T10:00:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1);
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
         assert!(req.is_none(), "throttle window must refuse dispatch");
         assert_eq!(s.daily_llm_throttle_skips, 1);
         assert_eq!(
@@ -857,7 +950,7 @@ mod tests {
             version: 1,
         });
         assert!(
-            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z")).is_none()
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None).is_none()
         );
         assert_eq!(s.daily_llm_expression_calls, 0, "stage gate must not bill");
     }
@@ -874,7 +967,7 @@ mod tests {
             version: 1,
         });
         assert!(
-            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z")).is_none()
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None).is_none()
         );
     }
 
@@ -882,7 +975,7 @@ mod tests {
     fn loop_dispatch_returns_some_for_adult_first_call() {
         let mut s = adult_with_voice();
         let now = t("2026-05-21T10:00:00Z");
-        let req = try_plan_and_reserve_expression_for_loop(&mut s, now);
+        let req = try_plan_and_reserve_expression_for_loop(&mut s, now, None);
         assert!(req.is_some(), "Adult first loop dispatch should succeed");
         assert_eq!(s.last_loop_expression_dispatch_at, Some(now));
         assert_eq!(s.daily_llm_expression_calls, 1);
@@ -895,7 +988,7 @@ mod tests {
         s.daily_llm_day_key = "2026-05-21".to_string();
         // 2 minutes later — well inside the 5-minute floor.
         let now = t("2026-05-21T10:00:00Z");
-        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_none());
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now, None).is_none());
         assert_eq!(s.daily_llm_expression_calls, 0);
     }
 
@@ -904,7 +997,7 @@ mod tests {
         let mut s = adult_with_voice();
         s.last_loop_expression_dispatch_at = Some(t("2026-05-21T09:54:00Z"));
         let now = t("2026-05-21T10:00:00Z"); // 6 minutes later
-        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_some());
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now, None).is_some());
     }
 
     #[test]
@@ -915,7 +1008,7 @@ mod tests {
         s.daily_llm_call_count = cap / 2 + 1;
         s.daily_llm_day_key = "2026-05-21".to_string();
         let now = t("2026-05-21T10:00:00Z");
-        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_none());
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now, None).is_none());
         assert_eq!(
             s.daily_llm_expression_calls, 0,
             "headroom gate must not bill"
@@ -931,7 +1024,7 @@ mod tests {
         s.daily_llm_call_count = cap / 2;
         s.daily_llm_day_key = "2026-05-21".to_string();
         let now = t("2026-05-21T10:00:00Z");
-        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now).is_some());
+        assert!(try_plan_and_reserve_expression_for_loop(&mut s, now, None).is_some());
     }
 
     #[test]
@@ -944,7 +1037,7 @@ mod tests {
         let mut s = adult_with_voice();
         s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z"));
         let now = t("2026-05-21T10:00:00Z"); // 30s later
-        let req = try_plan_and_reserve_expression_for_loop(&mut s, now);
+        let req = try_plan_and_reserve_expression_for_loop(&mut s, now, None);
         assert!(
             req.is_none(),
             "shared 60s throttle inside try_reserve should still refuse — \
@@ -966,7 +1059,7 @@ mod tests {
         // only when try_reserve fires).
         let mut s = adult();
         s.crt_brain_mode = VivlingExpressionMode::Off;
-        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"));
+        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"), None);
         assert!(req.is_none());
         assert_eq!(
             s.daily_llm_optout_skips, 0,
@@ -995,7 +1088,7 @@ mod tests {
         // Past the 60s throttle so the throttle pre-flight would
         // not catch this — the cache-fresh pre-flight must.
         let later = t("2026-05-21T10:02:00Z");
-        let req = try_plan_and_reserve_expression(&mut s, later);
+        let req = try_plan_and_reserve_expression(&mut s, later, None);
         assert!(req.is_none(), "fresh cache pre-flight must skip");
         assert_eq!(
             s.daily_llm_dedup_skips, dedup_before,
@@ -1015,7 +1108,7 @@ mod tests {
         let now = t("2026-05-21T10:00:00Z");
         s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z")); // 30s ago
         let dedup_before = s.daily_llm_dedup_skips;
-        let req = try_plan_and_reserve_expression(&mut s, now);
+        let req = try_plan_and_reserve_expression(&mut s, now, None);
         assert!(req.is_none(), "throttle pre-flight must skip");
         assert_eq!(s.daily_llm_dedup_skips, dedup_before);
         assert_eq!(
@@ -1053,7 +1146,7 @@ mod tests {
             ttl_expires_at: Some(now + Duration::minutes(10)),
         });
 
-        let result = try_plan_and_reserve_expression_forced(&mut s, now);
+        let result = try_plan_and_reserve_expression_forced(&mut s, now, None);
         assert!(result.is_none(), "dedup must refuse the forced dispatch");
         assert_eq!(
             s.last_llm_dispatch_at, saved,
@@ -1069,7 +1162,7 @@ mod tests {
         // helper must surface None without billing.
         let mut s = adult();
         s.hatched = true;
-        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"));
+        let req = try_plan_and_reserve_expression(&mut s, t("2026-05-21T10:00:00Z"), None);
         assert!(
             req.is_none(),
             "planner refusal must propagate as None without billing"
@@ -1099,7 +1192,7 @@ mod tests {
         s.brain_profile = Some("glm".to_string());
         let now = t("2026-05-21T10:00:00Z");
         let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1)
+            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None)
                 .expect("Juvenile Expression dispatch should reserve");
         assert_eq!(req.brain_target, BrainTarget::Profile("glm".to_string()));
     }

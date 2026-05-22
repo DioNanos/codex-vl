@@ -525,9 +525,11 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
+        let live_snapshot = self.live_context.borrow().clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
-        let request = super::expression::try_plan_and_reserve_expression(state, now)?;
+        let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
+        let request = super::expression::try_plan_and_reserve_expression(state, now, focus_hint)?;
         if self.save_state().is_err() {
             return None;
         }
@@ -541,9 +543,12 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh_forced(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
+        let live_snapshot = self.live_context.borrow().clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
-        let request = super::expression::try_plan_and_reserve_expression_forced(state, now)?;
+        let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
+        let request =
+            super::expression::try_plan_and_reserve_expression_forced(state, now, focus_hint)?;
         if self.save_state().is_err() {
             return None;
         }
@@ -558,9 +563,12 @@ impl Vivling {
     pub(crate) fn try_dispatch_loop_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
+        let live_snapshot = self.live_context.borrow().clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
-        let request = super::expression::try_plan_and_reserve_expression_for_loop(state, now)?;
+        let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
+        let request =
+            super::expression::try_plan_and_reserve_expression_for_loop(state, now, focus_hint)?;
         if self.save_state().is_err() {
             return None;
         }
