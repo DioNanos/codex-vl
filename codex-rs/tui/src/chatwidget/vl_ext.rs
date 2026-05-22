@@ -259,17 +259,8 @@ impl ChatWidget {
         // opened the sidebar yet this session. The bottom-pane
         // helper sets the persisted `chat_hint_shown` flag on the
         // first true so the hint never repeats for this Vivling.
-        if is_chat
-            && self
-                .bottom_pane
-                .should_emit_vivling_chat_panel_hint(&self.config)
-        {
-            self.add_info_message(
-                "Suggerimento: premi Ctrl+J per aprire la chat dedicata del Vivling \
-                 (storia preservata, scroll line-based, niente clutter del thread principale)."
-                    .to_string(),
-                /*hint*/ None,
-            );
+        if is_chat && let Some(hint) = self.bottom_pane.vivling_chat_panel_hint(&self.config) {
+            self.add_info_message(hint, /*hint*/ None);
         }
         self.request_redraw();
     }

@@ -221,10 +221,10 @@ impl BottomPane {
     /// on the FIRST turn that satisfies (turns ≥ 3, sidebar never
     /// opened, hint never shown). The persisted flag is set on the
     /// first `true` so the hint never repeats for this Vivling.
-    pub(crate) fn should_emit_vivling_chat_panel_hint(&mut self, config: &Config) -> bool {
+    pub(crate) fn vivling_chat_panel_hint(&mut self, config: &Config) -> Option<String> {
         self.configure_vivling(config);
         let sidebar_opened = self.vl_sidebar.is_expanded();
-        self.vivling.should_emit_chat_panel_hint(sidebar_opened)
+        self.vivling.chat_panel_hint(sidebar_opened)
     }
 
     /// Memory V2 Step 12.B.L — one-shot bootstrap dispatch invoked

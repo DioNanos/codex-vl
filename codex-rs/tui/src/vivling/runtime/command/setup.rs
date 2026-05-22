@@ -113,15 +113,15 @@ impl Vivling {
     ///   3. `chat_hint_shown` on the active Vivling state is `false`
     /// On `true`, the persisted flag is set so the hint never fires
     /// again for this Vivling.
-    pub(crate) fn should_emit_chat_panel_hint(&mut self, sidebar_opened: bool) -> bool {
+    pub(crate) fn chat_panel_hint(&mut self, sidebar_opened: bool) -> Option<String> {
         const HINT_THRESHOLD: u32 = 3;
         let turns = self.session_chat_turns.get().saturating_add(1);
         self.session_chat_turns.set(turns);
         if sidebar_opened {
-            return false;
+            return None;
         }
         if turns < HINT_THRESHOLD {
-            return false;
+            return None;
         }
         let already_shown = self
             .state
@@ -129,8 +129,19 @@ impl Vivling {
             .map(|s| s.chat_hint_shown)
             .unwrap_or(true);
         if already_shown {
-            return false;
+            return None;
         }
+        // codex-vl: localize the hint via the same effective-language
+        // resolution used for greetings and brain replies, so the
+        // one-shot suggestion matches what the Vivling speaks.
+        let system_lang = std::env::var("LANG").ok();
+        let lang = self
+            .state
+            .as_ref()
+            .map(|s| s.language_state.effective_language(system_lang.as_deref()))
+            .unwrap_or_else(|| "en".to_string());
+        let hint =
+            codex_vivling_core::model::VivlingLanguageState::chat_panel_hint(&lang).to_string();
         if let Some(state) = self.state.as_mut() {
             state.chat_hint_shown = true;
         }
@@ -138,7 +149,7 @@ impl Vivling {
         // show again on the next session, which is not a correctness
         // issue.
         let _ = self.save_state();
-        true
+        Some(hint)
     }
 
     pub(crate) fn set_live_context(&self, context: Option<VivlingLiveContext>) {
