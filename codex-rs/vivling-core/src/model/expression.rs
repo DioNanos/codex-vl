@@ -69,17 +69,19 @@ pub enum LlmCallSkipReason {
 /// Memory V2 Step 12.B.B — per-stage daily cap on LLM reservations.
 ///
 /// The cap covers *all* kinds together (Chat + Assist + LoopTick +
-/// Expression). 200/100/20 is a deliberate budget gradient: Adult
-/// Vivlings carry the most responsibility, Baby Vivlings only sip a
-/// few expression refreshes a day. The numbers are global constants
-/// rather than state fields so 12.B.C/D ship without growing
-/// `VivlingState` further; a `/vivling crt-brain-budget` override
-/// command is rinviato a Step 12.C.
+/// Expression). 200/100/50 is a deliberate budget gradient: Adult
+/// Vivlings carry the most responsibility, Baby Vivlings get a
+/// modest allowance now that Step 12.B.E routes every Baby `/vl`
+/// through the LLM (smoke 2026-05-22: Baby Lv24 saturated 20 cap by
+/// mid-day = 10 chat + 10 expression). The numbers are global
+/// constants rather than state fields so 12.B.C/D ship without
+/// growing `VivlingState` further; a `/vivling crt-brain-budget`
+/// override command is rinviato a Step 12.C.
 pub const fn stage_llm_budget(stage: Stage) -> u32 {
     match stage {
         Stage::Adult => 200,
         Stage::Juvenile => 100,
-        Stage::Baby => 20,
+        Stage::Baby => 50,
     }
 }
 

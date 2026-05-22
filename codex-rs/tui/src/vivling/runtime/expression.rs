@@ -432,12 +432,16 @@ pub(crate) fn format_crt_brain_status(state: &VivlingState) -> String {
     } else {
         state.daily_llm_day_key.as_str()
     };
+    let cap = stage_llm_budget(state.stage());
+    let remaining = cap.saturating_sub(state.daily_llm_call_count);
     let mut lines = Vec::with_capacity(6);
     lines.push(format!("CRT brain: {mode}"));
     lines.push(format!("Day: {day_key}"));
     lines.push(format!(
-        "Calls today: total {} (chat {}, assist {}, loop {}, expression {})",
+        "Calls today: total {}/{} ({} left) (chat {}, assist {}, loop {}, expression {})",
         state.daily_llm_call_count,
+        cap,
+        remaining,
         state.daily_llm_chat_calls,
         state.daily_llm_assist_calls,
         state.daily_llm_loop_tick_calls,

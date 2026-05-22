@@ -35,7 +35,10 @@ impl Vivling {
         //
         // Budget/throttle/etc. still applies via `try_reserve_llm_call`;
         // on Err the local template fallback still answers so chat
-        // never silently fails.
+        // never silently fails. Step 12.B.K: the fallback marker now
+        // names the skip reason so the user can tell budget exhaustion
+        // apart from throttle/dedup/opt-out without `/vivling crt-brain
+        // show`.
         let now = Utc::now();
         let reservation = {
             let state = self.state.as_mut().expect("state checked");
@@ -54,13 +57,48 @@ impl Vivling {
                 self.prepare_chat_request(text)
                     .map(VivlingCommandOutcome::DispatchAssist)
             }
-            Err(_reason) => self
-                .update_existing_result(|state| state.direct_chat_reply(text))
-                .map(|reply| format!("Local fallback: {reply}"))
-                .map(VivlingCommandOutcome::Message),
+            Err(reason) => {
+                let label = {
+                    let state = self.state.as_ref().expect("state checked");
+                    chat_skip_reason_label(reason, state)
+                };
+                self.update_existing_result(|state| state.direct_chat_reply(text))
+                    .map(|reply| format!("Local fallback ({label}): {reply}"))
+                    .map(VivlingCommandOutcome::Message)
+            }
         }
     }
 
+    // Step 12.B.K — human-readable label for the `/vl` fallback
+    // marker. We only spell out the skip reason in chat (no internal
+    // counters dump): users who want the full picture run `/vivling
+    // crt-brain show`.
+}
+
+fn chat_skip_reason_label(
+    reason: codex_vivling_core::model::LlmCallSkipReason,
+    state: &VivlingState,
+) -> String {
+    use codex_vivling_core::model::LlmCallSkipReason;
+    use codex_vivling_core::model::stage_llm_budget;
+    match reason {
+        LlmCallSkipReason::BudgetExhausted => {
+            let cap = stage_llm_budget(state.stage());
+            format!(
+                "daily LLM budget {}/{} exhausted, resets UTC midnight",
+                state.daily_llm_call_count, cap
+            )
+        }
+        LlmCallSkipReason::Throttle => "throttled — wait a few seconds and retry".to_string(),
+        LlmCallSkipReason::Dedup => "deduplicated — same prompt is still cached".to_string(),
+        LlmCallSkipReason::OptOut => {
+            "CRT brain off — toggle with `/vivling crt-brain on`".to_string()
+        }
+        LlmCallSkipReason::NotEligibleStage => "not eligible for this stage".to_string(),
+    }
+}
+
+impl Vivling {
     pub(crate) fn set_brain_enabled_with_guidance(
         &mut self,
         enabled: bool,

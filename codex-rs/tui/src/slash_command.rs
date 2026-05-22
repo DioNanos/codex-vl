@@ -279,7 +279,6 @@ impl SlashCommand {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
-            SlashCommand::VivlingAlias => false,
             _ => true,
         }
     }

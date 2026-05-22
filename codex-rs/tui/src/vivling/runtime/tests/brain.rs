@@ -1110,8 +1110,12 @@ fn chat_falls_back_to_template_when_budget_exhausted() {
         other => panic!("expected Message, got {other:?}"),
     };
     assert!(
-        message.starts_with("Local fallback: "),
+        message.starts_with("Local fallback ("),
         "budget-exhausted Chat must surface the local fallback marker: {message}"
+    );
+    assert!(
+        message.contains("daily LLM budget"),
+        "budget-exhausted Chat fallback must name the skip reason: {message}"
     );
 }
 

@@ -131,4 +131,26 @@ mod tests {
             "zero chat counter must render: {text}"
         );
     }
+
+    #[test]
+    fn format_crt_brain_status_shows_budget_remaining() {
+        // Step 12.B.K: surface the daily budget cap and remaining
+        // headroom inline so users can tell at a glance how close
+        // they are to a fallback path (no more silent `/vl` →
+        // template degradation discovered only via the fallback
+        // marker).
+        use codex_vivling_core::model::stage_llm_budget;
+        let mut state = fixture_state();
+        state.daily_llm_call_count = 17;
+        let cap = stage_llm_budget(state.stage());
+        let text = expression::format_crt_brain_status(&state);
+        assert!(
+            text.contains(&format!("total 17/{cap}")),
+            "render must show used/cap fraction: {text}"
+        );
+        assert!(
+            text.contains(&format!("({} left)", cap - 17)),
+            "render must show remaining headroom: {text}"
+        );
+    }
 }
