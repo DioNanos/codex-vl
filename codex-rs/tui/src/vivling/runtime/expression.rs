@@ -208,6 +208,25 @@ pub(crate) fn try_plan_and_reserve_expression(
     {
         return None;
     }
+    // Memory V2 Step 12.B.I (DAG smoke test 2026-05-22 evidenza
+    // `dedup_skips=2979` in poche ore): when the CRT cache is still
+    // fresh, every per-frame idle call would run the planner and
+    // then bump `daily_llm_dedup_skips` through `try_reserve`. The
+    // counter is supposed to surface user-facing observability,
+    // not "this Vivling has been idle for 10 minutes with a still-
+    // valid cache". Skip here before incurring serde + planner
+    // when both: (a) cache is fresh (TTL in the future), and
+    // (b) cache was produced by an LLM dispatch (prompt_hash set).
+    // Forced refresh (`try_plan_and_reserve_expression_forced`)
+    // bypasses this short-circuit by clearing `last_llm_dispatch_at`
+    // upstream; the dedup gate inside `try_reserve` still runs and
+    // protects content-unchanged refusals on the forced path.
+    if let Some(cached) = state.cached_crt_phrase.as_ref()
+        && cached.prompt_hash.is_some()
+        && cached.ttl_expires_at.map(|exp| exp > now).unwrap_or(false)
+    {
+        return None;
+    }
     let body = serde_json::to_string(state).ok()?;
     let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
     let prompt_hash = fnv1a64(plan.prompt.as_bytes());
@@ -952,6 +971,56 @@ mod tests {
         assert_eq!(
             s.daily_llm_optout_skips, 0,
             "pre-flight skip must not bill the optout counter — only try_reserve does"
+        );
+    }
+
+    #[test]
+    fn pre_flight_skips_when_cache_fresh_to_prevent_dedup_explosion() {
+        // Memory V2 Step 12.B.I (DAG smoke test 2026-05-22):
+        // pre_draw_tick idle hook calls this helper at frame rate.
+        // When the cache is still fresh, the inner dedup gate would
+        // bump `daily_llm_dedup_skips` once per frame — DAG observed
+        // 2979 in a few hours. The pre-flight check must short-
+        // circuit BEFORE serde + planner + try_reserve.
+        let mut s = adult_with_voice();
+        let now = t("2026-05-21T10:00:00Z");
+        s.last_llm_dispatch_at = Some(t("2026-05-21T09:55:00Z"));
+        s.cached_crt_phrase = Some(CachedCrtPhrase {
+            text: "cached".to_string(),
+            generated_at: Some(now),
+            prompt_hash: Some(42),
+            ttl_expires_at: Some(now + Duration::minutes(10)),
+        });
+        let dedup_before = s.daily_llm_dedup_skips;
+        // Past the 60s throttle so the throttle pre-flight would
+        // not catch this — the cache-fresh pre-flight must.
+        let later = t("2026-05-21T10:02:00Z");
+        let req = try_plan_and_reserve_expression(&mut s, later);
+        assert!(req.is_none(), "fresh cache pre-flight must skip");
+        assert_eq!(
+            s.daily_llm_dedup_skips, dedup_before,
+            "pre-flight must NOT bump dedup_skips counter (only forced/explicit \
+             paths bill it)"
+        );
+        assert_eq!(s.daily_llm_call_count, 0);
+        assert_eq!(s.daily_llm_expression_calls, 0);
+    }
+
+    #[test]
+    fn pre_flight_skips_when_throttle_window_open_to_prevent_dedup_explosion() {
+        // Cache fresh AND throttle window open — both should
+        // short-circuit. Test confirms the simpler throttle gate
+        // still wins when cache is empty (no prompt_hash).
+        let mut s = adult_with_voice();
+        let now = t("2026-05-21T10:00:00Z");
+        s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z")); // 30s ago
+        let dedup_before = s.daily_llm_dedup_skips;
+        let req = try_plan_and_reserve_expression(&mut s, now);
+        assert!(req.is_none(), "throttle pre-flight must skip");
+        assert_eq!(s.daily_llm_dedup_skips, dedup_before);
+        assert_eq!(
+            s.daily_llm_throttle_skips, 0,
+            "pre-flight must not bill throttle skip"
         );
     }
 
