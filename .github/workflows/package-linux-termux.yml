@@ -47,8 +47,11 @@ jobs:
           rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-musl
           rustup default 1.93.0
           rustup target add x86_64-unknown-linux-musl
+          set -x
           target="x86_64-unknown-linux-musl"
+          python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version
           version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
+          echo "RESOLVED v8 version: ${version}"
           release_tag="rusty-v8-v${version}"
           base_url="https://github.com/openai/codex/releases/download/${release_tag}"
           binding_dir="${RUNNER_TEMP:-/tmp}/rusty_v8"
