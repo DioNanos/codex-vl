@@ -230,9 +230,10 @@ impl ChatWidget {
         use ratatui::text::Line;
         let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
         let is_life = kind == crate::vl::VivlingLogKind::Life;
+        let is_chat = kind == crate::vl::VivlingLogKind::Chat;
         self.app_event_tx
             .send_vl(crate::vl::VlEvent::SidebarPushMessage {
-                kind,
+                kind: kind.clone(),
                 text: text.clone(),
                 vivling_id,
             });
@@ -252,6 +253,24 @@ impl ChatWidget {
             lines.push("Vivling".dim().into());
         }
         self.add_plain_history_lines(lines);
+        // Memory V2 Step 12.B.P — Ctrl+J discoverability one-shot
+        // hint. Triggers only on chat-kind replies (assist + slash
+        // dump output are excluded) and only when the user has not
+        // opened the sidebar yet this session. The bottom-pane
+        // helper sets the persisted `chat_hint_shown` flag on the
+        // first true so the hint never repeats for this Vivling.
+        if is_chat
+            && self
+                .bottom_pane
+                .should_emit_vivling_chat_panel_hint(&self.config)
+        {
+            self.add_info_message(
+                "Suggerimento: premi Ctrl+J per aprire la chat dedicata del Vivling \
+                 (storia preservata, scroll line-based, niente clutter del thread principale)."
+                    .to_string(),
+                /*hint*/ None,
+            );
+        }
         self.request_redraw();
     }
 

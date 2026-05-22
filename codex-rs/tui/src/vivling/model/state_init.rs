@@ -128,6 +128,8 @@ impl VivlingState {
             // Memory V2 Step 12.B.O — budget override defaults to
             // stage-driven; user lifts it via `/vivling crt-brain budget`.
             budget_override: codex_vivling_core::model::VivlingBudgetCap::default(),
+            // Memory V2 Step 12.B.P — Ctrl+J one-shot hint flag.
+            chat_hint_shown: false,
             daily_llm_call_count: 0,
             daily_llm_chat_calls: 0,
             daily_llm_assist_calls: 0,

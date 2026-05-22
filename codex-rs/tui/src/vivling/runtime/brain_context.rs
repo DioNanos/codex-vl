@@ -117,6 +117,19 @@ pub(crate) fn compose_brain_prompt(
     ));
     sections.push(language_contract_section(state));
     sections.push(stage_guidance_section(state));
+    // Memory V2 Step 12.B.P — opportunistic Ctrl+J mention. The user
+    // can press Ctrl+J to open a dedicated chat panel; not every
+    // user discovers this. The Vivling is told it exists and may
+    // casually mention it if the conversation becomes long — never
+    // forced, never every turn.
+    sections.push(
+        "TUI affordance: The user can press Ctrl+J to open a dedicated chat panel \
+         where every exchange between you and them is preserved across turns. \
+         If the conversation grows long or the user seems to lose track, you may \
+         casually mention this option — but only when it would genuinely help, \
+         never as a forced reminder."
+            .to_string(),
+    );
     if let BrainPromptKind::LoopTick {
         label,
         goal,

@@ -216,6 +216,17 @@ impl BottomPane {
         request
     }
 
+    /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
+    /// from chatwidget after every `/vl` chat turn. Returns `true`
+    /// on the FIRST turn that satisfies (turns ≥ 3, sidebar never
+    /// opened, hint never shown). The persisted flag is set on the
+    /// first `true` so the hint never repeats for this Vivling.
+    pub(crate) fn should_emit_vivling_chat_panel_hint(&mut self, config: &Config) -> bool {
+        self.configure_vivling(config);
+        let sidebar_opened = self.vl_sidebar.is_expanded();
+        self.vivling.should_emit_chat_panel_hint(sidebar_opened)
+    }
+
     /// Memory V2 Step 12.B.L — one-shot bootstrap dispatch invoked
     /// from `codex_vl_pre_draw_tick`. Returns `Some(request)` only on
     /// the FIRST qualifying frame after a state load; subsequent

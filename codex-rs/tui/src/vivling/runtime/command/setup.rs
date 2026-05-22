@@ -27,6 +27,7 @@ impl Vivling {
             crt_animation_ledger: CrtAnimationLedger::new(),
             crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
             startup_dispatched: Cell::new(false),
+            session_chat_turns: Cell::new(0),
         }
     }
 
@@ -101,6 +102,43 @@ impl Vivling {
         } else {
             self.request_frame();
         }
+    }
+
+    /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
+    /// from chatwidget after every `/vl` chat turn. Returns `true`
+    /// the FIRST time all three conditions hold:
+    ///   1. session_chat_turns ≥ `HINT_THRESHOLD` (3)
+    ///   2. user has never expanded the sidebar this session
+    ///      (passed by caller via `sidebar_opened`)
+    ///   3. `chat_hint_shown` on the active Vivling state is `false`
+    /// On `true`, the persisted flag is set so the hint never fires
+    /// again for this Vivling.
+    pub(crate) fn should_emit_chat_panel_hint(&mut self, sidebar_opened: bool) -> bool {
+        const HINT_THRESHOLD: u32 = 3;
+        let turns = self.session_chat_turns.get().saturating_add(1);
+        self.session_chat_turns.set(turns);
+        if sidebar_opened {
+            return false;
+        }
+        if turns < HINT_THRESHOLD {
+            return false;
+        }
+        let already_shown = self
+            .state
+            .as_ref()
+            .map(|s| s.chat_hint_shown)
+            .unwrap_or(true);
+        if already_shown {
+            return false;
+        }
+        if let Some(state) = self.state.as_mut() {
+            state.chat_hint_shown = true;
+        }
+        // Best-effort persist — failure simply means the hint may
+        // show again on the next session, which is not a correctness
+        // issue.
+        let _ = self.save_state();
+        true
     }
 
     pub(crate) fn set_live_context(&self, context: Option<VivlingLiveContext>) {

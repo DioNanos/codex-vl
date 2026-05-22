@@ -127,6 +127,12 @@ pub(crate) struct Vivling {
     /// implicitly on process restart because the wrapper is rebuilt
     /// (see `unavailable()` and `Clone`).
     pub(crate) startup_dispatched: Cell<bool>,
+    /// Memory V2 Step 12.B.P — runtime-only counter of `/vl` chat
+    /// turns observed in this session. Drives the one-shot Ctrl+J
+    /// hint surfaced via `chat_widget.add_info_message` after a few
+    /// turns when the user has never opened the dedicated panel.
+    /// Reset implicitly on process restart.
+    pub(crate) session_chat_turns: Cell<u32>,
 }
 
 impl Clone for Vivling {
@@ -154,6 +160,7 @@ impl Clone for Vivling {
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             crt_frame_target: self.crt_frame_target.clone(),
             startup_dispatched: self.startup_dispatched.clone(),
+            session_chat_turns: self.session_chat_turns.clone(),
         }
     }
 }

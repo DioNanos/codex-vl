@@ -2,13 +2,76 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
 use ratatui::widgets::Widget;
 
 use super::log::VivlingChatLog;
 use super::log::VivlingLogKind;
 use crate::render::renderable::Renderable;
 
-const EXPANDED_MAX_HEIGHT: u16 = 20;
+/// Memory V2 Step 12.B.P — default panel height. Bumped 20 → 25 to
+/// give long Vivling replies more breathing room. Override at
+/// runtime via the `CODEX_VL_VIVLING_PANEL_HEIGHT` env var (clamped
+/// 10–50) so users on tall terminals (or DAG on a 50-row console)
+/// can stretch the panel without a code change.
+const DEFAULT_EXPANDED_HEIGHT: u16 = 25;
+const MIN_EXPANDED_HEIGHT: u16 = 10;
+const MAX_EXPANDED_HEIGHT: u16 = 50;
+
+fn expanded_height_from_env() -> u16 {
+    match std::env::var("CODEX_VL_VIVLING_PANEL_HEIGHT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+    {
+        Some(n) => n.clamp(MIN_EXPANDED_HEIGHT, MAX_EXPANDED_HEIGHT),
+        None => DEFAULT_EXPANDED_HEIGHT,
+    }
+}
+
+/// Memory V2 Step 12.B.P — terminal-first responsive layout tier.
+/// The render path picks one based on the available width so the
+/// panel stays usable on narrow Termux portrait sessions (~30 col)
+/// as well as wide desktop terminals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayoutTier {
+    /// `< 30` col — drop borders, drop sender prefix, drop age.
+    Minimal,
+    /// `30..50` col — borders + sender prefix, no age.
+    Compact,
+    /// `50..80` col — borders + sender prefix + age suffix.
+    Normal,
+    /// `>= 80` col — full layout including the `[N/M]` scroll
+    /// position in the title.
+    Full,
+}
+
+impl LayoutTier {
+    fn from_width(width: u16) -> Self {
+        match width {
+            0..=29 => LayoutTier::Minimal,
+            30..=49 => LayoutTier::Compact,
+            50..=79 => LayoutTier::Normal,
+            _ => LayoutTier::Full,
+        }
+    }
+
+    fn show_borders(self) -> bool {
+        !matches!(self, LayoutTier::Minimal)
+    }
+
+    fn show_sender_prefix(self) -> bool {
+        !matches!(self, LayoutTier::Minimal)
+    }
+
+    fn show_age(self) -> bool {
+        matches!(self, LayoutTier::Normal | LayoutTier::Full)
+    }
+
+    fn show_scroll_position(self) -> bool {
+        matches!(self, LayoutTier::Full)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SidebarMode {
@@ -86,67 +149,112 @@ impl Renderable for VivlingSidebar {
         match &self.mode {
             SidebarMode::Collapsed => {}
             SidebarMode::Expanded { scroll_offset } => {
+                let tier = LayoutTier::from_width(area.width);
                 let unread = self.log.unread_count();
-                let meta = self
+                let last_age = self
                     .log
                     .last_entry()
-                    .map(entry_meta)
-                    .unwrap_or_else(|| "ready".to_string());
-                let unread_suffix = if unread > 0 {
-                    format!(" · {unread} new")
+                    .map(|e| e.ts.elapsed().as_secs().min(9999));
+                let last_vivling_id = self
+                    .log
+                    .last_entry()
+                    .and_then(|e| e.vivling_id.as_deref().map(|s| truncate_str(s, 16)));
+
+                // Step 12.B.P — Block borders + title with responsive
+                // header. On `Minimal` tier we skip the block entirely
+                // so we keep every row for chat content.
+                let (inner_area, has_borders) = if tier.show_borders() {
+                    let title = format_header(
+                        tier,
+                        self.log.len(),
+                        unread,
+                        last_age,
+                        last_vivling_id.as_deref(),
+                    );
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(Line::from(title.dim()));
+                    let inner = block.inner(area);
+                    block.render(area, buf);
+                    (inner, true)
                 } else {
-                    String::new()
+                    // Render a single-line header inline (no block).
+                    let header = format_header(
+                        tier,
+                        self.log.len(),
+                        unread,
+                        last_age,
+                        last_vivling_id.as_deref(),
+                    );
+                    render_row(area, buf, 0, Line::from(header.dim()));
+                    (
+                        Rect {
+                            x: area.x,
+                            y: area.y + 1,
+                            width: area.width,
+                            height: area.height.saturating_sub(1),
+                        },
+                        false,
+                    )
                 };
-                render_row(
-                    area,
-                    buf,
-                    0,
-                    Line::from(
-                        format!(
-                            "Vivling chat · {} messages{unread_suffix} · {meta}",
-                            self.log.len()
-                        )
-                        .dim(),
-                    ),
-                );
+
                 if self.log.is_empty() {
-                    render_row(area, buf, 1, Line::from("> ready".dim()));
+                    if inner_area.height > 0 {
+                        render_row(inner_area, buf, 0, Line::from("> ready".dim()));
+                    }
                     return;
                 }
-                let visible_rows = area.height.saturating_sub(1) as usize;
+                let visible_rows = inner_area.height as usize;
                 if visible_rows == 0 {
                     return;
                 }
-                // Memory V2 Step 12.B.N — wrap entries to fit the
-                // pane width instead of truncating with "…". Build
-                // all wrapped lines for the recent N entries (we
-                // walk the whole log so scroll_offset can land on
-                // any earlier message), then take a window of
-                // `visible_rows` ending at
-                // `total_wrapped_lines - scroll_offset_in_lines`.
-                let inner_width = (area.width as usize).saturating_sub(2);
+                let inner_width = (inner_area.width as usize).saturating_sub(2);
                 let mut all_lines: Vec<Line<'static>> = Vec::new();
                 for entry in self.log.iter_recent(self.log.len()) {
-                    let entry_lines = wrap_entry(entry, inner_width);
+                    let entry_lines = wrap_entry(entry, inner_width, tier);
                     all_lines.extend(entry_lines);
+                    // Separator between entries on Normal/Full tier.
+                    if matches!(tier, LayoutTier::Normal | LayoutTier::Full) {
+                        all_lines.push(Line::from(""));
+                    }
                 }
-                // Per-line scroll. Each `entry` may produce 1..N
-                // wrapped lines; one notch of `scroll_offset` moves
-                // the window by one wrapped line, not one entry —
-                // this is the only way long messages remain
-                // reachable when the view shows ~20 lines and a
-                // single message spans more than that.
+                // Drop trailing empty line so the last entry sits
+                // flush at the bottom.
+                if all_lines
+                    .last()
+                    .map(|l| l.spans.is_empty())
+                    .unwrap_or(false)
+                {
+                    all_lines.pop();
+                }
                 let total_lines = all_lines.len();
                 let max_offset = total_lines.saturating_sub(visible_rows);
                 let scroll = (*scroll_offset).min(max_offset);
                 let end = total_lines.saturating_sub(scroll);
                 let start = end.saturating_sub(visible_rows);
                 for (row, line) in all_lines[start..end].iter().enumerate() {
-                    let row = row as u16 + 1;
-                    if row >= area.height {
+                    let row = row as u16;
+                    if row >= inner_area.height {
                         break;
                     }
-                    render_row(area, buf, row, line.clone());
+                    render_row(inner_area, buf, row, line.clone());
+                }
+
+                // Step 12.B.P — Full tier shows scroll position in
+                // the bottom-right corner of the block. Hidden on
+                // narrower tiers to preserve content width.
+                if tier.show_scroll_position() && has_borders && total_lines > visible_rows {
+                    let position = format!("[{}/{}]", start + 1, total_lines);
+                    let label_width = position.chars().count() as u16;
+                    if label_width + 4 < area.width && area.height >= 2 {
+                        let pos_rect = Rect {
+                            x: area.x + area.width.saturating_sub(label_width + 2),
+                            y: area.y + area.height - 1,
+                            width: label_width,
+                            height: 1,
+                        };
+                        Line::from(position.dim()).render(pos_rect, buf);
+                    }
                 }
             }
         }
@@ -158,19 +266,39 @@ impl Renderable for VivlingSidebar {
         }
         match &self.mode {
             SidebarMode::Collapsed => 0,
-            SidebarMode::Expanded { .. } => EXPANDED_MAX_HEIGHT,
+            SidebarMode::Expanded { .. } => expanded_height_from_env(),
         }
     }
 }
 
-fn entry_meta(entry: &super::log::VivlingLogEntry) -> String {
-    let age = entry.ts.elapsed().as_secs().min(999);
-    if let Some(id) = entry.vivling_id.as_deref() {
-        let short_id = truncate_str(id, 12);
-        format!("{short_id} · last {age}s ago")
+/// Step 12.B.P — single source for the responsive header line. The
+/// `Minimal` tier already returns an inline string (no borders), the
+/// others feed this into the `Block::title`.
+fn format_header(
+    tier: LayoutTier,
+    msg_count: usize,
+    unread: usize,
+    last_age: Option<u64>,
+    last_vivling_id: Option<&str>,
+) -> String {
+    let unread_suffix = if unread > 0 {
+        format!(" · {unread} new")
     } else {
-        format!("last {age}s ago")
-    }
+        String::new()
+    };
+    let age_part = if tier.show_age() {
+        match last_age {
+            Some(age) => format!(" · last {age}s ago"),
+            None => " · ready".to_string(),
+        }
+    } else {
+        String::new()
+    };
+    let id_part = match (tier, last_vivling_id) {
+        (LayoutTier::Full, Some(id)) => format!(" · {id}"),
+        _ => String::new(),
+    };
+    format!(" Vivling chat · {msg_count} msg{unread_suffix}{age_part}{id_part} ")
 }
 
 fn render_row(area: Rect, buf: &mut Buffer, row: u16, line: Line<'_>) {
@@ -208,23 +336,40 @@ fn truncate_str(s: &str, max: usize) -> String {
 /// padded with two spaces so the column under the prefix stays
 /// blank, matching the visual rhythm of multi-line entries in the
 /// main chat history.
-fn wrap_entry(entry: &super::log::VivlingLogEntry, inner_width: usize) -> Vec<Line<'static>> {
-    let prefix = match entry.kind {
-        VivlingLogKind::Chat => " ",
-        VivlingLogKind::Assist => "*",
-        VivlingLogKind::Life => "^",
+fn wrap_entry(
+    entry: &super::log::VivlingLogEntry,
+    inner_width: usize,
+    tier: LayoutTier,
+) -> Vec<Line<'static>> {
+    // Step 12.B.P — sender prefix: ● Vivling chat / assist reply,
+    // ■ system, ▸ user (kept around in case a future `User` variant
+    // is added; today push() rejects `Life`). The `Minimal` tier
+    // drops the prefix entirely to recover one column of body width.
+    let prefix: &str = if tier.show_sender_prefix() {
+        match entry.kind {
+            VivlingLogKind::Chat => "●",
+            VivlingLogKind::Assist => "●",
+            VivlingLogKind::Life => "■",
+        }
+    } else {
+        ""
     };
-    let body_width = inner_width.saturating_sub(2).max(1);
+    let head_width = if prefix.is_empty() { 0 } else { 2 }; // "● "
+    let body_width = inner_width.saturating_sub(head_width).max(1);
     let wrapped = wrap_text_lines(&entry.text, body_width);
     let mut out: Vec<Line<'static>> = Vec::with_capacity(wrapped.len().max(1));
     for (idx, chunk) in wrapped.iter().enumerate() {
-        let head = if idx == 0 { prefix } else { " " };
-        out.push(Line::from(format!("{head} {chunk}").dim()));
+        let line = if prefix.is_empty() {
+            chunk.clone()
+        } else if idx == 0 {
+            format!("{prefix} {chunk}")
+        } else {
+            format!("  {chunk}")
+        };
+        out.push(Line::from(line.dim()));
     }
     if out.is_empty() {
-        // Defensive: an empty trimmed body still gets a single
-        // prefix-only line so the entry occupies one visible row.
-        out.push(Line::from(format!("{prefix} ").dim()));
+        out.push(Line::from(prefix.to_string().dim()));
     }
     out
 }
@@ -349,21 +494,29 @@ mod tests {
     }
 
     #[test]
-    fn expanded_empty_sidebar_renders_placeholder() {
+    fn expanded_empty_sidebar_renders_default_height() {
         let mut sidebar = VivlingSidebar::new();
         sidebar.toggle();
         assert!(sidebar.should_render());
-        assert_eq!(sidebar.desired_height(80), 20);
+        // Step 12.B.P — default panel height bumped 20 → 25.
+        // SAFETY: clear env first so the default kicks in regardless
+        // of test runner state.
+        unsafe { std::env::remove_var("CODEX_VL_VIVLING_PANEL_HEIGHT") };
+        assert_eq!(sidebar.desired_height(80), DEFAULT_EXPANDED_HEIGHT);
     }
 
     #[test]
-    fn expanded_sidebar_caps_at_twenty_rows() {
+    fn expanded_sidebar_uses_default_expanded_height() {
         let mut sidebar = VivlingSidebar::new();
         for i in 0..40 {
             sidebar.push(VivlingLogKind::Chat, format!("msg-{i}"), None);
         }
         sidebar.toggle();
-        assert_eq!(sidebar.desired_height(80), 20);
+        // Step 12.B.P — default panel height bumped 20 → 25.
+        // SAFETY: clear env first so the default kicks in regardless
+        // of test runner state.
+        unsafe { std::env::remove_var("CODEX_VL_VIVLING_PANEL_HEIGHT") };
+        assert_eq!(sidebar.desired_height(80), DEFAULT_EXPANDED_HEIGHT);
     }
 
     #[test]
@@ -401,7 +554,7 @@ mod tests {
             ts: Instant::now(),
             vivling_id: None,
         };
-        let lines = wrap_entry(&entry, 40);
+        let lines = wrap_entry(&entry, 40, LayoutTier::Normal);
         assert!(
             lines.len() > 1,
             "long entry must wrap into more than one line, got {}",
@@ -430,7 +583,7 @@ mod tests {
             ts: Instant::now(),
             vivling_id: None,
         };
-        let lines = wrap_entry(&entry, 40);
+        let lines = wrap_entry(&entry, 40, LayoutTier::Normal);
         assert_eq!(lines.len(), 1, "short entry must stay on one line");
     }
 
@@ -448,7 +601,7 @@ mod tests {
             ts: Instant::now(),
             vivling_id: None,
         };
-        let lines = wrap_entry(&entry, 20);
+        let lines = wrap_entry(&entry, 20, LayoutTier::Normal);
         for line in &lines {
             let width = line
                 .spans
@@ -460,5 +613,91 @@ mod tests {
                 "hard-break must respect pane width: {width} > 20"
             );
         }
+    }
+
+    // ---- Memory V2 Step 12.B.P responsive layout tiers ------------
+
+    #[test]
+    fn layout_tier_from_width_assigns_correct_buckets() {
+        assert_eq!(LayoutTier::from_width(20), LayoutTier::Minimal);
+        assert_eq!(LayoutTier::from_width(29), LayoutTier::Minimal);
+        assert_eq!(LayoutTier::from_width(30), LayoutTier::Compact);
+        assert_eq!(LayoutTier::from_width(49), LayoutTier::Compact);
+        assert_eq!(LayoutTier::from_width(50), LayoutTier::Normal);
+        assert_eq!(LayoutTier::from_width(79), LayoutTier::Normal);
+        assert_eq!(LayoutTier::from_width(80), LayoutTier::Full);
+        assert_eq!(LayoutTier::from_width(200), LayoutTier::Full);
+    }
+
+    #[test]
+    fn minimal_tier_drops_borders_and_sender_prefix() {
+        // Termux portrait ~25 cols: every column must go to content.
+        use crate::vl::sidebar::log::VivlingLogEntry;
+        use std::time::Instant;
+        let entry = VivlingLogEntry {
+            kind: VivlingLogKind::Chat,
+            text: "ciao".to_string(),
+            ts: Instant::now(),
+            vivling_id: None,
+        };
+        let lines = wrap_entry(&entry, 20, LayoutTier::Minimal);
+        assert_eq!(lines.len(), 1);
+        let body: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // No sender prefix, no leading space — pure content.
+        assert!(
+            !body.starts_with('●') && !body.starts_with("● "),
+            "minimal tier must not emit sender prefix: {body:?}"
+        );
+        assert!(body.contains("ciao"));
+    }
+
+    #[test]
+    fn compact_tier_keeps_sender_prefix() {
+        use crate::vl::sidebar::log::VivlingLogEntry;
+        use std::time::Instant;
+        let entry = VivlingLogEntry {
+            kind: VivlingLogKind::Chat,
+            text: "ok".to_string(),
+            ts: Instant::now(),
+            vivling_id: None,
+        };
+        let lines = wrap_entry(&entry, 30, LayoutTier::Compact);
+        let body: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            body.starts_with('●'),
+            "compact tier must emit sender prefix: {body:?}"
+        );
+    }
+
+    #[test]
+    fn format_header_full_tier_includes_vivling_id_and_age() {
+        let h = format_header(LayoutTier::Full, 9, 0, Some(42), Some("viv-13ba0093"));
+        assert!(h.contains("9 msg"), "{h}");
+        assert!(h.contains("42s ago"), "{h}");
+        assert!(h.contains("viv-13ba0093"), "{h}");
+    }
+
+    #[test]
+    fn format_header_compact_tier_omits_age_and_id() {
+        let h = format_header(LayoutTier::Compact, 9, 0, Some(42), Some("viv-13ba0093"));
+        assert!(h.contains("9 msg"), "{h}");
+        assert!(!h.contains("42s ago"), "compact omits age: {h}");
+        assert!(!h.contains("viv-13ba0093"), "compact omits id: {h}");
+    }
+
+    #[test]
+    fn expanded_height_env_override_clamps_to_range() {
+        // SAFETY: tests in this module are not parallel-sensitive
+        // because the env is read on every render, but we should
+        // restore. Use a unique value within range and check upper
+        // clamp via a deliberately out-of-range string.
+        unsafe { std::env::set_var("CODEX_VL_VIVLING_PANEL_HEIGHT", "9999") };
+        assert_eq!(expanded_height_from_env(), MAX_EXPANDED_HEIGHT);
+        unsafe { std::env::set_var("CODEX_VL_VIVLING_PANEL_HEIGHT", "1") };
+        assert_eq!(expanded_height_from_env(), MIN_EXPANDED_HEIGHT);
+        unsafe { std::env::set_var("CODEX_VL_VIVLING_PANEL_HEIGHT", "30") };
+        assert_eq!(expanded_height_from_env(), 30);
+        unsafe { std::env::remove_var("CODEX_VL_VIVLING_PANEL_HEIGHT") };
+        assert_eq!(expanded_height_from_env(), DEFAULT_EXPANDED_HEIGHT);
     }
 }

@@ -250,6 +250,14 @@ pub(crate) struct VivlingState {
     #[serde(default)]
     pub(crate) budget_override: codex_vivling_core::model::VivlingBudgetCap,
 
+    /// Memory V2 Step 12.B.P — one-shot Ctrl+J discoverability flag.
+    /// Set to `true` the first time the user has accumulated enough
+    /// `/vl` chat turns without ever opening the dedicated panel —
+    /// the chatwidget emits a single inline hint and never repeats.
+    /// Additive on V10 with `#[serde(default)]`.
+    #[serde(default)]
+    pub(crate) chat_hint_shown: bool,
+
     // Step 12.B.A — daily LLM call budget counters. Reservation
     // happens in main-thread `try_reserve_llm_call` (Step 12.B.B); the
     // increments persist here so a crash/restart cannot let the

@@ -93,7 +93,9 @@ fn chat_skip_reason_label(
                 _ => cap.to_string(),
             };
             format!(
-                "daily LLM budget {}/{cap_label} exhausted, try `/vivling crt-brain reset-budget` or wait UTC midnight",
+                "daily LLM budget {}/{cap_label} exhausted. Try `/vivling crt-brain budget unlimited` \
+                 for unmetered wrappers (GLM Z.AI / Ollama Cloud / local), \
+                 `/vivling crt-brain reset-budget` to zero counters, or wait UTC midnight",
                 state.daily_llm_call_count
             )
         }

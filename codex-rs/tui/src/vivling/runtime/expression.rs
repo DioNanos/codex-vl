@@ -50,12 +50,16 @@ use super::BrainTarget;
 use super::request::resolve_expression_target;
 use crate::vivling::model::VivlingState;
 
-/// Maximum chars for the CRT footer phrase. Matches the renderer's
-/// visual budget (single-line footer slot).
-const EXPRESSION_CRT_MAX: usize = 28;
+/// Maximum chars for the CRT footer phrase. Step 12.B.P bump from
+/// 28 → 42 chars: Italian phrases routinely run ~50% longer than
+/// the equivalent English, and the renderer's footer slot has room
+/// for ~60 chars on a standard terminal. 42 keeps a comfortable
+/// safety margin under the visual budget while letting localized
+/// phrases land complete.
+const EXPRESSION_CRT_MAX: usize = 42;
 /// Maximum chars for the proactive message (longer than CRT — used
 /// in the chat surface, not the footer).
-const EXPRESSION_PROACTIVE_MAX: usize = 120;
+const EXPRESSION_PROACTIVE_MAX: usize = 160;
 /// Stage-aware TTL: Adult/Juvenile refresh more often.
 const TTL_ADULT_JUVENILE_MINUTES: i64 = 10;
 /// Baby Expression is a rare-event channel — a fresh phrase is
@@ -580,13 +584,46 @@ fn sanitize_phrase(raw: Option<&str>, max_chars: usize) -> Option<String> {
         return None;
     }
     let redacted = redact_secrets(trimmed);
-    let bounded = truncate_summary(redacted.trim(), max_chars);
+    // Step 12.B.P — use word-aware truncate so the CRT footer never
+    // shows a mid-word cut like `"patterns loa..."`. The cross-cutting
+    // `truncate_summary` stays char-based (other callers depend on a
+    // hard byte budget); only the user-facing phrase channels use the
+    // word boundary variant.
+    let bounded = truncate_phrase_at_word(redacted.trim(), max_chars);
     let final_trimmed = bounded.trim();
     if final_trimmed.is_empty() {
         None
     } else {
         Some(final_trimmed.to_string())
     }
+}
+
+/// Memory V2 Step 12.B.P — word-aware truncate for the user-facing
+/// Expression channels (CRT footer + proactive message). When the
+/// input fits inside `max_chars`, return as-is. Otherwise take the
+/// first `max_chars` characters, then back-step to the nearest
+/// whitespace boundary and replace the tail with a single-char
+/// ellipsis. Falls back to a hard char cut when the token does not
+/// contain any whitespace (URLs, identifiers).
+///
+/// Smoke 2026-05-22 (DAG): `"session green — patterns loa..."` was
+/// produced by the previous char-based cut at 28. This helper plus
+/// the bumped 42-char cap give Italian phrases room to land complete.
+pub(crate) fn truncate_phrase_at_word(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max_chars).collect();
+    if let Some(last_space) = head.rfind(char::is_whitespace) {
+        let trimmed = head[..last_space].trim_end();
+        if !trimmed.is_empty() {
+            return format!("{trimmed}…");
+        }
+    }
+    // No usable whitespace → hard char cut + ellipsis. This protects
+    // against silent overflow when a single token (long URL, log
+    // line identifier) exceeds the cap.
+    format!("{head}…")
 }
 
 /// Tolerant parse of the Expression LLM reply.
@@ -865,21 +902,21 @@ mod tests {
         let reply = make_reply(None, Some(&long), 1);
         record_expression_result(&mut s, &reply, now);
         let proactive = s.cached_proactive.as_ref().expect("proactive cached");
-        // `truncate_summary` keeps `max_chars` chars and appends the
-        // 3-char "..." ellipsis when it has to cut — the cache budget
-        // therefore peaks at `max + 3`, never higher.
+        // Step 12.B.P: word-aware truncate appends a single `…`
+        // codepoint instead of `...`. For repeated 'a' input with no
+        // whitespace the helper falls back to hard-cut + ellipsis.
         let count = proactive.text.chars().count();
         assert!(
-            count <= EXPRESSION_PROACTIVE_MAX + 3,
+            count <= EXPRESSION_PROACTIVE_MAX + 1,
             "proactive cache must respect the budget (max + ellipsis), got {count} chars"
         );
         assert!(
-            count > EXPRESSION_PROACTIVE_MAX,
+            count > EXPRESSION_PROACTIVE_MAX - 1,
             "this test feeds an oversize string; the truncation suffix should fire, got {count} chars"
         );
         assert!(
-            proactive.text.ends_with("..."),
-            "truncated proactive must end with the truncation suffix"
+            proactive.text.ends_with('…'),
+            "truncated proactive must end with the unicode ellipsis"
         );
     }
 
@@ -1059,17 +1096,79 @@ mod tests {
         record_expression_result(&mut s, &reply, now);
         let crt = s.cached_crt_phrase.as_ref().expect("crt cached");
         let count = crt.text.chars().count();
+        // Step 12.B.P: word-aware truncate produces `<head>…` (single
+        // ellipsis char, 1 codepoint) instead of `<head>...` (three
+        // dots). For pure-x repeated input with no whitespace, the
+        // helper falls back to the hard-cut branch + ellipsis.
         assert!(
-            count <= EXPRESSION_CRT_MAX + 3,
-            "crt cache must respect the budget (max + ellipsis), got {count} chars"
+            count <= EXPRESSION_CRT_MAX + 1,
+            "crt cache must respect the budget (max + ellipsis char), got {count} chars"
         );
         assert!(
-            count > EXPRESSION_CRT_MAX,
+            count > EXPRESSION_CRT_MAX - 1,
             "this test feeds an oversize string; truncation suffix should fire, got {count} chars"
         );
         assert!(
-            crt.text.ends_with("..."),
-            "truncated crt must end with the truncation suffix"
+            crt.text.ends_with('…'),
+            "truncated crt must end with the unicode ellipsis (word-aware variant)"
+        );
+    }
+
+    // ---- 12.B.P truncate_phrase_at_word --------------------------
+
+    #[test]
+    fn truncate_phrase_at_word_keeps_short_text_intact() {
+        // Short input must pass through verbatim — no ellipsis,
+        // no allocation surprises.
+        let out = truncate_phrase_at_word("ciao Nilo", 40);
+        assert_eq!(out, "ciao Nilo");
+    }
+
+    #[test]
+    fn truncate_phrase_at_word_breaks_at_last_whitespace() {
+        // Smoke 2026-05-22 regression guard: the previous char-based
+        // cut produced `"session green — patterns loa..."`. The word-
+        // aware variant must back-step to the space and end on a
+        // complete word.
+        let input = "session green — patterns loaded ready";
+        let out = truncate_phrase_at_word(input, 28);
+        assert!(
+            out.ends_with('…'),
+            "must end with ellipsis when truncated: {out}"
+        );
+        // The last visible token must be complete (no `loa…`).
+        let body = out.trim_end_matches('…').trim_end();
+        let last_word = body.rsplit(char::is_whitespace).next().unwrap_or("");
+        assert!(
+            !last_word.starts_with("loa") || last_word == "loaded",
+            "must not cut `loaded` mid-word: got `{last_word}` in `{out}`"
+        );
+    }
+
+    #[test]
+    fn truncate_phrase_at_word_hard_falls_back_on_no_whitespace() {
+        // A pathological long token (URL, identifier) without spaces:
+        // hard char cut + ellipsis is the only safe option.
+        let input = "supercalifragilisticexpialidocious";
+        let out = truncate_phrase_at_word(input, 10);
+        assert!(
+            out.ends_with('…'),
+            "hard-cut path also appends ellipsis: {out}"
+        );
+        // Output cap = 10 chars + 1 ellipsis = 11 codepoints.
+        assert_eq!(out.chars().count(), 11, "hard-cut respects max + ellipsis");
+    }
+
+    #[test]
+    fn truncate_phrase_at_word_uses_unicode_ellipsis_not_three_dots() {
+        // Single `…` codepoint instead of `...` (three chars) keeps
+        // the visual budget tight on the narrow CRT footer.
+        let input = "una frase italiana abbastanza lunga per scattare";
+        let out = truncate_phrase_at_word(input, 20);
+        assert!(out.ends_with('…'), "{out}");
+        assert!(
+            !out.ends_with("..."),
+            "must not use three-dot fallback: {out}"
         );
     }
 
