@@ -495,7 +495,13 @@ pub(crate) fn try_plan_and_reserve_expression_for_loop(
     {
         return None;
     }
-    let cap = stage_llm_budget(state.stage());
+    // Memory V2 Step 12.B.O P1 advisory (Sonnet 2026-05-22): loop
+    // hook headroom must respect `budget_override` like every other
+    // gate, otherwise Adult Vivlings on `Unlimited` cap would still
+    // be blocked at 50% of the stage default (100 calls). Reading
+    // through `effective_cap` keeps the loop-hook 50% guard
+    // consistent with the rest of the reservation pipeline.
+    let cap = state.budget_override.effective_cap(state.stage());
     if state
         .daily_llm_call_count
         .saturating_mul(LOOP_EXPRESSION_HEADROOM_DENOMINATOR)
@@ -1174,6 +1180,27 @@ mod tests {
         s.daily_llm_day_key = "2026-05-21".to_string();
         let now = t("2026-05-21T10:00:00Z");
         assert!(try_plan_and_reserve_expression_for_loop(&mut s, now, None).is_some());
+    }
+
+    #[test]
+    fn loop_dispatch_respects_unlimited_budget_override() {
+        // Memory V2 Step 12.B.O P1 advisory (Sonnet 2026-05-22): the
+        // loop hook headroom gate must read through
+        // `budget_override.effective_cap(stage)`, NOT the raw stage
+        // constant. With `Unlimited`, an Adult Vivling counter well
+        // past 50% of the stage default (here: 150 calls > 100) must
+        // still pass the loop hook gate because the effective cap is
+        // `u32::MAX`.
+        let mut s = adult_with_voice();
+        s.budget_override = codex_vivling_core::model::VivlingBudgetCap::Unlimited;
+        s.daily_llm_call_count = 150; // > 50% of Adult stage cap (200/2 = 100)
+        s.daily_llm_day_key = "2026-05-21".to_string();
+        let now = t("2026-05-21T10:00:00Z");
+        let req = try_plan_and_reserve_expression_for_loop(&mut s, now, None);
+        assert!(
+            req.is_some(),
+            "Unlimited override must let the loop hook fire even past stage 50%"
+        );
     }
 
     #[test]
