@@ -16,6 +16,15 @@ impl Vivling {
             "/vivling zed - open the ZED Companion panel (bond + gene snapshot)".to_string(),
             "/vivling assist <task> - ask the Vivling brain for adult help".to_string(),
             "/vivling brain <on|off> - enable or disable the Vivling brain".to_string(),
+            "/vivling crt-brain - show CRT brain mode, budget and today's LLM counters"
+                .to_string(),
+            "/vivling crt-brain <on|off|default> - toggle the live Expression channel".to_string(),
+            "/vivling crt-brain refresh - force an Expression refresh now (bypass throttle)"
+                .to_string(),
+            "/vivling crt-brain budget [default|unlimited|<N>] - show or set the per-Vivling LLM budget cap"
+                .to_string(),
+            "/vivling crt-brain reset-budget - zero today's daily counters + retry bootstrap"
+                .to_string(),
             "/vivling language - show effective/detected language, override, mode".to_string(),
             "/vivling language <it|en|es|fr|de> - pin a language override".to_string(),
             "/vivling language auto - clear the override; fall back to detected/LANG".to_string(),
