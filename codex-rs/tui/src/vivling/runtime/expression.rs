@@ -41,7 +41,6 @@ use codex_vivling_core::model::VivlingExpressionMode;
 use codex_vivling_core::model::VivlingLlmCallKind;
 use codex_vivling_core::model::fnv1a64;
 use codex_vivling_core::model::plan_expression_prompt;
-use codex_vivling_core::model::stage_llm_budget;
 use codex_vivling_core::model::truncate_summary;
 use codex_vivling_core::redaction::redact_secrets;
 use serde::Deserialize;

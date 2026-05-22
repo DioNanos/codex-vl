@@ -11,6 +11,8 @@ use anyhow::bail;
 #[cfg(unix)]
 use codex_install_context::InstallContext;
 #[cfg(unix)]
+use codex_install_context::InstallMethod;
+#[cfg(unix)]
 use futures::FutureExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -141,7 +143,11 @@ pub(crate) fn reexec_managed_updater(
     managed_codex_bin: &std::path::Path,
     install_context: &InstallContext,
 ) -> Result<()> {
-    if matches!(install_context, InstallContext::Npm | InstallContext::Bun) {
+    // codex-vl: post-merge InstallContext is a struct; check via method.
+    if matches!(
+        install_context.method,
+        InstallMethod::Npm | InstallMethod::Bun
+    ) {
         return Ok(());
     }
 

@@ -8,6 +8,7 @@ use anyhow::Result;
 #[cfg(unix)]
 use anyhow::anyhow;
 use codex_install_context::InstallContext;
+use codex_install_context::InstallMethod;
 #[cfg(unix)]
 use sha2::Digest;
 #[cfg(unix)]
@@ -29,9 +30,11 @@ pub(crate) fn resolve_managed_codex_bin_for_install_context(
     install_context: &InstallContext,
     codex_home: &Path,
 ) -> Result<PathBuf> {
-    match install_context {
-        InstallContext::Npm | InstallContext::Bun => managed_package_current_exe(),
-        InstallContext::Standalone { .. } | InstallContext::Brew | InstallContext::Other => {
+    // codex-vl: post-merge `InstallContext` is a struct; route through
+    // its `method` discriminant. Patch 16-style adapter from Termux merge.
+    match install_context.method {
+        InstallMethod::Npm | InstallMethod::Bun => managed_package_current_exe(),
+        InstallMethod::Standalone { .. } | InstallMethod::Brew | InstallMethod::Other => {
             Ok(managed_codex_bin(codex_home))
         }
     }

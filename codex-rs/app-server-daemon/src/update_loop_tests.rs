@@ -7,6 +7,15 @@ use crate::RestartMode;
 use crate::UpdaterRefreshMode;
 use crate::managed_install::executable_identity_from_bytes;
 use codex_install_context::InstallContext;
+use codex_install_context::InstallMethod;
+
+// codex-vl: post-merge InstallContext is a struct; build per-method.
+fn ctx(method: InstallMethod) -> InstallContext {
+    InstallContext {
+        method,
+        package_layout: None,
+    }
+}
 
 #[test]
 fn unchanged_updater_uses_version_based_restart() {
@@ -65,6 +74,6 @@ async fn install_latest_standalone_is_disabled_in_fork() {
 fn reexec_managed_updater_short_circuits_for_npm_and_bun() {
     let missing = std::path::Path::new("/definitely/not/a/codex-vl-binary");
 
-    reexec_managed_updater(missing, &InstallContext::Npm).expect("npm short-circuits");
-    reexec_managed_updater(missing, &InstallContext::Bun).expect("bun short-circuits");
+    reexec_managed_updater(missing, &ctx(InstallMethod::Npm)).expect("npm short-circuits");
+    reexec_managed_updater(missing, &ctx(InstallMethod::Bun)).expect("bun short-circuits");
 }

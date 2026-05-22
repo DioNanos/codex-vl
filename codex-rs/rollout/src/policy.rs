@@ -191,6 +191,7 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::BackgroundEvent(_)
         | EventMsg::UndoStarted(_)
         | EventMsg::UndoCompleted(_)
+        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)

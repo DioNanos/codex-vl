@@ -8,9 +8,19 @@ use super::managed_codex_bin;
 use super::parse_codex_version;
 use super::resolve_managed_codex_bin_for_install_context;
 use codex_install_context::InstallContext;
+use codex_install_context::InstallMethod;
 use codex_install_context::StandalonePlatform;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+// codex-vl: post-merge InstallContext is a struct; helpers below build the
+// per-method fixture variants the old enum API gave for free.
+fn ctx(method: InstallMethod) -> InstallContext {
+    InstallContext {
+        method,
+        package_layout: None,
+    }
+}
 
 #[test]
 fn parses_codex_cli_version_output() {
@@ -43,7 +53,7 @@ fn managed_codex_bin_resolves_to_self_exe_when_npm() {
 
     with_self_exe(&bin, || {
         let resolved =
-            resolve_managed_codex_bin_for_install_context(&InstallContext::Npm, temp.path())
+            resolve_managed_codex_bin_for_install_context(&ctx(InstallMethod::Npm), temp.path())
                 .expect("resolve");
 
         assert_eq!(resolved, std::fs::canonicalize(&bin).expect("canonicalize"));
@@ -58,7 +68,7 @@ fn managed_codex_bin_resolves_to_self_exe_when_bun() {
 
     with_self_exe(&bin, || {
         let resolved =
-            resolve_managed_codex_bin_for_install_context(&InstallContext::Bun, temp.path())
+            resolve_managed_codex_bin_for_install_context(&ctx(InstallMethod::Bun), temp.path())
                 .expect("resolve");
 
         assert_eq!(resolved, std::fs::canonicalize(&bin).expect("canonicalize"));
@@ -72,7 +82,7 @@ fn managed_codex_bin_ignores_missing_self_exe_for_npm() {
 
     with_self_exe(&missing, || {
         let resolved =
-            resolve_managed_codex_bin_for_install_context(&InstallContext::Npm, temp.path())
+            resolve_managed_codex_bin_for_install_context(&ctx(InstallMethod::Npm), temp.path())
                 .expect("resolve");
 
         assert_eq!(
@@ -87,14 +97,18 @@ fn managed_codex_bin_ignores_missing_self_exe_for_npm() {
 fn managed_codex_bin_falls_back_to_standalone_path_for_other_contexts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let legacy = managed_codex_bin(temp.path());
+    let release_dir = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
+        PathBuf::from("/tmp/codex-release"),
+    )
+    .expect("absolute path");
     let contexts = [
-        InstallContext::Standalone {
-            release_dir: PathBuf::from("/tmp/codex-release"),
+        ctx(InstallMethod::Standalone {
+            release_dir,
             resources_dir: None,
             platform: StandalonePlatform::Unix,
-        },
-        InstallContext::Brew,
-        InstallContext::Other,
+        }),
+        ctx(InstallMethod::Brew),
+        ctx(InstallMethod::Other),
     ];
 
     for context in contexts {

@@ -1,392 +1,262 @@
-use super::*;
-use crate::tools::handlers::apply_patch_spec::create_apply_patch_freeform_tool;
-use crate::tools::handlers::goal_spec::create_create_goal_tool;
-use crate::tools::handlers::goal_spec::create_get_goal_tool;
-use crate::tools::handlers::goal_spec::create_update_goal_tool;
-use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
-use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
-use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v2;
-use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
-use crate::tools::handlers::multi_agents_spec::create_send_input_tool_v1;
-use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
-use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
-use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
-use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
-use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
-use crate::tools::handlers::plan_spec::create_update_plan_tool;
-use crate::tools::handlers::request_user_input_spec::REQUEST_USER_INPUT_TOOL_NAME;
-use crate::tools::handlers::request_user_input_spec::create_request_user_input_tool;
-use crate::tools::handlers::request_user_input_spec::request_user_input_tool_description;
-use crate::tools::handlers::shell_spec::CommandToolOptions;
-use crate::tools::handlers::shell_spec::create_exec_command_tool;
-use crate::tools::handlers::shell_spec::create_request_permissions_tool;
-use crate::tools::handlers::shell_spec::create_write_stdin_tool;
-use crate::tools::handlers::shell_spec::request_permissions_tool_description;
-use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
-use crate::tools::handlers::view_image_spec::create_view_image_tool;
-use crate::tools::registry::ToolRegistry;
-use codex_app_server_protocol::AppInfo;
-use codex_extension_api::ToolCall as ExtensionToolCall;
-use codex_extension_api::ToolExecutor;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use codex_features::Feature;
-use codex_features::Features;
+use codex_login::AuthManager;
+use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
-use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::WebSearchConfig;
+use codex_model_provider::create_model_provider;
+use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::VIEW_IMAGE_TOOL_NAME;
+use codex_protocol::openai_models::ApplyPatchToolType;
+use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_tools::AdditionalProperties;
 use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
-use codex_tools::FreeformTool;
-use codex_tools::JsonSchema;
-use codex_tools::JsonSchemaPrimitiveType;
-use codex_tools::JsonSchemaType;
-use codex_tools::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
-use codex_tools::ResponsesApiWebSearchFilters;
-use codex_tools::ResponsesApiWebSearchUserLocation;
-use codex_tools::TOOL_SEARCH_TOOL_NAME;
-use codex_tools::ToolEnvironmentMode;
+use codex_tools::ToolExposure;
 use codex_tools::ToolName;
-use codex_tools::ToolsConfigParams;
-use codex_tools::mcp_call_tool_result_output_schema;
-use codex_tools::request_user_input_available_modes;
+use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::sync::Arc;
 
-const CODEX_APPS_MCP_SERVER_NAME: &str = "codex_apps";
-const DEFAULT_AGENT_TYPE_DESCRIPTION: &str = "Test agent type description.";
-const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-const MAX_WAIT_TIMEOUT_MS: i64 = 3_600_000;
+use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnContext;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::router::ToolRouter;
+use crate::tools::router::ToolRouterParams;
 
-fn extension_tool_executor(
-    name: &str,
-    description: &str,
-) -> Arc<dyn ToolExecutor<ExtensionToolCall>> {
-    struct SpecOnlyExtensionExecutor {
-        name: String,
-        description: String,
-    }
-
-    #[async_trait::async_trait]
-    impl ToolExecutor<ExtensionToolCall> for SpecOnlyExtensionExecutor {
-        fn tool_name(&self) -> ToolName {
-            ToolName::plain(self.name.as_str())
-        }
-
-        fn spec(&self) -> Option<ToolSpec> {
-            Some(ToolSpec::Function(ResponsesApiTool {
-                name: self.name.clone(),
-                description: self.description.clone(),
-                strict: true,
-                parameters: JsonSchema::object(
-                    BTreeMap::from([(
-                        "message".to_string(),
-                        JsonSchema::string(/*description*/ None),
-                    )]),
-                    Some(vec!["message".to_string()]),
-                    Some(false.into()),
-                ),
-                output_schema: None,
-                defer_loading: None,
-            }))
-        }
-
-        async fn handle(
-            &self,
-            _call: ExtensionToolCall,
-        ) -> Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError> {
-            panic!("spec planning should not execute extension tools")
-        }
-    }
-
-    Arc::new(SpecOnlyExtensionExecutor {
-        name: name.to_string(),
-        description: description.to_string(),
-    })
+#[derive(Default)]
+struct ToolPlanInputs {
+    mcp_tools: Option<Vec<ToolInfo>>,
+    deferred_mcp_tools: Option<Vec<ToolInfo>>,
+    discoverable_tools: Option<Vec<DiscoverableTool>>,
+    dynamic_tools: Vec<DynamicToolSpec>,
 }
 
-#[test]
-fn extension_tools_do_not_replace_builtin_tools() {
-    let model_info = model_info();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &Features::with_defaults(),
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let extension_tool_executors = vec![extension_tool_executor(
-        "update_plan",
-        "Extension attempt to replace a built-in tool.",
-    )];
-    let (tools, _) = build_specs_with_inputs_for_test(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        /*discoverable_tools*/ None,
-        &extension_tool_executors,
-        &[],
-    );
+struct ToolPlanProbe {
+    visible_specs: Vec<ToolSpec>,
+    visible_names: Vec<String>,
+    namespace_functions: BTreeMap<String, Vec<String>>,
+    registered_names: Vec<String>,
+    exposures: BTreeMap<String, ToolExposure>,
+}
 
-    assert_eq!(
-        find_tool(&tools, "update_plan").clone(),
-        create_update_plan_tool()
-    );
-    assert_eq!(
-        tools
+impl ToolPlanProbe {
+    fn from_router(router: ToolRouter) -> Self {
+        let visible_specs = router.model_visible_specs();
+        let visible_names = visible_specs
             .iter()
-            .filter(|tool| tool.name() == "update_plan")
-            .count(),
-        1
-    );
-}
+            .map(|spec| spec.name().to_string())
+            .collect::<Vec<_>>();
+        let namespace_functions = visible_specs
+            .iter()
+            .filter_map(|spec| match spec {
+                ToolSpec::Namespace(namespace) => Some((
+                    namespace.name.clone(),
+                    namespace
+                        .tools
+                        .iter()
+                        .map(|tool| match tool {
+                            ResponsesApiNamespaceTool::Function(tool) => tool.name.clone(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                ToolSpec::Function(_)
+                | ToolSpec::ToolSearch { .. }
+                | ToolSpec::ImageGeneration { .. }
+                | ToolSpec::WebSearch { .. }
+                | ToolSpec::Freeform(_) => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let registered_tool_names = router.registered_tool_names_for_test();
+        let registered_names = registered_tool_names
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let exposures = registered_tool_names
+            .iter()
+            .filter_map(|name| {
+                router
+                    .tool_exposure_for_test(name)
+                    .map(|exposure| (name.to_string(), exposure))
+            })
+            .collect::<BTreeMap<_, _>>();
 
-#[test]
-fn test_full_toolset_specs_for_gpt5_codex_unified_exec_web_search() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::UnifiedExec);
-    let available_models = Vec::new();
-    let config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Live),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    let mut actual = BTreeMap::new();
-    let mut duplicate_names = Vec::new();
-    for tool in &tools {
-        let name = tool.name().to_string();
-        if actual.insert(name.clone(), tool.clone()).is_some() {
-            duplicate_names.push(name);
+        Self {
+            visible_specs,
+            visible_names,
+            namespace_functions,
+            registered_names,
+            exposures,
         }
     }
-    assert!(
-        duplicate_names.is_empty(),
-        "duplicate tool entries detected: {duplicate_names:?}"
-    );
 
-    let mut expected = BTreeMap::new();
-    for spec in [
-        create_exec_command_tool(CommandToolOptions {
-            allow_login_shell: true,
-            exec_permission_approvals_enabled: false,
-        }),
-        create_write_stdin_tool(),
-        create_update_plan_tool(),
-        request_user_input_tool_spec(&request_user_input_available_modes(&features)),
-        create_apply_patch_freeform_tool(/*include_environment_id*/ false),
-        ToolSpec::WebSearch {
-            external_web_access: Some(true),
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: None,
+    fn assert_visible_contains(&self, expected: &[&str]) {
+        for name in expected {
+            assert!(
+                self.visible_names.iter().any(|visible| visible == name),
+                "expected visible tool `{name}` in {:?}",
+                self.visible_names
+            );
+        }
+    }
+
+    fn assert_visible_lacks(&self, expected_absent: &[&str]) {
+        for name in expected_absent {
+            assert!(
+                !self.visible_names.iter().any(|visible| visible == name),
+                "expected visible tool `{name}` to be absent from {:?}",
+                self.visible_names
+            );
+        }
+    }
+
+    fn assert_registered_contains(&self, expected: &[&str]) {
+        for name in expected {
+            assert!(
+                self.registered_names
+                    .iter()
+                    .any(|registered| registered == name),
+                "expected registered tool `{name}` in {:?}",
+                self.registered_names
+            );
+        }
+    }
+
+    fn assert_registered_lacks(&self, expected_absent: &[&str]) {
+        for name in expected_absent {
+            assert!(
+                !self
+                    .registered_names
+                    .iter()
+                    .any(|registered| registered == name),
+                "expected registered tool `{name}` to be absent from {:?}",
+                self.registered_names
+            );
+        }
+    }
+
+    fn namespace_function_names(&self, namespace: &str) -> &[String] {
+        self.namespace_functions
+            .get(namespace)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    fn visible_spec(&self, name: &str) -> &ToolSpec {
+        self.visible_specs
+            .iter()
+            .find(|spec| spec.name() == name)
+            .unwrap_or_else(|| panic!("expected visible spec `{name}` in {:?}", self.visible_names))
+    }
+
+    fn exposure(&self, name: &str) -> ToolExposure {
+        *self
+            .exposures
+            .get(name)
+            .unwrap_or_else(|| panic!("expected registered tool `{name}`"))
+    }
+}
+
+async fn probe_with(
+    configure_turn: impl FnOnce(&mut TurnContext),
+    inputs: ToolPlanInputs,
+) -> ToolPlanProbe {
+    let (_session, mut turn) = make_session_and_context().await;
+    configure_turn(&mut turn);
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            mcp_tools: inputs.mcp_tools,
+            deferred_mcp_tools: inputs.deferred_mcp_tools,
+            discoverable_tools: inputs.discoverable_tools,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
-        create_image_generation_tool("png"),
-        create_view_image_tool(ViewImageToolOptions {
-            can_request_original_image_detail: config.can_request_original_image_detail,
-            include_environment_id: false,
-        }),
-    ] {
-        expected.insert(spec.name().to_string(), spec);
-    }
-    if config.goal_tools {
-        for spec in [
-            create_get_goal_tool(),
-            create_create_goal_tool(),
-            create_update_goal_tool(),
-        ] {
-            expected.insert(spec.name().to_string(), spec);
-        }
-    }
-    let collab_specs = if config.multi_agent_v2 {
-        vec![
-            create_spawn_agent_tool_v2(spawn_agent_tool_options(&config)),
-            create_send_message_tool(),
-            create_wait_agent_tool_v2(wait_agent_timeout_options()),
-            create_close_agent_tool_v2(),
-        ]
+    );
+    ToolPlanProbe::from_router(router)
+}
+
+async fn probe(configure_turn: impl FnOnce(&mut TurnContext)) -> ToolPlanProbe {
+    probe_with(configure_turn, ToolPlanInputs::default()).await
+}
+
+fn set_feature(turn: &mut TurnContext, feature: Feature, enabled: bool) {
+    if enabled {
+        turn.features
+            .enable(feature)
+            .expect("test feature should be enableable");
     } else {
-        vec![
-            create_spawn_agent_tool_v1(spawn_agent_tool_options(&config)),
-            create_send_input_tool_v1(),
-            create_wait_agent_tool_v1(wait_agent_timeout_options()),
-            create_close_agent_tool_v1(),
-        ]
-    };
-    for spec in collab_specs {
-        expected.insert(spec.name().to_string(), spec);
-    }
-    if !config.multi_agent_v2 {
-        let spec = create_resume_agent_tool();
-        expected.insert(spec.name().to_string(), spec);
+        turn.features
+            .disable(feature)
+            .expect("test feature should be disableable");
     }
 
-    if config.exec_permission_approvals_enabled {
-        let spec = create_request_permissions_tool(request_permissions_tool_description());
-        expected.insert(spec.name().to_string(), spec);
+    let mut config = (*turn.config).clone();
+    if enabled {
+        config
+            .features
+            .enable(feature)
+            .expect("test feature should be enableable in config");
+    } else {
+        config
+            .features
+            .disable(feature)
+            .expect("test feature should be disableable in config");
     }
+    turn.config = Arc::new(config);
+}
 
-    assert_eq!(
-        actual.keys().collect::<Vec<_>>(),
-        expected.keys().collect::<Vec<_>>(),
-        "tool name set mismatch"
-    );
-
-    for name in expected.keys() {
-        let mut actual_spec = actual.get(name).expect("present").clone();
-        let mut expected_spec = expected.get(name).expect("present").clone();
-        strip_descriptions_tool(&mut actual_spec);
-        strip_descriptions_tool(&mut expected_spec);
-        assert_eq!(actual_spec, expected_spec, "spec mismatch for {name}");
+fn set_features(turn: &mut TurnContext, features: &[Feature]) {
+    for feature in features {
+        set_feature(turn, *feature, /*enabled*/ true);
     }
 }
 
-#[test]
-fn exec_command_spec_includes_environment_id_only_for_multiple_selected_environments() {
-    let model_info = model_info();
-    let available_models = Vec::new();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::UnifiedExec);
-    let config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config::Config)) {
+    let mut config = (*turn.config).clone();
+    update(&mut config);
+    turn.config = Arc::new(config);
+}
+
+fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
+    update_config(turn, |config| {
+        config
+            .web_search_mode
+            .set(mode)
+            .expect("test web search mode should be accepted");
     });
+}
 
-    let (single_environment_tools, _) = build_specs(
-        &config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_process_tool_environment_id(
-        &single_environment_tools,
-        "exec_command",
-        /*expected_present*/ false,
-    );
-
-    let multi_environment_config = config.with_environment_mode(ToolEnvironmentMode::Multiple);
-    let (multi_environment_tools, _) = build_specs(
-        &multi_environment_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_process_tool_environment_id(
-        &multi_environment_tools,
-        "exec_command",
-        /*expected_present*/ true,
+fn use_chatgpt_auth(turn: &mut TurnContext) {
+    turn.auth_manager = Some(AuthManager::from_auth_for_testing(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+    ));
+    turn.provider = create_model_provider(
+        turn.config.model_provider.clone(),
+        turn.auth_manager.clone(),
     );
 }
 
-#[test]
-fn apply_patch_spec_includes_environment_id_only_for_multiple_selected_environments() {
-    let model_info = model_info();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &Features::with_defaults(),
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+fn use_bedrock_provider(turn: &mut TurnContext) {
+    let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+    update_config(turn, |config| {
+        config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
+        config.model_provider = provider_info.clone();
     });
-
-    let (single_environment_tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_apply_patch_environment_id(&single_environment_tools, /*expected_present*/ false);
-
-    let multi_environment_config =
-        tools_config.with_environment_mode(ToolEnvironmentMode::Multiple);
-    let (multi_environment_tools, _) = build_specs(
-        &multi_environment_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_apply_patch_environment_id(&multi_environment_tools, /*expected_present*/ true);
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
 }
 
-#[test]
-fn test_build_specs_collab_tools_enabled() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::Collab);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_contains_tool_names(
-        &tools,
-        &["spawn_agent", "send_input", "wait_agent", "close_agent"],
-    );
-    assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
-    assert_lacks_tool_name(&tools, "list_agents");
-
-    let spawn_agent = find_tool(&tools, "spawn_agent");
-    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = spawn_agent else {
-        panic!("spawn_agent should be a function tool");
-    };
-    let (properties, _) = expect_object_schema(parameters);
-    assert!(properties.contains_key("fork_context"));
-    assert!(!properties.contains_key("fork_turns"));
+fn duplicate_primary_environment(turn: &mut TurnContext) {
+    let mut second_environment = turn.environments.turn_environments[0].clone();
+    second_environment.environment_id = "secondary".to_string();
+    turn.environments.turn_environments.push(second_environment);
 }
 
 #[test]
@@ -435,174 +305,544 @@ fn goal_tools_require_goals_feature() {
     assert_contains_tool_names(&tools, &["get_goal", "create_goal", "update_goal"]);
 }
 
-#[test]
-fn test_build_specs_multi_agent_v2_uses_task_names_and_hides_resume() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::Collab);
-    features.enable(Feature::MultiAgentV2);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_contains_tool_names(
-        &tools,
-        &[
-            "spawn_agent",
-            "send_message",
-            "followup_task",
-            "wait_agent",
-            "close_agent",
-            "list_agents",
-        ],
-    );
-
-    let spawn_agent = find_tool(&tools, "spawn_agent");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = spawn_agent
-    else {
-        panic!("spawn_agent should be a function tool");
-    };
-    let (properties, required) = expect_object_schema(parameters);
-    assert!(properties.contains_key("task_name"));
-    assert!(properties.contains_key("message"));
-    assert!(properties.contains_key("fork_turns"));
-    assert!(!properties.contains_key("items"));
-    assert!(!properties.contains_key("fork_context"));
-    assert_eq!(
-        required,
-        Some(&vec!["task_name".to_string(), "message".to_string()])
-    );
-    let output_schema = output_schema
-        .as_ref()
-        .expect("spawn_agent should define output schema");
-    assert_eq!(output_schema["required"], json!(["task_name", "nickname"]));
-
-    let send_message = find_tool(&tools, "send_message");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = send_message
-    else {
-        panic!("send_message should be a function tool");
-    };
-    assert_eq!(output_schema, &None);
-    let (properties, required) = expect_object_schema(parameters);
-    assert!(properties.contains_key("target"));
-    assert!(!properties.contains_key("interrupt"));
-    assert!(properties.contains_key("message"));
-    assert!(!properties.contains_key("items"));
-    assert_eq!(
-        required,
-        Some(&vec!["target".to_string(), "message".to_string()])
-    );
-
-    let followup_task = find_tool(&tools, "followup_task");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = followup_task
-    else {
-        panic!("followup_task should be a function tool");
-    };
-    assert_eq!(output_schema, &None);
-    let (properties, required) = expect_object_schema(parameters);
-    assert!(properties.contains_key("target"));
-    assert!(properties.contains_key("message"));
-    assert!(!properties.contains_key("items"));
-    assert_eq!(
-        required,
-        Some(&vec!["target".to_string(), "message".to_string()])
-    );
-
-    let wait_agent = find_tool(&tools, "wait_agent");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = wait_agent
-    else {
-        panic!("wait_agent should be a function tool");
-    };
-    let (properties, required) = expect_object_schema(parameters);
-    assert!(!properties.contains_key("targets"));
-    assert!(properties.contains_key("timeout_ms"));
-    assert_eq!(required, None);
-    let output_schema = output_schema
-        .as_ref()
-        .expect("wait_agent should define output schema");
-    assert_eq!(
-        output_schema["properties"]["message"]["description"],
-        json!("Brief wait summary without the agent's final content.")
-    );
-
-    let list_agents = find_tool(&tools, "list_agents");
-    let ToolSpec::Function(ResponsesApiTool {
-        parameters,
-        output_schema,
-        ..
-    }) = list_agents
-    else {
-        panic!("list_agents should be a function tool");
-    };
-    let (properties, required) = expect_object_schema(parameters);
-    assert!(properties.contains_key("path_prefix"));
-    assert_eq!(required, None);
-    let output_schema = output_schema
-        .as_ref()
-        .expect("list_agents should define output schema");
-    assert_eq!(
-        output_schema["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
-    );
-    assert_lacks_tool_name(&tools, "send_input");
-    assert_lacks_tool_name(&tools, "resume_agent");
+fn mcp_tool(server: &str, namespace: &str, name: &str) -> ToolInfo {
+    ToolInfo {
+        server_name: server.to_string(),
+        supports_parallel_tool_calls: false,
+        server_origin: None,
+        callable_name: name.to_string(),
+        callable_namespace: namespace.to_string(),
+        namespace_description: Some(format!("Tools from {server}.")),
+        tool: rmcp::model::Tool {
+            name: name.to_string().into(),
+            title: None,
+            description: Some(format!("{name} test tool").into()),
+            input_schema: Arc::new(rmcp::model::object(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }))),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        },
+        connector_id: None,
+        connector_name: None,
+        plugin_display_names: Vec::new(),
+    }
 }
 
-#[test]
-fn test_build_specs_multi_agent_v2_uses_configured_tool_namespace() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::MultiAgentV2);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+fn dynamic_tool(namespace: Option<&str>, name: &str, defer_loading: bool) -> DynamicToolSpec {
+    DynamicToolSpec {
+        namespace: namespace.map(str::to_string),
+        name: name.to_string(),
+        description: format!("{name} dynamic tool"),
+        input_schema: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+        defer_loading,
+    }
+}
+
+fn discoverable_plugin(id: &str, name: &str) -> DiscoverableTool {
+    DiscoverablePluginInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: Some(format!("{name} plugin")),
+        has_skills: false,
+        mcp_server_names: Vec::new(),
+        app_connector_ids: Vec::new(),
+    }
+    .into()
+}
+
+fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
+    serde_json::to_value(spec)
+        .expect("tool spec should serialize")
+        .pointer(&format!("/parameters/properties/{parameter_name}"))
+        .is_some()
+}
+
+fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
+    match spec {
+        ToolSpec::Freeform(tool) if tool.name == "apply_patch" => {
+            tool.format.definition.contains("Environment ID")
+        }
+        _ => false,
+    }
+}
+
+#[tokio::test]
+async fn shell_family_registers_visible_unified_exec_and_hidden_legacy_shell() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::ShellTool, Feature::UnifiedExec]);
+        set_feature(turn, Feature::ShellZshFork, /*enabled*/ false);
+        turn.model_info.shell_type = ConfigShellToolType::ShellCommand;
     })
-    .with_multi_agent_v2_tool_namespace(Some("agents".to_string()));
-    let (tools, registry) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
+    .await;
+
+    plan.assert_visible_contains(&["exec_command", "write_stdin"]);
+    plan.assert_visible_lacks(&["shell_command"]);
+    plan.assert_registered_contains(&["exec_command", "write_stdin", "shell_command"]);
+    assert_eq!(plan.exposure("shell_command"), ToolExposure::Direct);
+}
+
+#[tokio::test]
+async fn environment_count_controls_environment_backed_tools() {
+    let no_environment = probe(|turn| {
+        turn.environments.turn_environments.clear();
+        set_feature(turn, Feature::ShellTool, /*enabled*/ true);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    no_environment.assert_visible_lacks(&[
+        "shell_command",
+        "exec_command",
+        "apply_patch",
+        "view_image",
+    ]);
+    no_environment.assert_registered_lacks(&[
+        "shell_command",
+        "exec_command",
+        "apply_patch",
+        "view_image",
+    ]);
+
+    let multiple_environments = probe(|turn| {
+        duplicate_primary_environment(turn);
+        set_feature(turn, Feature::ShellTool, /*enabled*/ true);
+        set_feature(turn, Feature::UnifiedExec, /*enabled*/ true);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    multiple_environments.assert_visible_contains(&["exec_command", "apply_patch", "view_image"]);
+    assert!(has_parameter(
+        multiple_environments.visible_spec("exec_command"),
+        "environment_id"
+    ));
+    assert!(apply_patch_accepts_environment_id(
+        multiple_environments.visible_spec("apply_patch")
+    ));
+    assert!(has_parameter(
+        multiple_environments.visible_spec("view_image"),
+        "environment_id"
+    ));
+}
+
+#[tokio::test]
+async fn host_context_gates_goal_and_agent_job_tools() {
+    let feature_disabled = probe(|turn| {
+        set_feature(turn, Feature::Goals, /*enabled*/ false);
+        turn.goal_tools_supported = true;
+    })
+    .await;
+    feature_disabled.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
+
+    let host_disabled = probe(|turn| {
+        set_feature(turn, Feature::Goals, /*enabled*/ true);
+        turn.goal_tools_supported = false;
+    })
+    .await;
+    host_disabled.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
+
+    let enabled = probe(|turn| {
+        set_feature(turn, Feature::Goals, /*enabled*/ true);
+        turn.goal_tools_supported = true;
+    })
+    .await;
+    enabled.assert_visible_contains(&["get_goal", "create_goal", "update_goal"]);
+
+    let review_thread = probe(|turn| {
+        set_feature(turn, Feature::Goals, /*enabled*/ true);
+        turn.goal_tools_supported = true;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::Review);
+    })
+    .await;
+    review_thread.assert_visible_lacks(&["get_goal", "create_goal", "update_goal"]);
+
+    let normal_agent_job = probe(|turn| {
+        set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);
+    })
+    .await;
+    normal_agent_job.assert_visible_contains(&["spawn_agents_on_csv"]);
+    normal_agent_job.assert_visible_lacks(&["report_agent_job_result"]);
+
+    let worker_agent_job = probe(|turn| {
+        set_feature(turn, Feature::SpawnCsv, /*enabled*/ true);
+        turn.session_source =
+            SessionSource::SubAgent(SubAgentSource::Other("agent_job:42".to_string()));
+    })
+    .await;
+    worker_agent_job.assert_visible_contains(&["spawn_agents_on_csv", "report_agent_job_result"]);
+}
+
+#[tokio::test]
+async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
+    let direct_mcp = probe_with(
+        |_| {},
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct__", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    direct_mcp.assert_visible_contains(&[
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    ]);
+    assert_eq!(
+        direct_mcp.namespace_function_names("mcp__direct__"),
+        &["lookup".to_string()]
     );
 
-    assert_contains_tool_names(&tools, &["agents"]);
+    let searchable_mcp = ToolPlanInputs {
+        deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable__", "lookup")]),
+        ..ToolPlanInputs::default()
+    };
+
+    let missing_model_capability = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = false;
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: searchable_mcp.deferred_mcp_tools.clone(),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    missing_model_capability.assert_visible_lacks(&["tool_search"]);
+
+    let missing_deferred_tools = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ false);
+        turn.model_info.supports_search_tool = true;
+    })
+    .await;
+    missing_deferred_tools.assert_visible_lacks(&["tool_search"]);
+    missing_deferred_tools.assert_visible_lacks(&[
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    ]);
+
+    let missing_namespace_capability = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+            use_bedrock_provider(turn);
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: searchable_mcp.deferred_mcp_tools.clone(),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    missing_namespace_capability.assert_visible_lacks(&["tool_search"]);
+
+    let enabled = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+        },
+        searchable_mcp,
+    )
+    .await;
+    enabled.assert_visible_contains(&["tool_search"]);
+    enabled.assert_registered_contains(&["tool_search", "mcp__searchable__lookup"]);
+}
+
+#[tokio::test]
+async fn request_plugin_install_requires_all_discovery_features_and_discoverable_tools() {
+    let discoverable_tools = Some(vec![discoverable_plugin("github", "GitHub")]);
+    for disabled_feature in [Feature::ToolSuggest, Feature::Apps, Feature::Plugins] {
+        let plan = probe_with(
+            |turn| {
+                set_features(
+                    turn,
+                    &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+                );
+                set_feature(turn, disabled_feature, /*enabled*/ false);
+            },
+            ToolPlanInputs {
+                discoverable_tools: discoverable_tools.clone(),
+                ..ToolPlanInputs::default()
+            },
+        )
+        .await;
+        plan.assert_visible_lacks(&[
+            "list_available_plugins_to_install",
+            "request_plugin_install",
+        ]);
+    }
+
+    let no_candidates = probe(|turn| {
+        set_features(
+            turn,
+            &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+        );
+    })
+    .await;
+    no_candidates.assert_visible_lacks(&[
+        "list_available_plugins_to_install",
+        "request_plugin_install",
+    ]);
+
+    let enabled = probe_with(
+        |turn| {
+            set_features(
+                turn,
+                &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+            );
+        },
+        ToolPlanInputs {
+            discoverable_tools,
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    enabled.assert_visible_contains(&[
+        "list_available_plugins_to_install",
+        "request_plugin_install",
+    ]);
+}
+
+#[tokio::test]
+async fn install_suggestion_tools_stay_visible_without_tool_search() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = false;
+            set_features(
+                turn,
+                &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+            );
+        },
+        ToolPlanInputs {
+            discoverable_tools: Some(vec![discoverable_plugin("github", "GitHub")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&[
+        "list_available_plugins_to_install",
+        "request_plugin_install",
+    ]);
+    plan.assert_visible_lacks(&["tool_search"]);
+}
+
+#[tokio::test]
+async fn request_plugin_install_description_defers_inventory_to_list_tool() {
+    let plan = probe_with(
+        |turn| {
+            set_features(
+                turn,
+                &[Feature::ToolSuggest, Feature::Apps, Feature::Plugins],
+            );
+        },
+        ToolPlanInputs {
+            discoverable_tools: Some(vec![discoverable_plugin("github", "GitHub")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    let ToolSpec::Function(ResponsesApiTool {
+        description: list_description,
+        ..
+    }) = plan.visible_spec("list_available_plugins_to_install")
+    else {
+        panic!("expected list_available_plugins_to_install function spec");
+    };
+    assert!(list_description.contains(
+        "Returns known plugins and connectors that can be passed to `request_plugin_install`."
+    ));
+
+    let ToolSpec::Function(ResponsesApiTool {
+        description: request_description,
+        ..
+    }) = plan.visible_spec("request_plugin_install")
+    else {
+        panic!("expected request_plugin_install function spec");
+    };
+    assert!(request_description.contains(
+        "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector that exactly matches the user's explicit request."
+    ));
+    assert!(!request_description.contains("github"));
+}
+
+#[tokio::test]
+async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
+    let input = ToolPlanInputs {
+        dynamic_tools: vec![dynamic_tool(
+            Some("codex_app"),
+            "lookup",
+            /*defer_loading*/ false,
+        )],
+        ..ToolPlanInputs::default()
+    };
+    let plain = probe_with(|_| {}, input).await;
+    assert_eq!(
+        plain.namespace_function_names("codex_app"),
+        &["lookup".to_string()]
+    );
+    plain.assert_visible_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+
+    let code_mode_only = probe_with(
+        |turn| {
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                Some("codex_app"),
+                "lookup",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    code_mode_only.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    assert_eq!(
+        code_mode_only.namespace_function_names("codex_app"),
+        Vec::<String>::new().as_slice()
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_feature_selects_one_agent_tool_family() {
+    let v1 = probe(|turn| {
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+    })
+    .await;
+    v1.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
+    v1.assert_visible_lacks(&[
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+        "send_message",
+        "followup_task",
+        "list_agents",
+    ]);
+    assert_eq!(
+        v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
+
+    let v2 = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.multi_agent_v2.max_concurrent_threads_per_session = 17;
+        });
+    })
+    .await;
+    v2.assert_visible_contains(&[
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "close_agent",
+        "list_agents",
+    ]);
+    v2.assert_visible_lacks(&["send_input", "resume_agent"]);
+    let spawn_agent_description = match v2.visible_spec("spawn_agent") {
+        ToolSpec::Function(tool) => tool.description.as_str(),
+        other => panic!("expected spawn_agent function spec, got {other:?}"),
+    };
+    assert!(spawn_agent_description.contains("max_concurrent_threads_per_session = 17"));
+
+    let direct_model_only = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::CodeMode,
+                Feature::CodeModeOnly,
+                Feature::MultiAgentV2,
+            ],
+        );
+        update_config(turn, |config| {
+            config.multi_agent_v2.non_code_mode_only = true;
+        });
+    })
+    .await;
+    direct_model_only.assert_visible_contains(&["spawn_agent", "send_message", "wait_agent"]);
+    assert_eq!(
+        direct_model_only.exposure("spawn_agent"),
+        ToolExposure::DirectModelOnly
+    );
+}
+
+#[tokio::test]
+async fn v1_multi_agent_tools_defer_when_tool_search_available() {
+    let plan = probe(|turn| {
+        turn.model_info.supports_search_tool = true;
+        set_feature(turn, Feature::Collab, /*enabled*/ true);
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["tool_search"]);
+    plan.assert_visible_lacks(&[
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ]);
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        let namespaced_tool_name = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name);
+        let namespaced_tool_name = namespaced_tool_name.to_string();
+        assert!(
+            plan.registered_names.contains(&namespaced_tool_name),
+            "expected namespaced runtime for {tool_name}"
+        );
+        assert!(
+            !plan
+                .registered_names
+                .contains(&ToolName::plain(tool_name).to_string()),
+            "expected no plain runtime for deferred {tool_name}"
+        );
+        assert_eq!(plan.exposure(&namespaced_tool_name), ToolExposure::Deferred);
+    }
+    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
+        panic!("expected visible tool_search spec");
+    };
+    assert!(description.contains("- Multi-agent tools: Spawn and manage sub-agents."));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_can_use_configured_tool_namespace() {
+    let namespaced = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+        });
+    })
+    .await;
+
+    namespaced.assert_visible_contains(&["agents"]);
     for tool_name in [
         "spawn_agent",
         "send_message",
@@ -611,663 +851,114 @@ fn test_build_specs_multi_agent_v2_uses_configured_tool_namespace() {
         "close_agent",
         "list_agents",
     ] {
-        assert_lacks_tool_name(&tools, tool_name);
-        assert!(registry.has_tool(&ToolName::namespaced("agents", tool_name)));
-        assert!(!registry.has_tool(&ToolName::plain(tool_name)));
-        assert_namespace_contains_function(&tools, "agents", tool_name);
+        namespaced.assert_visible_lacks(&[tool_name]);
+        assert!(
+            namespaced
+                .registered_names
+                .contains(&ToolName::namespaced("agents", tool_name).to_string()),
+            "expected namespaced runtime for {tool_name}"
+        );
+        assert!(
+            !namespaced
+                .registered_names
+                .contains(&ToolName::plain(tool_name).to_string()),
+            "expected no plain runtime for {tool_name}"
+        );
+        assert!(
+            namespaced
+                .namespace_function_names("agents")
+                .iter()
+                .any(|name| name == tool_name),
+            "expected {tool_name} in agents namespace"
+        );
     }
 }
 
-#[test]
-fn test_build_specs_multi_agent_v2_ignores_tool_namespace_without_namespace_support() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::MultiAgentV2);
-    let available_models = Vec::new();
-    let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+#[tokio::test]
+async fn multi_agent_v2_namespace_is_ignored_without_provider_namespace_support() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+        });
+        use_bedrock_provider(turn);
     })
-    .with_multi_agent_v2_tool_namespace(Some("agents".to_string()));
-    tools_config.namespace_tools = false;
-    let (tools, registry) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
+    .await;
 
-    assert_contains_tool_names(&tools, &["spawn_agent", "send_message", "list_agents"]);
-    assert_lacks_tool_name(&tools, "agents");
-    assert!(registry.has_tool(&ToolName::plain("spawn_agent")));
-    assert!(!registry.has_tool(&ToolName::namespaced("agents", "spawn_agent")));
-}
-
-#[test]
-fn test_build_specs_multi_agent_v2_does_not_require_collab_feature() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.disable(Feature::Collab);
-    features.enable(Feature::MultiAgentV2);
-    assert!(!features.enabled(Feature::Collab));
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_contains_tool_names(
-        &tools,
-        &[
-            "spawn_agent",
-            "send_message",
-            "followup_task",
-            "wait_agent",
-            "close_agent",
-            "list_agents",
-        ],
-    );
-    assert_lacks_tool_name(&tools, "send_input");
-    assert_lacks_tool_name(&tools, "resume_agent");
-}
-
-#[test]
-fn test_build_specs_enable_fanout_enables_agent_jobs_and_collab_tools() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::SpawnCsv);
-    features.normalize_dependencies();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_contains_tool_names(
-        &tools,
-        &[
-            "spawn_agent",
-            "send_input",
-            "wait_agent",
-            "close_agent",
-            "spawn_agents_on_csv",
-        ],
-    );
-}
-
-#[test]
-fn view_image_tool_omits_detail_without_original_detail_support() {
-    let mut model_info = model_info();
-    model_info.supports_image_detail_original = false;
-    let features = Features::with_defaults();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    let view_image = find_tool(&tools, VIEW_IMAGE_TOOL_NAME);
-    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = view_image else {
-        panic!("view_image should be a function tool");
-    };
-    let (properties, _) = expect_object_schema(parameters);
-    assert!(!properties.contains_key("detail"));
-}
-
-#[test]
-fn view_image_tool_includes_detail_with_original_detail_support() {
-    let mut model_info = model_info();
-    model_info.supports_image_detail_original = true;
-    let features = Features::with_defaults();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    let view_image = find_tool(&tools, VIEW_IMAGE_TOOL_NAME);
-    let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = view_image else {
-        panic!("view_image should be a function tool");
-    };
-    let (properties, _) = expect_object_schema(parameters);
-    assert!(properties.contains_key("detail"));
-    let detail_schema = properties
-        .get("detail")
-        .expect("view_image detail should include a description");
-    let description = expect_string_description(detail_schema);
-    let expected = vec![json!("high"), json!("original")];
-    assert_eq!(detail_schema.enum_values.as_ref(), Some(&expected));
-    assert!(description.contains("Supported values are `high` and `original`"));
-    assert!(description.contains("omit this field for default high resized behavior"));
-}
-
-#[test]
-fn disabled_environment_omits_environment_backed_tools() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::UnifiedExec);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    })
-    .with_environment_mode(ToolEnvironmentMode::None);
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_lacks_tool_name(&tools, "exec_command");
-    assert_lacks_tool_name(&tools, "write_stdin");
-    assert_lacks_tool_name(&tools, "apply_patch");
-    assert_lacks_tool_name(&tools, VIEW_IMAGE_TOOL_NAME);
-}
-
-#[test]
-fn view_image_spec_includes_environment_id_only_for_multiple_selected_environments() {
-    let model_info = model_info();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &Features::with_defaults(),
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-
-    let (single_environment_tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_process_tool_environment_id(
-        &single_environment_tools,
-        VIEW_IMAGE_TOOL_NAME,
-        /*expected_present*/ false,
-    );
-
-    let multi_environment_config =
-        tools_config.with_environment_mode(ToolEnvironmentMode::Multiple);
-    let (multi_environment_tools, _) = build_specs(
-        &multi_environment_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_process_tool_environment_id(
-        &multi_environment_tools,
-        VIEW_IMAGE_TOOL_NAME,
-        /*expected_present*/ true,
-    );
-}
-
-#[test]
-fn test_build_specs_agent_job_worker_tools_enabled() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::SpawnCsv);
-    features.normalize_dependencies();
-    features.enable(Feature::Sqlite);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::SubAgent(SubAgentSource::Other(
-            "agent_job:test".to_string(),
-        )),
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_contains_tool_names(
-        &tools,
-        &[
-            "spawn_agent",
-            "send_input",
-            "resume_agent",
-            "wait_agent",
-            "close_agent",
-            "spawn_agents_on_csv",
-            "report_agent_job_result",
-            REQUEST_USER_INPUT_TOOL_NAME,
-        ],
-    );
-}
-
-#[test]
-fn request_user_input_description_reflects_default_mode_feature_flag() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    let request_user_input_tool = find_tool(&tools, REQUEST_USER_INPUT_TOOL_NAME);
-    assert_eq!(
-        request_user_input_tool.clone(),
-        request_user_input_tool_spec(&request_user_input_available_modes(&features))
-    );
-
-    features.enable(Feature::DefaultModeRequestUserInput);
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    let request_user_input_tool = find_tool(&tools, REQUEST_USER_INPUT_TOOL_NAME);
-    assert_eq!(
-        request_user_input_tool.clone(),
-        request_user_input_tool_spec(&request_user_input_available_modes(&features))
-    );
-}
-
-#[test]
-fn request_permissions_requires_feature_flag() {
-    let model_info = model_info();
-    let features = Features::with_defaults();
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_lacks_tool_name(&tools, "request_permissions");
-
-    let mut features = Features::with_defaults();
-    features.enable(Feature::RequestPermissionsTool);
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    let request_permissions_tool = find_tool(&tools, "request_permissions");
-    assert_eq!(
-        request_permissions_tool.clone(),
-        create_request_permissions_tool(request_permissions_tool_description())
-    );
-}
-
-#[test]
-fn request_permissions_tool_is_independent_from_additional_permissions() {
-    let model_info = model_info();
-    let mut features = Features::with_defaults();
-    features.enable(Feature::ExecPermissionApprovals);
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    assert_lacks_tool_name(&tools, "request_permissions");
-}
-
-#[test]
-fn image_generation_tools_require_feature_and_supported_model() {
-    let supported_model_info = model_info();
-    let mut unsupported_model_info = supported_model_info.clone();
-    unsupported_model_info.input_modalities = vec![InputModality::Text];
-    let mut image_generation_disabled_features = Features::with_defaults();
-    image_generation_disabled_features.disable(Feature::ImageGeneration);
-    let mut image_generation_features = Features::with_defaults();
-    image_generation_features.enable(Feature::ImageGeneration);
-
-    let available_models = Vec::new();
-    let default_tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &supported_model_info,
-        available_models: &available_models,
-        features: &image_generation_disabled_features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (default_tools, _) = build_specs(
-        &default_tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
+    plan.assert_visible_contains(&["spawn_agent", "send_message", "list_agents"]);
+    plan.assert_visible_lacks(&["agents"]);
+    assert!(
+        plan.registered_names
+            .contains(&ToolName::plain("spawn_agent").to_string())
     );
     assert!(
-        !default_tools
-            .iter()
-            .any(|tool| tool.name() == "image_generation"),
-        "image_generation should be disabled when the feature is disabled"
-    );
-
-    let supported_tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &supported_model_info,
-        available_models: &available_models,
-        features: &image_generation_features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (supported_tools, _) = build_specs(
-        &supported_tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert_contains_tool_names(&supported_tools, &["image_generation"]);
-    let image_generation_tool = find_tool(&supported_tools, "image_generation");
-    assert_eq!(
-        serde_json::to_value(image_generation_tool).expect("serialize image tool"),
-        serde_json::json!({
-            "type": "image_generation",
-            "output_format": "png"
-        })
-    );
-
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &unsupported_model_info,
-        available_models: &available_models,
-        features: &image_generation_features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-    assert!(
-        !tools.iter().any(|tool| tool.name() == "image_generation"),
-        "image_generation should be disabled for unsupported models"
+        !plan
+            .registered_names
+            .contains(&ToolName::namespaced("agents", "spawn_agent").to_string())
     );
 }
 
-#[test]
-fn web_search_mode_cached_sets_external_web_access_false() {
-    let model_info = model_info();
-    let features = Features::with_defaults();
-
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Cached),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    let tool = find_tool(&tools, "web_search");
-    assert_eq!(
-        tool.clone(),
-        ToolSpec::WebSearch {
-            external_web_access: Some(false),
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: None,
-        }
-    );
-}
-
-#[test]
-fn web_search_mode_live_sets_external_web_access_true() {
-    let model_info = model_info();
-    let features = Features::with_defaults();
-
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Live),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
-
-    let tool = find_tool(&tools, "web_search");
-    assert_eq!(
-        tool.clone(),
-        ToolSpec::WebSearch {
-            external_web_access: Some(true),
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: None,
-        }
-    );
-}
-
-#[test]
-fn web_search_config_is_forwarded_to_tool_spec() {
-    let model_info = model_info();
-    let features = Features::with_defaults();
-    let web_search_config = WebSearchConfig {
-        filters: Some(codex_protocol::config_types::WebSearchFilters {
-            allowed_domains: Some(vec!["example.com".to_string()]),
-        }),
-        user_location: Some(codex_protocol::config_types::WebSearchUserLocation {
-            r#type: codex_protocol::config_types::WebSearchUserLocationType::Approximate,
-            country: Some("US".to_string()),
-            region: Some("California".to_string()),
-            city: Some("San Francisco".to_string()),
-            timezone: Some("America/Los_Angeles".to_string()),
-        }),
-        search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
-    };
-
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Live),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+#[tokio::test]
+async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
+    let plan = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::CodeMode,
+                Feature::CodeModeOnly,
+                Feature::MultiAgentV2,
+            ],
+        );
+        update_config(turn, |config| {
+            config.multi_agent_v2.non_code_mode_only = true;
+            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+        });
     })
-    .with_web_search_config(Some(web_search_config.clone()));
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
+    .await;
 
-    let tool = find_tool(&tools, "web_search");
-    assert_eq!(
-        tool.clone(),
-        ToolSpec::WebSearch {
-            external_web_access: Some(true),
-            filters: web_search_config
-                .filters
-                .map(ResponsesApiWebSearchFilters::from),
-            user_location: web_search_config
-                .user_location
-                .map(ResponsesApiWebSearchUserLocation::from),
-            search_context_size: web_search_config.search_context_size,
-            search_content_types: None,
-        }
-    );
+    assert_eq!(plan.visible_names, vec!["exec", "wait", "agents"]);
+    for tool_name in [
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "close_agent",
+        "list_agents",
+    ] {
+        assert!(
+            plan.namespace_function_names("agents")
+                .iter()
+                .any(|name| name == tool_name),
+            "expected {tool_name} in agents namespace"
+        );
+    }
 }
 
-#[test]
-fn web_search_tool_type_text_and_image_sets_search_content_types() {
-    let mut model_info = model_info();
-    model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
-    let features = Features::with_defaults();
+#[tokio::test]
+async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
+    let api_key_auth = probe(|turn| {
+        set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+        turn.model_info.input_modalities = vec![InputModality::Image];
+    })
+    .await;
+    api_key_auth.assert_visible_lacks(&["image_generation"]);
 
-    let available_models = Vec::new();
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
-        model_info: &model_info,
-        available_models: &available_models,
-        features: &features,
-        image_generation_tool_auth_allowed: true,
-        web_search_mode: Some(WebSearchMode::Live),
-        session_source: SessionSource::Cli,
-        permission_profile: &PermissionProfile::Disabled,
-        windows_sandbox_level: WindowsSandboxLevel::Disabled,
-    });
-    let (tools, _) = build_specs(
-        &tools_config,
-        /*mcp_tools*/ None,
-        /*deferred_mcp_tools*/ None,
-        &[],
-    );
+    let image_generation = probe(|turn| {
+        use_chatgpt_auth(turn);
+        set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
+        turn.model_info.input_modalities = vec![InputModality::Image];
+    })
+    .await;
+    image_generation.assert_visible_contains(&["image_generation"]);
 
-    let tool = find_tool(&tools, "web_search");
+    let live_web_search = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
+    })
+    .await;
     assert_eq!(
-        tool.clone(),
-        ToolSpec::WebSearch {
+        live_web_search.visible_spec("web_search"),
+        &ToolSpec::WebSearch {
             external_web_access: Some(true),
             filters: None,
             user_location: None,
@@ -1275,6 +966,13 @@ fn web_search_tool_type_text_and_image_sets_search_content_types() {
             search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
         }
     );
+
+    let unsupported_provider = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        use_bedrock_provider(turn);
+    })
+    .await;
+    unsupported_provider.assert_visible_lacks(&["web_search"]);
 }
 
 #[test]

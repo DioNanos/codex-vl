@@ -11,8 +11,8 @@ example, to stage the CLI, responses proxy, and SDK packages for version `0.6.0`
   --package codex-sdk
 ```
 
-This downloads the native artifacts once, hydrates `vendor/` for each package, and writes
-tarballs to `dist/npm/`.
+This downloads the native package archive artifacts once, hydrates `vendor/` for each
+package, and writes tarballs to `dist/npm/`.
 
 When `--package codex` is provided in this fork, the staging helper builds the
 lightweight `@mmmbuto/codex-vl` meta package plus the platform-native
@@ -20,5 +20,5 @@ lightweight `@mmmbuto/codex-vl` meta package plus the platform-native
 dist-tags.
 
 If you need to invoke `build_npm_package.py` directly, run
-`codex-cli/scripts/install_native_deps.py` first and pass `--vendor-src` pointing to the
-directory that contains the populated `vendor/` tree.
+`codex-cli/scripts/install_native_deps.py --component codex-package` first and pass
+`--vendor-src` pointing to the directory that contains the populated `vendor/` tree.

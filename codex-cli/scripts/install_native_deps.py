@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install Codex native binaries (Rust CLI, bwrap, and ripgrep helpers)."""
+"""Install Codex package archives and native helper binaries."""
 
 import argparse
 from contextlib import contextmanager
@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
-# Codex VL release staging must be explicit about the artifact source. Do not
+# codex-vl: release staging must be explicit about the artifact source. Do not
 # keep a parent-project workflow URL here: a missing `--workflow-url` should
 # fail rather than silently downloading native payloads from the wrong project.
 DEFAULT_WORKFLOW_URL = ""
@@ -35,6 +35,7 @@ BINARY_TARGETS = (
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 )
+CODEX_PACKAGE_COMPONENT = "codex-package"
 
 
 @dataclass(frozen=True)
@@ -143,11 +144,20 @@ def parse_args() -> argparse.Namespace:
         "--component",
         dest="components",
         action="append",
-        choices=tuple(list(BINARY_COMPONENTS) + ["rg"]),
+        choices=tuple([CODEX_PACKAGE_COMPONENT, *BINARY_COMPONENTS, "rg"]),
         help=(
             "Limit installation to the specified components."
-            " May be repeated. Defaults to bwrap, codex, codex-windows-sandbox-setup,"
-            " codex-command-runner, and rg."
+            " May be repeated. Defaults to codex-package and codex-responses-api-proxy."
+        ),
+    )
+    parser.add_argument(
+        "--allow-legacy-codex-package",
+        action="store_true",
+        help=(
+            "Allow codex-package to be synthesized from legacy per-binary artifacts "
+            "when package archives are missing. Intended for CI compatibility only; "
+            "release staging should not use this. Automatically enabled for the "
+            "built-in default workflow."
         ),
     )
     parser.add_argument(
@@ -169,15 +179,16 @@ def main() -> int:
     vendor_dir = codex_cli_root / VENDOR_DIR_NAME
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
-    components = args.components or [
-        "bwrap",
-        "codex",
-        "codex-windows-sandbox-setup",
-        "codex-command-runner",
-        "rg",
-    ]
+    components = args.components or [CODEX_PACKAGE_COMPONENT, "codex-responses-api-proxy"]
 
-    workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
+    # codex-vl: fork must be explicit about the artifact source. `DEFAULT_WORKFLOW_URL`
+    # is empty so a missing `--workflow-url` fails rather than silently downloading
+    # from a parent-project run. `use_default_workflow` is preserved (always False
+    # for the fork) so the upstream legacy-codex-package fallback below stays
+    # consistent.
+    workflow_override = (args.workflow_url or "").strip()
+    use_default_workflow = not workflow_override
+    workflow_url = workflow_override or DEFAULT_WORKFLOW_URL
     if not workflow_url:
         raise SystemExit(
             "Missing --workflow-url. Codex VL does not default to parent-project "
@@ -202,7 +213,22 @@ def main() -> int:
     with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
+            # codex-vl fork: pass `repo=repo` so artifacts are downloaded from
+            # DioNanos/codex-vl by default; upstream's `install_codex_package_archives`
+            # + legacy fallback are preserved for the new `codex-package` layout.
             _download_artifacts(workflow_id, artifacts_dir, repo=repo)
+            if CODEX_PACKAGE_COMPONENT in components:
+                try:
+                    install_codex_package_archives(artifacts_dir, vendor_dir, BINARY_TARGETS)
+                except FileNotFoundError:
+                    if not (args.allow_legacy_codex_package or use_default_workflow):
+                        raise
+                    install_legacy_codex_package_layouts(
+                        artifacts_dir,
+                        vendor_dir,
+                        BINARY_TARGETS,
+                        manifest_path=RG_MANIFEST,
+                    )
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
@@ -216,6 +242,135 @@ def main() -> int:
 
     print(f"Installed native dependencies into {vendor_dir}")
     return 0
+
+
+def install_codex_package_archives(
+    artifacts_dir: Path,
+    vendor_dir: Path,
+    targets: Sequence[str],
+) -> None:
+    targets = list(targets)
+    if not targets:
+        return
+
+    print("Installing Codex package archives for targets: " + ", ".join(targets))
+    max_workers = min(len(targets), max(1, (os.cpu_count() or 1)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _install_single_codex_package_archive,
+                artifacts_dir,
+                vendor_dir,
+                target,
+            ): target
+            for target in targets
+        }
+        for future in as_completed(futures):
+            installed_path = future.result()
+            print(f"  installed {installed_path}")
+
+
+def _install_single_codex_package_archive(
+    artifacts_dir: Path,
+    vendor_dir: Path,
+    target: str,
+) -> Path:
+    artifact_subdir = artifact_dir_for_target(artifacts_dir, target)
+    archive_path = artifact_subdir / f"codex-package-{target}.tar.gz"
+    if not archive_path.exists():
+        raise FileNotFoundError(f"Expected package archive not found: {archive_path}")
+
+    dest_dir = vendor_dir / target
+    if dest_dir.exists():
+        shutil.rmtree(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        archive.extractall(dest_dir, filter="data")
+
+    return dest_dir
+
+
+def install_legacy_codex_package_layouts(
+    artifacts_dir: Path,
+    vendor_dir: Path,
+    targets: Sequence[str],
+    *,
+    manifest_path: Path,
+) -> None:
+    targets = list(targets)
+    print(
+        "Synthesizing Codex package layouts from legacy artifacts for targets: "
+        + ", ".join(targets)
+    )
+    with tempfile.TemporaryDirectory(prefix="codex-legacy-package-") as legacy_vendor_dir_str:
+        legacy_vendor_dir = Path(legacy_vendor_dir_str)
+        install_binary_components(
+            artifacts_dir,
+            legacy_vendor_dir,
+            [
+                BINARY_COMPONENTS["codex"],
+                BINARY_COMPONENTS["bwrap"],
+                BINARY_COMPONENTS["codex-windows-sandbox-setup"],
+                BINARY_COMPONENTS["codex-command-runner"],
+            ],
+        )
+        fetch_rg(legacy_vendor_dir, targets, manifest_path=manifest_path)
+
+        for target in targets:
+            dest_dir = vendor_dir / target
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            _build_legacy_codex_package_layout(legacy_vendor_dir / target, dest_dir, target)
+            print(f"  synthesized {dest_dir}")
+
+
+def _build_legacy_codex_package_layout(
+    legacy_target_dir: Path,
+    package_dir: Path,
+    target: str,
+) -> None:
+    is_windows = "windows" in target
+    exe_suffix = ".exe" if is_windows else ""
+    package_dir.mkdir(parents=True)
+
+    bin_dir = package_dir / "bin"
+    resources_dir = package_dir / "codex-resources"
+    path_dir = package_dir / "codex-path"
+    bin_dir.mkdir()
+    resources_dir.mkdir()
+    path_dir.mkdir()
+
+    shutil.copy2(
+        legacy_target_dir / "codex" / f"codex{exe_suffix}",
+        bin_dir / f"codex{exe_suffix}",
+    )
+    shutil.copy2(
+        legacy_target_dir / "path" / f"rg{exe_suffix}",
+        path_dir / f"rg{exe_suffix}",
+    )
+
+    if is_windows:
+        for helper in [
+            "codex-command-runner.exe",
+            "codex-windows-sandbox-setup.exe",
+        ]:
+            shutil.copy2(legacy_target_dir / "codex" / helper, resources_dir / helper)
+    elif "linux" in target:
+        shutil.copy2(legacy_target_dir / "codex-resources" / "bwrap", resources_dir / "bwrap")
+
+    write_json(
+        package_dir / "codex-package.json",
+        {
+            "layoutVersion": 1,
+            "version": "unknown",
+            "target": target,
+            "variant": "codex",
+            "entrypoint": f"bin/codex{exe_suffix}",
+            "resourcesDir": "codex-resources",
+            "pathDir": "codex-path",
+        },
+    )
 
 
 def fetch_rg(
@@ -342,11 +497,8 @@ def _install_single_binary(
     target: str,
     component: BinaryComponent,
 ) -> Path:
-    artifact_subdir = artifacts_dir / target
-    archive_name = _archive_name_for_target(component.artifact_prefix, target)
-    archive_path = artifact_subdir / archive_name
-    if not archive_path.exists():
-        raise FileNotFoundError(f"Expected artifact not found: {archive_path}")
+    artifact_subdir = artifact_dir_for_target(artifacts_dir, target)
+    archive_path = legacy_binary_archive_path(artifact_subdir, component.artifact_prefix, target)
 
     dest_dir = vendor_dir / target / component.dest_dir
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -366,6 +518,28 @@ def _archive_name_for_target(artifact_prefix: str, target: str) -> str:
     if "windows" in target:
         return f"{artifact_prefix}-{target}.exe.zst"
     return f"{artifact_prefix}-{target}.zst"
+
+
+def legacy_binary_archive_path(artifact_dir: Path, artifact_prefix: str, target: str) -> Path:
+    archive_names = [_archive_name_for_target(artifact_prefix, target)]
+    if artifact_dir.name == f"{target}-unsigned":
+        archive_names.append(_archive_name_for_target(artifact_prefix, f"{target}-unsigned"))
+
+    for archive_name in archive_names:
+        archive_path = artifact_dir / archive_name
+        if archive_path.exists():
+            return archive_path
+
+    raise FileNotFoundError(f"Expected artifact not found: {artifact_dir / archive_names[0]}")
+
+
+def artifact_dir_for_target(artifacts_dir: Path, target: str) -> Path:
+    for artifact_name in [target, f"{target}-unsigned"]:
+        artifact_dir = artifacts_dir / artifact_name
+        if artifact_dir.is_dir():
+            return artifact_dir
+
+    return artifacts_dir / target
 
 
 def _fetch_single_rg(
@@ -504,6 +678,12 @@ def _load_manifest(manifest_path: Path) -> dict:
         )
 
     return manifest
+
+
+def write_json(path: Path, value: object) -> None:
+    with open(path, "w", encoding="utf-8") as out:
+        json.dump(value, out, indent=2)
+        out.write("\n")
 
 
 if __name__ == "__main__":
