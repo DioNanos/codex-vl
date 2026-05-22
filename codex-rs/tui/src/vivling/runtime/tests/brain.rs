@@ -1117,6 +1117,10 @@ fn chat_falls_back_to_template_when_budget_exhausted() {
         message.contains("daily LLM budget"),
         "budget-exhausted Chat fallback must name the skip reason: {message}"
     );
+    assert!(
+        message.contains("reset-budget") || message.contains("UTC midnight"),
+        "fallback must point user to recovery options: {message}"
+    );
 }
 
 #[test]

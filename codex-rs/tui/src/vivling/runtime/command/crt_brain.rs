@@ -30,6 +30,49 @@ impl Vivling {
             format_set_message(mode)
         })
     }
+
+    /// Memory V2 Step 12.B.O — `/vivling crt-brain budget [default|
+    /// unlimited|<N>]`. Persists the override on
+    /// `VivlingState.budget_override` (additive #[serde(default)],
+    /// no schema bump). Also clears `startup_dispatched` so the
+    /// bootstrap CRT dispatch can fire again on the next frame when
+    /// the user lifts a previously-exhausted cap.
+    pub(crate) fn crt_brain_set_budget(
+        &mut self,
+        cap: codex_vivling_core::model::VivlingBudgetCap,
+    ) -> Result<String, String> {
+        let message = self.update_existing(|state| {
+            state.budget_override = cap;
+            let stage_label = state.budget_override.label(state.stage());
+            format!("CRT brain budget: {stage_label}.")
+        })?;
+        self.startup_dispatched.set(false);
+        Ok(message)
+    }
+
+    /// Memory V2 Step 12.B.O — `/vivling crt-brain reset-budget`.
+    /// Zeroes today's daily counters without waiting for the UTC
+    /// midnight rollover and also clears `startup_dispatched` so the
+    /// bootstrap CRT dispatch can fire again on the next frame.
+    pub(crate) fn crt_brain_reset_budget(&mut self) -> Result<String, String> {
+        let message = self.update_existing(|state| {
+            state.daily_llm_call_count = 0;
+            state.daily_llm_chat_calls = 0;
+            state.daily_llm_assist_calls = 0;
+            state.daily_llm_loop_tick_calls = 0;
+            state.daily_llm_expression_calls = 0;
+            state.daily_llm_failure_count = 0;
+            state.daily_llm_throttle_skips = 0;
+            state.daily_llm_dedup_skips = 0;
+            state.daily_llm_budget_skips = 0;
+            state.daily_llm_optout_skips = 0;
+            // `last_llm_dispatch_at` deliberately survives — the 60s
+            // throttle is wall-clock and unrelated to the budget.
+            "CRT brain daily counters reset. Bootstrap will retry on next frame.".to_string()
+        })?;
+        self.startup_dispatched.set(false);
+        Ok(message)
+    }
 }
 
 fn format_set_message(mode: VivlingExpressionMode) -> String {
@@ -152,5 +195,60 @@ mod tests {
             text.contains(&format!("({} left)", cap - 17)),
             "render must show remaining headroom: {text}"
         );
+    }
+
+    // ---- Memory V2 Step 12.B.O — edge cases + budget override ----
+
+    #[test]
+    fn format_crt_brain_status_renders_count_at_cap_as_zero_left() {
+        // Sonnet K audit P2: count==cap edge case must render "0 left"
+        // cleanly (saturating_sub) without underflow.
+        use codex_vivling_core::model::stage_llm_budget;
+        let mut state = fixture_state();
+        let cap = stage_llm_budget(state.stage());
+        state.daily_llm_call_count = cap;
+        let text = expression::format_crt_brain_status(&state);
+        assert!(
+            text.contains(&format!("total {cap}/{cap}")),
+            "render at cap: {text}"
+        );
+        assert!(text.contains("(0 left)"), "0 left at cap: {text}");
+    }
+
+    #[test]
+    fn format_crt_brain_status_renders_count_over_cap_as_zero_left() {
+        // Theoretical reservation race: count could briefly exceed cap.
+        // saturating_sub must clamp to 0 left, not underflow.
+        use codex_vivling_core::model::stage_llm_budget;
+        let mut state = fixture_state();
+        let cap = stage_llm_budget(state.stage());
+        state.daily_llm_call_count = cap + 10;
+        let text = expression::format_crt_brain_status(&state);
+        assert!(text.contains("(0 left)"), "saturating_sub clamps: {text}");
+    }
+
+    #[test]
+    fn format_crt_brain_status_with_unlimited_budget_renders_infinity() {
+        // Step 12.B.O: VivlingBudgetCap::Unlimited renders as `∞` for
+        // both cap and remaining so the line stays readable instead
+        // of showing `u32::MAX`.
+        let mut state = fixture_state();
+        state.budget_override = codex_vivling_core::model::VivlingBudgetCap::Unlimited;
+        state.daily_llm_call_count = 1337;
+        let text = expression::format_crt_brain_status(&state);
+        assert!(text.contains("total 1337/∞"), "unlimited cap: {text}");
+        assert!(text.contains("(∞ left)"), "unlimited remaining: {text}");
+        assert!(text.contains("unlimited (override)"), "budget line: {text}");
+    }
+
+    #[test]
+    fn format_crt_brain_status_with_custom_budget_renders_override_label() {
+        let mut state = fixture_state();
+        state.budget_override = codex_vivling_core::model::VivlingBudgetCap::Custom(75);
+        state.daily_llm_call_count = 20;
+        let text = expression::format_crt_brain_status(&state);
+        assert!(text.contains("total 20/75"), "custom cap: {text}");
+        assert!(text.contains("(55 left)"), "custom remaining: {text}");
+        assert!(text.contains("75 (override)"), "budget line: {text}");
     }
 }

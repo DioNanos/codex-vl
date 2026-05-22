@@ -243,6 +243,13 @@ pub(crate) struct VivlingState {
     #[serde(default)]
     pub(crate) crt_brain_mode: codex_vivling_core::model::VivlingExpressionMode,
 
+    /// Memory V2 Step 12.B.O — per-Vivling budget cap override.
+    /// `Default` falls back to `stage_llm_budget(stage)`; DAG can
+    /// switch to `Unlimited` or `Custom(n)` via `/vivling crt-brain
+    /// budget`. Additive on V10 with `#[serde(default)]`.
+    #[serde(default)]
+    pub(crate) budget_override: codex_vivling_core::model::VivlingBudgetCap,
+
     // Step 12.B.A — daily LLM call budget counters. Reservation
     // happens in main-thread `try_reserve_llm_call` (Step 12.B.B); the
     // increments persist here so a crash/restart cannot let the

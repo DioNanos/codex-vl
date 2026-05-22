@@ -85,6 +85,61 @@ pub const fn stage_llm_budget(stage: Stage) -> u32 {
     }
 }
 
+/// Memory V2 Step 12.B.O — per-Vivling budget cap override.
+///
+/// `Default` falls back to [`stage_llm_budget`] (Baby 50 / Juvenile
+/// 100 / Adult 200). DAG on an unmetered wrapper (GLM Z.AI, Ollama
+/// Cloud, local models) can lift the artificial gradient with
+/// `/vivling crt-brain budget unlimited|<N>`. The enum form
+/// (instead of `Option<u32>` with `Some(0)` = unlimited) was
+/// chosen on the DeepSeek 2026-05-22 design audit to keep the
+/// semantics self-documenting.
+///
+/// Schema: additive on V10 via `#[serde(default)]` on the
+/// `VivlingState::budget_override` field. No bump required.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
+pub enum VivlingBudgetCap {
+    /// Stage-driven cap (the original behavior). Reads
+    /// [`stage_llm_budget`].
+    #[default]
+    Default,
+    /// No daily cap at all. The 60s Expression throttle and the
+    /// 5-minute loop floor (`LOOP_EXPRESSION_THROTTLE_SECONDS`)
+    /// remain active as anti-burn safety nets.
+    Unlimited,
+    /// Explicit numeric override. Honored verbatim; no clamping
+    /// against the stage gradient so DAG can dial Baby above
+    /// Adult if a scenario calls for it.
+    Custom(u32),
+}
+
+impl VivlingBudgetCap {
+    /// Resolve the effective cap for a given stage. Returns
+    /// `u32::MAX` for `Unlimited` so the existing
+    /// `daily_llm_call_count >= cap` comparison short-circuits
+    /// without special-casing in the reservation primitive.
+    pub fn effective_cap(self, stage: Stage) -> u32 {
+        match self {
+            VivlingBudgetCap::Default => stage_llm_budget(stage),
+            VivlingBudgetCap::Unlimited => u32::MAX,
+            VivlingBudgetCap::Custom(n) => n,
+        }
+    }
+
+    /// Short label used in `/vivling crt-brain show` and the
+    /// fallback marker. `Default` reports the resolved numeric
+    /// cap so the user sees what they get without having to
+    /// read source.
+    pub fn label(self, stage: Stage) -> String {
+        match self {
+            VivlingBudgetCap::Default => format!("{} (stage default)", stage_llm_budget(stage)),
+            VivlingBudgetCap::Unlimited => "unlimited (override)".to_string(),
+            VivlingBudgetCap::Custom(n) => format!("{n} (override)"),
+        }
+    }
+}
+
 /// Anti-flood window between two successful `Expression` reservations
 /// for the same Vivling, in seconds. Step 12.B.B keeps the throttle
 /// scoped to the Expression channel because Chat/Assist/LoopTick are

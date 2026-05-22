@@ -19,6 +19,17 @@ pub(crate) enum CrtBrainAction {
     /// an Expression refresh now, bypassing the 60s throttle window.
     /// Budget + opt-out + dedup gates still apply.
     Refresh,
+    /// Memory V2 Step 12.B.O — `/vivling crt-brain budget
+    /// default|unlimited|<N>`: set or show the per-Vivling budget
+    /// cap override.
+    SetBudget(codex_vivling_core::model::VivlingBudgetCap),
+    /// Memory V2 Step 12.B.O — `/vivling crt-brain reset-budget`:
+    /// zero today's daily counters without waiting for the UTC
+    /// midnight rollover. Useful for live testing + recovery from
+    /// over-saturation. Also clears the `startup_dispatched` flag
+    /// so the bootstrap CRT dispatch can fire again on the next
+    /// frame.
+    ResetBudget,
 }
 
 /// Memory V2 §8.2 (Step 5.B) — sub-actions for `/vivling language`.
@@ -200,13 +211,48 @@ impl VivlingAction {
         if trimmed.is_empty() {
             return Ok(Self::CrtBrain(CrtBrainAction::Show));
         }
-        match trimmed.to_ascii_lowercase().as_str() {
+        let lowered = trimmed.to_ascii_lowercase();
+        // Step 12.B.O — `budget` and `reset-budget` accept the same
+        // tail-stripping convention as `language` (the keyword + rest)
+        // so we can parse the override value cleanly.
+        if let Some(rest) = lowered.strip_prefix("budget") {
+            let value = rest.trim();
+            let cap = match value {
+                "" | "show" => {
+                    return Ok(Self::CrtBrain(CrtBrainAction::SetBudget(
+                        codex_vivling_core::model::VivlingBudgetCap::Default,
+                    )));
+                }
+                "default" | "auto" | "reset" => {
+                    codex_vivling_core::model::VivlingBudgetCap::Default
+                }
+                "unlimited" | "infinite" | "off" => {
+                    codex_vivling_core::model::VivlingBudgetCap::Unlimited
+                }
+                other => match other.parse::<u32>() {
+                    Ok(n) => codex_vivling_core::model::VivlingBudgetCap::Custom(n),
+                    Err(_) => {
+                        return Err(
+                            "Usage: /vivling crt-brain budget [default|unlimited|<N>]".to_string()
+                        );
+                    }
+                },
+            };
+            return Ok(Self::CrtBrain(CrtBrainAction::SetBudget(cap)));
+        }
+        match lowered.as_str() {
             "show" | "status" => Ok(Self::CrtBrain(CrtBrainAction::Show)),
             "on" => Ok(Self::CrtBrain(CrtBrainAction::On)),
             "off" => Ok(Self::CrtBrain(CrtBrainAction::Off)),
             "default" | "auto" | "clear" | "reset" => Ok(Self::CrtBrain(CrtBrainAction::Default)),
             "refresh" | "now" => Ok(Self::CrtBrain(CrtBrainAction::Refresh)),
-            _ => Err("Usage: /vivling crt-brain [show|on|off|default|refresh]".to_string()),
+            "reset-budget" | "reset_budget" | "resetbudget" => {
+                Ok(Self::CrtBrain(CrtBrainAction::ResetBudget))
+            }
+            _ => Err(
+                "Usage: /vivling crt-brain [show|on|off|default|refresh|budget <opt>|reset-budget]"
+                    .to_string(),
+            ),
         }
     }
 

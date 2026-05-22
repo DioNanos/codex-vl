@@ -42,6 +42,7 @@ use codex_vivling_core::model::LlmCallSkipReason;
 use codex_vivling_core::model::Stage;
 use codex_vivling_core::model::VivlingExpressionMode;
 use codex_vivling_core::model::VivlingLlmCallKind;
+#[cfg(test)]
 use codex_vivling_core::model::stage_llm_budget;
 
 use super::VivlingState;
@@ -143,8 +144,11 @@ impl VivlingState {
             }
         }
 
-        // (5) Budget. Stage-scoped cap, shared across all kinds.
-        let cap = stage_llm_budget(self.stage());
+        // (5) Budget. Stage-scoped cap by default, optionally
+        // overridden per-Vivling via `budget_override` (Step 12.B.O).
+        // `effective_cap` returns `u32::MAX` on `Unlimited` so the
+        // comparison short-circuits without a special-case branch.
+        let cap = self.budget_override.effective_cap(self.stage());
         if self.daily_llm_call_count >= cap {
             self.daily_llm_budget_skips = self.daily_llm_budget_skips.saturating_add(1);
             return Err(LlmCallSkipReason::BudgetExhausted);

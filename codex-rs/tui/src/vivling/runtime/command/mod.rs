@@ -112,6 +112,12 @@ impl Vivling {
                 super::action::CrtBrainAction::Refresh => {
                     Ok(VivlingCommandOutcome::CrtBrainRefresh)
                 }
+                super::action::CrtBrainAction::SetBudget(cap) => self
+                    .crt_brain_set_budget(cap)
+                    .map(VivlingCommandOutcome::Message),
+                super::action::CrtBrainAction::ResetBudget => self
+                    .crt_brain_reset_budget()
+                    .map(VivlingCommandOutcome::Message),
             },
             VivlingAction::Language(language_action) => match language_action {
                 super::action::LanguageAction::Show => self

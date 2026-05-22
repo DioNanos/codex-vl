@@ -523,16 +523,32 @@ pub(crate) fn format_crt_brain_status(state: &VivlingState) -> String {
     } else {
         state.daily_llm_day_key.as_str()
     };
-    let cap = stage_llm_budget(state.stage());
+    // Step 12.B.O — render the effective cap (override-aware) so the
+    // user sees what `try_reserve_llm_call` will actually enforce.
+    // `Unlimited` is rendered as `∞` instead of `u32::MAX` to keep the
+    // status line readable.
+    let cap = state.budget_override.effective_cap(state.stage());
+    let cap_label = match state.budget_override {
+        codex_vivling_core::model::VivlingBudgetCap::Unlimited => "∞".to_string(),
+        _ => cap.to_string(),
+    };
     let remaining = cap.saturating_sub(state.daily_llm_call_count);
-    let mut lines = Vec::with_capacity(6);
+    let remaining_label = match state.budget_override {
+        codex_vivling_core::model::VivlingBudgetCap::Unlimited => "∞".to_string(),
+        _ => remaining.to_string(),
+    };
+    let mut lines = Vec::with_capacity(7);
     lines.push(format!("CRT brain: {mode}"));
+    lines.push(format!(
+        "Budget: {}",
+        state.budget_override.label(state.stage())
+    ));
     lines.push(format!("Day: {day_key}"));
     lines.push(format!(
         "Calls today: total {}/{} ({} left) (chat {}, assist {}, loop {}, expression {})",
         state.daily_llm_call_count,
-        cap,
-        remaining,
+        cap_label,
+        remaining_label,
         state.daily_llm_chat_calls,
         state.daily_llm_assist_calls,
         state.daily_llm_loop_tick_calls,

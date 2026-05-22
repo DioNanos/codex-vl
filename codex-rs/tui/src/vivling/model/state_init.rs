@@ -125,6 +125,9 @@ impl VivlingState {
             cached_proactive: None,
             // Memory V2 Step 12.B.A: V10 scaffolding defaults.
             crt_brain_mode: codex_vivling_core::model::VivlingExpressionMode::default(),
+            // Memory V2 Step 12.B.O — budget override defaults to
+            // stage-driven; user lifts it via `/vivling crt-brain budget`.
+            budget_override: codex_vivling_core::model::VivlingBudgetCap::default(),
             daily_llm_call_count: 0,
             daily_llm_chat_calls: 0,
             daily_llm_assist_calls: 0,

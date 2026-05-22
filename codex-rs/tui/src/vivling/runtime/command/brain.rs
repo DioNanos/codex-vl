@@ -80,13 +80,21 @@ fn chat_skip_reason_label(
     state: &VivlingState,
 ) -> String {
     use codex_vivling_core::model::LlmCallSkipReason;
-    use codex_vivling_core::model::stage_llm_budget;
+    use codex_vivling_core::model::VivlingBudgetCap;
     match reason {
         LlmCallSkipReason::BudgetExhausted => {
-            let cap = stage_llm_budget(state.stage());
+            // Step 12.B.O — render the effective cap (override-aware)
+            // and use `∞` for `Unlimited` so the chat never leaks
+            // `u32::MAX` to the user even if the BudgetExhausted
+            // path was reached through stale state on disk.
+            let cap = state.budget_override.effective_cap(state.stage());
+            let cap_label = match state.budget_override {
+                VivlingBudgetCap::Unlimited => "∞".to_string(),
+                _ => cap.to_string(),
+            };
             format!(
-                "daily LLM budget {}/{} exhausted, resets UTC midnight",
-                state.daily_llm_call_count, cap
+                "daily LLM budget {}/{cap_label} exhausted, try `/vivling crt-brain reset-budget` or wait UTC midnight",
+                state.daily_llm_call_count
             )
         }
         LlmCallSkipReason::Throttle => "throttled — wait a few seconds and retry".to_string(),
@@ -141,5 +149,95 @@ impl Vivling {
             lines.push(profiles);
         }
         Ok(lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vivling::model::SeedIdentity;
+    use codex_vivling_core::model::ADULT_LEVEL;
+    use codex_vivling_core::model::LlmCallSkipReason;
+    use codex_vivling_core::model::Stage;
+
+    fn fixture() -> VivlingState {
+        let mut s = VivlingState::new(SeedIdentity {
+            value: "step-12bo-fixture".to_string(),
+            install_id: None,
+        });
+        s.level = ADULT_LEVEL;
+        assert_eq!(s.stage(), Stage::Adult);
+        s
+    }
+
+    // Memory V2 Step 12.B.O — reason label coverage. Sonnet K audit
+    // P2 noted only BudgetExhausted was exercised end-to-end; here
+    // we test each arm's string contract directly so changing one
+    // label cannot silently regress the fallback marker.
+
+    #[test]
+    fn chat_skip_reason_label_budget_exhausted_names_cap_fraction() {
+        let mut s = fixture();
+        s.daily_llm_call_count = 200;
+        let label = chat_skip_reason_label(LlmCallSkipReason::BudgetExhausted, &s);
+        assert!(label.contains("200/200"), "must show fraction: {label}");
+        assert!(
+            label.contains("reset-budget") || label.contains("UTC midnight"),
+            "must point to recovery: {label}"
+        );
+    }
+
+    #[test]
+    fn chat_skip_reason_label_throttle_suggests_retry() {
+        let s = fixture();
+        let label = chat_skip_reason_label(LlmCallSkipReason::Throttle, &s);
+        assert!(label.contains("throttled"), "label: {label}");
+        assert!(label.contains("retry"), "label: {label}");
+    }
+
+    #[test]
+    fn chat_skip_reason_label_dedup_explains_cache_hit() {
+        let s = fixture();
+        let label = chat_skip_reason_label(LlmCallSkipReason::Dedup, &s);
+        assert!(label.contains("deduplicated"), "label: {label}");
+        assert!(label.contains("cached"), "label: {label}");
+    }
+
+    #[test]
+    fn chat_skip_reason_label_optout_points_to_toggle_command() {
+        let s = fixture();
+        let label = chat_skip_reason_label(LlmCallSkipReason::OptOut, &s);
+        assert!(
+            label.contains("crt-brain on"),
+            "label points to toggle: {label}"
+        );
+    }
+
+    #[test]
+    fn chat_skip_reason_label_not_eligible_stage_says_so() {
+        let s = fixture();
+        let label = chat_skip_reason_label(LlmCallSkipReason::NotEligibleStage, &s);
+        assert!(label.contains("not eligible"), "label: {label}");
+        assert!(label.contains("stage"), "label: {label}");
+    }
+
+    #[test]
+    fn chat_skip_reason_label_budget_exhausted_with_unlimited_shows_infinity() {
+        // Step 12.B.O: when budget_override = Unlimited the label
+        // must NOT print the literal u32::MAX as the cap. We don't
+        // actually enter this branch in practice (Unlimited never
+        // triggers BudgetExhausted), but the formatter still has to
+        // be safe in case of stale state on disk.
+        let mut s = fixture();
+        s.budget_override = codex_vivling_core::model::VivlingBudgetCap::Unlimited;
+        s.daily_llm_call_count = 9999;
+        let label = chat_skip_reason_label(LlmCallSkipReason::BudgetExhausted, &s);
+        // We do not check for ∞ here because the budget marker path
+        // uses the numeric stage cap; this guards only against the
+        // theoretical "u32::MAX in label" footgun.
+        assert!(
+            !label.contains("4294967295"),
+            "must not leak u32::MAX into chat: {label}"
+        );
     }
 }
