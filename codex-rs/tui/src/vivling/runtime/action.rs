@@ -217,12 +217,18 @@ impl VivlingAction {
         // so we can parse the override value cleanly.
         if let Some(rest) = lowered.strip_prefix("budget") {
             let value = rest.trim();
+            // Step 12.B.O (Gemini P0 fix 2026-05-22): empty arg /
+            // `show` is a PASSIVE inspection. Route to the standard
+            // `Show` handler so format_crt_brain_status prints the
+            // current Budget line without mutating state. The bug
+            // before this fix dispatched SetBudget(Default), which
+            // silently overwrote any Custom/Unlimited cap the user
+            // had previously set — a destructive footgun for what
+            // the user reads as a "show" command.
+            if value.is_empty() || value == "show" {
+                return Ok(Self::CrtBrain(CrtBrainAction::Show));
+            }
             let cap = match value {
-                "" | "show" => {
-                    return Ok(Self::CrtBrain(CrtBrainAction::SetBudget(
-                        codex_vivling_core::model::VivlingBudgetCap::Default,
-                    )));
-                }
                 "default" | "auto" | "reset" => {
                     codex_vivling_core::model::VivlingBudgetCap::Default
                 }

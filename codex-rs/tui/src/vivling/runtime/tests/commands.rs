@@ -133,6 +133,68 @@ fn action_parse_supports_crt_brain_subcommands() {
 }
 
 #[test]
+fn action_parse_crt_brain_budget_show_is_passive_not_destructive() {
+    // Memory V2 Step 12.B.O (Gemini P0 fix 2026-05-22): the previous
+    // implementation routed `budget` / `budget show` to
+    // SetBudget(Default), silently wiping any user-configured cap
+    // override on a read-only inspection command. Both forms must
+    // now resolve to the standard `Show` action so the renderer can
+    // print the current Budget line without mutating state.
+    use super::super::action::CrtBrainAction;
+    assert_eq!(
+        VivlingAction::parse("crt-brain budget"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Show)),
+        "empty `budget` arg must be passive Show"
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain budget show"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::Show)),
+        "explicit `budget show` must be passive Show"
+    );
+}
+
+#[test]
+fn action_parse_crt_brain_budget_set_variants() {
+    use super::super::action::CrtBrainAction;
+    use codex_vivling_core::model::VivlingBudgetCap;
+    assert_eq!(
+        VivlingAction::parse("crt-brain budget default"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::SetBudget(
+            VivlingBudgetCap::Default
+        )))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain budget unlimited"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::SetBudget(
+            VivlingBudgetCap::Unlimited
+        )))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain budget 75"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::SetBudget(
+            VivlingBudgetCap::Custom(75)
+        )))
+    );
+    assert!(
+        VivlingAction::parse("crt-brain budget abc").is_err(),
+        "non-numeric, non-keyword value must error"
+    );
+}
+
+#[test]
+fn action_parse_crt_brain_reset_budget() {
+    use super::super::action::CrtBrainAction;
+    assert_eq!(
+        VivlingAction::parse("crt-brain reset-budget"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::ResetBudget))
+    );
+    assert_eq!(
+        VivlingAction::parse("crt-brain reset_budget"),
+        Ok(VivlingAction::CrtBrain(CrtBrainAction::ResetBudget))
+    );
+}
+
+#[test]
 fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = configured_vivling(temp.path());
