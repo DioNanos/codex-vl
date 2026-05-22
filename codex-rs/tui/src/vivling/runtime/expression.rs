@@ -80,6 +80,14 @@ pub(crate) struct VivlingExpressionRequest {
     /// (`"loops breathe, work hums"`). Hashed into `prompt_hash` so a
     /// focus shift triggers a fresh dispatch, not a dedup skip.
     pub(crate) focus_hint: Option<String>,
+    /// Memory V2 Step 12.B.L — bootstrap dispatch flag. `true` only
+    /// for the one-shot dispatch issued by `ensure_startup_dispatched`
+    /// at TUI session start. The async runner uses this to enrich the
+    /// system instruction with a "first phrase of the session" hint
+    /// so the LLM greets in the resolved language instead of producing
+    /// a generic CRT phrase. Default `false` for all other dispatch
+    /// paths (turn-driven, loop-driven, idle frame, forced refresh).
+    pub(crate) bootstrap: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +130,7 @@ pub(crate) fn maybe_dispatch_expression_refresh(
     language: String,
     prompt_hash: u64,
     focus_hint: Option<String>,
+    bootstrap: bool,
 ) -> Option<VivlingExpressionRequest> {
     state
         .try_reserve_llm_call(VivlingLlmCallKind::Expression, now, Some(prompt_hash))
@@ -137,6 +146,7 @@ pub(crate) fn maybe_dispatch_expression_refresh(
         prompt_hash,
         generated_at: now,
         focus_hint,
+        bootstrap,
     })
 }
 
@@ -307,6 +317,7 @@ pub(crate) fn try_plan_and_reserve_expression(
         plan.language,
         prompt_hash,
         focus_hint,
+        false,
     )
 }
 
@@ -366,6 +377,86 @@ fn try_plan_forced_inner(
         plan.language,
         prompt_hash,
         focus_hint,
+        false,
+    )
+}
+
+/// Memory V2 Step 12.B.L — bootstrap dispatch issued once per
+/// session by `ensure_startup_dispatched`. Differs from the regular
+/// pipeline in two ways:
+///
+/// 1. **Bypasses the 60s `last_llm_dispatch_at` throttle**: the boot
+///    moment is exactly when the user expects a greeting; a stale
+///    timestamp from the previous session must not silence it.
+///    Re-uses the save/clear/restore pattern from the forced refresh
+///    so any other refusal (dedup against fresh cache, opt-out,
+///    budget exhausted) leaves `last_llm_dispatch_at` intact for the
+///    rest of the session.
+/// 2. **Sets `request.bootstrap = true`** so the async runner can
+///    enrich the system instruction with a "first phrase of the
+///    session, greet in {language}" hint. Without that hint the LLM
+///    routinely defaults to English for non-EN Vivlings, defeating
+///    the whole point of starting localized.
+///
+/// Returns `None` on every refusal so the caller keeps showing the
+/// cached/template chain. Pre-flight cache-fresh skip is preserved:
+/// if the previous session left a fresh `cached_crt_phrase` with a
+/// valid `prompt_hash`, the dispatch is skipped (it is preferable
+/// to show the last real phrase than to spend a slot on a redundant
+/// LLM call at every restart).
+pub(crate) fn try_plan_and_reserve_expression_bootstrap(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+    focus_hint: Option<String>,
+) -> Option<VivlingExpressionRequest> {
+    if state.crt_brain_mode == VivlingExpressionMode::Off {
+        return None;
+    }
+    // Pre-flight cache-fresh skip (Step 12.B.I parity): on a normal
+    // restart we want to keep showing the previous phrase, not burn a
+    // slot to regenerate it. Only when the cache is missing / expired
+    // / template-derived do we proceed.
+    if let Some(cached) = state.cached_crt_phrase.as_ref()
+        && cached.prompt_hash.is_some()
+        && cached.ttl_expires_at.map(|exp| exp > now).unwrap_or(false)
+    {
+        return None;
+    }
+    let saved_dispatch_at = state.last_llm_dispatch_at;
+    state.last_llm_dispatch_at = None;
+    let result = try_plan_bootstrap_inner(state, now, focus_hint);
+    if result.is_none() {
+        state.last_llm_dispatch_at = saved_dispatch_at;
+    }
+    result
+}
+
+fn try_plan_bootstrap_inner(
+    state: &mut VivlingState,
+    now: DateTime<Utc>,
+    focus_hint: Option<String>,
+) -> Option<VivlingExpressionRequest> {
+    let body = serde_json::to_string(state).ok()?;
+    let plan = plan_expression_prompt(&body, now).ok()?.ok()?;
+    let mut hash_bytes = plan.prompt.as_bytes().to_vec();
+    if let Some(focus) = focus_hint.as_deref() {
+        hash_bytes.push(b'\0');
+        hash_bytes.extend_from_slice(focus.as_bytes());
+    }
+    // Step 12.B.L: fold a stable "boot" marker into the hash so the
+    // bootstrap dispatch never collides with the regular dedup gate
+    // even if the planned prompt happens to match a previous one.
+    hash_bytes.push(b'\0');
+    hash_bytes.extend_from_slice(b"boot");
+    let prompt_hash = fnv1a64(&hash_bytes);
+    maybe_dispatch_expression_refresh(
+        state,
+        now,
+        plan.prompt,
+        plan.language,
+        prompt_hash,
+        focus_hint,
+        true,
     )
 }
 
@@ -783,6 +874,7 @@ mod tests {
             "en".to_string(),
             42,
             None,
+            false,
         )
         .expect("Adult Expression dispatch should reserve");
         assert_eq!(req.prompt, "hello prompt");
@@ -806,6 +898,7 @@ mod tests {
             "en".to_string(),
             1,
             None,
+            false,
         );
         assert!(req.is_none(), "Off mode must refuse dispatch");
         assert_eq!(s.daily_llm_optout_skips, 1);
@@ -825,6 +918,7 @@ mod tests {
             "en".to_string(),
             1,
             None,
+            false,
         );
         assert!(req.is_none(), "budget cap must refuse dispatch");
         assert_eq!(s.daily_llm_budget_skips, 1);
@@ -849,6 +943,7 @@ mod tests {
             "en".to_string(),
             7,
             None,
+            false,
         );
         assert!(req.is_none(), "matching fresh cache must dedup");
         assert_eq!(s.daily_llm_dedup_skips, 1);
@@ -868,6 +963,7 @@ mod tests {
             "en".to_string(),
             1,
             None,
+            false,
         );
         assert!(
             req.is_some(),
@@ -895,6 +991,7 @@ mod tests {
             "en".to_string(),
             1,
             None,
+            false,
         );
         assert!(req.is_none(), "throttle window must refuse dispatch");
         assert_eq!(s.daily_llm_throttle_skips, 1);
@@ -1234,6 +1331,7 @@ mod tests {
             "en".to_string(),
             1,
             None,
+            false,
         )
         .expect("Juvenile Expression dispatch should reserve");
         assert_eq!(req.brain_target, BrainTarget::Profile("glm".to_string()));

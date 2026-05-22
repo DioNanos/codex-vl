@@ -120,6 +120,13 @@ pub(crate) struct Vivling {
     pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
     /// Frame pacing target detected from the runtime environment.
     pub(crate) crt_frame_target: Cell<crate::vl::crt::FrameTarget>,
+    /// Memory V2 Step 12.B.L — runtime-only flag set the first time a
+    /// boot/load completes for this Vivling instance. Prevents `ensure_
+    /// startup_dispatched()` from re-firing on subsequent `configure()`
+    /// calls within the same session (e.g. `codex_home` toggles). Reset
+    /// implicitly on process restart because the wrapper is rebuilt
+    /// (see `unavailable()` and `Clone`).
+    pub(crate) startup_dispatched: Cell<bool>,
 }
 
 impl Clone for Vivling {
@@ -146,6 +153,7 @@ impl Clone for Vivling {
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             crt_frame_target: self.crt_frame_target.clone(),
+            startup_dispatched: self.startup_dispatched.clone(),
         }
     }
 }

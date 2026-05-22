@@ -311,10 +311,22 @@ pub(super) async fn run_vivling_expression_request(
         ),
         _ => String::new(),
     };
+    // Memory V2 Step 12.B.L — bootstrap dispatch enrichment. The
+    // first CRT phrase of a session must greet in the resolved
+    // language; without this hint the LLM routinely defaults to
+    // English for non-EN Vivlings, defeating the localized boot.
+    let bootstrap_line = if request.bootstrap {
+        format!(
+            "This is the first CRT phrase of the session. Greet briefly in {} using the Vivling's own voice — do not produce a generic system phrase. ",
+            request.language
+        )
+    } else {
+        String::new()
+    };
     prompt.base_instructions = codex_protocol::models::BaseInstructions {
         text: format!(
             "You are {} expressing yourself as a Vivling inside Codex. \
-{focus_line}\
+{bootstrap_line}{focus_line}\
 Return a single JSON object on one line with two optional string fields: \
 `crt_phrase` (an extremely short footer phrase, max ~6 words, in {}) and \
 `proactive` (a short conversational message, max ~25 words, in {}). \

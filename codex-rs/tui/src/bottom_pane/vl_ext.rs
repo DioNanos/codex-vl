@@ -216,6 +216,22 @@ impl BottomPane {
         request
     }
 
+    /// Memory V2 Step 12.B.L — one-shot bootstrap dispatch invoked
+    /// from `codex_vl_pre_draw_tick`. Returns `Some(request)` only on
+    /// the FIRST qualifying frame after a state load; subsequent
+    /// frames short-circuit via `Vivling::startup_dispatched`.
+    pub(crate) fn try_dispatch_vivling_bootstrap_expression(
+        &mut self,
+        config: &Config,
+    ) -> Option<crate::vivling::VivlingExpressionRequest> {
+        self.configure_vivling(config);
+        let request = self.vivling.try_dispatch_bootstrap_expression();
+        if request.is_some() {
+            self.request_redraw();
+        }
+        request
+    }
+
     /// Memory V2 Step 12.B.D.4 — loop-event variant. Layers
     /// Adult-only + 5min throttle + 50% budget headroom on top of
     /// the standard turn-driven pipeline.

@@ -1212,3 +1212,100 @@ fn stage_guidance_section_distinguishes_baby_juvenile_adult() {
     assert!(!prompt_adult.contains("Baby Vivling"));
     assert!(!prompt_adult.contains("Juvenile Vivling"));
 }
+
+// ---- Memory V2 Step 12.B.L — bootstrap dispatch -----------------
+
+#[test]
+fn bootstrap_dispatches_on_first_load() {
+    // Fresh `Vivling` instance has `startup_dispatched = false`; the
+    // first call to `try_dispatch_bootstrap_expression` should plan +
+    // reserve a slot and flip the flag. Requires at least one work
+    // memory entry — the deterministic Expression planner refuses
+    // when there is no source material to summarize.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    {
+        let state = vivling.state.as_mut().expect("hatched state");
+        state.work_memory = saturated_memory_entries();
+    }
+    assert!(
+        !vivling.startup_dispatched.get(),
+        "fresh wrapper starts with flag=false"
+    );
+    let request = vivling
+        .try_dispatch_bootstrap_expression()
+        .expect("first bootstrap dispatch must produce a request");
+    assert!(request.bootstrap, "bootstrap request must carry the flag");
+    assert!(
+        vivling.startup_dispatched.get(),
+        "flag must be set after dispatch"
+    );
+}
+
+#[test]
+fn bootstrap_idempotent_within_session() {
+    // Second invocation within the same session must return None
+    // even when the planner would have produced something — the
+    // `startup_dispatched` flag is the single source of truth.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    {
+        let state = vivling.state.as_mut().expect("hatched state");
+        state.work_memory = saturated_memory_entries();
+    }
+    let _first = vivling
+        .try_dispatch_bootstrap_expression()
+        .expect("first bootstrap dispatch must succeed");
+    let second = vivling.try_dispatch_bootstrap_expression();
+    assert!(second.is_none(), "second bootstrap must be a no-op");
+}
+
+#[test]
+fn bootstrap_respects_cache_fresh_skip() {
+    // If the previous session left a fresh `cached_crt_phrase`
+    // (prompt_hash set + TTL in the future), the bootstrap path
+    // skips dispatch — preferable to showing the cached phrase than
+    // burning a slot at every restart. The flag still flips to true
+    // so the per-frame trigger does not re-enter.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    {
+        let state = vivling.state.as_mut().expect("hatched state");
+        state.cached_crt_phrase = Some(codex_vivling_core::model::CachedCrtPhrase {
+            text: "cache hit".to_string(),
+            generated_at: Some(chrono::Utc::now()),
+            prompt_hash: Some(0x1234_5678_9abc_def0),
+            ttl_expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(30)),
+        });
+    }
+    let request = vivling.try_dispatch_bootstrap_expression();
+    assert!(
+        request.is_none(),
+        "fresh cache must short-circuit bootstrap dispatch"
+    );
+    assert!(
+        vivling.startup_dispatched.get(),
+        "flag still flips so next frame is a no-op"
+    );
+}
+
+#[test]
+fn bootstrap_failure_marks_dispatched_true_to_prevent_loop() {
+    // When the bootstrap dispatch is refused for any reason (here:
+    // CRT brain in `Off` mode), the flag must still be flipped to
+    // true UNCONDITIONALLY. Otherwise the per-frame `pre_draw_tick`
+    // trigger would retry every frame, defeating the whole point of
+    // the idempotency guard.
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+    {
+        let state = vivling.state.as_mut().expect("hatched state");
+        state.crt_brain_mode = codex_vivling_core::model::VivlingExpressionMode::Off;
+    }
+    let request = vivling.try_dispatch_bootstrap_expression();
+    assert!(request.is_none(), "Off mode must refuse the bootstrap");
+    assert!(
+        vivling.startup_dispatched.get(),
+        "flag must flip on refusal too — no retry on next frame"
+    );
+}

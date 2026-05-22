@@ -555,6 +555,48 @@ impl Vivling {
         Some(request)
     }
 
+    /// Memory V2 Step 12.B.L — one-shot bootstrap dispatch issued the
+    /// first time the chatwidget pre_draw_tick runs after a state
+    /// load. Bypasses the 60s throttle (a stale `last_llm_dispatch_at`
+    /// from the previous session must not silence the boot greeting);
+    /// pre-flight cache-fresh skip is preserved so a still-fresh
+    /// phrase from the previous session keeps being shown.
+    ///
+    /// Idempotency contract: the `startup_dispatched: Cell<bool>` flag
+    /// is set UNCONDITIONALLY before the dispatch attempt, so a
+    /// failure (planner refused, dedup, budget exhausted, save_state
+    /// error) does not cause a retry storm on the next frame. The
+    /// flag is wrapper-scoped (lives on the `Vivling` instance, not
+    /// in `VivlingState`) and resets naturally on `codex_home` reload
+    /// or process restart.
+    ///
+    /// Returns `None` when no dispatch is warranted (already done,
+    /// no state, planner refused, etc.); returns `Some(request)` for
+    /// the caller to forward via `VlEvent::RunVivlingExpression`.
+    pub(crate) fn try_dispatch_bootstrap_expression(
+        &mut self,
+    ) -> Option<super::expression::VivlingExpressionRequest> {
+        if self.startup_dispatched.get() {
+            return None;
+        }
+        if self.state.is_none() {
+            return None;
+        }
+        // Set BEFORE the dispatch attempt: any refusal downstream
+        // must not let the next frame retry.
+        self.startup_dispatched.set(true);
+        let live_snapshot = self.live_context.borrow().clone();
+        let state = self.state.as_mut()?;
+        let now = Utc::now();
+        let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
+        let request =
+            super::expression::try_plan_and_reserve_expression_bootstrap(state, now, focus_hint)?;
+        if self.save_state().is_err() {
+            return None;
+        }
+        Some(request)
+    }
+
     /// Memory V2 Step 12.B.D.4 — loop-event variant of
     /// `try_dispatch_expression_refresh`. Layers Adult-only + 5min
     /// throttle + 50% budget headroom on top of the standard

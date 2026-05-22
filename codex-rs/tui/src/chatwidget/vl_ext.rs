@@ -165,6 +165,14 @@ impl ChatWidget {
             !self.is_vl_sidebar_expanded(),
             false,
         );
+        // Memory V2 Step 12.B.L: one-shot bootstrap dispatch on the
+        // first qualifying frame after a Vivling state load. The
+        // `startup_dispatched` flag inside `try_dispatch_bootstrap_
+        // expression` makes this a no-op on every subsequent frame.
+        // Placed BEFORE the idle refresh so the very first phrase
+        // the user sees is the bootstrap one (greeting in resolved
+        // language) rather than a generic idle-triggered phrase.
+        self.maybe_trigger_vivling_bootstrap_expression();
         // Memory V2 Step 12.B.H: opportunistic idle Expression
         // refresh. The CRT footer should keep evolving even when the
         // user goes quiet for a while. `try_dispatch_*` already
@@ -173,6 +181,23 @@ impl ChatWidget {
         // first qualifying frame inside an open window actually
         // spends an LLM slot.
         self.maybe_trigger_vivling_expression_refresh();
+    }
+
+    /// Memory V2 Step 12.B.L — bridge for the first-frame bootstrap
+    /// dispatch. Forwards to the BottomPane bridge which routes to
+    /// `Vivling::try_dispatch_bootstrap_expression`; emits the
+    /// background runner event when a request is returned. The
+    /// `startup_dispatched` flag inside the runtime wrapper makes
+    /// every subsequent call a no-op so this is safe to invoke from
+    /// `pre_draw_tick`.
+    pub(crate) fn maybe_trigger_vivling_bootstrap_expression(&mut self) {
+        if let Some(request) = self
+            .bottom_pane
+            .try_dispatch_vivling_bootstrap_expression(&self.config)
+        {
+            self.app_event_tx
+                .send_vl(crate::vl::VlEvent::RunVivlingExpression { request });
+        }
     }
 
     pub(crate) fn vl_lifecycle_tick(

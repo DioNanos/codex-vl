@@ -26,6 +26,7 @@ impl Vivling {
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
             crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
+            startup_dispatched: Cell::new(false),
         }
     }
 
@@ -60,6 +61,14 @@ impl Vivling {
             };
             self.active_vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
             self.maybe_backfill_msa_index();
+            // Memory V2 Step 12.B.L — reset bootstrap flag whenever a
+            // fresh state is loaded (codex_home toggle). The actual
+            // dispatch happens from the chatwidget pre_draw_tick path,
+            // which has access to the async runtime + app_event_tx
+            // needed to spawn the background LLM task. Keeping the
+            // flag here lets `Vivling` (sync, no tokio context) signal
+            // "needs bootstrap" without owning the dispatch itself.
+            self.startup_dispatched.set(false);
         }
     }
 
