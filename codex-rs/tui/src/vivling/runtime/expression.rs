@@ -795,8 +795,14 @@ mod tests {
         let mut s = adult();
         s.crt_brain_mode = VivlingExpressionMode::Off;
         let now = t("2026-05-21T10:00:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            now,
+            "p".to_string(),
+            "en".to_string(),
+            1,
+            None,
+        );
         assert!(req.is_none(), "Off mode must refuse dispatch");
         assert_eq!(s.daily_llm_optout_skips, 1);
         assert_eq!(s.daily_llm_call_count, 0);
@@ -808,8 +814,14 @@ mod tests {
         s.daily_llm_call_count = stage_llm_budget(Stage::Adult);
         s.daily_llm_day_key = "2026-05-21".to_string();
         let now = t("2026-05-21T10:00:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            now,
+            "p".to_string(),
+            "en".to_string(),
+            1,
+            None,
+        );
         assert!(req.is_none(), "budget cap must refuse dispatch");
         assert_eq!(s.daily_llm_budget_skips, 1);
     }
@@ -826,8 +838,14 @@ mod tests {
         });
         // Past the 60s throttle so the dedup branch is reached.
         let later = t("2026-05-21T10:02:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, later, "p".to_string(), "en".to_string(), 7, None);
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            later,
+            "p".to_string(),
+            "en".to_string(),
+            7,
+            None,
+        );
         assert!(req.is_none(), "matching fresh cache must dedup");
         assert_eq!(s.daily_llm_dedup_skips, 1);
     }
@@ -839,8 +857,14 @@ mod tests {
         // upstream, but the reservation primitive must not refuse).
         let mut s = baby();
         let now = t("2026-05-21T10:00:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            now,
+            "p".to_string(),
+            "en".to_string(),
+            1,
+            None,
+        );
         assert!(
             req.is_some(),
             "Baby Expression eligible — caller decides rarity upstream"
@@ -860,8 +884,14 @@ mod tests {
         s.daily_llm_day_key = "2026-05-21".to_string();
         s.last_llm_dispatch_at = Some(t("2026-05-21T09:59:30Z"));
         let now = t("2026-05-21T10:00:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None);
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            now,
+            "p".to_string(),
+            "en".to_string(),
+            1,
+            None,
+        );
         assert!(req.is_none(), "throttle window must refuse dispatch");
         assert_eq!(s.daily_llm_throttle_skips, 1);
         assert_eq!(
@@ -950,7 +980,8 @@ mod tests {
             version: 1,
         });
         assert!(
-            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None).is_none()
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None)
+                .is_none()
         );
         assert_eq!(s.daily_llm_expression_calls, 0, "stage gate must not bill");
     }
@@ -967,7 +998,8 @@ mod tests {
             version: 1,
         });
         assert!(
-            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None).is_none()
+            try_plan_and_reserve_expression_for_loop(&mut s, t("2026-05-21T10:00:00Z"), None)
+                .is_none()
         );
     }
 
@@ -1191,9 +1223,112 @@ mod tests {
         s.brain_enabled = true;
         s.brain_profile = Some("glm".to_string());
         let now = t("2026-05-21T10:00:00Z");
-        let req =
-            maybe_dispatch_expression_refresh(&mut s, now, "p".to_string(), "en".to_string(), 1, None)
-                .expect("Juvenile Expression dispatch should reserve");
+        let req = maybe_dispatch_expression_refresh(
+            &mut s,
+            now,
+            "p".to_string(),
+            "en".to_string(),
+            1,
+            None,
+        )
+        .expect("Juvenile Expression dispatch should reserve");
         assert_eq!(req.brain_target, BrainTarget::Profile("glm".to_string()));
+    }
+
+    // ---- 12.B.J build_focus_hint + hash fold (Sonnet P1) ----------
+
+    #[test]
+    fn build_focus_hint_returns_none_when_live_missing() {
+        let s = adult();
+        assert!(build_focus_hint(&s, None).is_none());
+    }
+
+    #[test]
+    fn build_focus_hint_returns_none_when_all_fields_empty() {
+        let s = adult();
+        let live = super::super::live_context::VivlingLiveContext::default();
+        assert!(build_focus_hint(&s, Some(&live)).is_none());
+    }
+
+    #[test]
+    fn build_focus_hint_returns_none_when_fields_are_whitespace_only() {
+        let s = adult();
+        let live = super::super::live_context::VivlingLiveContext {
+            task_progress: Some("   ".to_string()),
+            active_agent_label: Some("\t".to_string()),
+            thread_title: Some("".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            build_focus_hint(&s, Some(&live)).is_none(),
+            "whitespace-only fields must be treated as empty"
+        );
+    }
+
+    #[test]
+    fn build_focus_hint_task_only_when_agent_thread_absent() {
+        let s = adult();
+        let live = super::super::live_context::VivlingLiveContext {
+            task_progress: Some("merge upstream".to_string()),
+            active_agent_label: None,
+            thread_title: None,
+            ..Default::default()
+        };
+        let hint = build_focus_hint(&s, Some(&live)).expect("task set → Some");
+        assert!(hint.contains("task `merge upstream`"), "{hint}");
+        assert!(!hint.contains("agent"), "agent must be absent: {hint}");
+        assert!(!hint.contains("thread"), "thread must be absent: {hint}");
+        assert!(hint.contains("· tone "), "{hint}");
+    }
+
+    #[test]
+    fn build_focus_hint_all_three_fields_and_tone_present() {
+        let s = adult();
+        let live = super::super::live_context::VivlingLiveContext {
+            task_progress: Some("step 12".to_string()),
+            active_agent_label: Some("Nilo".to_string()),
+            thread_title: Some("codex-vl audit".to_string()),
+            ..Default::default()
+        };
+        let hint = build_focus_hint(&s, Some(&live)).expect("all fields → Some");
+        assert!(hint.contains("task `step 12`"), "{hint}");
+        assert!(hint.contains("agent `Nilo`"), "{hint}");
+        assert!(hint.contains("thread `codex-vl audit`"), "{hint}");
+        assert!(hint.contains("· tone "), "{hint}");
+    }
+
+    #[test]
+    fn focus_hint_changes_produce_different_prompt_hash() {
+        // Hash fold invariant (Step 12.B.J): identical prompt, different
+        // focus → different prompt_hash. Guarantees a focus shift breaks
+        // the dedup gate and triggers a fresh dispatch on the next TTL-
+        // expired pass.
+        let prompt = b"test prompt";
+        let focus_a = "merge upstream";
+        let focus_b = "vps3 bootstrap";
+
+        let mut bytes_a = prompt.to_vec();
+        bytes_a.push(b'\0');
+        bytes_a.extend_from_slice(focus_a.as_bytes());
+
+        let mut bytes_b = prompt.to_vec();
+        bytes_b.push(b'\0');
+        bytes_b.extend_from_slice(focus_b.as_bytes());
+
+        assert_ne!(
+            fnv1a64(&bytes_a),
+            fnv1a64(&bytes_b),
+            "different focus must produce different hash"
+        );
+
+        // Same focus must be byte-equal → same hash (determinism).
+        let mut bytes_a2 = prompt.to_vec();
+        bytes_a2.push(b'\0');
+        bytes_a2.extend_from_slice(focus_a.as_bytes());
+        assert_eq!(
+            fnv1a64(&bytes_a),
+            fnv1a64(&bytes_a2),
+            "identical focus must produce identical hash"
+        );
     }
 }
