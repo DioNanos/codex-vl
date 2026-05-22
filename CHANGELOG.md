@@ -10,54 +10,66 @@ Stable release on the npm `latest` tag.
 
 Based on the OpenAI Codex `rust-v0.133.0` release line.
 
-### Changed
+### Vivling improvements
 
-- npm package metadata moved from the pre-release lane to `0.133.0`.
-- Workspace and lockfile package versions aligned with the upstream `0.133.0`
-  release.
-- Public install, source-build, and native artifact staging surfaces remain
-  fork-owned for `DioNanos/codex-vl` and `@mmmbuto/codex-vl`.
-
-### Preserved fork features
-
-- All Codex VL workflow commands and fork-owned modules are preserved across
-  the upstream stable merge: `/vivling`, `/vl`, `/loop`, `/remote-control`,
-  Vivling Memory V2 (V10 schema, bond mechanics, brain expression channel,
-  daily LLM budget, language-aware boot, Ctrl+J chat panel, CRT footer).
-- The fork-safe managed-update channel and the disabled standalone
-  auto-updater are kept (the daemon never fetches the upstream installer
-  script).
-- The fork feedback channel points to `DioNanos/codex-vl/issues` and the
-  announcement tip source is `DioNanos/codex-vl/main/announcement_tip.toml`.
+- Vivlings now actually speak. The CRT footer phrase and every `/vl`
+  reply flow through the same LLM channel the Vivling chooses for chat,
+  gated by an atomic daily budget (stage defaults: Baby 50, Juvenile
+  100, Adult 200).
+- The greeting at session start now comes out in the configured
+  language instead of a generic English placeholder.
+- CRT phrases and proactive replies no longer cut mid-word.
+- `Ctrl+J` opens a bordered, scrollable chat panel that wraps long
+  replies cleanly and adapts to narrow terminals (Termux portrait to
+  wide desktop).
+- New `/vivling crt-brain` controls: `show` exposes mode, budget, calls
+  today and remaining head-room; `budget unlimited` lifts the cap for
+  unmetered wrappers; `reset-budget` zeroes daily counters without
+  waiting for UTC rollover.
+- Bond mechanics rate tuning makes companion progression more
+  noticeable during real work sessions.
 
 ### Upstream merge
 
-- Goals are now enabled by default, backed by a dedicated `goals.db` store,
-  with `create_goal`, `update_goal`, and `get_goal` exposed as model tools.
-- `codex remote-control` runs as a foreground command, waits for readiness,
-  reports machine status, and keeps explicit daemon-style `start` / `stop`
-  commands.
+- Goals are now enabled by default, backed by a dedicated `goals.db`
+  store, with `create_goal`, `update_goal`, and `get_goal` exposed as
+  model tools.
+- `codex remote-control` runs as a foreground command, waits for
+  readiness, reports machine status, and keeps explicit daemon-style
+  `start` / `stop` commands.
 - Permission profiles gained list APIs, inheritance, managed
-  `requirements.toml` support, runtime refresh behavior, and stronger Windows
-  sandbox integration.
-- Plugin discovery is easier to inspect, with marketplace-aware list output,
-  installed versions, visible marketplace roots, and remote collection
-  support.
+  `requirements.toml` support, runtime refresh behavior, and stronger
+  Windows sandbox integration.
+- Plugin discovery is easier to inspect, with marketplace-aware list
+  output, installed versions, visible marketplace roots, and remote
+  collection support.
 - Extensions can observe more lifecycle events, including subagent
-  start / stop, tool execution, turn metadata, and async approval / turn
-  processing.
+  start / stop, tool execution, turn metadata, and async approval /
+  turn processing.
 
 Full upstream release notes:
 https://github.com/openai/codex/releases/tag/rust-v0.133.0
 
-### Verification
+### Changed
 
-- 1395 tests green across six sub-suites
-  (`codex-vivling-core`, `codex-vivling-memory-agent`,
-  `codex-tui --lib vivling`, `codex-tui --lib chatwidget`,
-  `codex-tui --lib vl::`, `codex-app-server-daemon --lib`).
-- Multi-model audit approved before publish (three independent reviewers,
-  cross-modular).
+- npm package metadata moved from the pre-release lane to `0.133.0`.
+- Workspace and lockfile package versions aligned with the upstream
+  `0.133.0` release.
+- Public install, source-build, and native artifact staging surfaces
+  remain fork-owned for `DioNanos/codex-vl` and `@mmmbuto/codex-vl`.
+
+### Preserved fork features
+
+- All Codex VL workflow commands and fork-owned modules are preserved
+  across the upstream stable merge: `/vivling`, `/vl`, `/loop`,
+  `/remote-control`, Vivling Memory V2 (V10 schema, bond mechanics,
+  brain expression channel, daily LLM budget, language-aware boot,
+  Ctrl+J chat panel, CRT footer).
+- The fork-safe managed-update channel and the disabled standalone
+  auto-updater are kept (the daemon never fetches the upstream
+  installer script).
+- The fork feedback channel points to `DioNanos/codex-vl/issues` and
+  the announcement tip source is `DioNanos/codex-vl/main/announcement_tip.toml`.
 
 Per aspera ad astra.
 
