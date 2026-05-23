@@ -257,9 +257,14 @@ if [[ "${#uapi_include_flags[@]}" -gt 0 ]]; then
 fi
 
 if [[ "${TARGET}" == "aarch64-unknown-linux-musl" ]]; then
-  # BoringSSL enables -Wframe-larger-than=25344 under clang and treats warnings as errors.
-  cflags="${cflags} -Wno-error=frame-larger-than"
-  cxxflags="${cxxflags} -Wno-error=frame-larger-than"
+  # BoringSSL enables -Wframe-larger-than=25344 under clang and treats
+  # warnings as errors. clang accepts "-Wno-error=frame-larger-than" as a
+  # bare token; GCC requires the "=" suffix form so the warning name
+  # parses as a parameterised diagnostic. Emit both — clang ignores the
+  # trailing "=" form, GCC rejects the bare form, so this is the
+  # smallest set that works across both toolchains.
+  cflags="${cflags} -Wno-error=frame-larger-than="
+  cxxflags="${cxxflags} -Wno-error=frame-larger-than="
 fi
 
 echo "CFLAGS=${cflags}" >> "$GITHUB_ENV"
