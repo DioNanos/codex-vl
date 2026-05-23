@@ -32,11 +32,31 @@ pub(crate) fn resolve_managed_codex_bin_for_install_context(
 ) -> Result<PathBuf> {
     // codex-vl: post-merge `InstallContext` is a struct; route through
     // its `method` discriminant. Patch 16-style adapter from Termux merge.
+    //
+    // `InstallMethod::Other` is the catch-all when none of the known
+    // shims (npm wrapper, bun wrapper, standalone release layout,
+    // homebrew prefix) is detected. In practice this fires when the
+    // user runs the fork binary directly — e.g. through a personal
+    // symlink to the npm vendor path, or via a packaged-rebuild path
+    // that does not match the upstream standalone install layout.
+    // Falling back to `managed_codex_bin(codex_home)` would point the
+    // daemon at the standalone install path, which the codex-vl fork
+    // never ships, and the fork-protection guard in
+    // `ensure_managed_codex_bin` would then surface a misleading
+    // "managed standalone install not found" error.
+    //
+    // The safer behaviour is to resolve the binary through the same
+    // `current_exe` / `CODEX_SELF_EXE` path used for Npm/Bun: the
+    // process that just launched the daemon is, by definition, the
+    // fork binary the user is running, so re-launching the daemon
+    // from it stays on the fork. Brew is left on the standalone
+    // path because a homebrew cask explicitly ships its own
+    // standalone-compatible layout.
     match install_context.method {
-        InstallMethod::Npm | InstallMethod::Bun => managed_package_current_exe(),
-        InstallMethod::Standalone { .. } | InstallMethod::Brew | InstallMethod::Other => {
-            Ok(managed_codex_bin(codex_home))
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Other => {
+            managed_package_current_exe()
         }
+        InstallMethod::Standalone { .. } | InstallMethod::Brew => Ok(managed_codex_bin(codex_home)),
     }
 }
 

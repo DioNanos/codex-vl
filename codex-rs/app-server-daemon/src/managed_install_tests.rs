@@ -94,7 +94,7 @@ fn managed_codex_bin_ignores_missing_self_exe_for_npm() {
 }
 
 #[test]
-fn managed_codex_bin_falls_back_to_standalone_path_for_other_contexts() {
+fn managed_codex_bin_falls_back_to_standalone_path_for_brew_and_standalone_contexts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let legacy = managed_codex_bin(temp.path());
     let release_dir = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(
@@ -108,7 +108,6 @@ fn managed_codex_bin_falls_back_to_standalone_path_for_other_contexts() {
             platform: StandalonePlatform::Unix,
         }),
         ctx(InstallMethod::Brew),
-        ctx(InstallMethod::Other),
     ];
 
     for context in contexts {
@@ -117,6 +116,29 @@ fn managed_codex_bin_falls_back_to_standalone_path_for_other_contexts() {
             legacy
         );
     }
+}
+
+#[test]
+fn managed_codex_bin_routes_other_via_current_exe() {
+    // codex-vl Step 14 Bug 2 fix — `InstallMethod::Other` happens when
+    // the user runs the fork binary through a symlink that bypasses
+    // the Node.js wrapper (so `CODEX_MANAGED_BY_NPM` is unset and the
+    // exe is not under any known standalone release prefix). In that
+    // case the daemon must re-launch via `current_exe` /
+    // `CODEX_SELF_EXE`, not via the standalone path the fork never
+    // ships — otherwise the fork-protection error in
+    // `ensure_managed_codex_bin` fires spuriously and `/remote-control
+    // start` fails for direct-binary users.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("codex-vl-other");
+    std::fs::write(&bin, b"binary").expect("write binary");
+
+    with_self_exe(&bin, || {
+        let resolved =
+            resolve_managed_codex_bin_for_install_context(&ctx(InstallMethod::Other), temp.path())
+                .expect("resolve");
+        assert_eq!(resolved, std::fs::canonicalize(&bin).expect("canonicalize"));
+    });
 }
 
 fn with_self_exe(path: &Path, f: impl FnOnce()) {
