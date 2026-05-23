@@ -33,9 +33,10 @@ npm install -g @mmmbuto/codex-vl@next
 codex-vl --version
 ```
 
-Linux x64 and Termux Android arm64 installs use packaged native binaries. On
-macOS, npm install builds the local native binaries with Cargo; install Rust if
-Cargo is not already available.
+Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
+Android arm64 installs use packaged native binaries. On macOS, npm install
+builds the local native binaries with Cargo; install Rust if Cargo is not
+already available.
 
 Codex VL uses the normal Codex configuration and runtime state in `~/.codex/`.
 Installing it does not replace the official `codex` binary.
@@ -61,12 +62,17 @@ explicit `start` / `stop` lifecycle, permission profile inheritance and managed
 `requirements.toml` support, plugin marketplace discovery, and extension
 lifecycle events for subagent / tool / turn / approval surfaces.
 
-The npm `latest` release ships optimized Linux x64 and Termux Android arm64
-native packages plus a macOS arm64 source-build package that builds and installs
-locally with Cargo during npm postinstall.
+The npm `latest` release ships optimized Linux x64, Linux arm64 (musl) and
+Termux Android arm64 native packages plus a macOS arm64 source-build package
+that builds and installs locally with Cargo during npm postinstall.
 
 For this line, macOS is shipped as a source-build payload instead of a prebuilt
 native binary. The local install path still requires Rust/Cargo on the Mac.
+The postinstall script performs a non-blocking preflight check (Xcode Command
+Line Tools, Cargo, optional rustup target) and prints actionable hints when
+something is missing. Homebrew/standalone Cargo installs without rustup are
+accepted because Cargo on an arm64 Mac can build the native host target
+directly.
 
 The npm `next` tag is reserved for the next upstream alpha lane after a stable
 release.
@@ -128,8 +134,8 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.133.0` npm `latest` publish includes Linux x64 and Termux Android arm64 native
-packages plus the macOS arm64 source-build package.
+`0.133.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
+Android arm64 native packages plus the macOS arm64 source-build package.
 
 ## Status
 
