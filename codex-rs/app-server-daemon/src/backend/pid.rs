@@ -584,6 +584,20 @@ fn try_lock_file(file: &fs::File) -> Result<bool> {
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
         return Ok(false);
     }
+    // codex-vl Step 14 Bug 3 fix — Android/Termux storage backends that
+    // reject `flock(2)` with ENOTSUP / EOPNOTSUPP must not abort daemon
+    // startup. Match the permissive degradation used in
+    // `core::installation_id::is_unsupported_file_lock_error` and in
+    // `lib.rs::try_lock_file`: treat unsupported file locks as
+    // "lock acquired" so the pid reservation flow proceeds. The pid
+    // file race that the lock guards is best-effort on these
+    // platforms; refusing to start the daemon is not.
+    if err.kind() == std::io::ErrorKind::Unsupported
+        || err.raw_os_error() == Some(libc::ENOTSUP)
+        || err.raw_os_error() == Some(libc::EOPNOTSUPP)
+    {
+        return Ok(true);
+    }
     Err(err).context("failed to lock pid reservation")
 }
 
