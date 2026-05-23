@@ -1,6 +1,17 @@
 name: package-linux-arm64
 
 on:
+  push:
+    branches:
+      - develop
+    paths:
+      - ".github/workflows/package-linux-arm64.yml"
+      - ".github/scripts/install-musl-build-tools.sh"
+      - "codex-cli/scripts/build_npm_package.py"
+      - "codex-cli/bin/codex.js"
+      - "codex-cli/bin/codex-exec.js"
+      - "codex-rs/**"
+      - "third_party/v8/**"
   workflow_dispatch:
     inputs:
       release_version:
