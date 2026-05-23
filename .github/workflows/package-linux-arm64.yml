@@ -1,0 +1,122 @@
+name: package-linux-arm64
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version override (defaults to codex-cli/package.json)"
+        required: false
+        type: string
+
+jobs:
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+      CARGO_PROFILE_RELEASE_LTO: "thin"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_PROFILE_RELEASE_PANIC: "abort"
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release version
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_RELEASE_VERSION" ]; then
+            version="$INPUT_RELEASE_VERSION"
+          else
+            version="$(node -p "require('./codex-cli/package.json').version")"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Install Linux musl build tools
+        env:
+          TARGET: aarch64-unknown-linux-musl
+        run: |
+          set -euo pipefail
+          bash .github/scripts/install-musl-build-tools.sh
+      - name: Build Linux arm64 native payload
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.93.0 --profile minimal --target aarch64-unknown-linux-musl
+          rustup default 1.93.0
+          rustup target add aarch64-unknown-linux-musl
+          target="aarch64-unknown-linux-musl"
+          version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
+          release_tag="rusty-v8-v${version}"
+          base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+          binding_dir="${RUNNER_TEMP:-/tmp}/rusty_v8"
+          archive_path="${binding_dir}/librusty_v8_release_${target}.a.gz"
+          binding_path="${binding_dir}/src_binding_release_${target}.rs"
+          checksums_path="${binding_dir}/rusty_v8_release_${target}.sha256"
+          checksums_source="third_party/v8/rusty_v8_${version//./_}.sha256"
+          mkdir -p "$binding_dir"
+          curl -fsSL "${base_url}/librusty_v8_release_${target}.a.gz" -o "$archive_path"
+          curl -fsSL "${base_url}/src_binding_release_${target}.rs" -o "$binding_path"
+          grep -E "  (librusty_v8_release_${target}[.]a[.]gz|src_binding_release_${target}[.]rs)$" \
+            "$checksums_source" > "$checksums_path"
+          if [ "$(wc -l < "$checksums_path")" -ne 2 ]; then
+            echo "Expected exactly two checksums for ${target} in ${checksums_source}" >&2
+            exit 1
+          fi
+          (cd "$binding_dir" && sha256sum -c "$checksums_path")
+          export RUSTY_V8_ARCHIVE="$archive_path"
+          export RUSTY_V8_SRC_BINDING_PATH="$binding_path"
+          echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-bwrap
+          bwrap_path="codex-rs/target/aarch64-unknown-linux-musl/release/bwrap"
+          if [ ! -f "$bwrap_path" ]; then
+            echo "bwrap binary ${bwrap_path} not found" >&2
+            exit 1
+          fi
+          export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-exec
+          before_codex="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex)"
+          before_exec="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec)"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+          elif command -v strip >/dev/null 2>&1; then
+            strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+          fi
+          after_codex="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex)"
+          after_exec="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec)"
+          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
+          ls -lh codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+          codex-rs/target/aarch64-unknown-linux-musl/release/codex --version
+      - name: Stage Linux arm64 npm package
+        run: |
+          set -euo pipefail
+          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/linux-arm64"
+          vendor="$root/vendor/aarch64-unknown-linux-musl"
+          out="$root/npm"
+          rm -rf "$root"
+          mkdir -p "$vendor/codex" "$vendor/codex-resources" "$vendor/path" "$out"
+          cp codex-rs/target/aarch64-unknown-linux-musl/release/codex "$vendor/codex/codex"
+          cp codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec "$vendor/codex/codex-exec"
+          cp codex-rs/target/aarch64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
+          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex-resources/bwrap"
+          if command -v rg >/dev/null 2>&1; then
+            cp "$(command -v rg)" "$vendor/path/rg"
+            chmod 755 "$vendor/path/rg"
+          else
+            printf '#!/usr/bin/env sh\nexec grep "$@"\n' > "$vendor/path/rg"
+            chmod 755 "$vendor/path/rg"
+          fi
+          python3 codex-cli/scripts/build_npm_package.py \
+            --package codex-linux-arm64 \
+            --release-version "$RELEASE_VERSION" \
+            --vendor-src "$root/vendor" \
+            --staging-dir "$root/staging" \
+            --pack-output "$out/codex-npm-linux-arm64-$RELEASE_VERSION.tgz"
+          find "$root" -maxdepth 5 -type f -print
+      - name: Upload Linux arm64 npm package
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-linux-arm64-npm-${{ env.RELEASE_VERSION }}
+          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/linux-arm64/npm/*.tgz
+          if-no-files-found: error

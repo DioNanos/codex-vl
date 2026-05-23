@@ -29,6 +29,13 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
         "os": "linux",
         "cpu": "x64",
     },
+    "codex-linux-arm64": {
+        "npm_name": "@mmmbuto/codex-vl-linux-arm64",
+        "npm_tag": "linux-arm64",
+        "target_triple": "aarch64-unknown-linux-musl",
+        "os": "linux",
+        "cpu": "arm64",
+    },
     "codex-android-arm64": {
         "npm_name": "@mmmbuto/codex-vl-android-arm64",
         "npm_tag": "android-arm64",
@@ -48,6 +55,7 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
 OFFICIAL_CODEX_PLATFORM_PACKAGES = (
     "codex-darwin-arm64",
     "codex-linux-x64",
+    "codex-linux-arm64",
     "codex-android-arm64",
 )
 
@@ -57,10 +65,12 @@ PACKAGE_EXPANSIONS: dict[str, list[str]] = {
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
-    # codex-vl fork: only Linux x64 / Android arm64 / Darwin arm64 are
-    # shipped, each with its own explicit component list rather than
-    # the generic upstream `codex-package` layout.
+    # codex-vl fork: explicit per-target component lists rather than
+    # the generic upstream `codex-package` layout. Linux x64 and Linux
+    # arm64 ship the same set; Android arm64 ships codex only; Darwin
+    # arm64 ships nothing prebuilt (post-install local build).
     "codex-linux-x64": ["bwrap", "codex", "rg"],
+    "codex-linux-arm64": ["bwrap", "codex", "rg"],
     "codex-android-arm64": ["codex"],
     "codex-darwin-arm64": [],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],

@@ -29,6 +29,22 @@ Based on the OpenAI Codex `rust-v0.133.0` release line.
 - Bond mechanics rate tuning makes companion progression more
   noticeable during real work sessions.
 
+### Platform coverage
+
+- New Linux arm64 prebuilt target: `@mmmbuto/codex-vl-linux-arm64`
+  (`aarch64-unknown-linux-musl`) is now built in CI alongside Linux x64
+  and Android arm64. The launcher (`bin/codex.js`,
+  `bin/codex-exec.js`) auto-resolves the right native package on
+  Raspberry Pi (64-bit OS), AWS Graviton, Apple Silicon Linux VMs, and
+  other ARM64 Linux hosts.
+- The macOS arm64 post-install build (the only target that compiles on
+  the user's machine) now runs a preflight that checks for Xcode
+  Command Line Tools, the Rust toolchain, `rustup`, and the
+  `aarch64-apple-darwin` target before invoking `cargo build`. Each
+  missing item is reported with the exact command to install it, so a
+  fresh Mac no longer fails partway through compilation with cryptic
+  linker or toolchain errors.
+
 ### Upstream merge
 
 - Goals are now enabled by default, backed by a dedicated `goals.db`

@@ -52,6 +52,7 @@ fn fork_identity_pin_codex_cli_bin_shims() {
     for (path, source) in sources {
         for package in [
             "@mmmbuto/codex-vl-linux-x64",
+            "@mmmbuto/codex-vl-linux-arm64",
             "@mmmbuto/codex-vl-android-arm64",
             "@mmmbuto/codex-vl-darwin-arm64",
         ] {
