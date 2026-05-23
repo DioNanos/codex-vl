@@ -24,8 +24,9 @@ const INSIGHT_MAX_CHARS: usize = 28;
 pub(crate) fn compute_insight(
     state: &VivlingState,
     live_context: Option<&VivlingLiveContext>,
+    bootstrap_pending: bool,
 ) -> Option<String> {
-    compute_insight_at(state, live_context, chrono::Utc::now())
+    compute_insight_at(state, live_context, chrono::Utc::now(), bootstrap_pending)
 }
 
 /// Memory V2 Step 12.B.D.1 — clock-injectable variant. Lets the CRT
@@ -43,6 +44,7 @@ pub(crate) fn compute_insight_at(
     state: &VivlingState,
     live_context: Option<&VivlingLiveContext>,
     now: chrono::DateTime<chrono::Utc>,
+    bootstrap_pending: bool,
 ) -> Option<String> {
     if let Some(phrase) = brain_error_phrase(state) {
         return Some(phrase);
@@ -56,14 +58,26 @@ pub(crate) fn compute_insight_at(
     if let Some(phrase) = cached_crt_phrase_at(state, now) {
         return Some(phrase);
     }
-    if let Some(phrase) = proactive_next_phrase_at(state, now) {
-        return Some(phrase);
-    }
-    if let Some(phrase) = recent_memory_phrase(state) {
-        return Some(phrase);
-    }
-    if let Some(phrase) = last_work_summary_phrase(state) {
-        return Some(phrase);
+    // codex-vl Step 14 Bug 1 fix — skip the three state-persistent
+    // fallbacks while the first Expression dispatch of this TUI
+    // session is still in flight. Otherwise a fresh session would
+    // surface the *previous* session's `last_work_summary` (e.g. the
+    // last assistant reply, persisted to disk) for the few seconds it
+    // takes the bootstrap LLM dispatch to populate
+    // `cached_crt_phrase`, which reads to the user as "the CRT is
+    // showing yesterday's chat". After the first dispatch resolves
+    // (success or failure) the runtime flips the gate and the chain
+    // falls through to these fallbacks like before.
+    if !bootstrap_pending {
+        if let Some(phrase) = proactive_next_phrase_at(state, now) {
+            return Some(phrase);
+        }
+        if let Some(phrase) = recent_memory_phrase(state) {
+            return Some(phrase);
+        }
+        if let Some(phrase) = last_work_summary_phrase(state) {
+            return Some(phrase);
+        }
     }
     if let Some(phrase) = live_context.and_then(VivlingLiveContext::crt_phrase) {
         return Some(phrase);
@@ -410,7 +424,7 @@ mod tests {
         state
             .work_memory
             .push(loop_blocked_memory("loop_blocked_review"));
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "review gate blocking");
     }
 
@@ -422,7 +436,7 @@ mod tests {
         state
             .work_memory
             .push(loop_blocked_memory("loop_blocked_busy"));
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "busy - wait for state");
     }
 
@@ -440,14 +454,14 @@ mod tests {
             ..Default::default()
         };
 
-        let phrase = compute_insight(&state, Some(&context)).expect("insight");
+        let phrase = compute_insight(&state, Some(&context), false).expect("insight");
         assert_eq!(phrase, "review gate blocking");
     }
 
     #[test]
     fn stale_check_blocked_message_is_normalized() {
         let state = state_with_message("< check blocked");
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "blocked loop needs review");
     }
 
@@ -456,7 +470,7 @@ mod tests {
         let mut state = state_with_message("noticed loop add `foo`");
         state.loop_admin_churn = 5;
         state.loop_runtime_submissions = 0;
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "churn - verify state");
     }
 
@@ -465,7 +479,7 @@ mod tests {
         let mut state = state_with_message("everything is fine");
         state.brain_last_error = Some("model 500".to_string());
         state.loop_runtime_submissions = 5;
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "check brain error");
     }
 
@@ -475,7 +489,7 @@ mod tests {
         state.loop_runtime_submissions = 3;
         state.loop_runtime_blocks = 0;
         state.work_memory.push(loop_submitted_memory());
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "loop landed!");
     }
 
@@ -484,7 +498,7 @@ mod tests {
         let mut state = state_with_message("noticed loop");
         state.loop_runtime_submissions = 3;
         state.loop_runtime_blocks = 0;
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "noticed loop");
     }
 
@@ -493,7 +507,7 @@ mod tests {
         let mut state = state_with_message("greets the operator");
         state.loop_blocked_busy = 4;
         state.loop_runtime_submissions = 0;
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "greets the operator");
     }
 
@@ -511,7 +525,7 @@ mod tests {
             weight: 14,
             created_at: Utc::now(),
         });
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "memory: verify path");
     }
 
@@ -520,13 +534,13 @@ mod tests {
         let mut juvenile = state_with_message("noticed loop");
         juvenile.level = JUVENILE_LEVEL;
         juvenile.work_memory.push(loop_submitted_memory());
-        let phrase = compute_insight(&juvenile, None).expect("insight");
+        let phrase = compute_insight(&juvenile, None, false).expect("insight");
         assert_eq!(phrase, "clean - verify next");
 
         let mut adult = state_with_message("noticed loop");
         adult.level = ADULT_LEVEL;
         adult.work_memory.push(loop_submitted_memory());
-        let phrase = compute_insight(&adult, None).expect("insight");
+        let phrase = compute_insight(&adult, None, false).expect("insight");
         assert_eq!(phrase, "landed - check fallout");
     }
 
@@ -541,7 +555,7 @@ mod tests {
             weight: 14,
             created_at: Utc::now(),
         });
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "memory: verify path");
     }
 
@@ -555,7 +569,7 @@ mod tests {
         state
             .work_memory
             .push(loop_blocked_memory("loop_blocked_review"));
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "review gate blocking");
     }
 
@@ -581,7 +595,7 @@ mod tests {
             ..Default::default()
         };
 
-        let phrase = compute_insight(&state, Some(&context)).expect("insight");
+        let phrase = compute_insight(&state, Some(&context), false).expect("insight");
         assert_eq!(phrase, "memory: verify path");
     }
 
@@ -592,7 +606,7 @@ mod tests {
             "turn completed: review the README and audit the change carefully across files"
                 .to_string(),
         );
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "review: name the risk");
         assert!(phrase.chars().count() <= INSIGHT_MAX_CHARS);
     }
@@ -601,21 +615,21 @@ mod tests {
     fn plan_approval_summary_has_specific_phrase() {
         let mut state = state_with_message("greets");
         state.last_work_summary = Some("plan approved: implement the selected fix".to_string());
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "plan set - do one slice");
     }
 
     #[test]
     fn fallback_keeps_last_message_when_no_signals() {
         let state = state_with_message("watching upstream branch");
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "watching upstream branch");
     }
 
     #[test]
     fn fallback_strips_numeric_noise() {
         let state = state_with_message("Lv 5 work 64 loops 3");
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "Lv work loops");
         assert!(!phrase.chars().any(|c| c.is_ascii_digit()));
     }
@@ -624,7 +638,7 @@ mod tests {
     fn unclassified_summary_strips_numeric_noise() {
         let mut state = state_with_message("greets");
         state.last_work_summary = Some("Lv 5 signal 64 ticks 3".to_string());
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "Lv signal ticks");
         assert!(!phrase.chars().any(|c| c.is_ascii_digit()));
     }
@@ -639,14 +653,14 @@ mod tests {
             ..Default::default()
         };
 
-        let phrase = compute_insight(&state, Some(&context)).expect("insight");
+        let phrase = compute_insight(&state, Some(&context), false).expect("insight");
         assert_eq!(phrase, "tests: isolate failure");
     }
 
     #[test]
     fn empty_last_message_with_no_signals_returns_none() {
         let state = VivlingState::default();
-        assert!(compute_insight(&state, None).is_none());
+        assert!(compute_insight(&state, None, false).is_none());
     }
 
     #[test]
@@ -660,7 +674,7 @@ mod tests {
             researcher: 0,
             operator: 0,
         };
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "focus reviewer");
     }
 
@@ -671,7 +685,7 @@ mod tests {
         ];
         let candidates = sample_states();
         for state in candidates {
-            if let Some(phrase) = compute_insight(&state, None) {
+            if let Some(phrase) = compute_insight(&state, None, false) {
                 for needle in FORBIDDEN {
                     assert!(
                         !phrase.contains(needle),
@@ -698,7 +712,7 @@ mod tests {
 
         let mut state = state_with_message("watching upstream");
         state.loop_blocked_busy = 2;
-        let phrase = compute_insight(&state, None).expect("insight");
+        let phrase = compute_insight(&state, None, false).expect("insight");
         let cfg = VivlingCrtConfig::default();
         let trans = TransitionPhases {
             mode_fade: 1.0,
@@ -830,7 +844,7 @@ mod step_12bd1_cache_tests {
         let now = pin_now();
         let mut state = state_with_message("local fallback should not surface");
         state.cached_crt_phrase = Some(fresh_crt("llm bubble live", now));
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_eq!(out, "llm bubble live");
     }
 
@@ -839,7 +853,7 @@ mod step_12bd1_cache_tests {
         let now = pin_now();
         let mut state = state_with_message("template");
         state.cached_crt_phrase = Some(stale_crt("expired bubble", now));
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "expired bubble");
     }
 
@@ -853,7 +867,7 @@ mod step_12bd1_cache_tests {
             prompt_hash: Some(7),
             ttl_expires_at: Some(now + ChronoDuration::minutes(10)),
         });
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "");
         assert_ne!(out.trim(), "");
     }
@@ -868,7 +882,7 @@ mod step_12bd1_cache_tests {
             prompt_hash: Some(7),
             ttl_expires_at: None,
         });
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "no ttl");
     }
 
@@ -878,7 +892,7 @@ mod step_12bd1_cache_tests {
         let mut state = VivlingState::default();
         state.brain_last_error = Some("brain oops".to_string());
         state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "should be masked");
     }
 
@@ -891,7 +905,7 @@ mod step_12bd1_cache_tests {
             .work_memory
             .push(loop_blocked_memory("loop_blocked_busy"));
         state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "should be masked");
     }
 
@@ -917,7 +931,7 @@ mod step_12bd1_cache_tests {
         // Cache a fresh LLM bubble that must NOT mask the active
         // loop landing.
         state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "should be masked");
     }
 
@@ -931,7 +945,7 @@ mod step_12bd1_cache_tests {
             prompt_hash: Some(11),
             ttl_expires_at: Some(now + ChronoDuration::minutes(20)),
         });
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_eq!(out, "live proactive footer");
     }
 
@@ -945,14 +959,14 @@ mod step_12bd1_cache_tests {
             prompt_hash: Some(11),
             ttl_expires_at: Some(now - ChronoDuration::minutes(5)),
         });
-        let out = compute_insight_at(&state, None, now).expect("phrase");
+        let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "stale");
     }
 
     #[test]
     fn compute_insight_wrapper_uses_utc_now() {
         let state = state_with_message("hello CRT");
-        let out = compute_insight(&state, None).expect("phrase");
+        let out = compute_insight(&state, None, false).expect("phrase");
         assert!(!out.is_empty());
     }
 }

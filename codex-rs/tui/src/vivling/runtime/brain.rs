@@ -490,6 +490,11 @@ impl Vivling {
         reply: &super::expression::VivlingExpressionResult,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
+        // codex-vl Step 14 Bug 1 fix — first Expression dispatch of
+        // this TUI session has resolved (success). Flip the gate that
+        // hides state-persistent CRT fallbacks; from now on the chain
+        // falls back through `last_work_summary` etc. like before.
+        self.crt_first_dispatch_completed.set(true);
         if self.active_vivling_id.as_deref() == Some(vivling_id)
             && let Some(state) = self.state.as_mut()
         {
@@ -625,6 +630,12 @@ impl Vivling {
     /// background; failures must not pollute the user-visible error
     /// surface used by `/vl chat` and `/vivling assist`).
     pub(crate) fn record_expression_failure_for(&mut self, vivling_id: &str) -> Result<(), String> {
+        // codex-vl Step 14 Bug 1 fix — first Expression dispatch of
+        // this TUI session has resolved (failure). Same gate flip as
+        // the success path: a stalled / failed dispatch must not
+        // freeze the CRT into safety-template-only mode forever, so
+        // unlock the persistent fallbacks once any attempt completes.
+        self.crt_first_dispatch_completed.set(true);
         let mut state = self
             .load_state_for_id(vivling_id)
             .map_err(|err| err.to_string())?

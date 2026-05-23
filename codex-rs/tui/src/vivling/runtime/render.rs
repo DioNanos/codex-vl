@@ -91,7 +91,14 @@ impl Renderable for Vivling {
         let now = Instant::now();
         let sprite = self.current_sprite(state, now);
         let live_context = self.live_context.borrow();
-        let insight = super::crt_insight::compute_insight(state, live_context.as_ref());
+        // codex-vl Step 14 Bug 1 fix — pending = no Expression dispatch
+        // has resolved yet in this TUI session. Hides state-persistent
+        // CRT fallbacks (proactive/recent/last_work_summary) so the new
+        // session never starts by surfacing the previous session's last
+        // assistant turn.
+        let bootstrap_pending = !self.crt_first_dispatch_completed.get();
+        let insight =
+            super::crt_insight::compute_insight(state, live_context.as_ref(), bootstrap_pending);
         let animation_text = self.current_animation_text_at(now);
         let animation_phrase = animation_text
             .as_deref()

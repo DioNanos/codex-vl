@@ -27,6 +27,7 @@ impl Vivling {
             crt_animation_ledger: CrtAnimationLedger::new(),
             crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
             startup_dispatched: Cell::new(false),
+            crt_first_dispatch_completed: Cell::new(false),
             session_chat_turns: Cell::new(0),
         }
     }

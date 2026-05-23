@@ -127,6 +127,20 @@ pub(crate) struct Vivling {
     /// implicitly on process restart because the wrapper is rebuilt
     /// (see `unavailable()` and `Clone`).
     pub(crate) startup_dispatched: Cell<bool>,
+    /// codex-vl Step 14 Bug 1 fix — runtime gate that hides
+    /// state-persistent CRT fallbacks (`proactive_next_phrase_at`,
+    /// `recent_memory_phrase`, `last_work_summary_phrase`) until the
+    /// first Expression dispatch of this TUI session has resolved.
+    /// Without it, the CRT footer would render the *previous* session's
+    /// `last_work_summary` text for the few seconds it takes the
+    /// bootstrap LLM dispatch to populate `cached_crt_phrase`, which
+    /// reads as "the Vivling is showing yesterday's chat". Flipped to
+    /// `true` from `record_expression_result_for` (success) and
+    /// `record_expression_failure_for` (so a stalled / failed dispatch
+    /// does not freeze the CRT into safety-template-only mode forever).
+    /// Reset implicitly on process restart because the wrapper is
+    /// rebuilt (see `unavailable()` and `Clone`).
+    pub(crate) crt_first_dispatch_completed: Cell<bool>,
     /// Memory V2 Step 12.B.P — runtime-only counter of `/vl` chat
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
@@ -160,6 +174,7 @@ impl Clone for Vivling {
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             crt_frame_target: self.crt_frame_target.clone(),
             startup_dispatched: self.startup_dispatched.clone(),
+            crt_first_dispatch_completed: self.crt_first_dispatch_completed.clone(),
             session_chat_turns: self.session_chat_turns.clone(),
         }
     }
