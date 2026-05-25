@@ -1,10 +1,21 @@
 use std::env;
 use std::ffi::OsStr;
+use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use serde_json::Value;
 use tokio::process::Command;
+
+/// Maximum time we wait for a `remote-control stop` to fully release the
+/// daemon socket and lock before issuing the follow-up `start` during a
+/// restart sequence.
+const RESTART_DAEMON_DOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Polling interval used by [`wait_for_daemon_down`] when probing the daemon
+/// for liveness after a stop.
+const RESTART_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RemoteControlAction {
@@ -79,9 +90,39 @@ pub(crate) async fn run_action(action: RemoteControlAction) -> String {
             if stop_output.status.is_some_and(|code| code != 0) {
                 return format_single_output(RemoteControlAction::Restart, stop_output);
             }
+            // F1 (0.134.0-alpha.3): wait for the daemon to fully release the
+            // socket and lock before issuing the follow-up `start`. Without
+            // this gate the new daemon races the in-progress shutdown and
+            // either fails to acquire the socket lock or silently spawns a
+            // second daemon. The upstream 0.134 daemon→foreground refactor
+            // (commit 1752f374a8) made the shutdown path asynchronous, which
+            // turned the previously latent race into a routinely reproducible
+            // restart failure.
+            wait_for_daemon_down(RESTART_DAEMON_DOWN_TIMEOUT).await;
             let start_output = run_current_exe(["remote-control", "start"]).await;
             format_single_output(RemoteControlAction::Restart, start_output)
         }
+    }
+}
+
+/// Poll `app-server daemon version` until the daemon stops responding (i.e.
+/// the daemon process is no longer alive on the socket) or `timeout` elapses.
+///
+/// Used by [`RemoteControlAction::Restart`] to close the race between
+/// `remote-control stop` returning to the caller and the daemon actually
+/// releasing its lock/socket. If the timeout elapses while the daemon is
+/// still alive, we proceed anyway: the subsequent `start` will surface the
+/// concrete error to the user.
+async fn wait_for_daemon_down(timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let probe = run_current_exe(["app-server", "daemon", "version"]).await;
+        // A daemon that is no longer alive either fails to exec the probe
+        // (status == None) or returns a non-zero exit code.
+        if !probe.status.is_some_and(|code| code == 0) {
+            return;
+        }
+        tokio::time::sleep(RESTART_POLL_INTERVAL).await;
     }
 }
 
