@@ -44,6 +44,8 @@ use codex_vivling_core::model::plan_expression_prompt;
 use codex_vivling_core::model::truncate_summary;
 use codex_vivling_core::redaction::redact_secrets;
 use serde::Deserialize;
+use tracing::debug;
+use tracing::trace;
 
 use super::BrainTarget;
 use super::request::resolve_expression_target;
@@ -135,11 +137,38 @@ pub(crate) fn maybe_dispatch_expression_refresh(
     focus_hint: Option<String>,
     bootstrap: bool,
 ) -> Option<VivlingExpressionRequest> {
-    state
-        .try_reserve_llm_call(VivlingLlmCallKind::Expression, now, Some(prompt_hash))
-        .ok()?;
+    // F.3 debug telemetry: log the dispatch attempt so post-mortem on
+    // `/vivling crt` quiet periods can distinguish reservation refusals
+    // (budget / dedup / opt-out) from planner short-circuits upstream.
+    if let Err(err) =
+        state.try_reserve_llm_call(VivlingLlmCallKind::Expression, now, Some(prompt_hash))
+    {
+        // F.3 — `?err` (Debug) because `LlmCallSkipReason` does not
+        // implement `Display`. The enum variants are descriptive enough
+        // for telemetry as-is.
+        debug!(
+            vivling_id = %state.vivling_id,
+            stage = ?state.stage(),
+            mode = ?state.crt_brain_mode,
+            prompt_hash,
+            bootstrap,
+            reason = ?err,
+            "expression reservation refused",
+        );
+        return None;
+    }
     let brain_target =
         resolve_expression_target(state.brain_enabled, state.brain_profile.as_deref());
+    debug!(
+        vivling_id = %state.vivling_id,
+        stage = ?state.stage(),
+        mode = ?state.crt_brain_mode,
+        prompt_hash,
+        bootstrap,
+        brain_target = ?brain_target,
+        focus_hint_present = focus_hint.is_some(),
+        "expression reservation reserved",
+    );
     Some(VivlingExpressionRequest {
         vivling_id: state.vivling_id.clone(),
         vivling_name: state.name.clone(),
@@ -173,22 +202,41 @@ pub(crate) fn record_expression_result(
     };
     let expires = now + Duration::minutes(ttl_minutes);
 
-    if let Some(text) = sanitize_phrase(reply.crt_phrase.as_deref(), EXPRESSION_CRT_MAX) {
+    let crt_written = if let Some(text) = sanitize_phrase(reply.crt_phrase.as_deref(), EXPRESSION_CRT_MAX) {
         state.cached_crt_phrase = Some(CachedCrtPhrase {
             text,
             generated_at: Some(now),
             prompt_hash: Some(reply.prompt_hash),
             ttl_expires_at: Some(expires),
         });
-    }
-    if let Some(text) = sanitize_phrase(reply.proactive.as_deref(), EXPRESSION_PROACTIVE_MAX) {
+        true
+    } else {
+        false
+    };
+    let proactive_written = if let Some(text) = sanitize_phrase(reply.proactive.as_deref(), EXPRESSION_PROACTIVE_MAX) {
         state.cached_proactive = Some(CachedProactive {
             text,
             generated_at: Some(now),
             prompt_hash: Some(reply.prompt_hash),
             ttl_expires_at: Some(expires),
         });
-    }
+        true
+    } else {
+        false
+    };
+    // F.3 debug telemetry: record which cache slots the LLM reply
+    // actually filled, so a stale CRT footer can be traced back to
+    // either an LLM that returned no usable text or to a sanitizer
+    // truncation that emptied the slot.
+    debug!(
+        vivling_id = %state.vivling_id,
+        stage = ?stage,
+        prompt_hash = reply.prompt_hash,
+        ttl_minutes,
+        crt_written,
+        proactive_written,
+        "expression reply recorded",
+    );
 }
 
 /// Record an Expression failure on `state.daily_llm_failure_count`.
@@ -196,6 +244,15 @@ pub(crate) fn record_expression_result(
 /// expected to `save_state` after this mutation.
 pub(crate) fn record_expression_failure(state: &mut VivlingState) {
     state.daily_llm_failure_count = state.daily_llm_failure_count.saturating_add(1);
+    // F.3 debug telemetry: surface the running daily failure count so
+    // an LLM that keeps returning empty/invalid replies for the same
+    // Vivling shows up as a clear escalating signal in the trace log
+    // instead of staying silent.
+    debug!(
+        vivling_id = %state.vivling_id,
+        daily_failures = state.daily_llm_failure_count,
+        "expression dispatch failure recorded",
+    );
 }
 
 /// Memory V2 Step 12.B.D.3 — best-effort end-to-end planner +
@@ -269,6 +326,10 @@ pub(crate) fn try_plan_and_reserve_expression(
     // muted the channel. Saves a serialization + planner pass per
     // turn for Vivlings the user opted out of.
     if state.crt_brain_mode == VivlingExpressionMode::Off {
+        // F.3 — `trace!` (not `debug!`) because this short-circuits
+        // many times per second on muted Vivlings; the user only
+        // needs it when explicitly tracing the CRT path.
+        trace!(vivling_id = %state.vivling_id, "expression plan skipped: mode=Off");
         return None;
     }
     // Memory V2 Step 12.B.H: high-frequency callers (the per-frame
@@ -280,6 +341,11 @@ pub(crate) fn try_plan_and_reserve_expression(
     if let Some(prev) = state.last_llm_dispatch_at
         && now.signed_duration_since(prev).num_seconds() < LLM_EXPRESSION_THROTTLE_SECONDS
     {
+        trace!(
+            vivling_id = %state.vivling_id,
+            elapsed_s = now.signed_duration_since(prev).num_seconds(),
+            "expression plan skipped: 60s throttle window open",
+        );
         return None;
     }
     // Memory V2 Step 12.B.I (DAG smoke test 2026-05-22 evidenza
@@ -299,6 +365,10 @@ pub(crate) fn try_plan_and_reserve_expression(
         && cached.prompt_hash.is_some()
         && cached.ttl_expires_at.map(|exp| exp > now).unwrap_or(false)
     {
+        trace!(
+            vivling_id = %state.vivling_id,
+            "expression plan skipped: cache still fresh",
+        );
         return None;
     }
     let body = serde_json::to_string(state).ok()?;

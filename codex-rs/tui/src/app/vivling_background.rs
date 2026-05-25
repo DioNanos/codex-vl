@@ -21,6 +21,8 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_rollout_trace::InferenceTraceContext;
 use tokio_stream::StreamExt;
+use tracing::debug;
+use tracing::info;
 
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
@@ -258,8 +260,25 @@ pub(super) async fn run_vivling_expression_request(
     session_telemetry: SessionTelemetry,
     request: VivlingExpressionRequest,
 ) -> Result<VivlingExpressionResult, String> {
+    // F.3 debug telemetry: log Expression LLM dispatch entry so the user
+    // can confirm via `RUST_LOG=codex_tui::app::vivling_background=info`
+    // that a `/vivling crt` refresh actually reaches the LLM call.
+    info!(
+        vivling_id = %request.vivling_id,
+        vivling_name = %request.vivling_name,
+        brain_target = ?request.brain_target,
+        prompt_hash = request.prompt_hash,
+        bootstrap = request.bootstrap,
+        focus_hint_present = request.focus_hint.is_some(),
+        "vivling expression dispatch starting",
+    );
     let (profile_config, model_name) =
         resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
+    debug!(
+        vivling_id = %request.vivling_id,
+        model = %model_name,
+        "vivling expression brain target resolved",
+    );
 
     let auth_manager = Arc::new(
         codex_login::AuthManager::new(
@@ -417,6 +436,11 @@ async fn resolve_vivling_brain_target_config(
                  with `/vivling model <profile>`."
                     .to_string()
             })?;
+            debug!(
+                target_kind = "session_default",
+                model = %model_name,
+                "vivling brain target resolved",
+            );
             Ok((config.clone(), model_name))
         }
         BrainTarget::Profile(brain_profile) => {
@@ -449,6 +473,12 @@ async fn resolve_vivling_brain_target_config(
                     "Vivling brain profile `{brain_profile}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`."
                 )
             })?;
+            debug!(
+                target_kind = "profile",
+                profile = %brain_profile,
+                model = %model_name,
+                "vivling brain target resolved",
+            );
             Ok((profile_config, model_name))
         }
     }
