@@ -25,6 +25,7 @@ use tokio_stream::StreamExt;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
+use crate::legacy_core::config::LoaderOverrides;
 use crate::vivling::BrainTarget;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainRequestKind;
@@ -419,13 +420,23 @@ async fn resolve_vivling_brain_target_config(
             Ok((config.clone(), model_name))
         }
         BrainTarget::Profile(brain_profile) => {
+            // Upstream rust-v0.134.0-alpha.3 moved per-session profile selection
+            // from ConfigOverrides.config_profile to LoaderOverrides.user_config_profile
+            // (typed ProfileV2Name).
+            let profile_v2 = brain_profile.parse().map_err(|err| {
+                format!(
+                    "Vivling brain profile name `{brain_profile}` is invalid: {err}. Use only profile-v2 compatible names."
+                )
+            })?;
+            let mut loader_overrides = LoaderOverrides::default();
+            loader_overrides.user_config_profile = Some(profile_v2);
             let profile_config = ConfigBuilder::default()
                 .codex_home(config.codex_home.to_path_buf())
                 .harness_overrides(ConfigOverrides {
                     cwd: Some(config.cwd.to_path_buf()),
-                    config_profile: Some(brain_profile.clone()),
                     ..ConfigOverrides::default()
                 })
+                .loader_overrides(loader_overrides)
                 .build()
                 .await
                 .map_err(|err| {

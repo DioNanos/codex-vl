@@ -10,6 +10,7 @@ use super::App;
 use super::AppRunControl;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
+use crate::legacy_core::config::LoaderOverrides;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
 use crate::vl::VlEvent;
@@ -34,13 +35,27 @@ impl App {
 
                 let (profile_name, model_to_show) = match &request.kind {
                     VivlingBrainProfileRequestKind::AssignExisting { profile } => {
+                        // Upstream rust-v0.134.0-alpha.3 moved per-session profile
+                        // selection from ConfigOverrides.config_profile to
+                        // LoaderOverrides.user_config_profile (typed ProfileV2Name).
+                        let profile_v2 = match profile.parse() {
+                            Ok(name) => name,
+                            Err(err) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Invalid Vivling profile name `{profile}`: {err}"
+                                ));
+                                return Ok(AppRunControl::Continue);
+                            }
+                        };
+                        let mut loader_overrides = LoaderOverrides::default();
+                        loader_overrides.user_config_profile = Some(profile_v2);
                         let resolved = ConfigBuilder::default()
                             .codex_home(self.config.codex_home.to_path_buf())
                             .harness_overrides(ConfigOverrides {
                                 cwd: Some(self.config.cwd.to_path_buf()),
-                                config_profile: Some(profile.clone()),
                                 ..ConfigOverrides::default()
                             })
+                            .loader_overrides(loader_overrides)
                             .build()
                             .await;
                         match resolved {
