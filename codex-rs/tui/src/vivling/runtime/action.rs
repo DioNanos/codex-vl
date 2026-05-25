@@ -80,10 +80,19 @@ pub(crate) enum VivlingAction {
     DirectMessage(String),
     Reset,
     Zed,
-    /// Memory V2 §8.2 — `/vivling language [...]`.
+    /// Memory V2 §8.2 — `/vivling language [...]` (alias: `/vivling lang`).
     Language(LanguageAction),
-    /// Memory V2 Step 12.B.D.3 — `/vivling crt-brain [...]`.
+    /// Memory V2 Step 12.B.D.3 — `/vivling crt-brain [...]` (alias: `/vivling crt`).
     CrtBrain(CrtBrainAction),
+    /// 0.134.0 F.2 — `/vivling brain on|off` invoked via the deprecated
+    /// spelling. Behaviour matches [`Self::Brain`] but the dispatcher
+    /// surfaces a one-line migration hint pointing at `/vivling crt` and
+    /// `/vivling model`.
+    BrainDeprecated(bool),
+    /// 0.134.0 F.2 — `/vivling mode on|off` invoked via the deprecated
+    /// spelling. Behaviour matches [`Self::Mode`] but the dispatcher
+    /// surfaces a one-line migration hint pointing at `/vivling crt`.
+    ModeDeprecated(VivlingAiMode),
 }
 
 impl VivlingAction {
@@ -143,9 +152,14 @@ impl VivlingAction {
                     Ok(Self::Assist(rest.to_string()))
                 }
             }
+            // 0.134.0 F.2 — `/vivling brain on|off` is deprecated in favour of
+            // `/vivling crt` (expression channel) and `/vivling model` (brain
+            // profile assignment). Routed through `BrainDeprecated` so the
+            // dispatcher can append a migration hint without breaking
+            // existing behaviour.
             "brain" => match rest {
-                "on" => Ok(Self::Brain(true)),
-                "off" => Ok(Self::Brain(false)),
+                "on" => Ok(Self::BrainDeprecated(true)),
+                "off" => Ok(Self::BrainDeprecated(false)),
                 _ => Err("Usage: /vivling brain <on|off>".to_string()),
             },
             "model" => Self::parse_model_action(rest),
@@ -154,11 +168,19 @@ impl VivlingAction {
                 "60" => Ok(Self::PromoteAdult),
                 _ => Err("Usage: /vivling promote <10|60>".to_string()),
             },
+            // 0.134.0 F.2 — `/vivling mode on|off` is deprecated; the live
+            // expression channel is now exposed under `/vivling crt`.
             "mode" => VivlingAiMode::parse(rest)
-                .map(Self::Mode)
+                .map(Self::ModeDeprecated)
                 .ok_or_else(|| "Usage: /vivling mode <on|off>".to_string()),
-            "language" => Self::parse_language_action(rest),
-            "crt-brain" | "crt_brain" | "crtbrain" => Self::parse_crt_brain_action(rest),
+            // 0.134.0 F.2 — accept the short `lang` alias alongside the
+            // full `language` spelling.
+            "language" | "lang" => Self::parse_language_action(rest),
+            // 0.134.0 F.2 — accept the short `crt` alias alongside the
+            // historical `crt-brain` / `crt_brain` / `crtbrain` spellings.
+            "crt" | "crt-brain" | "crt_brain" | "crtbrain" => {
+                Self::parse_crt_brain_action(rest)
+            }
             "reset" => Ok(Self::Reset),
             _ => Ok(Self::DirectMessage(trimmed.to_string())),
         }

@@ -53,6 +53,15 @@ impl Vivling {
             VivlingAction::Brain(enabled) => self
                 .set_brain_enabled_with_guidance(enabled)
                 .map(VivlingCommandOutcome::Message),
+            // 0.134.0 F.2 — `/vivling brain` deprecated alias. Delegates to
+            // the same brain toggle but appends a one-line migration hint.
+            VivlingAction::BrainDeprecated(enabled) => self
+                .set_brain_enabled_with_guidance(enabled)
+                .map(|msg| {
+                    VivlingCommandOutcome::Message(format!(
+                        "{msg}\n\nNote: `/vivling brain` is deprecated in 0.134.0. Use `/vivling crt <on|off|default>` to manage the expression channel, or `/vivling model <profile>` to assign a brain profile."
+                    ))
+                }),
             VivlingAction::ModelShow => self.model_summary().map(VivlingCommandOutcome::Message),
             VivlingAction::ModelList => self.model_list().map(VivlingCommandOutcome::Message),
             VivlingAction::ModelProfile(profile) => self
@@ -77,6 +86,15 @@ impl Vivling {
             VivlingAction::Mode(mode) => self
                 .update_existing_result(|state| state.set_ai_mode(mode))
                 .map(VivlingCommandOutcome::Message),
+            // 0.134.0 F.2 — `/vivling mode` deprecated alias. Delegates to
+            // the same AI-mode toggle but appends a one-line migration hint.
+            VivlingAction::ModeDeprecated(mode) => self
+                .update_existing_result(|state| state.set_ai_mode(mode))
+                .map(|msg| {
+                    VivlingCommandOutcome::Message(format!(
+                        "{msg}\n\nNote: `/vivling mode` is deprecated in 0.134.0. Use `/vivling crt <on|off|default>` to manage the live expression channel."
+                    ))
+                }),
             VivlingAction::DirectMessage(text) => self
                 .update_existing_result(|state| state.direct_chat_reply(&text))
                 .map(VivlingCommandOutcome::Message),

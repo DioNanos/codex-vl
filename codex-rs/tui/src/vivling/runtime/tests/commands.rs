@@ -39,9 +39,16 @@ fn action_parse_supports_spawn_transfer_and_roster_commands() {
         VivlingAction::parse("assist review the blocker"),
         Ok(VivlingAction::Assist("review the blocker".to_string()))
     );
+    // 0.134.0 F.2 — `/vivling brain` is the deprecated alias that
+    // delegates to the brain toggle. Parser emits BrainDeprecated; the
+    // dispatcher in command/mod.rs is what appends the migration hint.
     assert_eq!(
         VivlingAction::parse("brain on"),
-        Ok(VivlingAction::Brain(true))
+        Ok(VivlingAction::BrainDeprecated(true))
+    );
+    assert_eq!(
+        VivlingAction::parse("brain off"),
+        Ok(VivlingAction::BrainDeprecated(false))
     );
     assert_eq!(
         VivlingAction::parse("model list"),
