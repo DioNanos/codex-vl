@@ -62,6 +62,34 @@ BINARY_COMPONENTS = {
     ),
 }
 
+# 0.134.0 P0#2 (B) — codex-vl fork components.
+#
+# Upstream `stage_npm_packages.py` knows how to install two component
+# layouts: the legacy `codex-package-<target>.tar.gz` archive and the
+# per-binary `<artifact_prefix>-<target>.zst` layout used for
+# `codex-responses-api-proxy`. The codex-vl fork ships a third layout:
+# the CI workflow (`.github/workflows/package-linux-termux.yml`,
+# `package-linux-arm64.yml`) uploads a single per-target tarball
+# `codex-vl-<target>.tar.gz` that already contains the populated
+# `vendor/` tree with `bwrap`, `codex`, `codex-exec`, `rg`. This means
+# the `BinaryComponent` extraction path defined above cannot service
+# `["bwrap", "codex", "rg"]` (Linux) or `["codex"]` (Android) — the
+# expected per-binary `.zst` archives do not exist in the fork release
+# artifacts.
+#
+# The fork release path therefore does NOT use this script; CI builds
+# the per-target tarball directly and `codex-cli/scripts/build_npm_package.py`
+# is invoked with `--vendor-src "$root/vendor"` already populated. Local
+# pre-publish staging is done via `gh run download <fork-run-id>` + `tar -xzf`
+# into a temporary `vendor/` root, then `build_npm_package.py` is run
+# directly.
+#
+# The set below names the fork components for visibility so that
+# `collect_native_component_sets` can match them and surface a clear
+# error in `select_target_artifacts` instead of silently producing an
+# empty vendor tree.
+FORK_VL_COMPONENTS: frozenset[str] = frozenset({"bwrap", "codex", "rg"})
+
 
 def _gha_enabled() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true"
@@ -222,6 +250,25 @@ def select_target_artifacts(
         component in BINARY_COMPONENTS for component in components
     )
     if not needs_target_artifacts:
+        # 0.134.0 P0#2 (B) — fail-fast on codex-vl fork components.
+        # If the requested components are the fork-specific set
+        # (`bwrap`, `codex`, `rg`), the upstream extraction path cannot
+        # service them (see FORK_VL_COMPONENTS comment above). Surface
+        # a clear error pointing at the supported workflow instead of
+        # silently returning an empty artifact list.
+        fork_components = [c for c in components if c in FORK_VL_COMPONENTS]
+        if fork_components:
+            raise NotImplementedError(
+                "stage_npm_packages.py cannot install codex-vl fork components "
+                f"{sorted(fork_components)} from CI artifacts — the fork CI uploads "
+                "a single per-target tarball `codex-vl-<target>.tar.gz` that does "
+                "not match the upstream per-binary `<prefix>-<target>.zst` layout. "
+                "Use the fork release path instead: trigger the CI workflow, then "
+                "`gh run download <run-id>`, `tar -xzf codex-vl-<target>.tar.gz` "
+                "into a temporary vendor root, and run "
+                "`codex-cli/scripts/build_npm_package.py --vendor-src <root>/vendor "
+                "...` directly."
+            )
         return []
 
     artifacts_by_name = {
