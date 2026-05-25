@@ -9,6 +9,7 @@
 //! changes to the rest of the app dispatcher, so upstream edits to
 //! `background_requests.rs` do not have to be merged around them.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use codex_core::ModelClient;
@@ -27,7 +28,6 @@ use tracing::info;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
-use crate::legacy_core::config::LoaderOverrides;
 use crate::vivling::BrainTarget;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainRequestKind;
@@ -444,44 +444,136 @@ async fn resolve_vivling_brain_target_config(
             Ok((config.clone(), model_name))
         }
         BrainTarget::Profile(brain_profile) => {
-            // Upstream rust-v0.134.0-alpha.3 moved per-session profile selection
-            // from ConfigOverrides.config_profile to LoaderOverrides.user_config_profile
-            // (typed ProfileV2Name).
-            let profile_v2 = brain_profile.parse().map_err(|err| {
+            // 0.134.0 P0#1 (A) — preserve legacy [profiles.X] semantics.
+            //
+            // Upstream rust-v0.134.0-alpha.3 removed
+            // `ConfigOverrides.config_profile` and replaced legacy profile
+            // selection with profile-v2 (a separate `<profile>.config.toml`
+            // file selected via `LoaderOverrides.user_config_path` +
+            // `LoaderOverrides.user_config_profile`). The new loader also
+            // rejects a `[profiles.X]` table in the base config whenever
+            // `user_config_profile = Some(X)` matches.
+            //
+            // The Vivling brain profile workflow created/persisted entries
+            // as `[profiles.<name>]` inside `$CODEX_HOME/config.toml` via
+            // `/vivling model <name> <model> [provider] [effort]`. To avoid
+            // breaking those existing profiles in 0.134.0-alpha.3 we keep
+            // the legacy on-disk layout intact and resolve the profile
+            // manually here: read `[profiles.<name>]` out of `config.toml`,
+            // apply `model` / `model_provider` via `ConfigOverrides` and
+            // `model_reasoning_effort` via `cli_overrides`, and let the
+            // loader fall back to the unselected base config. Migration to
+            // profile-v2 (`<name>.config.toml`) is deferred to a later
+            // iteration that ships a dedicated detection + migration UX.
+            let legacy = read_legacy_brain_profile(&config.codex_home, brain_profile).await?;
+            let mut overrides = ConfigOverrides {
+                cwd: Some(config.cwd.to_path_buf()),
+                model: Some(legacy.model.clone()),
+                ..ConfigOverrides::default()
+            };
+            if let Some(provider) = legacy.model_provider.clone() {
+                overrides.model_provider = Some(provider);
+            }
+            let mut builder = ConfigBuilder::default()
+                .codex_home(config.codex_home.to_path_buf())
+                .harness_overrides(overrides);
+            if let Some(effort) = legacy.model_reasoning_effort.as_ref() {
+                builder = builder.cli_overrides(vec![(
+                    "model_reasoning_effort".to_string(),
+                    toml::Value::String(effort.clone()),
+                )]);
+            }
+            let profile_config = builder.build().await.map_err(|err| {
                 format!(
-                    "Vivling brain profile name `{brain_profile}` is invalid: {err}. Use only profile-v2 compatible names."
+                    "Vivling brain profile `{brain_profile}` failed to load: {err}. Check `/vivling model` and fix the profile provider/model before retrying."
                 )
             })?;
-            let mut loader_overrides = LoaderOverrides::default();
-            loader_overrides.user_config_profile = Some(profile_v2);
-            let profile_config = ConfigBuilder::default()
-                .codex_home(config.codex_home.to_path_buf())
-                .harness_overrides(ConfigOverrides {
-                    cwd: Some(config.cwd.to_path_buf()),
-                    ..ConfigOverrides::default()
-                })
-                .loader_overrides(loader_overrides)
-                .build()
-                .await
-                .map_err(|err| {
-                    format!(
-                        "Vivling brain profile `{brain_profile}` is not ready: {err}. Check `/vivling model` and fix the profile provider/model before retrying."
-                    )
-                })?;
             let model_name = profile_config.model.clone().ok_or_else(|| {
                 format!(
                     "Vivling brain profile `{brain_profile}` does not resolve to a model. Set one with `/vivling model <profile>` or create it with `/vivling model <model> [provider] [effort]`."
                 )
             })?;
             debug!(
-                target_kind = "profile",
+                target_kind = "profile_legacy",
                 profile = %brain_profile,
                 model = %model_name,
-                "vivling brain target resolved",
+                provider = ?legacy.model_provider,
+                effort = ?legacy.model_reasoning_effort,
+                "vivling brain target resolved (legacy [profiles.X])",
             );
             Ok((profile_config, model_name))
         }
     }
+}
+
+/// 0.134.0 P0#1 (A) — fields extracted from a legacy `[profiles.<name>]`
+/// table inside `$CODEX_HOME/config.toml`. Used by Vivling brain target
+/// resolution to keep pre-0.134.0 profiles working without forcing users
+/// to migrate to profile-v2 (`<name>.config.toml`).
+#[derive(Debug, Clone)]
+pub(super) struct LegacyBrainProfile {
+    pub(super) model: String,
+    #[allow(dead_code)]
+    pub(super) model_provider: Option<String>,
+    #[allow(dead_code)]
+    pub(super) model_reasoning_effort: Option<String>,
+}
+
+/// Read `[profiles.<name>]` from `$CODEX_HOME/config.toml` and return the
+/// fields the Vivling brain dispatch needs (`model`, optional
+/// `model_provider`, optional `model_reasoning_effort`). Returns a clear
+/// user-facing error if the file cannot be read/parsed or the profile is
+/// absent / has no model.
+pub(super) async fn read_legacy_brain_profile(
+    codex_home: &Path,
+    profile_name: &str,
+) -> Result<LegacyBrainProfile, String> {
+    let toml_path = codex_home.join("config.toml");
+    let toml_text = tokio::fs::read_to_string(&toml_path).await.map_err(|err| {
+        format!(
+            "Cannot read {} for Vivling profile `{profile_name}`: {err}.",
+            toml_path.display()
+        )
+    })?;
+    let toml_value: toml::Value = toml::from_str(&toml_text).map_err(|err| {
+        format!(
+            "Cannot parse {} while resolving Vivling profile `{profile_name}`: {err}.",
+            toml_path.display()
+        )
+    })?;
+    let profile_table = toml_value
+        .get("profiles")
+        .and_then(|p| p.get(profile_name))
+        .and_then(|p| p.as_table())
+        .ok_or_else(|| {
+            format!(
+                "Vivling profile `{profile_name}` not found under `[profiles.{profile_name}]` in {}. Create it with `/vivling model <profile> <model> [provider] [effort]` or list available profiles with `/vivling model list`.",
+                toml_path.display()
+            )
+        })?;
+    let model = profile_table
+        .get("model")
+        .and_then(|m| m.as_str())
+        .ok_or_else(|| {
+            format!(
+                "Vivling profile `{profile_name}` has no `model` field in {}. Update with `/vivling model <profile> <new-model> [provider] [effort]`.",
+                toml_path.display()
+            )
+        })?
+        .to_string();
+    let model_provider = profile_table
+        .get("model_provider")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string());
+    let model_reasoning_effort = profile_table
+        .get("model_reasoning_effort")
+        .and_then(|e| e.as_str())
+        .map(|s| s.to_string());
+    Ok(LegacyBrainProfile {
+        model,
+        model_provider,
+        model_reasoning_effort,
+    })
 }
 
 #[cfg(test)]
