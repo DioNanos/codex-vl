@@ -51,11 +51,11 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the stable `0.133.0` line. It merges upstream
-Codex `rust-v0.133.0` while preserving the existing Codex VL workflow layer and
+The npm `latest` tag tracks the stable `0.134.0` line. It merges upstream
+Codex `rust-v0.134.0` while preserving the existing Codex VL workflow layer and
 fork-owned install/update guidance.
 
-The `0.133.0` line incorporates upstream improvements including goals enabled
+The `0.134.0` line incorporates upstream improvements including goals enabled
 by default (with a dedicated `goals.db` store and `create_goal` / `update_goal`
 / `get_goal` tools), `codex remote-control` as a foreground command with
 explicit `start` / `stop` lifecycle, permission profile inheritance and managed
@@ -134,7 +134,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.133.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
+`0.134.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
 Android arm64 native packages plus the macOS arm64 source-build package.
 
 ## Status
