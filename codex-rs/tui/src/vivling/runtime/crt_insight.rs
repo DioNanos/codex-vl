@@ -740,6 +740,7 @@ mod tests {
                 tier: CrtTier::Safe,
                 crt_config: &cfg,
                 transitions: trans,
+                tui_task_running: false,
             };
             render_crt_scene(&mut surface, &scene);
             let mut buf =
