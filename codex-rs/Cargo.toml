@@ -348,7 +348,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
     "pem",
 ] }
 regex = "1.12.3"
-regex-lite = "0.1.8"
+regex-lite = "0.1.9"
 reqwest = { version = "0.12", default-features = false, features = [
     "cookies",
     "rustls-tls-native-roots",
