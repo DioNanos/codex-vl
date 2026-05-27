@@ -316,7 +316,7 @@ jsonwebtoken = "9.3.1"
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
-libc = "0.2.182"
+libc = "0.2.186"
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
