@@ -30,6 +30,19 @@ pub(crate) struct CrtScene<'a> {
     pub(crate) crt_config: &'a VivlingCrtConfig,
     /// Per-frame transition snapshot from `CrtAnimationLedger`.
     pub(crate) transitions: TransitionPhases,
+    /// Render-only hint: TRUE when the broader TUI is processing a task
+    /// (mirrors `BottomPane::is_task_running()`). The CRT director uses
+    /// this to override low-energy `CrtMode::Alert` with `CrtMode::Working`
+    /// — semantically the agent is busy even when the Vivling lifecycle
+    /// activity has not been marked Working. Does not affect lifecycle
+    /// stats or persistence; display-only override.
+    ///
+    /// When `tui_task_running` is FALSE and the director still selects
+    /// `CrtMode::Alert` (e.g. for low energy), the caller is expected to
+    /// surface the reason directly through `last_message` so the user
+    /// understands why Vivling switched to the alert sprite — there is
+    /// no separate `alert_reason` channel.
+    pub(crate) tui_task_running: bool,
 }
 
 pub(crate) fn render_crt_scene(surface: &mut CrtSurface, scene: &CrtScene<'_>) {
@@ -97,6 +110,7 @@ mod tests {
             tier: CrtTier::Safe,
             crt_config: &cfg,
             transitions: settled_phases(),
+            tui_task_running: false,
         };
         render_crt_scene(&mut surface, &scene);
 
@@ -135,6 +149,7 @@ mod tests {
                 tier: CrtTier::Safe,
                 crt_config: &cfg,
                 transitions: settled_phases(),
+                tui_task_running: false,
             };
             render_crt_scene(&mut surface, &scene);
 
@@ -180,6 +195,7 @@ mod tests {
             tier: CrtTier::Safe,
             crt_config: &cfg,
             transitions: settled_phases(),
+            tui_task_running: false,
         };
         render_crt_scene(&mut surface, &scene);
 

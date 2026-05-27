@@ -110,7 +110,19 @@ impl Renderable for Vivling {
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
         let activity = *self.activity.borrow();
-        let mode_for_observe = derive_mode(state, activity, area.width);
+        let tui_task_running = self.task_running.get();
+        // codex-vl Step 14 Bug 2 fix — short label rendered in the CRT
+        // speech panel when the director selects Alert for a non-busy
+        // low-energy state. Surfaces the reason so the user understands
+        // why Vivling switched to the alert sprite. Keep this in sync
+        // with `CrtDirector::select` low-energy branch.
+        let alert_reason: Option<&'static str> =
+            if !tui_task_running && activity.is_none() && state.energy <= 12 {
+                Some("low energy")
+            } else {
+                None
+            };
+        let mode_for_observe = derive_mode(state, activity, tui_task_running, area.width);
 
         // Update the animation ledger before rendering so transition
         // phases reflect the new inputs.
@@ -131,6 +143,12 @@ impl Renderable for Vivling {
             VIVLING_STRIP_HEIGHT,
             ratatui::style::Style::default(),
         );
+        // When Alert fires for low-energy, surface the reason in the
+        // speech panel even if there is no insight/animation phrase to
+        // render. The alert label takes priority over `last_message` so
+        // the user sees "low energy" instead of an unrelated cached
+        // phrase the moment the alert sprite appears.
+        let last_message = alert_reason.or(last_message);
         let scene = crate::vl::crt::CrtScene {
             species_id: &state.species,
             stage: state.stage(),
@@ -149,6 +167,7 @@ impl Renderable for Vivling {
             tier: crate::vl::crt::CrtTier::detect(),
             crt_config: &self.crt_config,
             transitions,
+            tui_task_running,
         };
         crate::vl::crt::render_crt_scene(&mut surface, &scene);
         let strip_h = area.height.min(VIVLING_STRIP_HEIGHT);
@@ -204,6 +223,7 @@ impl Vivling {
 fn derive_mode(
     state: &VivlingState,
     activity: Option<crate::vl::VivlingActivity>,
+    tui_task_running: bool,
     width: u16,
 ) -> crate::vl::crt::director::CrtMode {
     use crate::vl::crt::director::CrtMode;
@@ -213,6 +233,14 @@ fn derive_mode(
         Some(crate::vl::VivlingActivity::Playing) => return CrtMode::Thinking,
         Some(crate::vl::VivlingActivity::Working) => return CrtMode::Working,
         Some(crate::vl::VivlingActivity::Idle) | None => {}
+    }
+    // codex-vl Step 14 Bug 2 fix — mirror the override in
+    // `CrtDirector::select` so the observability mode passed to the
+    // animation ledger stays consistent with the rendered mode and the
+    // animation phase transitions do not flip between Working and Alert
+    // every frame.
+    if tui_task_running {
+        return CrtMode::Working;
     }
     if state.energy <= 12 {
         return CrtMode::Alert;
