@@ -45,7 +45,6 @@ impl CodeModeService {
         Ok(RuntimeResponse::Result {
             cell_id: request.cell_id,
             content_items: Vec::new(),
-            stored_values: request.stored_values,
             error_text: Some(ANDROID_CODE_MODE_UNSUPPORTED.to_string()),
         })
     }
@@ -54,7 +53,6 @@ impl CodeModeService {
         Ok(WaitOutcome::MissingCell(RuntimeResponse::Result {
             cell_id: request.cell_id,
             content_items: Vec::new(),
-            stored_values: HashMap::new(),
             error_text: Some(ANDROID_CODE_MODE_UNSUPPORTED.to_string()),
         }))
     }

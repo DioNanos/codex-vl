@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use codex_protocol::ToolName;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -18,7 +16,6 @@ pub struct ExecuteRequest {
     pub tool_call_id: String,
     pub enabled_tools: Vec<ToolDefinition>,
     pub source: String,
-    pub stored_values: HashMap<String, JsonValue>,
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<usize>,
 }
@@ -57,7 +54,6 @@ pub enum RuntimeResponse {
     Result {
         cell_id: String,
         content_items: Vec<FunctionCallOutputContentItem>,
-        stored_values: HashMap<String, JsonValue>,
         error_text: Option<String>,
     },
 }
