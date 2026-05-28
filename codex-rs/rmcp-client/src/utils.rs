@@ -191,12 +191,11 @@ pub(crate) const TERMUX_ENV_VARS: &[&str] = &[
     "XDG_CONFIG_HOME",
 ];
 
-/// Windows builds of codex-vl never run under Termux (Termux is Android/Linux
-/// musl) so the allowlist is empty. Declared explicitly so that
-/// `create_env_for_mcp_server` resolves the name on every target — without
-/// this, the non-Unix typecheck of the function body would fail with
-/// `unresolved name TERMUX_ENV_VARS` (audit codex-vl-0.134.1-prebuild Codex
-/// GPT-5.5 2026-05-27).
+/// Windows builds never run under Termux (Termux is Android/Linux musl)
+/// so the allowlist is empty. Declared explicitly so that
+/// `create_env_for_mcp_server` resolves the name on every target —
+/// without this, the non-Unix typecheck of the function body would fail
+/// with `unresolved name TERMUX_ENV_VARS`.
 #[cfg(not(unix))]
 pub(crate) const TERMUX_ENV_VARS: &[&str] = &[];
 

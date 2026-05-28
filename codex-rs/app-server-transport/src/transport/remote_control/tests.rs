@@ -1360,15 +1360,15 @@ async fn remote_control_waits_for_account_id_before_enrolling() {
     .expect("auth with account id should save");
     auth_manager.reload().await;
 
-    // codex-vl/codex-termux 0.134.1 — raised from 100ms to 950ms to remove
-    // intermittent flake under CPU pressure (audit codex-vl-bug-audit Codex
-    // GPT-5.5 2026-05-27: original 100ms window failed at run 11/50;
-    // intermediate 750ms still failed at ~40% on codex-termux release line
-    // even in isolation). Must remain STRICTLY BELOW the production retry
-    // interval `REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL = 1s` so the
-    // assertion still verifies "auth change wakes remote control before
-    // the retry delay would fire" instead of just "retry eventually
-    // happens". 950ms leaves a 50ms guardrail below the 1s retry.
+    // 0.134.1 — raised from 100ms to 950ms to remove intermittent flake
+    // under CPU pressure. The original 100ms window failed under load;
+    // intermediate 750ms still showed residual flake on the Android arm64
+    // musl release line even in isolation. Must remain STRICTLY BELOW the
+    // production retry interval `REMOTE_CONTROL_ACCOUNT_ID_RETRY_INTERVAL
+    // = 1s` so the assertion still verifies "auth change wakes remote
+    // control before the retry delay would fire" instead of just "retry
+    // eventually happens". 950ms leaves a 50ms guardrail below the 1s
+    // retry.
     let enroll_request = timeout(Duration::from_millis(950), accept_http_request(&listener))
         .await
         .expect("auth change should wake remote control before the retry delay");

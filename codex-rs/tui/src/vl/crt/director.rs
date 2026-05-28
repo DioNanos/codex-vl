@@ -21,17 +21,16 @@ impl CrtDirector {
             Some(crate::vl::VivlingActivity::Working) => return CrtMode::Working,
             Some(crate::vl::VivlingActivity::Idle) | None => {}
         }
-        // codex-vl Step 14 Bug 2 fix — the TUI distinguishes three "busy"
-        // concepts (`BottomPane::is_task_running`, `VivlingActivity::Working`,
+        // The TUI distinguishes three "busy" concepts
+        // (`BottomPane::is_task_running`, `VivlingActivity::Working`,
         // `loop_tick_running`). When the broader TUI is processing a task
-        // but the Vivling lifecycle hasn't switched to `Working` yet, the
+        // but the Vivling lifecycle has not switched to `Working` yet, the
         // pre-existing low-energy branch below would otherwise win and
         // surface `CrtMode::Alert` (Syllo BABY_ALERT sprite + reversed
         // yellow palette = bright yellow bands) even though the agent is
         // legitimately busy. The render-only hint `tui_task_running`
         // overrides Alert with Working for visual mode only; lifecycle
-        // stats and persistence are untouched. Audit: codex-vl-bug-audit:
-        // NEEDS_CHANGES:bug-2 (Codex GPT-5.5 2026-05-27).
+        // stats and persistence are untouched.
         if scene.tui_task_running {
             return CrtMode::Working;
         }
