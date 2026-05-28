@@ -51,7 +51,14 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the stable `0.134.0` line. It merges upstream
+The npm `next` tag tracks the `0.135.0-alpha.0` prerelease, which merges
+upstream Codex `rust-v0.135.0-alpha.2` while preserving the Codex VL workflow
+layer. It ships Linux x64, Linux arm64, Android arm64 native packages plus the
+macOS arm64 source-build package, each platform under its own `<platform>-next`
+dist-tag (`linux-x64-next`, `linux-arm64-next`, `android-arm64-next`,
+`darwin-arm64-next`). Install with `npm install -g @mmmbuto/codex-vl@next`.
+
+The npm `latest` tag tracks the stable `0.134.1` line. It merges upstream
 Codex `rust-v0.134.0` while preserving the existing Codex VL workflow layer and
 fork-owned install/update guidance.
 
@@ -134,7 +141,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.134.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
+`0.134.1` npm `latest` publish includes Linux x64, Linux arm64 and Termux
 Android arm64 native packages plus the macOS arm64 source-build package.
 
 ## Status
