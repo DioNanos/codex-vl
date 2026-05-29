@@ -26,13 +26,6 @@ codex-vl --version
 codex-vl login
 ```
 
-When a pre-release lane is active, install it explicitly:
-
-```bash
-npm install -g @mmmbuto/codex-vl@next
-codex-vl --version
-```
-
 Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
 Android arm64 installs use packaged native binaries. On macOS, npm install
 builds the local native binaries with Cargo; install Rust if Cargo is not
@@ -51,11 +44,14 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the stable `0.134.0` line. It merges upstream
-Codex `rust-v0.134.0` while preserving the existing Codex VL workflow layer and
-fork-owned install/update guidance.
+The npm `latest` tag tracks the stable `0.135.0` line, which merges upstream
+Codex `rust-v0.135.0` while preserving the Codex VL workflow layer and
+fork-owned install/update guidance. It ships Linux x64, Linux arm64 (musl) and
+Android arm64 native packages plus a macOS arm64 source-build package, each
+platform under its own `<platform>` dist-tag (`linux-x64`, `linux-arm64`,
+`android-arm64`, `darwin-arm64`).
 
-The `0.134.0` line incorporates upstream improvements including goals enabled
+The `0.135.0` line incorporates upstream improvements including goals enabled
 by default (with a dedicated `goals.db` store and `create_goal` / `update_goal`
 / `get_goal` tools), `codex remote-control` as a foreground command with
 explicit `start` / `stop` lifecycle, permission profile inheritance and managed
@@ -134,7 +130,7 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.134.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
+`0.135.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
 Android arm64 native packages plus the macOS arm64 source-build package.
 
 ## Status

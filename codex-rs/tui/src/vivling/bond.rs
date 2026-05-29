@@ -227,8 +227,8 @@ impl VivlingBond {
                 self.loop_ticks_count = self.loop_ticks_count.saturating_add(1);
             }
             // Success bonuses modify bond.value only — counters stay tied to dispatch
-            // so they keep their "how many times you reached out" semantics. See
-            // DocsHub design § 1 (counter policy).
+            // so they keep their "how many times you reached out" semantics
+            // (counter policy).
             VivlingInteractionKind::BrainChatSucceeded
             | VivlingInteractionKind::BrainAssistSucceeded => {}
         }

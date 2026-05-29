@@ -51,8 +51,8 @@ jobs:
       - name: Build Linux arm64 native payload
         run: |
           set -euo pipefail
-          rustup toolchain install 1.93.0 --profile minimal --target aarch64-unknown-linux-musl
-          rustup default 1.93.0
+          rustup toolchain install 1.95.0 --profile minimal --target aarch64-unknown-linux-musl
+          rustup default 1.95.0
           rustup target add aarch64-unknown-linux-musl
           target="aarch64-unknown-linux-musl"
           version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"

@@ -1,7 +1,7 @@
 //! codex-vl care decay slowdown (Fase 4 iter 9) — integration tests.
 //!
 //! These tests pin the explicit `last_seen_at` contract described in
-//! `DocsHub/projects/codex-vl/2026-05-14_vivling_care_decay_slowdown_design.md` §3.1.
+//! the care-decay slowdown design section 3.1.
 //! Five branches map 1:1 to dedicated tests; Branch E gets three scenarios
 //! (two weeks, three months, one year) to verify weekly rate + clamp.
 

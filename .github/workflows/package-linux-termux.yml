@@ -44,8 +44,8 @@ jobs:
           # codex-vl: explicit toolchain install pattern from codex-termux working
           # workflow. Plain `rustup target add` started failing silently on fresh
           # ubuntu-24.04 runners after the rust-v0.133.0 cycle.
-          rustup toolchain install 1.93.0 --profile minimal --target x86_64-unknown-linux-musl
-          rustup default 1.93.0
+          rustup toolchain install 1.95.0 --profile minimal --target x86_64-unknown-linux-musl
+          rustup default 1.95.0
           rustup target add x86_64-unknown-linux-musl
           target="x86_64-unknown-linux-musl"
           version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
@@ -178,8 +178,8 @@ jobs:
           # codex-vl: explicit toolchain install pattern from codex-termux working
           # workflow. Plain `rustup target add` started failing silently on fresh
           # ubuntu-24.04 runners after the rust-v0.133.0 cycle.
-          rustup toolchain install 1.93.0 --profile minimal --target aarch64-linux-android
-          rustup default 1.93.0
+          rustup toolchain install 1.95.0 --profile minimal --target aarch64-linux-android
+          rustup default 1.95.0
           rustup target add aarch64-linux-android
           v8_env="$(python3 scripts/fetch_rusty_v8_android.py --target aarch64-linux-android)"
           printf '%s\n' "$v8_env"
