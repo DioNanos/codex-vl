@@ -81,7 +81,7 @@ pub(crate) struct VivlingExpressionRequest {
     /// tone). When `Some(_)`, the async runner appends it to the
     /// Expression system instruction so the CRT footer can reflect
     /// what the Vivling is observing RIGHT NOW (e.g. `"merge upstream
-    /// watch"`, `"vps3 bootstrap focus"`) instead of generic platitudes
+    /// watch"`, `"deploy bootstrap focus"`) instead of generic platitudes
     /// (`"loops breathe, work hums"`). Hashed into `prompt_hash` so a
     /// focus shift triggers a fresh dispatch, not a dedup skip.
     pub(crate) focus_hint: Option<String>,
@@ -1618,7 +1618,7 @@ mod tests {
         // expired pass.
         let prompt = b"test prompt";
         let focus_a = "merge upstream";
-        let focus_b = "vps3 bootstrap";
+        let focus_b = "deploy bootstrap";
 
         let mut bytes_a = prompt.to_vec();
         bytes_a.push(b'\0');

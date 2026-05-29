@@ -2,7 +2,7 @@
 //!
 //! Paths are derived at runtime from a `roster_dir: &Path` argument and never
 //! serialized into the on-disk state JSON. This keeps Vivling state portable
-//! between devices (e.g. exported from VPS3, imported on Pixel9Pro) and
+//! between devices (e.g. exported from one device, imported on another) and
 //! independent of filesystem layout differences.
 
 use std::path::Path;
