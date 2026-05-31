@@ -586,6 +586,7 @@ mod thread_processor_behavior_tests {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: true,
+            namespace_tools: None,
         };
         let config_manager = ConfigManager::new(
             temp_dir.path().to_path_buf(),
@@ -652,6 +653,7 @@ mod thread_processor_behavior_tests {
             developer_instructions: None,
             personality: None,
             exclude_turns: false,
+            initial_turns_page: None,
             persist_extended_history: false,
         };
         let config_snapshot = ThreadConfigSnapshot {
