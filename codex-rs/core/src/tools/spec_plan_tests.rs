@@ -1014,9 +1014,9 @@ async fn hosted_tools_follow_provider_auth_model_and_config_gates() {
     unsupported_provider.assert_visible_lacks(&["web_search"]);
 }
 
-// codex-vl fork coverage (MERGE_FEATURE_REGISTER, "Loop jobs"): the
-// `manage_loops` dynamic tool must register both as a flat tool and as the
-// namespaced `codex_app::manage_loops` alias, with its `action` parameter
+// codex-vl fork coverage: the `manage_loops` dynamic tool must register
+// both as a flat tool and as the namespaced `codex_app::manage_loops`
+// alias, with its `action` parameter
 // preserved. Ported to the upstream ToolRouter harness during the
 // rust-v0.136.0-alpha.1 merge (the old ToolsConfig/build_specs harness was
 // removed upstream by #22835).
