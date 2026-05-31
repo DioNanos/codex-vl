@@ -266,7 +266,10 @@ fn tick_action_request(
 
 pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRequest) {
     let app_event_tx = app.app_event_tx.clone();
-    let config = app.config.clone();
+    let config = crate::app::vivling_background::config_with_session_model(
+        &app.config,
+        app.chat_widget.effective_collaboration_mode().model(),
+    );
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
         let vivling_id = request.vivling_id.clone();
@@ -292,7 +295,10 @@ pub(super) fn run_loop_tick(
     request: crate::vivling::VivlingLoopTickRequest,
 ) {
     let app_event_tx = app.app_event_tx.clone();
-    let config = app.config.clone();
+    let config = crate::app::vivling_background::config_with_session_model(
+        &app.config,
+        app.chat_widget.effective_collaboration_mode().model(),
+    );
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
         let result = crate::app::vivling_background::run_vivling_loop_tick_request(
@@ -316,7 +322,10 @@ pub(super) fn run_loop_tick(
 /// an error.
 pub(super) fn run_expression(app: &mut App, request: crate::vivling::VivlingExpressionRequest) {
     let app_event_tx = app.app_event_tx.clone();
-    let config = app.config.clone();
+    let config = crate::app::vivling_background::config_with_session_model(
+        &app.config,
+        app.chat_widget.effective_collaboration_mode().model(),
+    );
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
         let vivling_id = request.vivling_id.clone();
