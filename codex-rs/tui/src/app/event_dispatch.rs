@@ -5,6 +5,8 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+#[cfg(target_os = "windows")]
+use codex_config::types::WindowsSandboxModeToml;
 
 const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
@@ -124,6 +126,9 @@ impl App {
                         ));
                     }
                 }
+            }
+            AppEvent::ArchiveCurrentThread => {
+                return Ok(self.archive_current_thread(app_server).await);
             }
             AppEvent::ForkCurrentSession => {
                 self.session_telemetry.counter(
@@ -872,13 +877,26 @@ impl App {
                 preset,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                if !self.chat_widget.windows_sandbox_mode_allowed(
+                    codex_config::types::WindowsSandboxModeToml::Elevated,
+                ) {
+                    tracing::warn!(
+                        "refusing to set up elevated Windows sandbox mode disallowed by requirements"
+                    );
+                    self.chat_widget.add_info_message(
+                        "That Windows sandbox option is disallowed by requirements.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 #[cfg(target_os = "windows")]
                 {
-                    let permission_profile = match self
-                        .permission_profile_for_windows_setup(&preset, profile_selection.as_ref())
+                    let setup_permissions = match self
+                        .windows_setup_permissions(&preset, profile_selection.as_ref())
                         .await
                     {
-                        Ok(permission_profile) => permission_profile,
+                        Ok(setup_permissions) => setup_permissions,
                         Err(err) => {
                             tracing::warn!(
                                 error = %err,
@@ -890,8 +908,9 @@ impl App {
                             return Ok(AppRunControl::Continue);
                         }
                     };
-                    let permission_profile_cwd = self.config.cwd.clone();
-                    let command_cwd = permission_profile_cwd.clone();
+                    let permission_profile = setup_permissions.permission_profile;
+                    let workspace_roots = setup_permissions.workspace_roots;
+                    let command_cwd = self.config.cwd.clone();
                     let env_map: std::collections::HashMap<String, String> =
                         std::env::vars().collect();
                     let codex_home = self.config.codex_home.clone();
@@ -916,7 +935,7 @@ impl App {
                     tokio::task::spawn_blocking(move || {
                         let result = crate::legacy_core::windows_sandbox::run_elevated_setup(
                             &permission_profile,
-                            permission_profile_cwd.as_path(),
+                            workspace_roots.as_slice(),
                             command_cwd.as_path(),
                             &env_map,
                             codex_home.as_path(),
@@ -981,13 +1000,26 @@ impl App {
                 preset,
                 profile_selection,
             } => {
+                #[cfg(any(target_os = "windows", test))]
+                if !self.chat_widget.windows_sandbox_mode_allowed(
+                    codex_config::types::WindowsSandboxModeToml::Unelevated,
+                ) {
+                    tracing::warn!(
+                        "refusing to set up unelevated Windows sandbox mode disallowed by requirements"
+                    );
+                    self.chat_widget.add_info_message(
+                        "That Windows sandbox option is disallowed by requirements.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return Ok(AppRunControl::Continue);
+                }
                 #[cfg(target_os = "windows")]
                 {
-                    let permission_profile = match self
-                        .permission_profile_for_windows_setup(&preset, profile_selection.as_ref())
+                    let setup_permissions = match self
+                        .windows_setup_permissions(&preset, profile_selection.as_ref())
                         .await
                     {
-                        Ok(permission_profile) => permission_profile,
+                        Ok(setup_permissions) => setup_permissions,
                         Err(err) => {
                             tracing::warn!(
                                 error = %err,
@@ -999,8 +1031,9 @@ impl App {
                             return Ok(AppRunControl::Continue);
                         }
                     };
-                    let permission_profile_cwd = self.config.cwd.clone();
-                    let command_cwd = permission_profile_cwd.clone();
+                    let permission_profile = setup_permissions.permission_profile;
+                    let workspace_roots = setup_permissions.workspace_roots;
+                    let command_cwd = self.config.cwd.clone();
                     let env_map: std::collections::HashMap<String, String> =
                         std::env::vars().collect();
                     let codex_home = self.config.codex_home.clone();
@@ -1012,7 +1045,7 @@ impl App {
                         if let Err(err) =
                             crate::legacy_core::windows_sandbox::run_legacy_setup_preflight(
                                 &permission_profile,
-                                permission_profile_cwd.as_path(),
+                                workspace_roots.as_slice(),
                                 command_cwd.as_path(),
                                 &env_map,
                                 codex_home.as_path(),
@@ -1050,7 +1083,7 @@ impl App {
                         ));
 
                     let permission_profile = self.config.permissions.effective_permission_profile();
-                    let permission_profile_cwd = self.config.cwd.clone();
+                    let workspace_roots = self.config.effective_workspace_roots();
                     let command_cwd = self.config.cwd.clone();
                     let env_map: std::collections::HashMap<String, String> =
                         std::env::vars().collect();
@@ -1061,7 +1094,7 @@ impl App {
                         let requested_path = PathBuf::from(path);
                         let event = match crate::legacy_core::grant_read_root_non_elevated(
                             &permission_profile,
-                            permission_profile_cwd.as_path(),
+                            workspace_roots.as_slice(),
                             command_cwd.as_path(),
                             &env_map,
                             codex_home.as_path(),
@@ -1112,7 +1145,23 @@ impl App {
                             &[("result", "success")],
                         );
                     }
-                    let elevated_enabled = matches!(mode, WindowsSandboxEnableMode::Elevated);
+                    let selected_mode = match mode {
+                        WindowsSandboxEnableMode::Elevated => WindowsSandboxModeToml::Elevated,
+                        WindowsSandboxEnableMode::Legacy => WindowsSandboxModeToml::Unelevated,
+                    };
+                    let elevated_enabled = selected_mode == WindowsSandboxModeToml::Elevated;
+                    if !self.chat_widget.windows_sandbox_mode_allowed(selected_mode) {
+                        tracing::warn!(
+                            ?selected_mode,
+                            "refusing to persist Windows sandbox mode disallowed by requirements"
+                        );
+                        self.chat_widget.add_info_message(
+                            "That Windows sandbox option is disallowed by requirements."
+                                .to_string(),
+                            /*hint*/ None,
+                        );
+                        return Ok(AppRunControl::Continue);
+                    }
                     let edits =
                         crate::config_update::build_windows_sandbox_mode_edits(elevated_enabled);
                     match crate::config_update::write_config_batch(
@@ -1187,8 +1236,9 @@ impl App {
                                         /*personality*/ None,
                                     ),
                                 ));
-                                self.apply_permission_profile_selection(selection).await;
-                                let _ = mode;
+                                if self.apply_permission_profile_selection(selection).await {
+                                    self.chat_widget.submit_initial_user_message_if_pending();
+                                }
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
@@ -1222,7 +1272,6 @@ impl App {
                                     .send(AppEvent::UpdateActivePermissionProfile(
                                         preset.active_permission_profile.clone(),
                                     ));
-                                let _ = mode;
                                 self.chat_widget.add_plain_history_lines(vec![
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
@@ -1465,6 +1514,7 @@ impl App {
                     Some(RuntimePermissionProfileOverride::from_config(&self.config));
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
+                self.chat_widget.submit_initial_user_message_if_pending();
 
                 // If a managed filesystem sandbox is active, run the Windows
                 // world-writable scan.
@@ -1482,6 +1532,7 @@ impl App {
                         && !self.chat_widget.world_writable_warning_hidden();
                     if should_check {
                         let cwd = self.config.cwd.clone();
+                        let workspace_roots = self.config.effective_workspace_roots();
                         let env_map: std::collections::HashMap<String, String> =
                             std::env::vars().collect();
                         let tx = self.app_event_tx.clone();
@@ -1490,6 +1541,7 @@ impl App {
                             self.config.permissions.effective_permission_profile();
                         Self::spawn_world_writable_scan(
                             cwd,
+                            workspace_roots,
                             env_map,
                             logs_base_dir,
                             permission_profile,
@@ -1499,7 +1551,9 @@ impl App {
                 }
             }
             AppEvent::SelectPermissionProfile(selection) => {
-                self.apply_permission_profile_selection(selection).await;
+                if self.apply_permission_profile_selection(selection).await {
+                    self.chat_widget.submit_initial_user_message_if_pending();
+                }
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 self.config.approvals_reviewer = policy;
@@ -2147,6 +2201,33 @@ impl App {
             ExitMode::Immediate => {
                 self.pending_shutdown_exit_thread_id = None;
                 AppRunControl::Exit(ExitReason::UserRequested)
+            }
+        }
+    }
+
+    pub(super) async fn archive_current_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) -> AppRunControl {
+        let Some(thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
+            self.chat_widget
+                .add_error_message("A thread must start before it can be archived.".to_string());
+            return AppRunControl::Continue;
+        };
+        if self.side_threads.contains_key(&thread_id) {
+            self.chat_widget.add_error_message(
+                "'/archive' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
+                    .to_string(),
+            );
+            return AppRunControl::Continue;
+        }
+
+        match app_server.thread_archive(thread_id).await {
+            Ok(()) => AppRunControl::Exit(ExitReason::UserRequested),
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to archive current thread: {err}"));
+                AppRunControl::Continue
             }
         }
     }

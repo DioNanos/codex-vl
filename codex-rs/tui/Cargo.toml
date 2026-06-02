@@ -134,8 +134,16 @@ zip = { workspace = true }
 codex-windows-sandbox = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 
+# Realtime audio: enabled on macOS/Windows (default cpal) and on Android.
+# On Android cpal -> oboe-sys would link `c++_static`, which Termux does not
+# provide (only libc++_shared.so). The `oboe-shared-stdcxx` feature switches
+# the link to `c++_shared`, matching our bundled libc++_shared.so + RUNPATH.
+# Ref: upstream openai/codex issue #24507.
 [target.'cfg(all(not(target_os = "linux"), not(target_os = "android")))'.dependencies]
-cpal = { version = "0.15" }
+cpal = "0.15"
+
+[target.'cfg(target_os = "android")'.dependencies]
+cpal = { version = "0.15", features = ["oboe-shared-stdcxx"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

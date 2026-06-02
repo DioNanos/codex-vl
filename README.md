@@ -70,8 +70,21 @@ something is missing. Homebrew/standalone Cargo installs without rustup are
 accepted because Cargo on an arm64 Mac can build the native host target
 directly.
 
-The npm `next` tag is reserved for the next upstream alpha lane after a stable
-release.
+The npm `next` tag currently tracks the `0.136.0` line, which merges upstream
+Codex `rust-v0.136.0` while preserving the Codex VL workflow layer. This line
+restores two capabilities on the native Android arm64 package that were
+previously stubbed out:
+
+- **code-mode** (`exec` / `wait`): the in-process V8 runtime is now enabled on
+  the native Android target, so code-mode is no longer a no-op stub there.
+- **realtime voice / audio input**: both the `voice` and `audio_device`
+  modules are aligned with upstream on the native Android build, so realtime
+  voice input is enabled there instead of returning "voice input is unavailable
+  in this build" (it stays unavailable on the Linux/musl packages, as in
+  upstream).
+
+`latest` continues to track the stable `0.135.0` line until `0.136.0` is
+promoted.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
