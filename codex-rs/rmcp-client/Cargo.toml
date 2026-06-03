@@ -62,6 +62,10 @@ tokio = { workspace = true, features = [
 tracing = { workspace = true, features = ["log"] }
 urlencoding = { workspace = true }
 webbrowser = { workspace = true }
+# codex-termux issue #11 fix (carried into codex-vl for parity): embedded
+# Mozilla roots used to bypass rustls-platform-verifier on Termux
+# (see utils::apply_termux_tls).
+webpki-root-certs = "1"
 which = { workspace = true }
 
 [dev-dependencies]

@@ -71,6 +71,7 @@ use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
 use crate::utils::apply_default_headers;
+use crate::utils::apply_termux_tls;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -1056,6 +1057,11 @@ async fn create_oauth_transport_and_runtime(
     let mut builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
     if let Some(tls_config) = maybe_build_rustls_client_config_with_custom_ca()? {
         builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    } else {
+        // Issue #11: only when no custom CA bundle is configured — the
+        // preconfigured rustls backend above already bypasses the platform
+        // verifier on its own.
+        builder = apply_termux_tls(builder);
     }
     let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same

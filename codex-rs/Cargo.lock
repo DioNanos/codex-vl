@@ -3582,6 +3582,7 @@ dependencies = [
  "tracing",
  "urlencoding",
  "webbrowser",
+ "webpki-root-certs",
  "which 8.0.0",
 ]
 
