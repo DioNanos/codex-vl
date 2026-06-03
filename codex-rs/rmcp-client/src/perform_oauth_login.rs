@@ -28,6 +28,7 @@ use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::save_oauth_tokens;
 use crate::utils::apply_default_headers;
+use crate::utils::apply_termux_tls;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -481,7 +482,9 @@ impl OauthLoginFlow {
             env_http_headers,
         } = headers;
         let default_headers = build_default_headers(http_headers, env_http_headers)?;
-        let http_client = apply_default_headers(ClientBuilder::new(), &default_headers).build()?;
+        let http_client =
+            apply_default_headers(apply_termux_tls(ClientBuilder::new()), &default_headers)
+                .build()?;
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
         let oauth_state = start_authorization(

@@ -44,41 +44,26 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the stable `0.135.0` line, which merges upstream
-Codex `rust-v0.135.0` while preserving the Codex VL workflow layer and
-fork-owned install/update guidance. It ships Linux x64, Linux arm64 (musl) and
-Android arm64 native packages plus a macOS arm64 source-build package, each
-platform under its own `<platform>` dist-tag (`linux-x64`, `linux-arm64`,
-`android-arm64`, `darwin-arm64`).
-
-The `0.135.0` line incorporates upstream improvements including goals enabled
-by default (with a dedicated `goals.db` store and `create_goal` / `update_goal`
-/ `get_goal` tools), `codex remote-control` as a foreground command with
-explicit `start` / `stop` lifecycle, permission profile inheritance and managed
-`requirements.toml` support, plugin marketplace discovery, and extension
-lifecycle events for subagent / tool / turn / approval surfaces.
-
-The npm `latest` release ships optimized Linux x64, Linux arm64 (musl) and
-Termux Android arm64 native packages plus a macOS arm64 source-build package
-that builds and installs locally with Cargo during npm postinstall.
-
-For this line, macOS is shipped as a source-build payload instead of a prebuilt
-native binary. The local install path still requires Rust/Cargo on the Mac.
-The postinstall script performs a non-blocking preflight check (Xcode Command
-Line Tools, Cargo, optional rustup target) and prints actionable hints when
-something is missing. Homebrew/standalone Cargo installs without rustup are
-accepted because Cargo on an arm64 Mac can build the native host target
-directly.
-
-The npm `next` tag tracks the `0.136.x` line (currently `0.136.1`), which merges
-upstream Codex `rust-v0.136.0` while preserving the Codex VL workflow layer. To
-try it (including on Termux):
+The npm `latest` tag tracks the `0.136.2` line, which merges upstream Codex
+`rust-v0.136.0` while preserving the Codex VL workflow layer (0.136.2 fixes a
+startup TLS crash of the Android/Termux package present in 0.136.0/0.136.1).
+The `stable` dist-tag points to the previous `0.135.0` line for conservative
+installs. Both ship Linux x64, Linux arm64 (musl) and Android arm64 native
+packages plus a macOS arm64 source-build package, each platform under its own
+`<platform>` dist-tag (`linux-x64`, `linux-arm64`, `android-arm64`,
+`darwin-arm64`).
 
 ```bash
-npm install -g @mmmbuto/codex-vl@next
+npm install -g @mmmbuto/codex-vl@latest   # 0.136.2
+npm install -g @mmmbuto/codex-vl@stable   # 0.135.0
 ```
 
-**Restored on the native Android arm64 package:**
+For macOS, the package is a source-build payload instead of a prebuilt native
+binary; the local install path requires Rust/Cargo on the Mac. The postinstall
+script performs a non-blocking preflight check (Xcode Command Line Tools, Cargo,
+optional rustup target) and prints actionable hints when something is missing.
+
+**Restored on the native Android arm64 package (0.136.x):**
 
 - **code-mode** (`exec` / `wait`): the in-process V8 runtime is now enabled on
   the native Android target, so code-mode is no longer a no-op stub there. This
@@ -99,9 +84,6 @@ Making voice work on Termux would require a different audio backend
 (PulseAudio or `termux-api`) rather than cpal's Android AAudio path. That is
 **not** in scope here and is tracked on the Codex VL roadmap, not implemented as
 a runtime change in this release.
-
-`latest` continues to track the stable `0.135.0` line until the `0.136.x` line
-is promoted.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -160,8 +142,8 @@ cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
 
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
-`0.135.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
-Android arm64 native packages plus the macOS arm64 source-build package.
+npm `latest` publish includes Linux x64, Linux arm64 and Termux Android arm64
+native packages plus the macOS arm64 source-build package.
 
 ## Roadmap
 

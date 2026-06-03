@@ -14,6 +14,7 @@ use tracing::debug;
 
 use crate::oauth::has_oauth_tokens;
 use crate::utils::apply_default_headers;
+use crate::utils::apply_termux_tls;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -86,7 +87,9 @@ async fn discover_streamable_http_oauth_with_headers(
 
     // Use no_proxy to avoid a bug in the system-configuration crate that
     // can result in a panic. See #8912.
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
+    let builder = apply_termux_tls(Client::builder())
+        .timeout(DISCOVERY_TIMEOUT)
+        .no_proxy();
     let client = apply_default_headers(builder, default_headers).build()?;
 
     let mut last_error: Option<Error> = None;
