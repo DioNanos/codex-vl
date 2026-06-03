@@ -70,14 +70,21 @@ something is missing. Homebrew/standalone Cargo installs without rustup are
 accepted because Cargo on an arm64 Mac can build the native host target
 directly.
 
-The npm `next` tag currently tracks the `0.136.0` line, which merges upstream
-Codex `rust-v0.136.0` while preserving the Codex VL workflow layer.
+The npm `next` tag tracks the `0.136.x` line (currently `0.136.1`), which merges
+upstream Codex `rust-v0.136.0` while preserving the Codex VL workflow layer. To
+try it (including on Termux):
+
+```bash
+npm install -g @mmmbuto/codex-vl@next
+```
 
 **Restored on the native Android arm64 package:**
 
 - **code-mode** (`exec` / `wait`): the in-process V8 runtime is now enabled on
   the native Android target, so code-mode is no longer a no-op stub there. This
-  is the meaningful capability gain on Android.
+  is the meaningful capability gain on Android. The Android package bundles
+  `libc++_shared.so` next to the binaries (`RUNPATH=$ORIGIN`), since Termux has
+  no system copy.
 
 **Known limitation — realtime voice/audio on Android (Termux):**
 
@@ -93,8 +100,8 @@ Making voice work on Termux would require a different audio backend
 **not** in scope here and is tracked on the Codex VL roadmap, not implemented as
 a runtime change in this release.
 
-`latest` continues to track the stable `0.135.0` line until `0.136.0` is
-promoted.
+`latest` continues to track the stable `0.135.0` line until the `0.136.x` line
+is promoted.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
