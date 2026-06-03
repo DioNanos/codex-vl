@@ -514,6 +514,7 @@ mod tests {
             requires_openai_auth: false,
             supports_websockets: true,
             aws: None,
+            namespace_tools: None,
         }
     }
 

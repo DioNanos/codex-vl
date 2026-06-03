@@ -576,6 +576,32 @@ pub(super) async fn read_legacy_brain_profile(
     })
 }
 
+/// codex-vl fresh-install brain fix — snapshot the live session model for
+/// the Vivling LLM channels (assist / loop tick / expression).
+///
+/// `BrainTarget::SessionDefault` resolves through `config.model` in
+/// [`resolve_vivling_brain_target_config`]. `App::config` is the *static*
+/// startup config: on a fresh install with no explicit `model = "…"` in
+/// `config.toml` it is `None`, and the interactive `/model` command updates
+/// the live session model WITHOUT writing back to `config.model`. Both cases
+/// left every Vivling dispatch failing with "the session has no default
+/// model configured" even though the session itself was running a model.
+///
+/// Snapshot the chatwidget's effective (live) model — the exact string shown
+/// in the status header (`refresh_model_display`) and used by the active
+/// session — so `SessionDefault` inherits the model the user is actually
+/// running, honouring `/model`. This matches the documented "STESSO MODELLO"
+/// contract of `resolve_expression_target`. An empty live model is ignored so
+/// the strict `None` error in `resolve_vivling_brain_target_config` still
+/// surfaces if no model exists anywhere.
+pub(super) fn config_with_session_model(base: &Config, live_model: &str) -> Config {
+    let mut config = base.clone();
+    if !live_model.trim().is_empty() {
+        config.model = Some(live_model.to_string());
+    }
+    config
+}
+
 #[cfg(test)]
 mod resolve_brain_target_tests {
     //! Memory V2 §8.1 (P0.2) — focused tests for the SessionDefault
@@ -651,6 +677,35 @@ mod resolve_brain_target_tests {
             Some("glm-5.1:cloud"),
             "the cloned Config must preserve the wrapper-shaped model"
         );
+    }
+
+    #[tokio::test]
+    async fn config_with_session_model_injects_live_model_when_config_has_none() {
+        // Fresh install + ChatGPT login: config.toml has no `model`, but the
+        // live session resolved one (shown in the status header). The Vivling
+        // dispatch must inherit it instead of erroring.
+        let base = config_with_model(None).await;
+        assert!(base.model.is_none(), "precondition: fresh config has no model");
+        let patched = config_with_session_model(&base, "gpt-5.3-codex");
+        assert_eq!(patched.model.as_deref(), Some("gpt-5.3-codex"));
+    }
+
+    #[tokio::test]
+    async fn config_with_session_model_honours_model_switch() {
+        // `/model` updates the live session model only; the snapshot must win
+        // over whatever (if anything) config.toml carried at startup.
+        let base = config_with_model(Some("startup-model")).await;
+        let patched = config_with_session_model(&base, "gpt-5.3-codex");
+        assert_eq!(patched.model.as_deref(), Some("gpt-5.3-codex"));
+    }
+
+    #[tokio::test]
+    async fn config_with_session_model_ignores_empty_live_model() {
+        // Defensive: an empty live model must not clobber config.model, so the
+        // strict `None` error in resolve still surfaces when nothing exists.
+        let base = config_with_model(Some("startup-model")).await;
+        let patched = config_with_session_model(&base, "   ");
+        assert_eq!(patched.model.as_deref(), Some("startup-model"));
     }
 
     #[tokio::test]

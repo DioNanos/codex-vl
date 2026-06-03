@@ -70,8 +70,38 @@ something is missing. Homebrew/standalone Cargo installs without rustup are
 accepted because Cargo on an arm64 Mac can build the native host target
 directly.
 
-The npm `next` tag is reserved for the next upstream alpha lane after a stable
-release.
+The npm `next` tag tracks the `0.136.x` line (currently `0.136.1`), which merges
+upstream Codex `rust-v0.136.0` while preserving the Codex VL workflow layer. To
+try it (including on Termux):
+
+```bash
+npm install -g @mmmbuto/codex-vl@next
+```
+
+**Restored on the native Android arm64 package:**
+
+- **code-mode** (`exec` / `wait`): the in-process V8 runtime is now enabled on
+  the native Android target, so code-mode is no longer a no-op stub there. This
+  is the meaningful capability gain on Android. The Android package bundles
+  `libc++_shared.so` next to the binaries (`RUNPATH=$ORIGIN`), since Termux has
+  no system copy.
+
+**Known limitation — realtime voice/audio on Android (Termux):**
+
+The realtime audio modules build for Android, but they are **not usable in a
+plain Termux CLI**. The audio backend (cpal → oboe → `ndk-context`) requires an
+Android `JavaVM`/`Activity` to initialize, which a command-line process in
+Termux does not have. As a result the experimental `/realtime` and `/settings`
+commands cannot open an audio device under Termux. The realtime conversation
+feature is off by default (under-development); do not enable it on Termux.
+
+Making voice work on Termux would require a different audio backend
+(PulseAudio or `termux-api`) rather than cpal's Android AAudio path. That is
+**not** in scope here and is tracked on the Codex VL roadmap, not implemented as
+a runtime change in this release.
+
+`latest` continues to track the stable `0.135.0` line until the `0.136.x` line
+is promoted.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -132,6 +162,13 @@ For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
 `0.135.0` npm `latest` publish includes Linux x64, Linux arm64 and Termux
 Android arm64 native packages plus the macOS arm64 source-build package.
+
+## Roadmap
+
+- **Realtime audio on Termux** (high priority, in progress alongside the MSA
+  Vivling work): a Termux-native audio backend (PulseAudio / `termux-api`)
+  so realtime voice works on Android/Termux, where cpal's AAudio path cannot
+  initialize (see the Android limitation under Release Channels).
 
 ## Status
 

@@ -152,7 +152,9 @@ for arg in "\$@"; do
   args+=("\${arg}")
 done
 
-exec "${zig_bin}" cc -target "${zig_target}" "\${args[@]}"
+# Zig enables UBSan for debug C builds by default. Rust links these objects
+# without Zig's sanitizer runtime, so keep native dependencies uninstrumented.
+exec "${zig_bin}" cc -target "${zig_target}" "\${args[@]}" -fno-sanitize=undefined
 EOF
   cat >"${cxx}" <<EOF
 #!/usr/bin/env bash
@@ -209,7 +211,9 @@ for arg in "\$@"; do
   args+=("\${arg}")
 done
 
-exec "${zig_bin}" c++ -target "${zig_target}" "\${args[@]}"
+# Zig enables UBSan for debug C++ builds by default. Rust links these objects
+# without Zig's sanitizer runtime, so keep native dependencies uninstrumented.
+exec "${zig_bin}" c++ -target "${zig_target}" "\${args[@]}" -fno-sanitize=undefined
 EOF
   chmod +x "${cc}" "${cxx}"
 
@@ -297,6 +301,8 @@ pkg_config_path_var="${pkg_config_path_var//-/_}"
 echo "${pkg_config_path_var}=${libcap_pkgconfig_dir}" >> "$GITHUB_ENV"
 pkg_config_libdir_var="PKG_CONFIG_LIBDIR_${TARGET}"
 pkg_config_libdir_var="${pkg_config_libdir_var//-/_}"
+# Do not let musl cross-builds resolve native libraries from the host glibc
+# pkg-config directories. libcap is the only target package provided here.
 echo "${pkg_config_libdir_var}=${libcap_pkgconfig_dir}" >> "$GITHUB_ENV"
 
 if [[ -n "${sysroot}" && "${sysroot}" != "/" ]]; then

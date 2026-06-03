@@ -11,6 +11,7 @@ use crate::legacy_core::config::load_config_as_toml_with_cli_and_load_options;
 use crate::legacy_core::config::resolve_oss_provider;
 use crate::legacy_core::config::resolve_profile_v2_config_path;
 use crate::legacy_core::format_exec_policy_error_with_source;
+#[cfg(target_os = "windows")]
 use crate::legacy_core::windows_sandbox::WindowsSandboxLevelExt;
 use crate::session_resume::ResolveCwdOutcome;
 use crate::session_resume::resolve_cwd_for_resume_or_fork;
@@ -50,6 +51,7 @@ use codex_login::enforce_login_restrictions;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::SandboxMode;
+#[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::protocol::AskForApproval;
 #[cfg(test)]
@@ -74,6 +76,9 @@ use codex_utils_oss::get_default_model_for_oss_provider;
 use codex_utils_path as path_utils;
 use color_eyre::eyre::WrapErr;
 use cwd_prompt::CwdPromptAction;
+pub use session_archive_commands::SessionArchiveAction;
+pub use session_archive_commands::SessionArchiveCommandOptions;
+pub use session_archive_commands::run_session_archive_command;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::path::Path;
@@ -101,9 +106,9 @@ mod app_server_approval_conversions;
 mod app_server_session;
 mod approval_events;
 mod ascii_animation;
-#[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 mod audio_device;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod audio_device {
     use crate::app_event::RealtimeAudioDeviceKind;
@@ -177,6 +182,7 @@ mod resize_reflow_cap;
 mod resume_picker;
 mod selection_list;
 mod service_tier_resolution;
+mod session_archive_commands;
 mod session_log;
 mod session_resume;
 mod session_state;
@@ -189,6 +195,7 @@ mod status;
 mod status_indicator_widget;
 mod streaming;
 mod style;
+mod terminal_hyperlinks;
 mod terminal_palette;
 mod terminal_probe;
 mod terminal_title;
@@ -211,11 +218,11 @@ mod updates;
 mod version;
 mod vivling;
 mod vl;
-#[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
+#[cfg(not(target_os = "linux"))]
 mod voice;
 mod width;
 mod workspace_command;
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod voice {
     use crate::app_event_sender::AppEventSender;
@@ -1405,6 +1412,7 @@ async fn run_ratatui_app(
 
     let should_show_trust_screen_flag =
         !uses_remote_workspace && should_show_trust_screen(&initial_config);
+    #[cfg(target_os = "windows")]
     let mut trust_decision_was_made = false;
     let login_status = if initial_config.model_provider.requires_openai_auth {
         let Some(app_server) = app_server.as_mut() else {
@@ -1450,7 +1458,10 @@ async fn run_ratatui_app(
                 exit_reason: ExitReason::UserRequested,
             });
         }
-        trust_decision_was_made = onboarding_result.directory_trust_persisted;
+        #[cfg(target_os = "windows")]
+        {
+            trust_decision_was_made = onboarding_result.directory_trust_persisted;
+        }
         // If this onboarding run included the login step, always refresh cloud requirements and
         // rebuild config. This avoids missing newly available cloud requirements due to login
         // status detection edge cases.
@@ -1708,9 +1719,26 @@ async fn run_ratatui_app(
 
     set_default_client_residency_requirement(config.enforce_residency.value());
     let should_show_trust_screen = should_show_trust_screen(&config);
-    let should_prompt_windows_sandbox_nux_at_startup = cfg!(target_os = "windows")
-        && trust_decision_was_made
-        && WindowsSandboxLevel::from_config(&config) == WindowsSandboxLevel::Disabled;
+    #[cfg(target_os = "windows")]
+    let windows_sandbox_level = WindowsSandboxLevel::from_config(&config);
+    #[cfg(target_os = "windows")]
+    let required_elevated_sandbox_needs_setup = windows_sandbox_level
+        == WindowsSandboxLevel::Elevated
+        && config
+            .config_layer_stack
+            .requirements()
+            .windows_sandbox_mode
+            .source
+            .is_some()
+        && !crate::legacy_core::windows_sandbox::sandbox_setup_is_complete(
+            config.codex_home.as_path(),
+        );
+    #[cfg(target_os = "windows")]
+    let should_prompt_windows_sandbox_nux_at_startup = (trust_decision_was_made
+        && windows_sandbox_level == WindowsSandboxLevel::Disabled)
+        || required_elevated_sandbox_needs_setup;
+    #[cfg(not(target_os = "windows"))]
+    let should_prompt_windows_sandbox_nux_at_startup = false;
 
     let Cli {
         prompt,
@@ -2934,6 +2962,7 @@ mod tests {
         TurnContextItem {
             turn_id: None,
             cwd,
+            workspace_roots: None,
             current_date: None,
             timezone: None,
             approval_policy: config.permissions.approval_policy.value(),

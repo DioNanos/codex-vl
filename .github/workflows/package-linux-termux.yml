@@ -169,9 +169,14 @@ jobs:
           toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "Using Android NDK at $ndk"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
-          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android29-clang" >> "$GITHUB_ENV"
+          # CXX + RANLIB are required by C++ build scripts (oboe-sys, pulled in by
+          # cpal for realtime audio). Without CXX, cc-rs falls back to a bare
+          # aarch64-linux-android-clang++ which the NDK does not ship.
+          echo "CXX_aarch64_linux_android=$toolchain/aarch64-linux-android29-clang++" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "RANLIB_aarch64_linux_android=$toolchain/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android29-clang" >> "$GITHUB_ENV"
       - name: Build Android arm64 native payload
         run: |
           set -euo pipefail
@@ -190,6 +195,14 @@ jobs:
             exit 1
           fi
           echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"
+          # v8 (code-mode JIT) references __clear_cache, a compiler-rt builtin.
+          # With the release profile's -nodefaultlibs, the NDK does not auto-link
+          # it, so link the compiler-rt builtins archive explicitly. The per-target
+          # RUSTFLAGS env overrides .cargo/config.toml, so replicate its flags here.
+          builtins="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64" -name 'libclang_rt.builtins-aarch64-android.a' 2>/dev/null | head -1)"
+          if [ -z "$builtins" ]; then echo "clang_rt builtins for aarch64-android not found under NDK" >&2; exit 1; fi
+          echo "linking compiler-rt builtins: $builtins"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg=$builtins"
           cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli
           cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
@@ -215,6 +228,15 @@ jobs:
           cp codex-rs/target/aarch64-linux-android/release/codex "$vendor/codex/codex"
           cp codex-rs/target/aarch64-linux-android/release/codex-exec "$vendor/codex/codex-exec"
           chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          # Bundle libc++_shared.so next to the binaries: the Android binaries are
+          # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
+          # the shared C++ runtime). Termux/Android has no system libc++_shared.so,
+          # so it must travel inside the package or the binary fails to link at
+          # runtime ("library libc++_shared.so not found").
+          libcxx="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64" -name 'libc++_shared.so' -path '*aarch64-linux-android*' 2>/dev/null | head -1)"
+          if [ -z "$libcxx" ]; then echo "libc++_shared.so for aarch64-linux-android not found under NDK" >&2; exit 1; fi
+          cp "$libcxx" "$vendor/codex/libc++_shared.so"
+          chmod 755 "$vendor/codex/libc++_shared.so"
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-android-arm64 \
             --release-version "$RELEASE_VERSION" \
