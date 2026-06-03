@@ -44,7 +44,7 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the stable `0.135.0` line, which merges upstream
+The npm `latest` tag tracks the `0.136.1` line (upstream `rust-v0.136.0`); `stable` points to `0.135.0`, which merges upstream
 Codex `rust-v0.135.0` while preserving the Codex VL workflow layer and
 fork-owned install/update guidance. It ships Linux x64, Linux arm64 (musl) and
 Android arm64 native packages plus a macOS arm64 source-build package, each
@@ -99,9 +99,6 @@ Making voice work on Termux would require a different audio backend
 (PulseAudio or `termux-api`) rather than cpal's Android AAudio path. That is
 **not** in scope here and is tracked on the Codex VL roadmap, not implemented as
 a runtime change in this release.
-
-`latest` continues to track the stable `0.135.0` line until the `0.136.x` line
-is promoted.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
