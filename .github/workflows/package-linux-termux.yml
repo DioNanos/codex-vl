@@ -228,6 +228,15 @@ jobs:
           cp codex-rs/target/aarch64-linux-android/release/codex "$vendor/codex/codex"
           cp codex-rs/target/aarch64-linux-android/release/codex-exec "$vendor/codex/codex-exec"
           chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          # Bundle libc++_shared.so next to the binaries: the Android binaries are
+          # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
+          # the shared C++ runtime). Termux/Android has no system libc++_shared.so,
+          # so it must travel inside the package or the binary fails to link at
+          # runtime ("library libc++_shared.so not found").
+          libcxx="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64" -name 'libc++_shared.so' -path '*aarch64-linux-android*' 2>/dev/null | head -1)"
+          if [ -z "$libcxx" ]; then echo "libc++_shared.so for aarch64-linux-android not found under NDK" >&2; exit 1; fi
+          cp "$libcxx" "$vendor/codex/libc++_shared.so"
+          chmod 755 "$vendor/codex/libc++_shared.so"
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-android-arm64 \
             --release-version "$RELEASE_VERSION" \
