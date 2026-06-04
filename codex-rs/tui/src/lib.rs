@@ -3026,6 +3026,9 @@ mod tests {
             summary: config
                 .model_reasoning_summary
                 .unwrap_or(codex_protocol::config_types::ReasoningSummary::Auto),
+            // codex-vl: upstream 0.137.0 multi-agent v2 added this field;
+            // fork test fixtures have no multi-agent context.
+            multi_agent_version: None,
         }
     }
 
