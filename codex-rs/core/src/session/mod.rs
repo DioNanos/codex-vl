@@ -558,11 +558,8 @@ impl Codex {
             .await;
         let multi_agent_version =
             resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version);
-        let startup_multi_agent_version = multi_agent_version
-            .or(model_info.multi_agent_version)
-            .unwrap_or_else(|| config.multi_agent_version_from_features());
-        let _ = config
-            .effective_agent_max_threads(startup_multi_agent_version)
+        config
+            .validate_multi_agent_v2_config()
             .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
         let base_instructions = config
             .base_instructions
@@ -3368,6 +3365,9 @@ pub(crate) fn emit_subagent_session_started(
         session_id: session_id.to_string(),
         thread_id: thread_id.to_string(),
         parent_thread_id: parent_thread_id.map(|thread_id| thread_id.to_string()),
+        forked_from_thread_id: thread_config
+            .forked_from_thread_id
+            .map(|thread_id| thread_id.to_string()),
         product_client_id: client_name.clone(),
         client_name,
         client_version,

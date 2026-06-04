@@ -6,19 +6,6 @@ on:
       release-lto:
         required: true
         type: string
-    secrets:
-      AZURE_TRUSTED_SIGNING_CLIENT_ID:
-        required: true
-      AZURE_TRUSTED_SIGNING_TENANT_ID:
-        required: true
-      AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID:
-        required: true
-      AZURE_TRUSTED_SIGNING_ENDPOINT:
-        required: true
-      AZURE_TRUSTED_SIGNING_ACCOUNT_NAME:
-        required: true
-      AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME:
-        required: true
 
 # Cargo's libgit2 transport has been flaky when fetching git dependencies with
 # nested submodules. Prefer the system git CLI across every Cargo invocation.
@@ -150,6 +137,9 @@ jobs:
       - build-windows-binaries
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runs_on }}
+    environment:
+      name: azure-artifact-signing
+      deployment: false
     timeout-minutes: 90
     permissions:
       contents: read
@@ -211,12 +201,12 @@ jobs:
         with:
           target: ${{ matrix.target }}
           binaries: ${{ env.WINDOWS_BINARIES }}
-          client-id: ${{ secrets.AZURE_TRUSTED_SIGNING_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TRUSTED_SIGNING_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID }}
-          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
-          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          client-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_SUBSCRIPTION_ID }}
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
 
       - name: Stage artifacts
         shell: bash

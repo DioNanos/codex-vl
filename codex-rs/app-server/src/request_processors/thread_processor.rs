@@ -3217,6 +3217,10 @@ impl ThreadRequestProcessor {
             .read_stored_thread_for_resume(&thread_id, path.as_ref(), /*include_history*/ true)
             .await?;
         let source_thread_id = source_thread.thread_id;
+        let source_thread_name = source_thread
+            .name
+            .as_deref()
+            .and_then(codex_core::util::normalize_thread_name);
         let history_items = source_thread
             .history
             .as_ref()
@@ -3308,6 +3312,21 @@ impl ThreadRequestProcessor {
             app_server_client_version,
         )
         .await?;
+        if session_configured.rollout_path.is_some()
+            && let Some(name) = source_thread_name.clone()
+        {
+            self.thread_manager
+                .update_thread_metadata(
+                    thread_id,
+                    StoreThreadMetadataPatch {
+                        name: Some(Some(name)),
+                        ..Default::default()
+                    },
+                    /*include_archived*/ true,
+                )
+                .await
+                .map_err(|err| core_thread_write_error("inherit source thread name", err))?;
+        }
 
         // Auto-attach a conversation listener when forking a thread.
         log_listener_attach_result(
@@ -3335,7 +3354,6 @@ impl ThreadRequestProcessor {
             )
         } else {
             let config_snapshot = forked_thread.config_snapshot().await;
-            // forked thread names do not inherit the source thread name
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
@@ -3353,6 +3371,9 @@ impl ThreadRequestProcessor {
             }
             thread
         };
+        if let Some(name) = source_thread_name {
+            set_thread_name_from_title(&mut thread, name);
+        }
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = forked_thread
             .config_snapshot()
