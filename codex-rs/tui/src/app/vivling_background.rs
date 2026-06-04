@@ -65,6 +65,7 @@ pub(super) async fn run_vivling_assist_request(
         request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
+        None,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -174,6 +175,7 @@ pub(super) async fn run_vivling_loop_tick_request(
         request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
+        None,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -301,6 +303,7 @@ pub(super) async fn run_vivling_expression_request(
         request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
+        None,
         profile_config.model_verbosity,
         profile_config
             .features

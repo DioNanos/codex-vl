@@ -44,17 +44,16 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `latest` tag tracks the `0.136.2` line, which merges upstream Codex
-`rust-v0.136.0` while preserving the Codex VL workflow layer (0.136.2 fixes a
-startup TLS crash of the Android/Termux package present in 0.136.0/0.136.1).
-The `stable` dist-tag points to the previous `0.135.0` line for conservative
-installs. Both ship Linux x64, Linux arm64 (musl) and Android arm64 native
+The npm `latest` tag tracks the `0.137.0` line, which merges upstream Codex
+`rust-v0.137.0` while preserving the Codex VL workflow layer (and carries the
+Termux TLS fix introduced in 0.136.2). The `stable` dist-tag points to the
+`0.135.0` line for conservative installs. Both ship Linux x64, Linux arm64 (musl) and Android arm64 native
 packages plus a macOS arm64 source-build package, each platform under its own
 `<platform>` dist-tag (`linux-x64`, `linux-arm64`, `android-arm64`,
 `darwin-arm64`).
 
 ```bash
-npm install -g @mmmbuto/codex-vl@latest   # 0.136.2
+npm install -g @mmmbuto/codex-vl@latest   # 0.137.0
 npm install -g @mmmbuto/codex-vl@stable   # 0.135.0
 ```
 
