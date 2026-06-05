@@ -26,6 +26,9 @@ const RECALL_FETCH_TOP_N: usize = 3;
 const RECALL_MAX_CHARS_PER_DOC: usize = 1500;
 const RECALL_MAX_TOTAL_CHARS: usize = 6000;
 const RECALL_MAX_ROUNDS: u32 = 8;
+/// Detail cap for rich capsule indexing (design "capsule ricche": 800, not
+/// the 1500 per-doc injection cap — start conservative).
+const RICH_DETAIL_MAX_CHARS: usize = 800;
 
 #[derive(Clone)]
 pub(crate) struct VivlingMsa {
@@ -221,6 +224,25 @@ impl VivlingMsa {
     }
 
     pub(crate) fn index_capsule(&self, vivling_id: &str, capsule: &VivlingWorkMemoryEntry) {
+        self.index_capsule_rich(vivling_id, capsule, None);
+    }
+
+    /// Index a capsule, optionally enriching `Document.text` with a bounded,
+    /// sanitized detail section (design "capsule ricche" 2026-06-05).
+    ///
+    /// Policy (adapter-owned, the engine in `msa_core::enrich` is
+    /// domain-neutral): only `turn` capsules with a non-low-signal source get
+    /// the rich layout; everything else keeps today's summary-only document.
+    /// The rich text is an INDEX artifact only — nothing here touches the
+    /// capsule or the serialized Vivling state.
+    pub(crate) fn index_capsule_rich(
+        &self,
+        vivling_id: &str,
+        capsule: &VivlingWorkMemoryEntry,
+        rich_source: Option<&str>,
+    ) {
+        use msa_core::enrich;
+
         let Some(idx) = self.collection_for(vivling_id) else {
             return;
         };
@@ -229,6 +251,17 @@ impl VivlingMsa {
             capsule.created_at.timestamp_nanos_opt().unwrap_or(0),
             capsule.kind,
         );
+
+        let detail = rich_source
+            .filter(|_| capsule.kind == "turn")
+            .map(enrich::sanitize_detail)
+            .filter(|d| !enrich::is_low_signal_detail(d));
+        let composed = match detail.as_deref() {
+            Some(d) => enrich::compose_rich_text(&capsule.summary, d, RICH_DETAIL_MAX_CHARS),
+            None => enrich::compose_rich_text(&capsule.summary, "", RICH_DETAIL_MAX_CHARS),
+        };
+        let rich = composed.detail_chars > 0;
+
         let mut metadata: HashMap<String, serde_json::Value> = HashMap::new();
         metadata.insert("kind".into(), serde_json::json!(capsule.kind));
         metadata.insert(
@@ -240,9 +273,24 @@ impl VivlingMsa {
             "day".into(),
             serde_json::json!(capsule.created_at.format("%F").to_string()),
         );
+        metadata.insert(
+            enrich::METADATA_KEY_INDEX_TEXT_VERSION.into(),
+            serde_json::json!(enrich::INDEX_TEXT_VERSION),
+        );
+        metadata.insert(enrich::METADATA_KEY_RICH.into(), serde_json::json!(rich));
+        if rich {
+            metadata.insert(
+                enrich::METADATA_KEY_DETAIL_CHARS.into(),
+                serde_json::json!(composed.detail_chars),
+            );
+            metadata.insert(
+                enrich::METADATA_KEY_SOURCE.into(),
+                serde_json::json!("turn_summary_sanitized"),
+            );
+        }
         let doc = Document {
             id: doc_id,
-            text: capsule.summary.clone(),
+            text: composed.text,
             metadata,
             created_at: capsule.created_at,
         };

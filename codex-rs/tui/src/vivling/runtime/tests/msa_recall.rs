@@ -95,3 +95,94 @@ fn recall_saturation_resets_and_recovers() {
         "fresh state after explicit reset must inject"
     );
 }
+
+// --- Gate "capsule ricche" (design 2026-06-05, audit Codex APPROVE) ---
+
+fn rich_source_with(marker: &str) -> String {
+    format!(
+        "Analisi completa del bug nel modulo websocket: la backoff window cresceva senza \
+         limite perche' il moltiplicatore non veniva azzerato dopo un successo. Il fix vive \
+         nella funzione di reconnect e il marcatore distintivo del dettaglio e' {marker}, \
+         che si trova ben oltre il taglio dei centoventi caratteri del summary."
+    )
+}
+
+/// Gate (b): senza sorgente, o con sorgente low-signal, il documento resta
+/// summary-only (layout v1) con metadata coerente.
+#[test]
+fn rich_capsule_falls_back_summary_only() {
+    let storage = TempDir::new().expect("msa storage tempdir");
+    let msa = VivlingMsa::open_for_tests(storage.path());
+    let vid = "viv-rich-fallback";
+    let cap = capsule("turn", "turn completed: lavoro breve di routine");
+
+    msa.index_capsule_rich(vid, &cap, None);
+    msa.index_capsule_rich(vid, &cap, Some("ok")); // low-signal
+
+    let idx = msa.collection_for(vid).expect("collection");
+    let hits = idx.search("routine", 3, None).expect("search");
+    assert!(!hits.is_empty());
+    let doc = idx.fetch_doc(&hits[0].doc_id).expect("fetch");
+    assert_eq!(doc.text, cap.summary, "low-signal deve restare summary-only");
+    assert_eq!(doc.metadata.get("rich"), Some(&serde_json::json!(false)));
+    assert_eq!(
+        doc.metadata.get("index_text_version"),
+        Some(&serde_json::json!(2))
+    );
+}
+
+/// Gate (a, adapter) + (c): il detail oltre il taglio 120c e' retrievabile e
+/// arriva nella sezione di recall; la capsule (stato) non lo contiene.
+#[test]
+fn rich_capsule_detail_recallable_beyond_truncation() {
+    let storage = TempDir::new().expect("msa storage tempdir");
+    let msa = VivlingMsa::open_for_tests(storage.path());
+    let vid = "viv-rich-recall";
+    let source = rich_source_with("SMERALDO99");
+    let cap = capsule("turn", &format!("turn completed: {}", &source[..120]));
+    assert!(!cap.summary.contains("SMERALDO99"));
+
+    msa.index_capsule_rich(vid, &cap, Some(&source));
+
+    // (c) la query sul contenuto del detail trova il documento e la sezione
+    // di recall porta il marcatore al brain.
+    let section = msa
+        .recall_section(vid, "marcatore distintivo SMERALDO99 reconnect")
+        .expect("injection section");
+    assert!(section.contains("SMERALDO99"), "{section}");
+    assert!(section.contains("detail:"), "{section}");
+
+    // (a) la capsule resta corta: il detail e' solo un artifact dell'indice.
+    assert!(!cap.summary.contains("SMERALDO99"));
+}
+
+/// Gate (d): un segreto simulato nel sorgente NON deve mai essere
+/// retrievabile, ne' via search ne' via recall_section.
+#[test]
+fn rich_capsule_never_indexes_secrets() {
+    let storage = TempDir::new().expect("msa storage tempdir");
+    let msa = VivlingMsa::open_for_tests(storage.path());
+    let vid = "viv-rich-privacy";
+    let source = format!(
+        "{} Durante il deploy ho usato Authorization: Bearer FAKESECRET1234567890abc e \
+         api_key=NOTAREALKEY99 per il test.",
+        rich_source_with("CONTESTO")
+    );
+    let cap = capsule("turn", "turn completed: deploy con credenziali di test");
+
+    msa.index_capsule_rich(vid, &cap, Some(&source));
+
+    let idx = msa.collection_for(vid).expect("collection");
+    for secret in ["FAKESECRET1234567890abc", "NOTAREALKEY99"] {
+        let hits = idx.search(secret, 3, None).expect("search");
+        assert!(hits.is_empty(), "segreto retrievabile via search: {secret}");
+        assert!(
+            msa.recall_section(vid, secret).is_none(),
+            "segreto retrievabile via recall: {secret}"
+        );
+        msa.reset_interleave_state(vid);
+    }
+    // Il resto del detail invece c'e' (la sanitizzazione non ha buttato tutto).
+    let hits = idx.search("deploy", 3, None).expect("search");
+    assert!(!hits.is_empty());
+}

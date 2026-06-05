@@ -11,6 +11,7 @@
 pub mod chunker;
 pub mod config;
 pub mod embeddings;
+pub mod enrich;
 pub mod error;
 pub mod index;
 pub mod interleave;

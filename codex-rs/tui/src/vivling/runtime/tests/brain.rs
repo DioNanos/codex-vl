@@ -1313,3 +1313,56 @@ fn bootstrap_failure_marks_dispatched_true_to_prevent_loop() {
         "flag must flip on refusal too — no retry on next frame"
     );
 }
+
+/// Gate (a) "capsule ricche": `record_turn_completed` con un summary lungo
+/// indicizza il detail oltre il taglio 120c, ma lo STATO Vivling conserva
+/// solo il summary troncato — il testo ricco e' un artifact dell'indice.
+#[test]
+fn record_turn_completed_indexes_rich_detail_not_persisted_in_state() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+
+    let long_summary = format!(
+        "Indagine sul deadlock del worker pool: il lock veniva preso due volte nello stesso \
+         path quando il canale era pieno. {} Il fix sposta l'acquisizione fuori dal loop e il \
+         marcatore distintivo oltre il taglio e' TOPAZIO77, irraggiungibile dal summary corto.",
+        "Dettaglio intermedio documentato passo passo. ".repeat(2)
+    );
+    assert!(long_summary.len() > 200);
+    vivling
+        .record_turn_completed(Some(&long_summary))
+        .expect("record_turn_completed");
+
+    // Stato: nessuna capsula contiene il marcatore (troncamento a 120 intatto).
+    let state = vivling.state.as_ref().expect("state");
+    assert!(
+        state
+            .work_memory
+            .iter()
+            .all(|c| !c.summary.contains("TOPAZIO77")),
+        "il detail NON deve essere persistito nello stato"
+    );
+
+    // Indice: il marcatore e' retrievabile.
+    let msa = vivling.msa.as_ref().expect("msa");
+    let idx = msa.collection_for(&vivling_id).expect("collection");
+    let hits = idx.search("TOPAZIO77", 3, None).expect("search");
+    assert!(
+        !hits.is_empty(),
+        "il detail deve essere indicizzato e retrievabile"
+    );
+}

@@ -393,7 +393,11 @@ impl Vivling {
         .map(|_| {
             if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
                 for capsule in new_capsules.borrow().iter() {
-                    msa.index_capsule(id, capsule);
+                    // "Capsule ricche": the full pre-truncate turn summary is
+                    // only alive here — the adapter gates (turn-kind, low-signal)
+                    // and sanitizes. Index artifact only: capsule/state keep the
+                    // short summary.
+                    msa.index_capsule_rich(id, capsule, summary);
                 }
             }
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
