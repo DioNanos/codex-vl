@@ -78,29 +78,50 @@ if (!platformPackage) {
   throw new Error(`Unsupported target triple: ${targetTriple}`);
 }
 
-function findCodexExecutable() {
-  let vendorRoot;
-  try {
-    const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
-    vendorRoot = path.join(path.dirname(packageJsonPath), "vendor");
-  } catch {
-    vendorRoot = path.join(__dirname, "..", "vendor");
+// Fork-owned native package resolution (restored verbatim from 0.137.0):
+// resolves both the upstream vendor/<triple>/bin and the fork CI
+// vendor/<triple>/codex payload layouts AND returns the PATH shim dir
+// (`pathDir`) consumed below — the 0.138 merge had replaced this block
+// with upstream's simpler resolver, orphaning `pathDir`.
+const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
+const localVendorRoot = path.join(__dirname, "..", "vendor");
+const packageBinaryPath = (vendorRoot) =>
+  path.join(vendorRoot, targetTriple, "bin", codexBinaryName);
+const legacyBinaryPath = (vendorRoot) =>
+  path.join(vendorRoot, targetTriple, "codex", codexBinaryName);
+
+function resolveNativePackage(vendorRoot) {
+  const packageRoot = path.join(vendorRoot, targetTriple);
+  const binaryPath = packageBinaryPath(vendorRoot);
+  if (existsSync(binaryPath)) {
+    return {
+      binaryPath,
+      pathDir: path.join(packageRoot, "codex-path"),
+    };
   }
 
-  const exeName = process.platform === "win32" ? "codex.exe" : "codex";
-  // Upstream 0.138 launcher expects vendor/<triple>/bin/<exe>; the fork CI
-  // payloads ship vendor/<triple>/codex/<exe> (pre-0.138 layout). Accept
-  // both so a launcher/payload layout drift can never brick the install.
-  const candidates = [
-    path.join(vendorRoot, targetTriple, "bin", exeName),
-    path.join(vendorRoot, targetTriple, "codex", exeName),
-  ];
-  for (const codexExecutable of candidates) {
-    if (existsSync(codexExecutable)) {
-      return codexExecutable;
-    }
+  const legacyPath = legacyBinaryPath(vendorRoot);
+  if (existsSync(legacyPath)) {
+    return {
+      binaryPath: legacyPath,
+      pathDir: path.join(packageRoot, "path"),
+    };
   }
 
+  return null;
+}
+
+let nativePackage;
+try {
+  const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
+  nativePackage = resolveNativePackage(
+    path.join(path.dirname(packageJsonPath), "vendor"),
+  );
+} catch {
+  nativePackage = resolveNativePackage(localVendorRoot);
+}
+
+if (!nativePackage) {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
@@ -111,7 +132,7 @@ function findCodexExecutable() {
   );
 }
 
-const binaryPath = findCodexExecutable();
+const { binaryPath, pathDir } = nativePackage;
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
