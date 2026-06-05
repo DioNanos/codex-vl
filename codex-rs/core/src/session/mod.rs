@@ -508,12 +508,13 @@ impl Codex {
 
         let primary_environment = environment_selections.primary_environment();
         let mut user_instruction_warnings = Vec::new();
-        let user_instructions = AgentsMdManager::new(&config)
-            .user_instructions(
-                primary_environment.as_deref(),
-                &mut user_instruction_warnings,
-            )
-            .await;
+        let user_instructions = if let Some(primary_environment) = primary_environment {
+            AgentsMdManager::new(&config)
+                .user_instructions(primary_environment.as_ref(), &mut user_instruction_warnings)
+                .await
+        } else {
+            None
+        };
         config.startup_warnings.extend(user_instruction_warnings);
 
         let exec_policy = if crate::guardian::is_guardian_reviewer_source(&session_source) {
@@ -579,7 +580,7 @@ impl Codex {
             mode: ModeKind::Default,
             settings: Settings {
                 model: model.clone(),
-                reasoning_effort: config.model_reasoning_effort,
+                reasoning_effort: config.model_reasoning_effort.clone(),
                 developer_instructions: None,
             },
         };
@@ -799,6 +800,17 @@ impl Codex {
     pub(crate) async fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         let state = self.session.state.lock().await;
         state.session_configuration.thread_config_snapshot()
+    }
+
+    pub(crate) async fn instruction_sources(&self) -> Vec<AbsolutePathBuf> {
+        let state = self.session.state.lock().await;
+        state
+            .session_configuration
+            .user_instructions
+            .as_ref()
+            .map_or_else(Vec::new, |instructions| {
+                instructions.sources().cloned().collect()
+            })
     }
 
     pub(crate) async fn thread_environment_selections(&self) -> Vec<TurnEnvironmentSelection> {

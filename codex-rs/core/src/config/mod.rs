@@ -1,4 +1,5 @@
 use crate::agents_md::AgentsMdManager;
+pub use crate::agents_md::LoadedAgentsMd;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::path_utils::normalize_for_native_workdir;
@@ -645,7 +646,7 @@ pub struct Config {
     pub show_raw_agent_reasoning: bool,
 
     /// User-provided instructions from AGENTS.md.
-    pub user_instructions: Option<String>,
+    pub user_instructions: Option<LoadedAgentsMd>,
 
     /// Base instructions override.
     pub base_instructions: Option<String>,
@@ -2605,8 +2606,7 @@ impl Config {
             Some(&codex_home),
             &mut startup_warnings,
         )
-        .await
-        .map(|loaded| loaded.contents);
+        .await;
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
