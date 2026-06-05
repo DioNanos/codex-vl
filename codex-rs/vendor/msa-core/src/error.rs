@@ -17,6 +17,9 @@ pub enum MsaError {
     #[error("invalid query: {0}")]
     InvalidQuery(String),
 
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("schema mismatch: {0}")]
     Schema(String),
 
