@@ -199,6 +199,7 @@ impl Vivling {
             let provider = config.model_provider.as_deref().unwrap_or("default");
             let effort = config
                 .model_reasoning_effort
+                .as_ref()
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "default".to_string());
             lines.push(format!(
@@ -229,6 +230,7 @@ impl Vivling {
                 let provider = profile.model_provider.as_deref().unwrap_or("inherit");
                 let effort = profile
                     .model_reasoning_effort
+                    .as_ref()
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "default".to_string());
                 lines.push(format!(

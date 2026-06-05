@@ -3022,7 +3022,7 @@ mod tests {
             personality: None,
             collaboration_mode: None,
             realtime_active: Some(false),
-            effort: config.model_reasoning_effort,
+            effort: config.model_reasoning_effort.clone(),
             summary: config
                 .model_reasoning_summary
                 .unwrap_or(codex_protocol::config_types::ReasoningSummary::Auto),
