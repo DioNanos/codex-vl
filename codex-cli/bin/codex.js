@@ -87,14 +87,18 @@ function findCodexExecutable() {
     vendorRoot = path.join(__dirname, "..", "vendor");
   }
 
-  const codexExecutable = path.join(
-    vendorRoot,
-    targetTriple,
-    "bin",
-    process.platform === "win32" ? "codex.exe" : "codex",
-  );
-  if (existsSync(codexExecutable)) {
-    return codexExecutable;
+  const exeName = process.platform === "win32" ? "codex.exe" : "codex";
+  // Upstream 0.138 launcher expects vendor/<triple>/bin/<exe>; the fork CI
+  // payloads ship vendor/<triple>/codex/<exe> (pre-0.138 layout). Accept
+  // both so a launcher/payload layout drift can never brick the install.
+  const candidates = [
+    path.join(vendorRoot, targetTriple, "bin", exeName),
+    path.join(vendorRoot, targetTriple, "codex", exeName),
+  ];
+  for (const codexExecutable of candidates) {
+    if (existsSync(codexExecutable)) {
+      return codexExecutable;
+    }
   }
 
   const packageManager = detectPackageManager();
