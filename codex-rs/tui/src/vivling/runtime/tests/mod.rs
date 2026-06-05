@@ -9,6 +9,7 @@ mod lineage;
 mod lineage_echo_runtime;
 mod lineage_summary;
 mod migration;
+mod msa_recall;
 mod rendering;
 mod save_safety;
 mod schema_v10;
