@@ -85,7 +85,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-pub use token_usage::TokenUsage;
 use tracing::Level;
 use tracing::error;
 use tracing::warn;
