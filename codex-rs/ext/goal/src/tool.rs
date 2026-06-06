@@ -262,6 +262,29 @@ impl GoalToolExecutor {
         let goal = protocol_goal_from_state(goal);
         let turn_id = self.accounting_state.clear_current_turn_goal();
         self.emit_goal_updated_from_tool_call(&invocation, turn_id, goal.clone());
+        // codex-vl: a goal marked Complete is also CLEARED from the thread so
+        // the next create_goal starts fresh (fork semantics, ported from core
+        // goals.rs after the upstream goal-runtime move to this extension).
+        // Blocked goals stay for the user/system to resolve.
+        if args.status == ThreadGoalStatus::Complete {
+            let cleared = self
+                .state_db
+                .thread_goals()
+                .delete_thread_goal(self.thread_id)
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to clear completed goal: {err}"
+                    ))
+                })?;
+            if cleared {
+                self.event_emitter.thread_goal_cleared(
+                    invocation.call_id.clone(),
+                    self.thread_id,
+                    None,
+                );
+            }
+        }
         goal_response(
             Some(goal),
             if args.status == ThreadGoalStatus::Complete {

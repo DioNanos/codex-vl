@@ -1428,3 +1428,70 @@ fn protocol_status(status: codex_state::ThreadGoalStatus) -> ThreadGoalStatus {
         codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
     }
 }
+
+/// codex-vl: completing a goal CLEARS it from the thread (fork semantics,
+/// ported from the core session tests after the upstream goal-runtime move)
+/// and the next create_goal starts fresh — the complete->recreate flow that
+/// replaces the old fork replace-on-create semantics (decision
+/// GOAL_SEMANTICS:B, upstream-first).
+#[tokio::test]
+async fn update_goal_complete_clears_goal_and_allows_recreate() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-1",
+            json!({ "objective": "first objective" }),
+        ))
+        .await?;
+    harness.sink.clear();
+
+    let update_tool = tool_by_name(&tools, "update_goal");
+    update_tool
+        .handle(tool_call(
+            "update_goal",
+            "call-complete",
+            json!({ "status": "complete" }),
+        ))
+        .await?;
+
+    // The completed goal is gone from the state db…
+    assert!(
+        runtime
+            .thread_goals()
+            .get_thread_goal(thread_id)
+            .await?
+            .is_none(),
+        "completed goal must be cleared from the thread"
+    );
+    // …the listeners were told…
+    let cleared_emitted = harness.sink.events().iter().any(|event| {
+        matches!(
+            &event.msg,
+            EventMsg::ThreadGoalCleared(cleared) if cleared.thread_id == thread_id
+        )
+    });
+    assert!(cleared_emitted, "ThreadGoalCleared event expected");
+    // …and a fresh goal can be created right away (recreate flow).
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-2",
+            json!({ "objective": "second objective" }),
+        ))
+        .await?;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("recreated goal should exist"))?;
+    assert_eq!("second objective", goal.objective);
+    Ok(())
+}

@@ -44,7 +44,7 @@ pub fn create_create_goal_tool() -> ToolSpec {
         name: CREATE_GOAL_TOOL_NAME.to_string(),
         description: format!(
             r#"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.
-Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use {UPDATE_GOAL_TOOL_NAME} only for status."#
+Set token_budget only when an explicit token budget is requested. Fails if a goal exists; complete or block the current goal first, then create the new one; use {UPDATE_GOAL_TOOL_NAME} only for completion status."#
         ),
         strict: false,
         defer_loading: None,
@@ -80,7 +80,8 @@ Once the blocked threshold is satisfied, do not keep reporting that you are stil
 Do not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.
 Do not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.
 You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.
-When marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user."#
+When marking a goal achieved with status `complete`, the goal is closed and cleared from the thread. Report any final token usage from the tool result to the user.
+When marking a goal `blocked`, do not report final token usage and leave the blocked state for the user/system to resolve."#
             .to_string(),
         strict: false,
         defer_loading: None,

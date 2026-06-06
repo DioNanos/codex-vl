@@ -565,13 +565,6 @@ pub enum Op {
     /// enable/disable state) without restarting the thread.
     ReloadUserConfig,
 
-    /// Request the loaded skills for the provided working directories.
-    ListSkills {
-        cwds: Vec<PathBuf>,
-        #[serde(default)]
-        force_reload: bool,
-    },
-
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
@@ -738,7 +731,6 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers { .. } => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::ListSkills { .. } => "list_skills",
             Self::Compact => "compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::SetThreadName { .. } => "set_thread_name",
