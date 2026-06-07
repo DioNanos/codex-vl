@@ -785,7 +785,9 @@ mod tests {
                 format!("loop tick generico {index}")
             };
             state.work_memory.push(VivlingWorkMemoryEntry {
-                kind: "loop_runtime".to_string(),
+                // `turn` (knowledge): bookkeeping kinds are gated out of the
+                // MSA archive (F1) and would never be recallable by design.
+                kind: "turn".to_string(),
                 summary,
                 archetype: WorkArchetype::Operator,
                 weight: 5,

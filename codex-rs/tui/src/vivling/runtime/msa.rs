@@ -243,6 +243,19 @@ impl VivlingMsa {
     ) {
         use msa_core::enrich;
 
+        // Ingest gate (live audit 2026-06-07, F1): operational bookkeeping
+        // stays in the local working memory but is NOT indexed into the
+        // long-term MSA archive — 78% of a 6-week-old vivling's index was
+        // this noise, crowding knowledge out of recall_section. Denylist
+        // (not allowlist) so future knowledge kinds flow by default. This
+        // single choke point also gates the setup backfill (F7) and the
+        // lineage echo path.
+        if crate::vivling::model::constants::BOOKKEEPING_KINDS
+            .contains(&capsule.kind.as_str())
+        {
+            return;
+        }
+
         let Some(idx) = self.collection_for(vivling_id) else {
             return;
         };

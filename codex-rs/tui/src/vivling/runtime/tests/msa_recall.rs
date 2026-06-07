@@ -186,3 +186,42 @@ fn rich_capsule_never_indexes_secrets() {
     let hits = idx.search("deploy", 3, None).expect("search");
     assert!(!hits.is_empty());
 }
+
+/// Ingest gate (live audit 2026-06-07, F1): bookkeeping kinds must NOT reach
+/// the MSA archive — a 6-week-old vivling's index was 78% loop noise. Turn
+/// capsules keep flowing; the recall section never serves bookkeeping.
+#[test]
+fn ingest_gate_drops_bookkeeping_kinds() {
+    let storage = TempDir::new().expect("msa storage tempdir");
+    let msa = VivlingMsa::open_for_tests(storage.path());
+    let vid = "viv-gate-1";
+
+    for kind in [
+        "live_context",
+        "loop_runtime",
+        "loop_config",
+        "loop_profile",
+        "loop_blocked_busy",
+        "loop_blocked_review",
+        "loop_blocked_side",
+    ] {
+        msa.index_capsule(
+            vid,
+            &capsule(kind, "loop bookkeeping about the quarzo websocket task"),
+        );
+    }
+    assert!(
+        msa.recall_section(vid, "quarzo websocket").is_none(),
+        "bookkeeping must not be recallable"
+    );
+
+    // Knowledge still flows: same wording, kind=turn.
+    msa.index_capsule(
+        vid,
+        &capsule("turn", "fixed the quarzo websocket reconnect for good"),
+    );
+    let section = msa
+        .recall_section(vid, "quarzo websocket")
+        .expect("turn capsule must be recallable");
+    assert!(section.contains("reconnect"));
+}
