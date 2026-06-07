@@ -181,6 +181,12 @@ impl VivlingMsa {
                 .get("kind")
                 .and_then(|value| value.as_str())
                 .unwrap_or("?");
+            // Serving-side gate twin of the ingest gate (F1): archives
+            // indexed BEFORE the gate shipped still hold bookkeeping docs —
+            // never serve them, on any install, without requiring a rebuild.
+            if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&kind) {
+                continue;
+            }
             let archetype = doc
                 .metadata
                 .get("archetype")
@@ -188,6 +194,9 @@ impl VivlingMsa {
                 .unwrap_or("?");
             let marker = if doc.truncated { " [truncated]" } else { "" };
             lines.push(format!("- {kind} [{archetype}]{marker}: {}", doc.text));
+        }
+        if lines.len() == 1 {
+            return None; // every injected doc was legacy bookkeeping
         }
         Some(lines.join("\n"))
     }

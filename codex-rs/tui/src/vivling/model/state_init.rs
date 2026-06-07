@@ -204,6 +204,7 @@ impl VivlingState {
             self.gene_vector = VivlingGeneVector::generate(&self.seed_hash);
         }
         self.backfill_capsule_metadata();
+        self.normalize_distilled_summaries();
         if !self.work_memory.is_empty() {
             self.recompute_progress_from_memory();
             self.work_xp = self.work_xp.max(persisted_work_xp);

@@ -644,3 +644,46 @@ fn roster_with_only_missing_entries_loads_empty_without_deleting_directory() {
     assert!(healed.external_vivling_ids.is_empty());
     assert!(healed.active_vivling_id.is_none());
 }
+
+/// Pre-F3 states carry distilled garbage: bookkeeping-kind summaries
+/// (wait/verify/churn topics) and counters compounded by re-distillation
+/// (live audit 2026-06-07: observations ~100k). Loading such a state must
+/// drop the former and clamp the latter — idempotently.
+#[test]
+fn normalize_drops_bookkeeping_distillates_and_clamps_counters() {
+    let mut state = seeded_state();
+    state.distilled_summaries = vec![
+        VivlingDistilledSummary {
+            topic: "wait".into(),
+            summary: "observed 12 loop_blocked_busy patterns around wait".into(),
+            kind: "loop_blocked_busy".into(),
+            archetype: WorkArchetype::Operator,
+            total_weight: 99_850,
+            observations: 99_850,
+            first_seen_at: chrono::Utc::now(),
+            last_seen_at: chrono::Utc::now(),
+        },
+        VivlingDistilledSummary {
+            topic: "merge_pipeline".into(),
+            summary: "observed merge work on the release pipeline".into(),
+            kind: "turn".into(),
+            archetype: WorkArchetype::Builder,
+            total_weight: 29_354,
+            observations: 16_241,
+            first_seen_at: chrono::Utc::now(),
+            last_seen_at: chrono::Utc::now(),
+        },
+    ];
+    state.normalize_loaded_state();
+
+    assert_eq!(state.distilled_summaries.len(), 1, "bookkeeping dropped");
+    let kept = &state.distilled_summaries[0];
+    assert_eq!(kept.kind, "turn");
+    assert!(kept.observations <= 64, "obs clamped: {}", kept.observations);
+    assert!(kept.total_weight <= 64 * 12, "weight clamped: {}", kept.total_weight);
+
+    // Idempotent: a second load changes nothing.
+    let snapshot = state.distilled_summaries.clone();
+    state.normalize_loaded_state();
+    assert_eq!(format!("{snapshot:?}"), format!("{:?}", state.distilled_summaries));
+}

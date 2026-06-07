@@ -201,6 +201,24 @@ impl VivlingState {
         }
     }
 
+    /// Idempotent hygiene for states written BEFORE the F3 fixes
+    /// (live audit 2026-06-07): drops distilled summaries of bookkeeping
+    /// kinds (garbage topics like wait/verify/churn) and clamps the counters
+    /// that compounded under re-distillation (observations near 100k on a
+    /// 6-week vivling; inflated total_weight made them permanently sticky in
+    /// the weight-sorted list). Runs on every load — a no-op on clean states.
+    pub(super) fn normalize_distilled_summaries(&mut self) {
+        self.distilled_summaries.retain(|entry| {
+            !super::constants::BOOKKEEPING_KINDS.contains(&entry.kind.as_str())
+        });
+        let obs_cap = MAX_WORK_MEMORY_ENTRIES as u64;
+        let weight_cap = obs_cap * 12;
+        for entry in &mut self.distilled_summaries {
+            entry.observations = entry.observations.min(obs_cap);
+            entry.total_weight = entry.total_weight.min(weight_cap);
+        }
+    }
+
     pub(super) fn maybe_distill_memory(&mut self) {
         let should_distill = self.capsules_since_distill >= DISTILL_TRIGGER_CAPSULES
             || self.work_memory.len() >= MAX_WORK_MEMORY_ENTRIES.saturating_sub(8);
