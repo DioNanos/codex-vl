@@ -606,10 +606,13 @@ fn record_turn_completed_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_turn_completed should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    assert_eq!(
-        state.work_memory.len(),
-        MAX_WORK_MEMORY_ENTRIES,
-        "work_memory should remain capped after record_turn_completed"
+    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // window, so a saturated memory legitimately shrinks well below the
+    // cap. The invariant is the ceiling, not equality.
+    assert!(
+        state.work_memory.len() <= MAX_WORK_MEMORY_ENTRIES && !state.work_memory.is_empty(),
+        "work_memory must stay within the cap after record_turn_completed (got {})",
+        state.work_memory.len()
     );
     assert!(
         state
@@ -668,7 +671,9 @@ fn record_loop_event_indexes_into_msa() {
         "work_memory should grow after record_loop_event (before={before}, after={after})"
     );
 
-    assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
+    // Ingest gate (live audit 2026-06-07, F1): loop bookkeeping stays in the
+    // local working memory but must NOT reach the long-term MSA archive.
+    assert_msa_collection_has_no_tantivy_shard(msa_storage.path(), &vivling_id);
 }
 
 #[test]
@@ -705,10 +710,13 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_loop_event should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    assert_eq!(
-        state.work_memory.len(),
-        MAX_WORK_MEMORY_ENTRIES,
-        "work_memory should remain capped after record_loop_event"
+    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // window, so a saturated memory legitimately shrinks well below the
+    // cap. The invariant is the ceiling, not equality.
+    assert!(
+        state.work_memory.len() <= MAX_WORK_MEMORY_ENTRIES && !state.work_memory.is_empty(),
+        "work_memory must stay within the cap after record_loop_event (got {})",
+        state.work_memory.len()
     );
     assert!(
         state
@@ -719,6 +727,17 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
             .contains("msa-saturated")
     );
 
+    // Gate F1: even under eviction pressure, bookkeeping must not be
+    // flushed into MSA. The eviction-survival guarantee belongs to
+    // KNOWLEDGE capsules: a completed turn must land in the archive
+    // even when work_memory is saturated.
+    assert_msa_collection_has_no_tantivy_shard(msa_storage.path(), &vivling_id);
+
+    vivling
+        .record_turn_completed(Some(
+            "turn completed: fixed the saturated eviction path for good",
+        ))
+        .expect("record_turn_completed should succeed");
     assert_msa_collection_has_tantivy_shard(msa_storage.path(), &vivling_id);
 }
 
@@ -757,6 +776,26 @@ fn assert_msa_collection_has_tantivy_shard(msa_storage: &std::path::Path, vivlin
     assert!(
         has_tantivy_shard,
         "expected tantivy shard files (.term/.store/.idx) in {}, got: {entries:?}",
+        collection_dir.display()
+    );
+}
+
+fn assert_msa_collection_has_no_tantivy_shard(msa_storage: &std::path::Path, vivling_id: &str) {
+    let collection_dir = msa_storage.join(format!("vivling::{vivling_id}"));
+    if !collection_dir.is_dir() {
+        return; // never even created: trivially clean
+    }
+    let entries: Vec<String> = std::fs::read_dir(&collection_dir)
+        .expect("list collection dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let has_tantivy_shard = entries
+        .iter()
+        .any(|name| name.ends_with(".term") || name.ends_with(".store") || name.ends_with(".idx"));
+    assert!(
+        !has_tantivy_shard,
+        "expected NO tantivy shard files in {} (ingest gate), got: {entries:?}",
         collection_dir.display()
     );
 }
@@ -1311,5 +1350,58 @@ fn bootstrap_failure_marks_dispatched_true_to_prevent_loop() {
     assert!(
         vivling.startup_dispatched.get(),
         "flag must flip on refusal too — no retry on next frame"
+    );
+}
+
+/// Gate (a) "capsule ricche": `record_turn_completed` con un summary lungo
+/// indicizza il detail oltre il taglio 120c, ma lo STATO Vivling conserva
+/// solo il summary troncato — il testo ricco e' un artifact dell'indice.
+#[test]
+fn record_turn_completed_indexes_rich_detail_not_persisted_in_state() {
+    use std::sync::Arc;
+
+    let codex_home = TempDir::new().expect("codex_home tempdir");
+    let msa_storage = TempDir::new().expect("msa storage tempdir");
+
+    let mut vivling = configured_vivling(codex_home.path());
+    vivling.msa = Some(Arc::new(VivlingMsa::open_for_tests(msa_storage.path())));
+
+    let _ = vivling
+        .command(VivlingAction::Hatch, codex_home.path())
+        .expect("hatch vivling");
+    let vivling_id = vivling
+        .state
+        .as_ref()
+        .map(|s| s.vivling_id.clone())
+        .expect("hatched state");
+
+    let long_summary = format!(
+        "Indagine sul deadlock del worker pool: il lock veniva preso due volte nello stesso \
+         path quando il canale era pieno. {} Il fix sposta l'acquisizione fuori dal loop e il \
+         marcatore distintivo oltre il taglio e' TOPAZIO77, irraggiungibile dal summary corto.",
+        "Dettaglio intermedio documentato passo passo. ".repeat(2)
+    );
+    assert!(long_summary.len() > 200);
+    vivling
+        .record_turn_completed(Some(&long_summary))
+        .expect("record_turn_completed");
+
+    // Stato: nessuna capsula contiene il marcatore (troncamento a 120 intatto).
+    let state = vivling.state.as_ref().expect("state");
+    assert!(
+        state
+            .work_memory
+            .iter()
+            .all(|c| !c.summary.contains("TOPAZIO77")),
+        "il detail NON deve essere persistito nello stato"
+    );
+
+    // Indice: il marcatore e' retrievabile.
+    let msa = vivling.msa.as_ref().expect("msa");
+    let idx = msa.collection_for(&vivling_id).expect("collection");
+    let hits = idx.search("TOPAZIO77", 3, None).expect("search");
+    assert!(
+        !hits.is_empty(),
+        "il detail deve essere indicizzato e retrievabile"
     );
 }

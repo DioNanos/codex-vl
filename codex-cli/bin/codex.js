@@ -78,6 +78,11 @@ if (!platformPackage) {
   throw new Error(`Unsupported target triple: ${targetTriple}`);
 }
 
+// Fork-owned native package resolution (restored verbatim from 0.137.0):
+// resolves both the upstream vendor/<triple>/bin and the fork CI
+// vendor/<triple>/codex payload layouts AND returns the PATH shim dir
+// (`pathDir`) consumed below — the 0.138 merge had replaced this block
+// with upstream's simpler resolver, orphaning `pathDir`.
 const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
 const packageBinaryPath = (vendorRoot) =>
@@ -326,17 +331,24 @@ if (skipNativeExec) {
   process.exit(0);
 }
 
-const env = { ...process.env, PATH: updatedPath };
-if (platform === "android") {
-  env.CODEX_SELF_EXE = binaryPath;
-  env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
-}
 const packageManagerEnvVar =
   detectPackageManager() === "bun"
     ? "CODEX_MANAGED_BY_BUN"
     : "CODEX_MANAGED_BY_NPM";
-env[packageManagerEnvVar] = "1";
-env.CODEX_MANAGED_PACKAGE_ROOT = realpathSync(path.join(__dirname, ".."));
+// Single env: the fork launcher needs (PATH update, Android self-exe and
+// LD_LIBRARY_PATH) merged with upstream's managed-package markers — the
+// 0.138.0-alpha.3 merge briefly kept both declarations and broke the
+// launcher with a duplicate `const env`.
+const env = {
+  ...process.env,
+  PATH: updatedPath,
+  [packageManagerEnvVar]: "1",
+  CODEX_MANAGED_PACKAGE_ROOT: realpathSync(path.join(__dirname, "..")),
+};
+if (platform === "android") {
+  env.CODEX_SELF_EXE = binaryPath;
+  env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
+}
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",

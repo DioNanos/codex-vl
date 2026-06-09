@@ -201,6 +201,24 @@ impl VivlingState {
         }
     }
 
+    /// Idempotent hygiene for states written BEFORE the F3 fixes
+    /// (live audit 2026-06-07): drops distilled summaries of bookkeeping
+    /// kinds (garbage topics like wait/verify/churn) and clamps the counters
+    /// that compounded under re-distillation (observations near 100k on a
+    /// 6-week vivling; inflated total_weight made them permanently sticky in
+    /// the weight-sorted list). Runs on every load — a no-op on clean states.
+    pub(super) fn normalize_distilled_summaries(&mut self) {
+        self.distilled_summaries.retain(|entry| {
+            !super::constants::BOOKKEEPING_KINDS.contains(&entry.kind.as_str())
+        });
+        let obs_cap = MAX_WORK_MEMORY_ENTRIES as u64;
+        let weight_cap = obs_cap * 12;
+        for entry in &mut self.distilled_summaries {
+            entry.observations = entry.observations.min(obs_cap);
+            entry.total_weight = entry.total_weight.min(weight_cap);
+        }
+    }
+
     pub(super) fn maybe_distill_memory(&mut self) {
         let should_distill = self.capsules_since_distill >= DISTILL_TRIGGER_CAPSULES
             || self.work_memory.len() >= MAX_WORK_MEMORY_ENTRIES.saturating_sub(8);
@@ -211,6 +229,10 @@ impl VivlingState {
     }
 
     pub(crate) fn distill_memory(&mut self) {
+        // F3: reset at ENTRY so the trigger re-arms even on the early-return
+        // paths below — otherwise, past the threshold, every new capsule
+        // re-enters distillation.
+        self.capsules_since_distill = 0;
         if self.work_memory.len() < 4 {
             return;
         }
@@ -230,6 +252,12 @@ impl VivlingState {
             // children, flattening the lineage. Only the Vivling's own work
             // produces distilled summaries.
             if capsule.kind == super::lineage::LINEAGE_PARENT_SUMMARY_KIND {
+                continue;
+            }
+            // F3: bookkeeping never distills — it already feeds the
+            // loop_profile signals above, and distilling it produced the
+            // garbage topics (wait/verify/churn) found in the live audit.
+            if super::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
                 continue;
             }
             let topic = Self::infer_semantic_topic(&capsule.kind, &capsule.summary).to_string();
@@ -297,7 +325,20 @@ impl VivlingState {
             self.distilled_summaries
                 .truncate(MAX_DISTILLED_MEMORY_ENTRIES);
         }
-        self.capsules_since_distill = 0;
+        // F3: CONSUME the distilled window. Before this, the same historical
+        // capsules were re-distilled on every pass and their observations /
+        // total_weight compounded into the merge at every trigger (live
+        // audit: observation counters near 100k on a 6-week vivling).
+        // Lineage parent capsules are kept: they are deliberately never
+        // distilled and must stay visible to the prompt.
+        let tail = self.work_memory.split_off(distill_len);
+        let mut kept: Vec<VivlingWorkMemoryEntry> = self
+            .work_memory
+            .drain(..)
+            .filter(|capsule| capsule.kind == super::lineage::LINEAGE_PARENT_SUMMARY_KIND)
+            .collect();
+        kept.extend(tail);
+        self.work_memory = kept;
         self.rebuild_learning_profiles();
     }
 }

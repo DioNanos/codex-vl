@@ -29,6 +29,14 @@ pub(super) fn leveled_state(level: u64, active_days: u64) -> VivlingState {
 
 pub(super) fn configured_vivling(home: &Path) -> Vivling {
     let mut vivling = Vivling::unavailable();
+    // Test isolation: pre-assign a tempdir-backed MSA store BEFORE configure,
+    // which only opens the REAL store (MsaConfig default → production
+    // ~/.local/state) when `msa` is still None. Without this every test run
+    // leaked empty `vivling::<uuid>` collections into the live storage
+    // (live audit 2026-06-07, finding F4).
+    vivling.msa = Some(std::sync::Arc::new(VivlingMsa::open_for_tests(
+        &home.join("msa-test-storage"),
+    )));
     vivling.configure(home, AuthCredentialsStoreMode::default());
     vivling.configure_runtime(FrameRequester::test_dummy(), false);
     vivling

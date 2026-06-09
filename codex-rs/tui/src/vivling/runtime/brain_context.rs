@@ -209,6 +209,14 @@ fn retrieved_relevant_capsules_section(
     payload: &str,
     msa: &super::msa::VivlingMsa,
 ) -> String {
+    // MSA injection lever (A5 gate): deliver the bounded ORIGINAL text of the
+    // retrieved capsules, not a truncated snippet. Any outcome without
+    // injected docs (saturation post-reset, collection missing, runtime
+    // error) falls through to the legacy snippet path below — the brain
+    // prompt always composes.
+    if let Some(section) = msa.recall_section(&state.vivling_id, payload) {
+        return section;
+    }
     let Some(idx) = msa.collection_for(&state.vivling_id) else {
         return recent_observed_work_section(state);
     };
@@ -777,7 +785,9 @@ mod tests {
                 format!("loop tick generico {index}")
             };
             state.work_memory.push(VivlingWorkMemoryEntry {
-                kind: "loop_runtime".to_string(),
+                // `turn` (knowledge): bookkeeping kinds are gated out of the
+                // MSA archive (F1) and would never be recallable by design.
+                kind: "turn".to_string(),
                 summary,
                 archetype: WorkArchetype::Operator,
                 weight: 5,
@@ -797,7 +807,9 @@ mod tests {
             &[],
         )
         .expect("prompt");
-        assert!(prompt.contains("Relevant memory:"));
+        // MSA injection recall (design 2026-06-05): the aged-out capsule comes
+        // back as bounded ORIGINAL text, no longer as a truncated snippet.
+        assert!(prompt.contains("Relevant memory (original text):"));
         assert!(prompt.contains("blocco review build"));
     }
 

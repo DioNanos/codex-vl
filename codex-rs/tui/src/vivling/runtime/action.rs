@@ -205,8 +205,14 @@ impl VivlingAction {
         let mut effort = None;
 
         for token in parts.iter().skip(1) {
+            // Upstream 0.138.0-alpha.4 (model-defined reasoning efforts) made
+            // ReasoningEffort::from_str accept ANY string as Custom(_), so
+            // "parses as effort" no longer disambiguates effort from provider.
+            // Only the known keyword efforts may claim the effort slot here;
+            // arbitrary tokens keep going to provider (pre-0.138 semantics).
             if effort.is_none()
                 && let Ok(parsed_effort) = token.parse::<ReasoningEffortConfig>()
+                && !matches!(parsed_effort, ReasoningEffortConfig::Custom(_))
             {
                 effort = Some(parsed_effort);
                 continue;

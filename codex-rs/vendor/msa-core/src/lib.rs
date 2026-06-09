@@ -11,10 +11,13 @@
 pub mod chunker;
 pub mod config;
 pub mod embeddings;
+pub mod enrich;
 pub mod error;
 pub mod index;
+pub mod interleave;
 pub mod schema;
 pub mod session;
+pub mod validate;
 
 pub use config::MsaConfig;
 pub use error::{MsaError, Result};

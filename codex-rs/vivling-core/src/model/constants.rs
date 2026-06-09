@@ -22,5 +22,20 @@ pub const MAX_WORK_MEMORY_ENTRIES: usize = 64;
 pub const MAX_DISTILLED_MEMORY_ENTRIES: usize = 24;
 pub const MAX_MENTAL_PATH_ENTRIES: usize = 256;
 pub const DISTILL_TRIGGER_CAPSULES: u64 = 8;
+
+/// Capsule kinds that are operational bookkeeping, not knowledge. They live
+/// in the rolling working memory (and feed `loop_profile` signals) but are
+/// excluded from BOTH the long-term MSA archive (ingest gate, live audit
+/// 2026-06-07 F1) and the distillation pipeline (F3: they produced garbage
+/// topics like "wait"/"verify" with compounding observation counters).
+pub const BOOKKEEPING_KINDS: &[&str] = &[
+    "live_context",
+    "loop_runtime",
+    "loop_config",
+    "loop_profile",
+    "loop_blocked_busy",
+    "loop_blocked_review",
+    "loop_blocked_side",
+];
 pub const MAX_DIRECT_REPLY_LEN: usize = 120;
 pub const MAX_CARD_REPLY_LEN: usize = 280;

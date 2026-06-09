@@ -166,7 +166,44 @@ impl MsaIndex {
         ))?;
 
         writer.commit()?;
+        self.maybe_merge_segments(&mut writer);
         Ok(chunks.len())
+    }
+
+    /// Past this many searchable segments a successful write triggers an
+    /// explicit, synchronous merge (F2, vivling live audit 2026-06-07: a
+    /// commit-per-capsule workload accumulated 4027 segments for 4233 docs,
+    /// opening ~4k segment readers per recall). Explicit by design: the
+    /// native LogMergePolicy merges asynchronously at uncontrolled moments;
+    /// here the merge runs only inside our own write path. Best-effort — a
+    /// failure leaves the index correct, just fragmented. Mirrors the
+    /// canonical implementation in the standalone msa-core (022f0bc).
+    const MAX_SEGMENTS_BEFORE_MERGE: usize = 24;
+
+    fn maybe_merge_segments(&self, writer: &mut IndexWriter) {
+        let ids = match self.index.searchable_segment_ids() {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!("segment id listing failed, skipping merge: {e}");
+                return;
+            }
+        };
+        if ids.len() <= Self::MAX_SEGMENTS_BEFORE_MERGE {
+            return;
+        }
+        tracing::info!(
+            "merging {} segments (threshold {})",
+            ids.len(),
+            Self::MAX_SEGMENTS_BEFORE_MERGE
+        );
+        match writer.merge(&ids).wait() {
+            Ok(_) => {
+                if let Err(e) = self.reader.reload() {
+                    tracing::warn!("reader reload after merge failed: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("segment merge failed (index stays fragmented): {e}"),
+        }
     }
 
     pub fn delete_document(&self, doc_id: &str) -> Result<()> {
