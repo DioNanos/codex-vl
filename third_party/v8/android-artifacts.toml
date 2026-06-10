@@ -35,4 +35,4 @@ base_urls = [
   "https://github.com/DioNanos/codex-vl/releases/download/rusty-v8-v149.2.0",
 ]
 archive_sha256 = "af238c22e12ccaca5cf0224863fe9d2f5cf0e1051acffee26d958858e5eb31ee"
-binding_sha256 = "930b70f68fe3bc74f7855f019bb62a0b103d0dc58eefbad08b3489f5a760ca33"
+binding_sha256 = "3ef8ac94e16f9d2d52ab0ed57f13319f844d726f341f632c0f4684d456069d63"
