@@ -47,7 +47,7 @@ npm install -g @mmmbuto/codex-vl
 The npm `next` tag tracks the `0.139.0` line, which merges upstream Codex
 `rust-v0.139.0` while preserving the Codex VL workflow layer (and carries the
 Termux TLS fix plus the native Android V8 149.2.0 build). The `latest` tag
-now tracks the `0.138.0` line, and the `stable` dist-tag points to the
+now tracks the same `0.139.0` line, and the `stable` dist-tag points to the
 `0.135.0` line for conservative installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
 packages plus a macOS arm64 source-build package, each platform under its own
 `<platform>` dist-tag (`linux-x64`, `linux-arm64`, `android-arm64`,
@@ -55,7 +55,7 @@ packages plus a macOS arm64 source-build package, each platform under its own
 
 ```bash
 npm install -g @mmmbuto/codex-vl@next     # 0.139.0
-npm install -g @mmmbuto/codex-vl@latest   # 0.138.0
+npm install -g @mmmbuto/codex-vl@latest   # 0.139.0
 npm install -g @mmmbuto/codex-vl@stable   # 0.135.0
 ```
 
