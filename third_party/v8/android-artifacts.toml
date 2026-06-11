@@ -23,3 +23,16 @@ base_urls = [
 ]
 archive_sha256 = "d33850bbe8e351a9c4ee0fdd679bd11cb9a4fa0761415809e894010128994e13"
 binding_sha256 = "09dee789aaf77fb3d5dcec556a62e78a342cc4a02f8cf36e0f48542f7645bf39"
+
+[versions."149.2.0"]
+source_tag = "v149.2.0"
+
+[versions."149.2.0".targets."aarch64-linux-android"]
+release_tag = "rusty-v8-v149.2.0"
+# The canonical artifact lineage is codex-termux, not codex-vl.
+base_urls = [
+  "https://github.com/DioNanos/codex-termux/releases/download/rusty-v8-v149.2.0",
+  "https://github.com/DioNanos/codex-vl/releases/download/rusty-v8-v149.2.0",
+]
+archive_sha256 = "af238c22e12ccaca5cf0224863fe9d2f5cf0e1051acffee26d958858e5eb31ee"
+binding_sha256 = "3ef8ac94e16f9d2d52ab0ed57f13319f844d726f341f632c0f4684d456069d63"

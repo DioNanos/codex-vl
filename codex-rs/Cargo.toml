@@ -83,6 +83,7 @@ members = [
     "tools",
     "v8-poc",
     "utils/absolute-path",
+    "utils/path-uri",
     "utils/cargo-bin",
     "git-utils",
     "utils/cache",
@@ -105,9 +106,6 @@ members = [
     "utils/fuzzy-match",
     "utils/stream-parser",
     "utils/template",
-    "vendor/msa-core",
-    "vivling-core",
-    "vivling-memory-agent",
     "codex-client",
     "codex-api",
     "state",
@@ -116,6 +114,9 @@ members = [
     "thread-manager-sample",
     "thread-store",
     "uds",
+    "vivling-core",
+    "vivling-memory-agent",
+    "vendor/msa-core",
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
@@ -123,7 +124,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.138.0"
+version = "0.139.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -222,10 +223,11 @@ codex-test-binary-support = { path = "test-binary-support" }
 codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tui = { path = "tui" }
-codex-vivling-core = { path = "vivling-core" }
-codex-vivling-memory-agent = { path = "vivling-memory-agent" }
 codex-uds = { path = "uds" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
+codex-vivling-core = { path = "vivling-core" }
+codex-vivling-memory-agent = { path = "vivling-memory-agent" }
+msa-core = { path = "vendor/msa-core", default-features = false }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
 codex-utils-cache = { path = "utils/cache" }
 codex-utils-cargo-bin = { path = "utils/cargo-bin" }
@@ -250,7 +252,6 @@ codex-v8-poc = { path = "v8-poc" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
-msa-core = { path = "vendor/msa-core", default-features = false }
 
 # External
 age = "0.11.1"
@@ -354,10 +355,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 ] }
 regex = "1.12.3"
 regex-lite = "0.1.8"
-reqwest = { version = "0.12", default-features = false, features = [
-    "cookies",
-    "rustls-tls-native-roots",
-] }
+reqwest = { version = "0.12", features = ["cookies"] }
 rmcp = { version = "1.7.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustls = { version = "0.23", default-features = false, features = [
@@ -369,15 +367,7 @@ rustls-pki-types = "1.14.0"
 schemars = { version = "0.8.22", features = ["chrono"] }
 seccompiler = "0.5.0"
 semver = "1.0"
-sentry = { version = "0.46.0", default-features = false, features = [
-    "backtrace",
-    "contexts",
-    "debug-images",
-    "panic",
-    "release-health",
-    "reqwest",
-    "rustls",
-] }
+sentry = "0.46.0"
 serde = "1"
 serde_ignored = "0.1.14"
 serde_json = "1"
@@ -401,7 +391,7 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "time",
     "uuid",
 ] }
-starlark = "0.13.0"
+starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
 strum_macros = "0.28.0"
 supports-color = "3.0.2"
@@ -441,7 +431,7 @@ unicode-width = "0.2"
 url = "2"
 urlencoding = "2.1"
 uuid = "1"
-v8 = "=147.4.0"
+v8 = "=149.2.0"
 vt100 = "0.16.2"
 walkdir = "2.5.0"
 webbrowser = "1.0"
@@ -518,13 +508,11 @@ strip = "symbols"
 
 [profile.release]
 lto = "thin"
+debug = "line-tables-only"
 split-debuginfo = "off"
-# Because we bundle some of these executables with the TypeScript CLI, we
-# remove everything to make the binary as small as possible.
-strip = "symbols"
-# Release artifacts are distributed as standalone CLIs, so smaller binaries and
-# a simpler panic path matter more than unwind support.
-panic = "abort"
+# Keep release binaries symbolicateable until packaging has archived the
+# sidecar symbols and stripped the binaries.
+strip = false
 
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1
