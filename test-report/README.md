@@ -38,6 +38,9 @@ validates the installed CLI and the AI-operated runtime surface.
 - `manual/2026-05-07_0.129.0_termux_ai_guided_surface.md`: 0.129.0
   Termux command surface, runtime exec, read/write, network, and first-launch
   TUI evidence with operator-scoped limitations.
+- `manual/2026-06-11_0.139.0_ai_guided_surface_termux.md`: 0.139.0
+  Termux command surface, runtime exec, read/write, network, and first-launch
+  TUI evidence with environment-scoped limitations.
 
 ## Report Rules
 
