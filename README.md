@@ -158,6 +158,22 @@ native packages plus the macOS arm64 source-build package.
 Codex VL is active development software. Use the official OpenAI Codex release
 when you want the upstream baseline without Codex VL additions.
 
+## Security
+
+Codex VL is a community fork of OpenAI Codex. Security-relevant properties of this build:
+
+- **Network**: agents bind to loopback by default; nothing is exposed externally unless you opt in.
+  `/remote-control` and the app-server require explicit opt-in.
+- **Supply chain**: builds and releases come only from fork-owned CI and the `@mmmbuto/codex-vl`
+  npm scope. This package does not silently fetch or run the upstream installer; updates flow
+  through the fork's own channel.
+- **Termux**: TLS trust uses bundled webpki roots (no Android platform-verifier dependency), and
+  advisory file locks degrade safely where unsupported.
+
+For sensitive work, prefer the official Codex CLI on Linux/macOS over SSH.
+
+To report a vulnerability, see [SECURITY.md](./SECURITY.md).
+
 ## License
 
 Apache 2.0. Upstream Codex remains under Apache 2.0, and the Codex VL additions
