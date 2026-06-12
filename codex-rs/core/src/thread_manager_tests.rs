@@ -331,6 +331,7 @@ async fn start_thread_rejects_explicit_local_environment_when_default_provider_i
                 environment_id: "local".to_string(),
                 cwd: config.cwd.clone(),
             }],
+            thread_extension_init: Default::default(),
         })
         .await;
     let err = match result {
@@ -368,6 +369,7 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
             metrics_service_name: None,
             parent_trace: None,
             environments: Vec::new(),
+            thread_extension_init: Default::default(),
         })
         .await
         .expect("internal thread should start");
@@ -382,6 +384,86 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
     assert!(report.submit_failed.is_empty());
     assert!(report.timed_out.is_empty());
     assert!(manager.list_thread_ids().await.is_empty());
+}
+
+#[tokio::test]
+async fn start_thread_seeds_extension_data_before_lifecycle_contributors_run() {
+    struct InitialMarker(&'static str);
+
+    struct InitialDataRecorder {
+        observed: Arc<std::sync::Mutex<Option<(String, String)>>>,
+    }
+
+    impl codex_extension_api::ThreadLifecycleContributor<Config> for InitialDataRecorder {
+        fn on_thread_start<'a>(
+            &'a self,
+            input: codex_extension_api::ThreadStartInput<'a, Config>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                let marker = input
+                    .thread_store
+                    .get::<InitialMarker>()
+                    .expect("initial extension data should be available");
+                *self
+                    .observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                    input.thread_store.level_id().to_string(),
+                    marker.0.to_string(),
+                ));
+            })
+        }
+    }
+
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.thread_lifecycle_contributor(Arc::new(InitialDataRecorder {
+        observed: Arc::clone(&observed),
+    }));
+    let manager = ThreadManager::new(
+        &config,
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Arc::new(extensions.build()),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, /*state_db*/ None),
+        /*state_db*/ None,
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+    );
+    let mut thread_extension_init = codex_extension_api::ExtensionDataInit::new();
+    thread_extension_init.insert(InitialMarker("seeded"));
+
+    let thread = manager
+        .start_thread_with_options(StartThreadOptions {
+            config,
+            initial_history: InitialHistory::New,
+            session_source: None,
+            thread_source: None,
+            dynamic_tools: Vec::new(),
+            metrics_service_name: None,
+            parent_trace: None,
+            environments: Vec::new(),
+            thread_extension_init,
+        })
+        .await
+        .expect("start thread");
+
+    assert_eq!(
+        observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone(),
+        Some((thread.thread_id.to_string(), "seeded".to_string()))
+    );
 }
 
 #[tokio::test]
@@ -400,6 +482,7 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*state_db*/ None,
@@ -423,6 +506,7 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
             metrics_service_name: None,
             parent_trace: None,
             environments: environments.clone(),
+            thread_extension_init: Default::default(),
         })
         .await
         .expect("start source thread");
@@ -516,6 +600,7 @@ async fn explicit_installation_id_skips_codex_home_file() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store,
         state_db.clone(),
@@ -555,6 +640,7 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*state_db*/ None,
@@ -612,6 +698,7 @@ async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*state_db*/ None,
@@ -676,6 +763,7 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store,
         state_db.clone(),
@@ -693,6 +781,7 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
             metrics_service_name: None,
             parent_trace: None,
             environments: Vec::new(),
+            thread_extension_init: Default::default(),
         })
         .await
         .expect("start source thread");
@@ -765,6 +854,7 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store.clone(),
         state_db,
@@ -866,6 +956,7 @@ async fn new_uses_active_provider_for_model_refresh() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*state_db*/ None,
@@ -1086,6 +1177,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         state_db.clone(),
@@ -1192,6 +1284,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         state_db.clone(),
@@ -1288,6 +1381,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         SessionSource::Exec,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         state_db.clone(),

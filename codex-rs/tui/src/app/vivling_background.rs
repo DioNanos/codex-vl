@@ -12,6 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use codex_core::CodexResponsesMetadata;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
@@ -60,12 +61,9 @@ pub(super) async fn run_vivling_assist_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
-        codex_protocol::SessionId::new(),
         ThreadId::new(),
-        request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
-        None,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -106,7 +104,12 @@ pub(super) async fn run_vivling_assist_request(
             profile_config.model_reasoning_effort,
             profile_config.model_reasoning_summary.unwrap_or_default(),
             profile_config.service_tier,
-            None,
+            &CodexResponsesMetadata::new(
+                request.vivling_id.clone(),
+                codex_protocol::SessionId::new().to_string(),
+                ThreadId::new().to_string(),
+                String::new(),
+            ),
             &InferenceTraceContext::disabled(),
         )
         .await
@@ -170,12 +173,9 @@ pub(super) async fn run_vivling_loop_tick_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
-        codex_protocol::SessionId::new(),
         ThreadId::new(),
-        request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
-        None,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -210,7 +210,12 @@ pub(super) async fn run_vivling_loop_tick_request(
             profile_config.model_reasoning_effort,
             profile_config.model_reasoning_summary.unwrap_or_default(),
             profile_config.service_tier,
-            None,
+            &CodexResponsesMetadata::new(
+                request.vivling_id.clone(),
+                codex_protocol::SessionId::new().to_string(),
+                ThreadId::new().to_string(),
+                String::new(),
+            ),
             &InferenceTraceContext::disabled(),
         )
         .await
@@ -298,12 +303,9 @@ pub(super) async fn run_vivling_expression_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
-        codex_protocol::SessionId::new(),
         ThreadId::new(),
-        request.vivling_id.clone(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
-        None,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -368,7 +370,12 @@ Do not include markdown fences, code blocks, or commentary outside the JSON obje
             profile_config.model_reasoning_effort,
             profile_config.model_reasoning_summary.unwrap_or_default(),
             profile_config.service_tier,
-            None,
+            &CodexResponsesMetadata::new(
+                request.vivling_id.clone(),
+                codex_protocol::SessionId::new().to_string(),
+                ThreadId::new().to_string(),
+                String::new(),
+            ),
             &InferenceTraceContext::disabled(),
         )
         .await

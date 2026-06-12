@@ -1473,9 +1473,17 @@ jobs:
 
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Download target artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
+          pattern: "{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server},pc-windows-msvc}"
+
+      - name: Download supplemental release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: "{*-symbols,argument-comment-lint-*,codex-zsh-*,python-runtime-wheel-*}"
 
       - name: Validate unsigned build run
         if: ${{ env.RELEASE_MODE == 'promote_signed' }}
@@ -1698,6 +1706,7 @@ jobs:
           ./scripts/stage_npm_packages.py \
             --release-version "$RELEASE_VERSION" \
             --workflow-url "$workflow_url" \
+            --artifacts-dir "${GITHUB_WORKSPACE}/dist" \
             --package codex \
             --package codex-responses-api-proxy \
             --package codex-sdk
@@ -1878,14 +1887,15 @@ jobs:
             other_tarballs+=("${tarball}")
           done
 
-          # Publish the platform packages before the root CLI wrapper. The root
-          # wrapper advances @openai/codex@latest, so it should only publish
-          # after the optional dependency versions it references exist.
+          # npm returns HTTP 409 when concurrent publishes update the same
+          # packument. Every platform tarball is a version of @openai/codex,
+          # so publish all tarballs serially.
           tarballs=(
             "${platform_tarballs[@]}"
             "${other_tarballs[@]}"
             "${root_tarball}"
           )
+          # The SDK depends on this exact root package version.
           if [[ -f "${sdk_tarball}" ]]; then
             tarballs+=("${sdk_tarball}")
           fi
