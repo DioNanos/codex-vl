@@ -211,8 +211,6 @@ mod updates_cache;
 mod version;
 mod vivling;
 mod vl;
-#[cfg(not(target_os = "linux"))]
-mod voice;
 mod width;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
