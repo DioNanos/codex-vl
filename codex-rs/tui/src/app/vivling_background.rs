@@ -51,6 +51,7 @@ pub(super) async fn run_vivling_assist_request(
             /*enable_codex_api_key_env*/ false,
             profile_config.cli_auth_credentials_store_mode,
             Some(profile_config.chatgpt_base_url.clone()),
+            codex_login::AuthKeyringBackendKind::default(),
         )
         .await,
     );
@@ -163,6 +164,7 @@ pub(super) async fn run_vivling_loop_tick_request(
             false,
             profile_config.cli_auth_credentials_store_mode,
             Some(profile_config.chatgpt_base_url.clone()),
+            codex_login::AuthKeyringBackendKind::default(),
         )
         .await,
     );
@@ -293,6 +295,7 @@ pub(super) async fn run_vivling_expression_request(
             false,
             profile_config.cli_auth_credentials_store_mode,
             Some(profile_config.chatgpt_base_url.clone()),
+            codex_login::AuthKeyringBackendKind::default(),
         )
         .await,
     );

@@ -17,6 +17,7 @@ use crate::oauth::oauth_token_status;
 use crate::utils::apply_default_headers;
 use crate::utils::apply_termux_tls;
 use crate::utils::build_default_headers;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,6 +37,7 @@ pub async fn determine_streamable_http_auth_status(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Result<McpAuthStatus> {
     if bearer_token_env_var.is_some() {
         return Ok(McpAuthStatus::BearerToken);
@@ -46,7 +48,7 @@ pub async fn determine_streamable_http_auth_status(
         return Ok(McpAuthStatus::BearerToken);
     }
 
-    match oauth_token_status(server_name, url, store_mode)? {
+    match oauth_token_status(server_name, url, store_mode, keyring_backend_kind)? {
         StoredOAuthTokenStatus::Usable => return Ok(McpAuthStatus::OAuth),
         StoredOAuthTokenStatus::AuthorizationRequired => {
             return Ok(McpAuthStatus::NotLoggedIn);
@@ -291,6 +293,7 @@ mod tests {
             )])),
             /*env_http_headers*/ None,
             OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::default(),
         )
         .await
         .expect("status should compute");
@@ -312,6 +315,7 @@ mod tests {
                 "CODEX_RMCP_CLIENT_AUTH_STATUS_TEST_TOKEN".to_string(),
             )])),
             OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::default(),
         )
         .await
         .expect("status should compute");

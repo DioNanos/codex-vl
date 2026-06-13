@@ -53,7 +53,6 @@ codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
-codex-realtime-webrtc = { workspace = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
 codex-sandboxing = { workspace = true }

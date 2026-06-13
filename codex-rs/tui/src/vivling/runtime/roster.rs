@@ -326,9 +326,13 @@ impl Vivling {
 
     pub(crate) fn seed_identity(&self) -> Option<SeedIdentity> {
         let codex_home = self.codex_home.as_ref()?;
-        let auth = load_auth_dot_json(codex_home, self.auth_mode)
-            .ok()
-            .flatten();
+        let auth = load_auth_dot_json(
+            codex_home,
+            self.auth_mode,
+            codex_login::AuthKeyringBackendKind::default(),
+        )
+        .ok()
+        .flatten();
         if let Some(tokens) = auth.as_ref().and_then(|auth| auth.tokens.as_ref()) {
             if let Some(account_id) = tokens.account_id.as_ref().filter(|value| !value.is_empty()) {
                 return Some(SeedIdentity {
