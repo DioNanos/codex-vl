@@ -1,6 +1,6 @@
 {
   "name": "@mmmbuto/codex-vl",
-  "version": "0.140.0-alpha.14",
+  "version": "0.140.0-alpha.18",
   "license": "Apache-2.0",
   "bin": {
     "codex-vl": "bin/codex.js",
