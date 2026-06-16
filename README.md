@@ -72,19 +72,15 @@ optional rustup target) and prints actionable hints when something is missing.
   `libc++_shared.so` next to the binaries (`RUNPATH=$ORIGIN`), since Termux has
   no system copy.
 
-**Known limitation — realtime voice/audio on Android (Termux):**
+**Realtime voice/audio (removed upstream):**
 
-The realtime audio modules build for Android, but they are **not usable in a
-plain Termux CLI**. The audio backend (cpal → oboe → `ndk-context`) requires an
-Android `JavaVM`/`Activity` to initialize, which a command-line process in
-Termux does not have. As a result the experimental `/realtime` and `/settings`
-commands cannot open an audio device under Termux. The realtime conversation
-feature is off by default (under-development); do not enable it on Termux.
-
-Making voice work on Termux would require a different audio backend
-(PulseAudio or `termux-api`) rather than cpal's Android AAudio path. That is
-**not** in scope here and is tracked on the Codex VL roadmap, not implemented as
-a runtime change in this release.
+Upstream OpenAI Codex removed the experimental TUI realtime voice/audio feature
+in `rust-v0.140.0` (openai/codex#27801). Codex VL no longer ships it on any
+platform. The Android cpal/oboe enablement this fork used to carry — never
+usable from a plain Termux CLI anyway, since the audio backend (cpal → oboe →
+`ndk-context`) needs an Android `JavaVM`/`Activity` a command-line process does
+not have — was dropped along with it. A Termux-native audio backend remains a
+possible future direction, not a current capability.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -148,10 +144,11 @@ native packages plus the macOS arm64 source-build package.
 
 ## Roadmap
 
-- **Realtime audio on Termux** (high priority, in progress alongside the MSA
-  Vivling work): a Termux-native audio backend (PulseAudio / `termux-api`)
-  so realtime voice works on Android/Termux, where cpal's AAudio path cannot
-  initialize (see the Android limitation under Release Channels).
+- **Termux-native audio** (parked): upstream removed the realtime voice feature
+  in `rust-v0.140.0` (openai/codex#27801), so this is on hold unless realtime
+  voice returns upstream. If it does, a Termux-native backend (PulseAudio /
+  `termux-api`) would be needed, since cpal's Android AAudio path cannot
+  initialize in a plain CLI.
 
 ## Status
 
