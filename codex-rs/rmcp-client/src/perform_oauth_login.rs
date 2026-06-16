@@ -30,6 +30,7 @@ use crate::save_oauth_tokens;
 use crate::utils::apply_default_headers;
 use crate::utils::apply_termux_tls;
 use crate::utils::build_default_headers;
+use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 struct OauthHeaders {
@@ -82,6 +83,7 @@ pub async fn perform_oauth_login(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -94,6 +96,7 @@ pub async fn perform_oauth_login(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         http_headers,
         env_http_headers,
         scopes,
@@ -111,6 +114,7 @@ pub async fn perform_oauth_login_silent(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -123,6 +127,7 @@ pub async fn perform_oauth_login_silent(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         http_headers,
         env_http_headers,
         scopes,
@@ -140,6 +145,7 @@ async fn perform_oauth_login_with_browser_output(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -157,6 +163,7 @@ async fn perform_oauth_login_with_browser_output(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         headers,
         scopes,
         oauth_client_id,
@@ -176,6 +183,7 @@ pub async fn perform_oauth_login_return_url(
     server_name: &str,
     server_url: &str,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
@@ -193,6 +201,7 @@ pub async fn perform_oauth_login_return_url(
         server_name,
         server_url,
         store_mode,
+        keyring_backend_kind,
         headers,
         scopes,
         oauth_client_id,
@@ -351,6 +360,7 @@ struct OauthLoginFlow {
     server_name: String,
     server_url: String,
     store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
     launch_browser: bool,
     timeout: Duration,
 }
@@ -446,6 +456,7 @@ impl OauthLoginFlow {
         server_name: &str,
         server_url: &str,
         store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
         headers: OauthHeaders,
         scopes: &[String],
         oauth_client_id: Option<&str>,
@@ -511,6 +522,7 @@ impl OauthLoginFlow {
             server_name: server_name.to_string(),
             server_url: server_url.to_string(),
             store_mode,
+            keyring_backend_kind,
             launch_browser,
             timeout,
         })
@@ -574,7 +586,12 @@ impl OauthLoginFlow {
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
             };
-            save_oauth_tokens(&self.server_name, &stored, self.store_mode)?;
+            save_oauth_tokens(
+                &self.server_name,
+                &stored,
+                self.store_mode,
+                self.keyring_backend_kind,
+            )?;
 
             Ok(())
         }
