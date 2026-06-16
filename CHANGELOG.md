@@ -4,6 +4,14 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.140.0 - Upstream rust-v0.140.0 final
+
+Stable release on the npm `latest` tag, based on the OpenAI Codex
+`rust-v0.140.0` release line. Upstream-tracking release: no fork-specific
+feature changes beyond the standing Codex VL workflow layer and the
+Termux/Android carry-forward. Validated on device (Linux, macOS, Termux —
+AI-guided surface reports, PASS). The `stable` dist-tag stays on `0.135.0`.
+
 ## 0.133.0 - Upstream rust-v0.133.0 final
 
 Stable release on the npm `latest` tag.
