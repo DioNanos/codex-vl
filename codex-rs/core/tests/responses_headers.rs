@@ -141,6 +141,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
             text: "hello".into(),
         }],
         phase: None,
+        metadata: None,
     }];
 
     let mut stream = client_session
@@ -272,6 +273,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
             text: "hello".into(),
         }],
         phase: None,
+        metadata: None,
     }];
 
     let mut stream = client_session
@@ -389,6 +391,7 @@ async fn responses_respects_model_info_overrides_from_config() {
             text: "hello".into(),
         }],
         phase: None,
+        metadata: None,
     }];
 
     let mut stream = client_session
