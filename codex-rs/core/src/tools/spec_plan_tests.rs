@@ -1480,12 +1480,25 @@ async fn dynamic_tools_register_flat_and_namespaced_manage_loops_aliases() {
         "required": ["action"],
         "additionalProperties": false,
     });
-    let manage_loops = |namespace: Option<&str>| DynamicToolSpec {
-        namespace: namespace.map(str::to_string),
-        name: "manage_loops".to_string(),
-        description: "Manage local recurring loop jobs.".to_string(),
-        input_schema: input_schema.clone(),
-        defer_loading: false,
+    let manage_loops = |namespace: Option<&str>| {
+        let function = codex_protocol::dynamic_tools::DynamicToolFunctionSpec {
+            name: "manage_loops".to_string(),
+            description: "Manage local recurring loop jobs.".to_string(),
+            input_schema: input_schema.clone(),
+            defer_loading: false,
+        };
+        match namespace {
+            None => DynamicToolSpec::Function(function),
+            Some(ns) => DynamicToolSpec::Namespace(
+                codex_protocol::dynamic_tools::DynamicToolNamespaceSpec {
+                    name: ns.to_string(),
+                    description: "Manage local recurring loop jobs.".to_string(),
+                    tools: vec![codex_protocol::dynamic_tools::DynamicToolNamespaceTool::Function(
+                        function,
+                    )],
+                },
+            ),
+        }
     };
     let plan = probe_with(
         |_| {},

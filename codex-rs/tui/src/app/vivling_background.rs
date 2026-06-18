@@ -81,6 +81,7 @@ pub(super) async fn run_vivling_assist_request(
             text: request.prompt_context,
         }],
         phase: None,
+        metadata: None,
     }];
     let instruction_text = match &request.kind {
         VivlingBrainRequestKind::Assist => format!(
@@ -195,6 +196,7 @@ pub(super) async fn run_vivling_loop_tick_request(
             text: request.prompt_context,
         }],
         phase: None,
+        metadata: None,
     }];
     prompt.base_instructions = codex_protocol::models::BaseInstructions {
         text: format!(
@@ -326,6 +328,7 @@ pub(super) async fn run_vivling_expression_request(
             text: request.prompt.clone(),
         }],
         phase: None,
+        metadata: None,
     }];
     // Memory V2 Step 12.B.J — focus-aware Expression system
     // instruction. When the chatwidget supplies a live focus hint

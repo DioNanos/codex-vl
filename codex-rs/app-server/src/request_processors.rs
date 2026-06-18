@@ -57,8 +57,6 @@ use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditParams;
 use codex_app_server_protocol::ConsumeAccountRateLimitResetCreditResponse;
 use codex_app_server_protocol::ConversationGitInfo;
 use codex_app_server_protocol::ConversationSummary;
-use codex_app_server_protocol::DynamicToolFunctionSpec;
-use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::EnvironmentAddParams;
 use codex_app_server_protocol::EnvironmentAddResponse;
