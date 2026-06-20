@@ -2131,6 +2131,29 @@
             },
             "method": {
               "enum": [
+                "externalAgentConfig/import/readHistories"
+              ],
+              "title": "ExternalAgentConfig/import/readHistoriesRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "ExternalAgentConfig/import/readHistoriesRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "config/value/write"
               ],
               "title": "Config/value/writeRequestMethod",
@@ -2355,13 +2378,21 @@
         "cwd": {
           "anyOf": [
             {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             {
               "type": "null"
             }
           ],
           "description": "The command's working directory."
+        },
+        "environmentId": {
+          "default": null,
+          "description": "Environment in which the command will run.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "itemId": {
           "type": "string"
@@ -2867,6 +2898,10 @@
         "experimentalApi": {
           "default": false,
           "description": "Opt into receiving experimental API methods and fields.",
+          "type": "boolean"
+        },
+        "mcpServerOpenaiFormElicitation": {
+          "description": "Allow downstream MCP servers to request OpenAI extended form elicitations.",
           "type": "boolean"
         },
         "optOutNotificationMethods": {
@@ -3616,6 +3651,27 @@
             "requestedSchema": {
               "$ref": "#/definitions/McpElicitationSchema"
             }
+          },
+          "required": [
+            "message",
+            "mode",
+            "requestedSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "_meta": true,
+            "message": {
+              "type": "string"
+            },
+            "mode": {
+              "enum": [
+                "openai/form"
+              ],
+              "type": "string"
+            },
+            "requestedSchema": true
           },
           "required": [
             "message",
@@ -4838,6 +4894,26 @@
           "properties": {
             "method": {
               "enum": [
+                "externalAgentConfig/import/progress"
+              ],
+              "title": "ExternalAgentConfig/import/progressNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportProgressNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "ExternalAgentConfig/import/progressNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "externalAgentConfig/import/completed"
               ],
               "title": "ExternalAgentConfig/import/completedNotificationMethod",
@@ -5804,6 +5880,14 @@
           },
           {
             "properties": {
+              "credentialSource": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/v2/AmazonBedrockCredentialSource"
+                  }
+                ],
+                "default": "awsManaged"
+              },
               "type": {
                 "enum": [
                   "amazonBedrock"
@@ -6020,7 +6104,7 @@
           "read": {
             "description": "This will be removed in favor of `entries`.",
             "items": {
-              "$ref": "#/definitions/v2/ApiPathString"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": [
               "array",
@@ -6030,7 +6114,7 @@
           "write": {
             "description": "This will be removed in favor of `entries`.",
             "items": {
-              "$ref": "#/definitions/v2/ApiPathString"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": [
               "array",
@@ -6123,6 +6207,13 @@
       "AgentPath": {
         "type": "string"
       },
+      "AmazonBedrockCredentialSource": {
+        "enum": [
+          "codexManaged",
+          "awsManaged"
+        ],
+        "type": "string"
+      },
       "AnalyticsConfig": {
         "additionalProperties": true,
         "properties": {
@@ -6134,9 +6225,6 @@
           }
         },
         "type": "object"
-      },
-      "ApiPathString": {
-        "type": "string"
       },
       "AppBranding": {
         "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
@@ -6635,6 +6723,16 @@
             "anyOf": [
               {
                 "$ref": "#/definitions/v2/ApprovalsReviewer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default_tools_approval_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AppToolApproval"
               },
               {
                 "type": "null"
@@ -8634,7 +8732,8 @@
       "ConversationTextRole": {
         "enum": [
           "user",
-          "developer"
+          "developer",
+          "assistant"
         ],
         "type": "string"
       },
@@ -9046,7 +9145,7 @@
             ]
           },
           "includeHome": {
-            "description": "If true, include detection under the user's home (~/.claude, ~/.codex, etc.).",
+            "description": "If true, include detection under the user's home directory.",
             "type": "boolean"
           }
         },
@@ -9089,9 +9188,61 @@
         "title": "ExternalAgentConfigImportCompletedNotification",
         "type": "object"
       },
+      "ExternalAgentConfigImportHistoriesReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportHistory"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ExternalAgentConfigImportHistoriesReadResponse",
+        "type": "object"
+      },
+      "ExternalAgentConfigImportHistory": {
+        "properties": {
+          "completedAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportItemTypeFailure"
+            },
+            "type": "array"
+          },
+          "importId": {
+            "type": "string"
+          },
+          "successes": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportItemTypeSuccess"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "completedAtMs",
+          "failures",
+          "importId",
+          "successes"
+        ],
+        "type": "object"
+      },
       "ExternalAgentConfigImportItemTypeFailure": {
         "properties": {
           "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errorType": {
             "type": [
               "string",
               "null"
@@ -9157,12 +9308,39 @@
               "$ref": "#/definitions/v2/ExternalAgentConfigMigrationItem"
             },
             "type": "array"
+          },
+          "source": {
+            "description": "Source product that produced the migration items. Missing means unspecified.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "migrationItems"
         ],
         "title": "ExternalAgentConfigImportParams",
+        "type": "object"
+      },
+      "ExternalAgentConfigImportProgressNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "importId": {
+            "type": "string"
+          },
+          "itemTypeResults": {
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentConfigImportTypeResult"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "importId",
+          "itemTypeResults"
+        ],
+        "title": "ExternalAgentConfigImportProgressNotification",
         "type": "object"
       },
       "ExternalAgentConfigImportResponse": {
@@ -9375,7 +9553,7 @@
           {
             "properties": {
               "path": {
-                "$ref": "#/definitions/v2/ApiPathString"
+                "$ref": "#/definitions/v2/LegacyAppPathString"
               },
               "type": {
                 "enum": [
@@ -11054,6 +11232,9 @@
         "title": "ItemStartedNotification",
         "type": "object"
       },
+      "LegacyAppPathString": {
+        "type": "string"
+      },
       "ListMcpServerStatusParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -11938,6 +12119,29 @@
         "title": "McpServerToolCallResponse",
         "type": "object"
       },
+      "McpToolCallAppContext": {
+        "properties": {
+          "connectorId": {
+            "type": "string"
+          },
+          "linkId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resourceUri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "connectorId"
+        ],
+        "type": "object"
+      },
       "McpToolCallError": {
         "properties": {
           "message": {
@@ -12432,6 +12636,14 @@
         ],
         "title": "ModelVerificationNotification",
         "type": "object"
+      },
+      "MultiAgentMode": {
+        "description": "Controls whether the model should only spawn sub-agents after an explicit user request or may delegate proactively when doing so would help.",
+        "enum": [
+          "explicitRequestOnly",
+          "proactive"
+        ],
+        "type": "string"
       },
       "NetworkAccess": {
         "enum": [
@@ -14126,13 +14338,6 @@
         "title": "RawResponseItemCompletedNotification",
         "type": "object"
       },
-      "RealtimeConversationArchitecture": {
-        "enum": [
-          "realtimeapi",
-          "avas"
-        ],
-        "type": "string"
-      },
       "RealtimeConversationVersion": {
         "enum": [
           "v1",
@@ -14640,8 +14845,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -14693,6 +14897,12 @@
                 },
                 "type": "array"
               },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "metadata": {
                 "anyOf": [
                   {
@@ -14736,6 +14946,12 @@
                 ]
               },
               "encrypted_content": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
                 "type": [
                   "string",
                   "null"
@@ -14789,8 +15005,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -14833,8 +15048,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -14888,8 +15102,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -14927,6 +15140,12 @@
             "properties": {
               "call_id": {
                 "type": "string"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -14966,8 +15185,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "input": {
                 "type": "string"
@@ -15012,6 +15230,12 @@
             "properties": {
               "call_id": {
                 "type": "string"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -15058,6 +15282,12 @@
               },
               "execution": {
                 "type": "string"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -15109,8 +15339,7 @@
                 "type": [
                   "string",
                   "null"
-                ],
-                "writeOnly": true
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -15145,7 +15374,10 @@
           {
             "properties": {
               "id": {
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -15178,7 +15410,6 @@
               }
             },
             "required": [
-              "id",
               "result",
               "status",
               "type"
@@ -15190,6 +15421,12 @@
             "properties": {
               "encrypted_content": {
                 "type": "string"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "metadata": {
                 "anyOf": [
@@ -15250,6 +15487,12 @@
                   "null"
                 ]
               },
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "metadata": {
                 "anyOf": [
                   {
@@ -15294,6 +15537,12 @@
       },
       "ResponseItemMetadata": {
         "properties": {
+          "source_call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "turn_id": {
             "type": [
               "string",
@@ -16491,6 +16740,14 @@
             "description": "Usually the first user message in the thread, if available.",
             "type": "string"
           },
+          "recencyAt": {
+            "description": "Unix timestamp (in seconds) used for thread recency ordering.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "sessionId": {
             "description": "Session id shared by threads that belong to the same session tree.",
             "type": "string"
@@ -16795,9 +17052,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -17262,7 +17519,7 @@
               "cwd": {
                 "allOf": [
                   {
-                    "$ref": "#/definitions/v2/AbsolutePathBuf"
+                    "$ref": "#/definitions/v2/LegacyAppPathString"
                   }
                 ],
                 "description": "The command's working directory."
@@ -17356,6 +17613,16 @@
           },
           {
             "properties": {
+              "appContext": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/McpToolCallAppContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "arguments": true,
               "durationMs": {
                 "description": "The duration of the MCP tool call in milliseconds.",
@@ -17379,6 +17646,7 @@
                 "type": "string"
               },
               "mcpAppResourceUri": {
+                "description": "Deprecated: use `appContext.resourceUri` instead.",
                 "type": [
                   "string",
                   "null"
@@ -18499,9 +18767,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -18750,7 +19018,8 @@
       "ThreadSortKey": {
         "enum": [
           "created_at",
-          "updated_at"
+          "updated_at",
+          "recency_at"
         ],
         "type": "string"
       },
@@ -18915,9 +19184,9 @@
           },
           "instructionSources": {
             "default": [],
-            "description": "Instruction source files currently loaded for this thread.",
+            "description": "Environment-native paths to instruction source files currently loaded for this thread.",
             "items": {
-              "$ref": "#/definitions/v2/AbsolutePathBuf"
+              "$ref": "#/definitions/v2/LegacyAppPathString"
             },
             "type": "array"
           },
@@ -19387,7 +19656,7 @@
       "TurnEnvironmentParams": {
         "properties": {
           "cwd": {
-            "$ref": "#/definitions/v2/AbsolutePathBuf"
+            "$ref": "#/definitions/v2/LegacyAppPathString"
           },
           "environmentId": {
             "type": "string"
@@ -20086,6 +20355,7 @@
         "enum": [
           "disabled",
           "cached",
+          "indexed",
           "live"
         ],
         "type": "string"

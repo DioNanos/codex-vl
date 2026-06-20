@@ -434,8 +434,8 @@ impl ChatWidget {
                 }
             }
             SlashCommand::Usage => {
-                if self.ensure_token_activity_command_available() {
-                    self.add_token_activity_output(tokens::TokenActivityView::Daily);
+                if self.ensure_usage_command_available() {
+                    self.open_usage_menu();
                 }
             }
             SlashCommand::Ide => {
@@ -662,7 +662,7 @@ impl ChatWidget {
         let trimmed = args.trim();
         match cmd {
             SlashCommand::Usage => {
-                if self.ensure_token_activity_command_available() {
+                if self.ensure_usage_command_available() {
                     match tokens::TokenActivityView::parse(trimmed) {
                         Some(view) => self.add_token_activity_output(view),
                         None => self.add_error_message(
@@ -1025,7 +1025,7 @@ impl ChatWidget {
         }
     }
 
-    fn ensure_token_activity_command_available(&mut self) -> bool {
+    fn ensure_usage_command_available(&mut self) -> bool {
         if self.has_codex_backend_auth {
             return true;
         }

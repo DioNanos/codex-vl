@@ -65,6 +65,10 @@ pub use model::ThreadLoopJobCreateParams;
 pub use model::ThreadLoopJobRuntimeUpdate;
 pub use model::ThreadLoopOwner;
 
+pub use runtime::ExternalAgentConfigImportDetailsRecord;
+pub use runtime::ExternalAgentConfigImportFailureRecord;
+pub use runtime::ExternalAgentConfigImportHistoryRecord;
+pub use runtime::ExternalAgentConfigImportSuccessRecord;
 pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
 pub use runtime::GoalStore;

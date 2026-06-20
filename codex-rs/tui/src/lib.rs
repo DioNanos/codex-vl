@@ -414,6 +414,7 @@ async fn connect_remote_app_server(
         client_name: "codex-tui".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,
+        mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
@@ -576,6 +577,7 @@ where
         client_name: "codex-tui".to_string(),
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         experimental_api: true,
+        mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
@@ -1827,7 +1829,9 @@ pub(crate) async fn read_session_cwd(
     // would be error-prone.
     let path = path?;
     if let Some(cwd) = read_latest_turn_context(path).await.map(|item| item.cwd) {
-        return Some(cwd);
+        // codex-vl: TurnContextItem.cwd became AbsolutePathBuf upstream; this
+        // resolver returns PathBuf like its sibling branches.
+        return Some(cwd.to_path_buf());
     }
     match read_session_meta_line(path).await {
         Ok(meta_line) => Some(meta_line.meta.cwd),
@@ -1946,7 +1950,7 @@ async fn get_login_status(
     Ok(match account.account {
         Some(AppServerAccount::ApiKey {}) => LoginStatus::AuthMode(AppServerAuthMode::ApiKey),
         Some(AppServerAccount::Chatgpt { .. }) => LoginStatus::AuthMode(AppServerAuthMode::Chatgpt),
-        Some(AppServerAccount::AmazonBedrock {}) => LoginStatus::NotAuthenticated,
+        Some(AppServerAccount::AmazonBedrock { .. }) => LoginStatus::NotAuthenticated,
         None => LoginStatus::NotAuthenticated,
     })
 }
@@ -3080,7 +3084,10 @@ mod tests {
         // continue to feed our fork-specific test fixtures unchanged.
         TurnContextItem {
             turn_id: None,
-            cwd,
+            // codex-vl: TurnContextItem.cwd became AbsolutePathBuf upstream; test
+            // fixtures pass absolute TempDir paths.
+            cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from(cwd)
+                .expect("absolute test cwd"),
             workspace_roots: None,
             current_date: None,
             timezone: None,
@@ -3103,6 +3110,9 @@ mod tests {
             // codex-vl: upstream 0.140.0 added comp_hash; fork test fixtures
             // have no compaction context.
             comp_hash: None,
+            // codex-vl: upstream 0.142.0 added multi_agent_mode; fork test
+            // fixtures have no multi-agent context.
+            multi_agent_mode: None,
         }
     }
 

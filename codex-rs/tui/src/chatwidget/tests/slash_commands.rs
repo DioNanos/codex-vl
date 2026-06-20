@@ -83,7 +83,7 @@ fn dispatch_usage_and_expect_refresh(
     chat: &mut ChatWidget,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
 ) -> u64 {
-    chat.dispatch_command(SlashCommand::Usage);
+    chat.dispatch_command_with_args(SlashCommand::Usage, "daily".to_string(), Vec::new());
     expect_token_activity_refresh(rx)
 }
 
@@ -589,7 +589,9 @@ async fn ctrl_d_with_modal_open_does_not_quit() {
 #[tokio::test]
 async fn slash_init_does_not_depend_on_loaded_instruction_sources() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.instruction_source_paths = vec![chat.config.cwd.join("project-instructions.md")];
+    chat.instruction_source_paths = vec![codex_utils_path_uri::PathUri::from_abs_path(
+        &chat.config.cwd.join("project-instructions.md"),
+    )];
 
     submit_composer_text(&mut chat, "/init");
 
@@ -1245,7 +1247,7 @@ async fn usage_command_runs_with_backend_auth_without_chatgpt_account_flag() {
         /*has_chatgpt_account*/ false, /*has_codex_backend_auth*/ true,
     );
 
-    chat.dispatch_command(SlashCommand::Usage);
+    chat.dispatch_command_with_args(SlashCommand::Usage, "daily".to_string(), Vec::new());
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::RefreshTokenActivity { .. }));
     assert!(!chat.has_chatgpt_account());
@@ -1259,7 +1261,7 @@ async fn usage_command_runs_with_backend_auth_from_widget_init() {
     )
     .await;
 
-    chat.dispatch_command(SlashCommand::Usage);
+    chat.dispatch_command_with_args(SlashCommand::Usage, "daily".to_string(), Vec::new());
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::RefreshTokenActivity { .. }));
     assert!(!chat.has_chatgpt_account());
@@ -1375,7 +1377,7 @@ async fn completed_token_activity_refresh_waits_for_active_stream() {
 
     let request_id = dispatch_usage_and_expect_refresh(&mut chat, &mut rx);
     chat.on_agent_message_delta("partial response".to_string());
-    assert!(chat.token_activity_history_insertion_blocked());
+    assert!(chat.usage_history_insertion_blocked());
 
     assert!(
         chat.finish_token_activity_refresh(
@@ -1390,10 +1392,10 @@ async fn completed_token_activity_refresh_waits_for_active_stream() {
     );
 
     chat.finalize_turn();
-    assert!(!chat.token_activity_history_insertion_blocked());
+    assert!(!chat.usage_history_insertion_blocked());
     assert!(
         std::iter::from_fn(|| rx.try_recv().ok())
-            .any(|event| matches!(event, AppEvent::CommitCompletedTokenActivityOutput))
+            .any(|event| matches!(event, AppEvent::CommitPendingUsageOutputAfterStreamShutdown))
     );
     assert!(chat.take_completed_token_activity_output().is_some());
 }
@@ -1414,11 +1416,11 @@ async fn completed_token_activity_refresh_waits_for_queued_stream_consolidation(
             Err("token activity unavailable".to_string()),
         )
     );
-    assert!(chat.token_activity_history_insertion_blocked());
+    assert!(chat.usage_history_insertion_blocked());
 
     chat.note_stream_consolidation_completed();
 
-    assert!(!chat.token_activity_history_insertion_blocked());
+    assert!(!chat.usage_history_insertion_blocked());
 }
 
 #[tokio::test]
@@ -1436,15 +1438,12 @@ async fn completed_token_activity_refresh_waits_for_active_history_cell() {
             Err("token activity unavailable".to_string()),
         )
     );
-    assert!(chat.token_activity_history_insertion_blocked());
+    assert!(chat.usage_history_insertion_blocked());
 
     chat.flush_active_cell();
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::CommitCompletedTokenActivityOutput)
-    );
+    assert_matches!(rx.try_recv(), Ok(AppEvent::CommitPendingUsageOutput));
 }
 
 #[tokio::test]
@@ -1469,7 +1468,7 @@ async fn completed_token_activity_refresh_waits_for_active_hook() {
             Err("token activity unavailable".to_string()),
         )
     );
-    assert!(chat.token_activity_history_insertion_blocked());
+    assert!(chat.usage_history_insertion_blocked());
 
     handle_hook_completed(
         &mut chat,
@@ -1486,10 +1485,7 @@ async fn completed_token_activity_refresh_waits_for_active_hook() {
     );
 
     assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::CommitCompletedTokenActivityOutput)
-    );
+    assert_matches!(rx.try_recv(), Ok(AppEvent::CommitPendingUsageOutput));
 }
 
 #[tokio::test]
@@ -1516,7 +1512,7 @@ async fn completed_token_activity_refresh_retries_after_plan_item_completion() {
 
     assert!(
         std::iter::from_fn(|| rx.try_recv().ok())
-            .any(|event| matches!(event, AppEvent::CommitCompletedTokenActivityOutput))
+            .any(|event| matches!(event, AppEvent::CommitPendingUsageOutputAfterStreamShutdown))
     );
 }
 

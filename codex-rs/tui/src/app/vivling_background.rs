@@ -50,6 +50,7 @@ pub(super) async fn run_vivling_assist_request(
             profile_config.codex_home.to_path_buf(),
             /*enable_codex_api_key_env*/ false,
             profile_config.cli_auth_credentials_store_mode,
+            /*forced_chatgpt_workspace_id*/ None,
             Some(profile_config.chatgpt_base_url.clone()),
             codex_login::AuthKeyringBackendKind::default(),
         )
@@ -71,6 +72,7 @@ pub(super) async fn run_vivling_assist_request(
             .enabled(Feature::EnableRequestCompression),
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
+        /*item_ids_enabled*/ false,
         None,
     );
     let mut prompt = Prompt::default();
@@ -164,6 +166,7 @@ pub(super) async fn run_vivling_loop_tick_request(
             profile_config.codex_home.to_path_buf(),
             false,
             profile_config.cli_auth_credentials_store_mode,
+            /*forced_chatgpt_workspace_id*/ None,
             Some(profile_config.chatgpt_base_url.clone()),
             codex_login::AuthKeyringBackendKind::default(),
         )
@@ -185,6 +188,7 @@ pub(super) async fn run_vivling_loop_tick_request(
             .enabled(Feature::EnableRequestCompression),
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
+        /*item_ids_enabled*/ false,
         None,
     );
 
@@ -296,6 +300,7 @@ pub(super) async fn run_vivling_expression_request(
             profile_config.codex_home.to_path_buf(),
             false,
             profile_config.cli_auth_credentials_store_mode,
+            /*forced_chatgpt_workspace_id*/ None,
             Some(profile_config.chatgpt_base_url.clone()),
             codex_login::AuthKeyringBackendKind::default(),
         )
@@ -317,6 +322,7 @@ pub(super) async fn run_vivling_expression_request(
             .enabled(Feature::EnableRequestCompression),
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
+        /*item_ids_enabled*/ false,
         None,
     );
 
