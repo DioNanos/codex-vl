@@ -9,6 +9,7 @@ use super::suggestions::{VivlingLoopSuggestion, VivlingSuggestionKind};
 const TURN_SUMMARY_MAX: usize = 500;
 const ACTIVE_LOOPS_MAX: usize = 10;
 
+#[allow(dead_code)] // FASE5 5A: fields read in Task 4 (TAPPA 2) dal brain loop-tick
 #[derive(Clone, Debug)]
 pub(crate) struct WorkerTurnSnapshot {
     pub(crate) turn_summary: String,

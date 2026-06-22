@@ -9,8 +9,11 @@ use super::events::LoopCommandRequest;
 
 /// Soglie di gating (§5.2). Adult e brain sono verificati a monte sul
 /// VivlingState; qui restano le soglie numeriche + confidence.
+#[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2) da SuggestionGate::passes
 pub(crate) const BOND_MIN: u8 = 50;
+#[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2)
 pub(crate) const LOOP_EXPOSURE_MIN: u64 = 20;
+#[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2)
 pub(crate) const CONFIDENCE_MIN: f32 = 0.60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -22,6 +25,20 @@ pub(crate) enum VivlingSuggestionKind {
     MarkDone,
     RefinePrompt,
     Disable,
+}
+
+impl VivlingSuggestionKind {
+    /// Etichetta testuale stable per messaggi UI (5A apply/dismiss feedback).
+    pub(crate) fn kind_label(self) -> &'static str {
+        match self {
+            VivlingSuggestionKind::Unblock => "unblock",
+            VivlingSuggestionKind::AdjustInterval => "adjust_interval",
+            VivlingSuggestionKind::Split => "split",
+            VivlingSuggestionKind::MarkDone => "mark_done",
+            VivlingSuggestionKind::RefinePrompt => "refine_prompt",
+            VivlingSuggestionKind::Disable => "disable",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -48,6 +65,7 @@ pub(crate) struct VivlingLoopSuggestion {
 
 /// Dati di gating estratti dal VivlingState dal chiamante (il modello non
 /// importa codex-tui::vivling per restare puro/test-abile).
+#[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2) da handle_loop_tick_finished
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SuggestionGate {
     pub(crate) is_adult: bool,
@@ -63,6 +81,7 @@ pub(crate) struct SuggestionGate {
 
 impl SuggestionGate {
     /// True solo se TUTTE le condizioni §5.2 valgono (brain_profile RIMOSSO, vedi sopra).
+    #[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2)
     pub(crate) fn passes(&self) -> bool {
         self.is_adult
             && self.brain_enabled

@@ -588,6 +588,9 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    /// FASE5 5A — volatile in-session context bus (worker snapshots +
+    /// pending loop suggestions). Not persisted, not part of VivlingState.
+    pub(crate) vivling_context_bus: crate::vl::context_bus::VivlingContextBus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1057,6 +1060,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_startup_thread_start,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            vivling_context_bus: crate::vl::context_bus::VivlingContextBus::default(),
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
