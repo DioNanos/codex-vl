@@ -5,6 +5,7 @@ mod commands;
 mod common;
 mod import_export;
 mod language;
+mod lifecycle_fsm;
 mod lineage;
 mod lineage_echo_runtime;
 mod lineage_summary;

@@ -15,6 +15,7 @@ impl Vivling {
             frame_requester: None,
             animations_enabled: false,
             task_running: Cell::new(false),
+            lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
             active_until: Cell::new(None),
             active_started_at: Cell::new(None),
             next_scheduled_frame_at: RefCell::new(None),
@@ -72,6 +73,8 @@ impl Vivling {
             // "needs bootstrap" without owning the dispatch itself.
             self.startup_dispatched.set(false);
         }
+        // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
+        self.lifecycle.borrow_mut().set_available();
     }
 
     fn maybe_backfill_msa_index(&self) {
@@ -98,11 +101,27 @@ impl Vivling {
 
     pub(crate) fn set_task_running(&self, running: bool) {
         self.task_running.set(running);
+        // Step 12.C — dual-write: FSM di fase in parallelo al flag legacy
+        // (Task 4 rende la FSM sorgente di verità, Task 5 rimuove il flag).
+        {
+            let mut phase = self.lifecycle.borrow_mut();
+            phase.set_available(); // configure() precede sempre un task
+            if running {
+                phase.begin_task(std::time::Instant::now());
+            } else {
+                phase.end_task();
+            }
+        }
         if running {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         } else {
             self.request_frame();
         }
+    }
+
+    /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
+    pub(crate) fn is_task_running(&self) -> bool {
+        self.lifecycle.borrow().is_task_running()
     }
 
     /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
