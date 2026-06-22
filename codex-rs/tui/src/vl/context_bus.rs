@@ -135,4 +135,31 @@ mod tests {
         assert!(bus.take_suggestion("a").is_none());
         assert!(bus.pending_suggestions.is_empty());
     }
+
+    /// SAFETY 5A (DoD, OBBLIGATORIO): una suggestion nel bus NON produce
+    /// alcuna azione finche non viene esplicitamente estratta con
+    /// `take_suggestion` (path `/loop apply`). `SuggestionReady` ->
+    /// `push_suggestion` NON genera comandi. `/loop dismiss` estrae senza
+    /// mappare. Solo il path apply chiama `map_to_command`.
+    #[test]
+    fn fase5_5a_no_autonomy_suggestion_pending_until_explicit_apply() {
+        let mut bus = VivlingContextBus::default();
+        // SuggestionReady equivalente: suggestion nel bus, NESSUN comando.
+        bus.push_suggestion(sugg("a", "build", VivlingSuggestionKind::Disable));
+        assert_eq!(bus.pending_suggestions.len(), 1);
+
+        // /loop dismiss: take + scarta (NESSUN map_to_command).
+        let dismissed = bus.take_suggestion("a");
+        assert!(dismissed.is_some());
+        assert!(bus.pending_suggestions.is_empty());
+
+        // /loop apply path: take + map_to_command genera il comando.
+        bus.push_suggestion(sugg("b", "build", VivlingSuggestionKind::Disable));
+        let for_apply = bus.take_suggestion("b").expect("present");
+        let cmd = super::super::suggestions::map_to_command(&for_apply, false);
+        assert!(matches!(
+            cmd,
+            Some(crate::vl::events::LoopCommandRequest::Disable { .. })
+        ));
+    }
 }

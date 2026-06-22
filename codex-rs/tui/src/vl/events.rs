@@ -54,10 +54,8 @@ pub(crate) enum LoopCommandRequest {
     OwnerSetMain,
     OwnerSetVivling,
     /// FASE5 5A — apply a pending suggestion by id (user-confirmed via `/loop apply`).
-    #[allow(dead_code)] // wired in Task 5 (TAPPA 2): vl_slash parser
     Apply { suggestion_id: String },
     /// FASE5 5A — dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
-    #[allow(dead_code)] // wired in Task 5 (TAPPA 2): vl_slash parser
     Dismiss { suggestion_id: String },
 }
 
