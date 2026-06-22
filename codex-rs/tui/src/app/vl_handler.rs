@@ -192,11 +192,15 @@ impl App {
                 self.handle_vivling_expression_finished(vivling_id, result);
             }
             VlEvent::SuggestionReady { suggestion } => {
+                // Audit UX: mostra id + target + tipo, cosi l'utente vede ESATTAMENTE
+                // quale loop e quale comando confermare prima di applicare.
+                let id = suggestion.id.clone();
                 let label = suggestion.loop_label.clone();
+                let kind = suggestion.kind.kind_label();
                 self.vivling_context_bus.push_suggestion(suggestion);
                 self.chat_widget.add_info_message(
                     format!(
-                        "Vivling: suggerimento sul loop '{label}' — /loop apply <id> o /loop dismiss <id>"
+                        "Vivling [{id}]: suggerimento {kind} sul loop '{label}' — /loop apply {id} oppure /loop dismiss {id}"
                     ),
                     None,
                 );

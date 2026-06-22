@@ -142,7 +142,10 @@ pub(super) async fn handle_loop_tick_finished(
                 {
                     let sugg = crate::vl::suggestions::VivlingLoopSuggestion {
                         id: format!("sg-{}", uuid::Uuid::new_v4().simple()),
-                        loop_label: raw.loop_label.clone(),
+                        // FASE5 5A safety (audit): il target e' VINCOLATO al job del
+                        // tick, MAI a raw.loop_label (LLM-controlled) -> niente label
+                        // injection / edit di un loop non corrispondente.
+                        loop_label: job.label.clone(),
                         kind: raw.kind,
                         reasoning: raw.reasoning.clone(),
                         confidence: raw.confidence,
