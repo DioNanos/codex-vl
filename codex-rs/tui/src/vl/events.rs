@@ -124,7 +124,6 @@ pub(crate) enum VlEvent {
     /// Stored in the in-session context bus; the user applies it with
     /// `/loop apply <id>` or discards it with `/loop dismiss <id>`. No
     /// automatic action is ever taken from this event alone.
-    #[allow(dead_code)] // FASE5 5A: wired in Task 4 (TAPPA 2) — handle_loop_tick_finished emit
     SuggestionReady { suggestion: VivlingLoopSuggestion },
     /// FASE5 5A — user confirmed `/loop apply <id>`: map the suggestion to
     /// a safe LoopCommandRequest and route it (only non-destructive kinds).

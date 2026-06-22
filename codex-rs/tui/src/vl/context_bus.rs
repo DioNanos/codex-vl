@@ -9,7 +9,6 @@ use super::suggestions::{VivlingLoopSuggestion, VivlingSuggestionKind};
 const TURN_SUMMARY_MAX: usize = 500;
 const ACTIVE_LOOPS_MAX: usize = 10;
 
-#[allow(dead_code)] // FASE5 5A: fields read in Task 4 (TAPPA 2) dal brain loop-tick
 #[derive(Clone, Debug)]
 pub(crate) struct WorkerTurnSnapshot {
     pub(crate) turn_summary: String,
@@ -66,6 +65,25 @@ impl VivlingContextBus {
     pub(crate) fn take_suggestion(&mut self, id: &str) -> Option<VivlingLoopSuggestion> {
         let pos = self.pending_suggestions.iter().position(|s| s.id == id)?;
         Some(self.pending_suggestions.remove(pos))
+    }
+
+    /// FASE5 5A — formatta lo snapshot worker (volatile) per il prompt del
+    /// loop tick, così il Vivling vede l'attività worker recente. Legge tutti
+    /// i campi di [`WorkerTurnSnapshot`]. None se non c'e' uno snapshot.
+    pub(crate) fn worker_context_summary(&self) -> Option<String> {
+        let snap = self.worker_last_context.as_ref()?;
+        let mut out = String::new();
+        out.push_str(&snap.turn_summary);
+        if !snap.active_loops.is_empty() {
+            out.push_str("\nactive loops: ");
+            out.push_str(&snap.active_loops.join(", "));
+        }
+        if !snap.blockers.is_empty() {
+            out.push_str("\nblockers: ");
+            out.push_str(&snap.blockers.join(", "));
+        }
+        out.push_str(&format!("\n(as of {})", snap.timestamp.to_rfc3339()));
+        Some(out)
     }
 }
 

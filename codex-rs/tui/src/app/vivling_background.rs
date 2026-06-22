@@ -204,7 +204,11 @@ pub(super) async fn run_vivling_loop_tick_request(
     }];
     prompt.base_instructions = codex_protocol::models::BaseInstructions {
         text: format!(
-            "You are {} managing a Codex loop tick. Return only valid JSON. Do not include markdown fences or commentary.",
+            "You are {} managing a Codex loop tick. Return only valid JSON. Do not include markdown fences or commentary. \
+You MAY include a `suggestion` object for a NON-automatic loop improvement that the owner must confirm with `/loop apply <id>` \
+(fields: loop_label, kind in [unblock, adjust_interval, split, mark_done, refine_prompt, disable], reasoning, confidence in [0,1], optional proposed_action {{interval_seconds, prompt_text}}). \
+Do NOT duplicate a suggestion into `loop_action` — `loop_action` is the AUTO channel that acts on the owned loop; `suggestion` is the no-auto channel. \
+Omit `suggestion` (or null) when you have no high-confidence advice; never invent blockers.",
             request.vivling_name
         ),
     };
