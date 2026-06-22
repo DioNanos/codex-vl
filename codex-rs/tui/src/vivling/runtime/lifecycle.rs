@@ -8,6 +8,9 @@
 
 use std::time::Instant;
 
+/// Step 12.D consumerà le varianti non-`Crt` per il dispatch kind-aware;
+/// in 12.C il gate usa solo la presenza (hardcoded `Crt`).
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExpressionKind {
     Assist,
@@ -16,23 +19,24 @@ pub(crate) enum ExpressionKind {
     Bootstrap,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) enum VivlingLifecyclePhase {
     /// Pre-configure: nessun codex_home.
+    #[default]
     Unavailable,
     /// Configured, nessun turno worker in corso.
     Idle,
     /// Un turno worker è in esecuzione.
-    TaskRunning { since: Instant },
-}
-
-impl Default for VivlingLifecyclePhase {
-    fn default() -> Self {
-        VivlingLifecyclePhase::Unavailable
-    }
+    TaskRunning {
+        /// Step 12.D: durata del turno per observability.
+        #[allow(dead_code)]
+        since: Instant,
+    },
 }
 
 impl VivlingLifecyclePhase {
+    /// Step 12.D: etichetta observability (`state.kind()` in 1 stringa).
+    #[allow(dead_code)]
     pub(crate) fn kind_label(&self) -> &'static str {
         match self {
             VivlingLifecyclePhase::Unavailable => "unavailable",
@@ -50,10 +54,6 @@ impl VivlingLifecyclePhase {
         if matches!(self, VivlingLifecyclePhase::Unavailable) {
             *self = VivlingLifecyclePhase::Idle;
         }
-    }
-
-    pub(crate) fn set_unavailable(&mut self) {
-        *self = VivlingLifecyclePhase::Unavailable;
     }
 
     /// Idle -> TaskRunning. false se non in Idle (best-effort, no panic).

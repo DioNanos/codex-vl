@@ -138,6 +138,8 @@ impl Vivling {
         self.expression_in_flight.set(None);
     }
 
+    /// Step 12.D / test helper: stato del gate di espressione.
+    #[allow(dead_code)]
     pub(crate) fn expression_in_flight(&self) -> bool {
         self.expression_in_flight.get().is_some()
     }
