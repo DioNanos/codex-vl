@@ -6,6 +6,7 @@
 //! upstream predictable: conflicts stay confined to this tree instead of
 //! spreading across every upstream file.
 
+pub(crate) mod context_bus;
 pub(crate) mod crt;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
