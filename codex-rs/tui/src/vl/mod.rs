@@ -12,6 +12,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod loop_runtime;
 pub(crate) mod remote_control;
 pub(crate) mod sidebar;
+pub(crate) mod suggestions;
 
 pub(crate) use events::VlEvent;
 pub(crate) use lifecycle::LifecycleState;
