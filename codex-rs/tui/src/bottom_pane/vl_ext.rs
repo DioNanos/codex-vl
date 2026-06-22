@@ -185,6 +185,15 @@ impl BottomPane {
         result
     }
 
+    /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
+    /// in volo. Inoltra al wrapper; `false` se uno è già in corso.
+    pub(crate) fn try_begin_vivling_expression(
+        &self,
+        kind: crate::vivling::ExpressionKind,
+    ) -> bool {
+        self.vivling.try_begin_expression(kind)
+    }
+
     /// Memory V2 Step 12.B.D.3 — best-effort post-turn / post-loop
     /// trigger for the Expression channel. Forwards to the active
     /// Vivling's reservation + planner pipeline; returns `None`

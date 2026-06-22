@@ -109,6 +109,9 @@ pub(crate) struct Vivling {
     /// Step 12.C — fase di dispatch shadow. Task 2: scritta in parallelo a
     /// `task_running`; Task 4: diventa sorgente di verità; Task 5: rimuove `task_running`.
     pub(crate) lifecycle: RefCell<VivlingLifecyclePhase>,
+    /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
+    /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
+    pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
     pub(crate) active_until: Cell<Option<Instant>>,
     pub(crate) active_started_at: Cell<Option<Instant>>,
     pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
@@ -168,6 +171,7 @@ impl Clone for Vivling {
             animations_enabled: self.animations_enabled,
             task_running: self.task_running.clone(),
             lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
+            expression_in_flight: self.expression_in_flight.clone(),
             active_until: self.active_until.clone(),
             active_started_at: self.active_started_at.clone(),
             next_scheduled_frame_at: self.next_scheduled_frame_at.clone(),

@@ -16,6 +16,7 @@ impl Vivling {
             animations_enabled: false,
             task_running: Cell::new(false),
             lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
+            expression_in_flight: Cell::new(None),
             active_until: Cell::new(None),
             active_started_at: Cell::new(None),
             next_scheduled_frame_at: RefCell::new(None),
@@ -122,6 +123,26 @@ impl Vivling {
     /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
     pub(crate) fn is_task_running(&self) -> bool {
         self.lifecycle.borrow().is_task_running()
+    }
+
+    /// Apre un dispatch di espressione se nessuno è in volo. false (skip) altrimenti.
+    pub(crate) fn try_begin_expression(&self, kind: ExpressionKind) -> bool {
+        if self.expression_in_flight.get().is_some() {
+            false
+        } else {
+            self.expression_in_flight.set(Some(kind));
+            true
+        }
+    }
+
+    /// Chiude il dispatch in volo (no-op se nessuno). Fail-safe: invocato da
+    /// ENTRAMBI i completion handler (success + failure).
+    pub(crate) fn finish_expression(&self) {
+        self.expression_in_flight.set(None);
+    }
+
+    pub(crate) fn expression_in_flight(&self) -> bool {
+        self.expression_in_flight.get().is_some()
     }
 
     /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
