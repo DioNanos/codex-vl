@@ -1,25 +1,14 @@
 use super::common::*;
 
 #[test]
-fn shadow_phase_agrees_with_task_running_flag() {
+fn task_running_is_tracked_by_phase() {
     let temp = TempDir::new().expect("tempdir");
     let vivling = configured_vivling(temp.path());
-    assert!(!vivling.task_running.get());
-    assert!(!vivling.lifecycle.borrow().is_task_running());
-
+    assert!(!vivling.is_task_running());
     vivling.set_task_running(true);
-    assert!(vivling.task_running.get());
-    assert!(
-        vivling.lifecycle.borrow().is_task_running(),
-        "shadow concorda con true"
-    );
-
+    assert!(vivling.is_task_running());
     vivling.set_task_running(false);
-    assert!(!vivling.task_running.get());
-    assert!(
-        !vivling.lifecycle.borrow().is_task_running(),
-        "shadow concorda con false"
-    );
+    assert!(!vivling.is_task_running());
 }
 
 #[test]

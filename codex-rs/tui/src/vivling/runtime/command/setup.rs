@@ -14,7 +14,6 @@ impl Vivling {
             active_vivling_id: None,
             frame_requester: None,
             animations_enabled: false,
-            task_running: Cell::new(false),
             lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
             expression_in_flight: Cell::new(None),
             active_until: Cell::new(None),
@@ -101,9 +100,7 @@ impl Vivling {
     }
 
     pub(crate) fn set_task_running(&self, running: bool) {
-        self.task_running.set(running);
-        // Step 12.C — dual-write: FSM di fase in parallelo al flag legacy
-        // (Task 4 rende la FSM sorgente di verità, Task 5 rimuove il flag).
+        // Step 12.C — la FSM di fase è ora sorgente di verità (flag legacy rimosso).
         {
             let mut phase = self.lifecycle.borrow_mut();
             phase.set_available(); // configure() precede sempre un task
