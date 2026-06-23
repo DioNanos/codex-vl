@@ -429,6 +429,34 @@ pub(super) async fn run_command_request(
                 None,
             )
         }
+        // FASE5 5A — `/loop apply`/`/loop dismiss`: puro routing ad eventi
+        // Vivling. Nessun tocco allo state DB qui; l'applicazione effettiva
+        // (map_to_command + run_command_request ricorsivo) avviene nel
+        // handler ApplyLoopSuggestion, sempre gated dal comando utente.
+        LoopCommandRequest::Apply { suggestion_id } => {
+            app.app_event_tx
+                .send_vl(crate::vl::VlEvent::ApplyLoopSuggestion { suggestion_id });
+            LoopActionOutcome {
+                success: true,
+                message: "Suggestion apply dispatched.".to_string(),
+                payload: serde_json::json!({
+                    "ok": true,
+                    "action": "apply_suggestion",
+                }),
+            }
+        }
+        LoopCommandRequest::Dismiss { suggestion_id } => {
+            app.app_event_tx
+                .send_vl(crate::vl::VlEvent::DismissLoopSuggestion { suggestion_id });
+            LoopActionOutcome {
+                success: true,
+                message: "Suggestion dismissed.".to_string(),
+                payload: serde_json::json!({
+                    "ok": true,
+                    "action": "dismiss_suggestion",
+                }),
+            }
+        }
     };
 
     app.refresh_loop_jobs(thread_id).await?;

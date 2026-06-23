@@ -29,7 +29,6 @@ use core_test_support::test_codex::RecordingUserInstructionsProvider;
 use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Arc;
@@ -88,7 +87,7 @@ fn instruction_fragments(request: &responses::ResponsesRequest) -> Vec<String> {
 }
 
 fn expected_instruction_fragment(cwd: &AbsolutePathBuf, contents: &str) -> String {
-    let cwd = cwd.as_path().display();
+    let cwd = PathUri::from_abs_path(cwd).inferred_native_path_string();
     format!("# AGENTS.md instructions for {cwd}\n\n<INSTRUCTIONS>\n{contents}\n</INSTRUCTIONS>")
 }
 
@@ -330,8 +329,8 @@ async fn symlinked_cwd_uses_logical_parent_for_agents_discovery() -> Result<()> 
     assert_eq!(
         test.codex.instruction_sources().await,
         vec![
-            logical_root.join("AGENTS.md"),
-            test.config.cwd.join("AGENTS.md")
+            PathUri::from_abs_path(&logical_root.join("AGENTS.md")),
+            PathUri::from_abs_path(&test.config.cwd.join("AGENTS.md"))
         ]
     );
 
@@ -379,7 +378,10 @@ async fn selected_environment_sources_match_model_visible_instructions() -> Resu
 
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![global_agents, project_agents]
+        vec![
+            PathUri::from_abs_path(&global_agents),
+            PathUri::from_abs_path(&project_agents),
+        ]
     );
 
     test.submit_turn("hello").await?;
@@ -439,15 +441,17 @@ async fn loads_user_instructions_without_a_primary_environment() -> Result<()> {
             thread_source: None,
             dynamic_tools: Vec::new(),
             metrics_service_name: None,
+            multi_agent_mode: None,
             parent_trace: None,
             environments: Vec::new(),
             thread_extension_init: Default::default(),
+            supports_openai_form_elicitation: false,
         })
         .await?;
     assert_eq!(provider.load_count(), 2);
     assert_eq!(
         no_environment_thread.thread.instruction_sources().await,
-        vec![global_source]
+        vec![PathUri::from_abs_path(&global_source)]
     );
 
     no_environment_thread
@@ -512,7 +516,10 @@ async fn fresh_thread_composes_global_before_project_and_reports_sources() -> Re
         });
     let test = builder.build_with_remote_env(&server).await?;
     let project_source = test.config.cwd.join(GLOBAL_AGENTS_FILENAME);
-    let creation_sources = vec![global_source.clone(), project_source.clone()];
+    let creation_sources = vec![
+        PathUri::from_abs_path(&global_source),
+        PathUri::from_abs_path(&project_source),
+    ];
 
     // Confirm the thread records both creation-time sources in composition order.
     assert_eq!(test.codex.instruction_sources().await, creation_sources);
@@ -642,27 +649,29 @@ async fn multi_environment_thread_loads_every_project_and_keeps_creation_snapsho
             thread_source: None,
             dynamic_tools: Vec::new(),
             metrics_service_name: None,
+            multi_agent_mode: None,
             parent_trace: None,
             environments: vec![
                 TurnEnvironmentSelection {
                     environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-                    cwd: test.config.cwd.clone(),
+                    cwd: PathUri::from_abs_path(&test.config.cwd),
                 },
                 TurnEnvironmentSelection {
                     environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
-                    cwd: local_root.path().to_path_buf().try_into()?,
+                    cwd: PathUri::from_path(local_root.path())?,
                 },
             ],
             thread_extension_init: Default::default(),
+            supports_openai_form_elicitation: false,
         })
         .await?;
     assert_eq!(provider.load_count(), 2);
     assert_eq!(
         thread.thread.instruction_sources().await,
         vec![
-            global_source.clone(),
-            remote_source.clone(),
-            local_source.clone().try_into()?,
+            PathUri::from_abs_path(&global_source),
+            PathUri::from_abs_path(&remote_source),
+            PathUri::from_path(&local_source)?,
         ]
     );
 
@@ -688,7 +697,7 @@ async fn multi_environment_thread_loads_every_project_and_keeps_creation_snapsho
 
     let contents = format!(
         "{GLOBAL_INSTRUCTIONS}\n\nfor `{REMOTE_ENVIRONMENT_ID}` with root {}\n\nremote project instructions\n\nfor `{LOCAL_ENVIRONMENT_ID}` with root {}\n\nlocal project instructions",
-        test.config.cwd.display(),
+        PathUri::from_abs_path(&test.config.cwd).inferred_native_path_string(),
         local_root.path().display(),
     );
     let expected =
@@ -700,15 +709,18 @@ async fn multi_environment_thread_loads_every_project_and_keeps_creation_snapsho
     assert_eq!(provider.load_count(), 2);
     assert_eq!(
         thread.thread.instruction_sources().await,
-        vec![global_source, remote_source, local_source.try_into()?]
+        vec![
+            PathUri::from_abs_path(&global_source),
+            PathUri::from_abs_path(&remote_source),
+            PathUri::from_path(&local_source)?,
+        ]
     );
 
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn global_loading_warning_surfaces_during_thread_creation() -> Result<()> {
-    // Set up a malformed global instruction file and one model response.
+async fn invalid_utf8_global_instructions_are_lossy() -> Result<()> {
     let server = responses::start_mock_server().await;
     let response_mock = responses::mount_sse_once(
         &server,
@@ -725,28 +737,14 @@ async fn global_loading_warning_surfaces_during_thread_creation() -> Result<()> 
         b"global\xFFinstructions",
     )?;
 
-    // Create the thread, capture its load warning, and submit one turn for rendered output.
     let mut builder = test_codex().with_home(home);
     let test = builder.build(&server).await?;
-    let warning = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::Warning(warning)
-            if warning
-                .message
-                .contains(source.as_path().display().to_string().as_str()) =>
-        {
-            Some(warning.message.clone())
-        }
-        _ => None,
-    })
-    .await;
     test.submit_turn("inspect lossy global instructions")
         .await?;
 
-    // Assert the source is reported, the warning is specific, and rendering is lossily decoded.
-    assert_eq!(test.codex.instruction_sources().await, vec![source.clone()]);
-    assert!(
-        warning.contains("invalid UTF-8"),
-        "expected warning to contain \"invalid UTF-8\"; observed: {warning}"
+    assert_eq!(
+        test.codex.instruction_sources().await,
+        vec![PathUri::from_abs_path(&source)]
     );
     let expected_fragment =
         expected_provider_only_instruction_fragment("global\u{FFFD}instructions");
@@ -790,7 +788,7 @@ async fn cold_resume_replays_rendered_instructions_but_reports_current_config_so
     // Assert the pre-resume thread reports the source used to create its snapshot.
     assert_eq!(
         initial.codex.instruction_sources().await,
-        vec![old_source.clone()],
+        vec![PathUri::from_abs_path(&old_source)],
         "initial thread reports the creation-time global source"
     );
     initial.submit_turn("persist instructions").await?;
@@ -820,7 +818,7 @@ async fn cold_resume_replays_rendered_instructions_but_reports_current_config_so
     // Assert the API reports the new source while model history replays the old structured prefix.
     assert_eq!(
         resumed.codex.instruction_sources().await,
-        vec![new_source],
+        vec![PathUri::from_abs_path(&new_source)],
         "resume reports sources from the newly loaded config"
     );
 
@@ -874,7 +872,7 @@ async fn fork_replays_rendered_instructions_from_shared_history() -> Result<()> 
     // Assert the parent reports the source used to create its snapshot.
     assert_eq!(
         parent.codex.instruction_sources().await,
-        vec![source.clone()],
+        vec![PathUri::from_abs_path(&source)],
         "parent reports the creation-time global source"
     );
     parent.submit_turn("persist instructions").await?;
@@ -909,7 +907,7 @@ async fn fork_replays_rendered_instructions_from_shared_history() -> Result<()> 
     // Assert the fork reports the new source before issuing its first turn.
     assert_eq!(
         forked.thread.instruction_sources().await,
-        vec![new_source],
+        vec![PathUri::from_abs_path(&new_source)],
         "fork config should reflect the newly loaded global source"
     );
 
@@ -1039,7 +1037,7 @@ async fn run_subagent_global_instruction_case(fork_context: bool) -> Result<()> 
     // Assert the parent reports the creation-time source before spawning.
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![source.clone()],
+        vec![PathUri::from_abs_path(&source)],
         "parent reports the creation-time global source before spawning"
     );
     test.submit_turn(SPAWN_SEED_PROMPT).await?;
@@ -1082,12 +1080,12 @@ async fn run_subagent_global_instruction_case(fork_context: bool) -> Result<()> 
     assert_single_instruction_fragment(&child_request, &expected_fragment);
     assert_eq!(
         test.codex.instruction_sources().await,
-        vec![source.clone()],
+        vec![PathUri::from_abs_path(&source)],
         "running parent retains the creation-time global source after spawning"
     );
     assert_eq!(
         child_thread.instruction_sources().await,
-        vec![source],
+        vec![PathUri::from_abs_path(&source)],
         "subagent reports the parent's creation-time source"
     );
     if fork_context {

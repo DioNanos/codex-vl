@@ -130,6 +130,33 @@ pub(super) async fn handle_loop_tick_finished(
                         .await?;
             }
 
+            // FASE5 5A — gated loop suggestion (NO-AUTO channel). Emessa solo se
+            // il gate (Adult + brain + bond>=50 + exposure>=20 + conf>=0.60)
+            // passa; MAI applicata qui — l'utente deve `/loop apply <id>`.
+            if let Some(raw) = result.suggestion.as_ref() {
+                let gate = app
+                    .chat_widget
+                    .vivling_suggestion_gate(&app.config, raw.confidence);
+                if let Some(gate) = gate
+                    && gate.passes()
+                {
+                    let sugg = crate::vl::suggestions::VivlingLoopSuggestion {
+                        id: format!("sg-{}", uuid::Uuid::new_v4().simple()),
+                        // FASE5 5A safety (audit): il target e' VINCOLATO al job del
+                        // tick, MAI a raw.loop_label (LLM-controlled) -> niente label
+                        // injection / edit di un loop non corrispondente.
+                        loop_label: job.label.clone(),
+                        kind: raw.kind,
+                        reasoning: raw.reasoning.clone(),
+                        confidence: raw.confidence,
+                        proposed_action: raw.proposed_action.clone(),
+                        created_at: chrono::Utc::now(),
+                    };
+                    app.app_event_tx
+                        .send_vl(crate::vl::VlEvent::SuggestionReady { suggestion: sugg });
+                }
+            }
+
             app.chat_widget.add_info_message(
                 format!("Vivling loop `{}`: {}", job.label, result.message),
                 /*hint*/ None,
@@ -321,6 +348,15 @@ pub(super) fn run_loop_tick(
 /// event can address the right Vivling even when the model returns
 /// an error.
 pub(super) fn run_expression(app: &mut App, request: crate::vivling::VivlingExpressionRequest) {
+    // codex-vl Step 12.C — gate singolo: un solo dispatch di espressione in
+    // volo. Se uno è già in corso, skip best-effort (nessun finished verrà
+    // emesso, quindi nessun clear pendente: begin e clear restano 1:1).
+    if !app
+        .chat_widget
+        .try_begin_vivling_expression(crate::vivling::ExpressionKind::Crt)
+    {
+        return;
+    }
     let app_event_tx = app.app_event_tx.clone();
     let config = crate::app::vivling_background::config_with_session_model(
         &app.config,

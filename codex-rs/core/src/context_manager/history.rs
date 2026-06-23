@@ -1,3 +1,4 @@
+use crate::context::EnvironmentContext;
 use crate::context_manager::normalize;
 use crate::event_mapping::has_non_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_dev_message_content;
@@ -48,6 +49,8 @@ pub(crate) struct ContextManager {
     /// also clear this when it trims a mixed initial-context developer bundle
     /// whose non-diff fragments no longer exist in the surviving history.
     reference_context_item: Option<TurnContextItem>,
+    /// Environment state most recently appended to model-visible history.
+    environment_context_baseline: Option<EnvironmentContext>,
 }
 
 impl ContextManager {
@@ -59,6 +62,7 @@ impl ContextManager {
                 &None, &None, /*model_context_window*/ None,
             ),
             reference_context_item: None,
+            environment_context_baseline: None,
         }
     }
 
@@ -76,6 +80,17 @@ impl ContextManager {
 
     pub(crate) fn reference_context_item(&self) -> Option<TurnContextItem> {
         self.reference_context_item.clone()
+    }
+
+    pub(crate) fn update_environment_context_baseline(
+        &mut self,
+        context: &EnvironmentContext,
+    ) -> bool {
+        if self.environment_context_baseline.as_ref() == Some(context) {
+            return false;
+        }
+        self.environment_context_baseline = Some(context.clone());
+        true
     }
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
@@ -163,12 +178,14 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(&mut self.items, &removed);
+            self.environment_context_baseline = None;
         }
     }
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
         self.history_version = self.history_version.saturating_add(1);
+        self.environment_context_baseline = None;
     }
 
     /// Replace image content in the last turn if it originated from a tool output.
@@ -338,23 +355,29 @@ impl ContextManager {
     fn process_item(&self, item: &ResponseItem, policy: TruncationPolicy) -> ResponseItem {
         let policy_with_serialization_budget = policy * 1.2;
         match item {
-            ResponseItem::FunctionCallOutput { call_id, output } => {
-                ResponseItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output: truncate_function_output_payload(
-                        output,
-                        policy_with_serialization_budget,
-                    ),
-                }
-            }
+            ResponseItem::FunctionCallOutput {
+                id,
+                call_id,
+                output,
+                internal_chat_message_metadata_passthrough: metadata,
+            } => ResponseItem::FunctionCallOutput {
+                id: id.clone(),
+                call_id: call_id.clone(),
+                output: truncate_function_output_payload(output, policy_with_serialization_budget),
+                internal_chat_message_metadata_passthrough: metadata.clone(),
+            },
             ResponseItem::CustomToolCallOutput {
+                id,
                 call_id,
                 name,
                 output,
+                internal_chat_message_metadata_passthrough: metadata,
             } => ResponseItem::CustomToolCallOutput {
+                id: id.clone(),
                 call_id: call_id.clone(),
                 name: name.clone(),
                 output: truncate_function_output_payload(output, policy_with_serialization_budget),
+                internal_chat_message_metadata_passthrough: metadata.clone(),
             },
             ResponseItem::Message { .. }
             | ResponseItem::AgentMessage { .. }
@@ -367,7 +390,7 @@ impl ContextManager {
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::CustomToolCall { .. }
             | ResponseItem::Compaction { .. }
-            | ResponseItem::CompactionTrigger
+            | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => item.clone(),
         }
@@ -459,7 +482,7 @@ fn is_api_message(message: &ResponseItem) -> bool {
         | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger => false,
+        ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::Other => false,
     }
 }
@@ -511,9 +534,11 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
         }
         | ResponseItem::Compaction {
             encrypted_content: content,
+            ..
         }
         | ResponseItem::ContextCompaction {
             encrypted_content: Some(content),
+            ..
         } => i64::try_from(estimate_reasoning_length(content.len())).unwrap_or(i64::MAX),
         item => {
             let raw = serde_json::to_string(item)
@@ -689,7 +714,7 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger => false,
+        ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::CustomToolCallOutput { .. }

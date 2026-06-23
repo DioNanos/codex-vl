@@ -494,6 +494,8 @@ impl Vivling {
         reply: &super::expression::VivlingExpressionResult,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
+        // Step 12.C — chiude il gate expression_in_flight (fail-safe clear).
+        self.finish_expression();
         // codex-vl Step 14 Bug 1 fix — first Expression dispatch of
         // this TUI session has resolved (success). Flip the gate that
         // hides state-persistent CRT fallbacks; from now on the chain
@@ -634,6 +636,8 @@ impl Vivling {
     /// background; failures must not pollute the user-visible error
     /// surface used by `/vl chat` and `/vivling assist`).
     pub(crate) fn record_expression_failure_for(&mut self, vivling_id: &str) -> Result<(), String> {
+        // Step 12.C — chiude il gate expression_in_flight (fail-safe clear).
+        self.finish_expression();
         // codex-vl Step 14 Bug 1 fix — first Expression dispatch of
         // this TUI session has resolved (failure). Same gate flip as
         // the success path: a stalled / failed dispatch must not

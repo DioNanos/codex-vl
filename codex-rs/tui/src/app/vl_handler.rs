@@ -191,6 +191,34 @@ impl App {
             VlEvent::VivlingExpressionFinished { vivling_id, result } => {
                 self.handle_vivling_expression_finished(vivling_id, result);
             }
+            VlEvent::SuggestionReady { suggestion } => {
+                // Audit UX: mostra id + target + tipo, cosi l'utente vede ESATTAMENTE
+                // quale loop e quale comando confermare prima di applicare.
+                let id = suggestion.id.clone();
+                let label = suggestion.loop_label.clone();
+                let kind = suggestion.kind.kind_label();
+                self.vivling_context_bus.push_suggestion(suggestion);
+                self.chat_widget.add_info_message(
+                    format!(
+                        "Vivling [{id}]: suggerimento {kind} sul loop '{label}' — /loop apply {id} oppure /loop dismiss {id}"
+                    ),
+                    None,
+                );
+            }
+            VlEvent::ApplyLoopSuggestion { suggestion_id } => {
+                self.apply_loop_suggestion(&suggestion_id).await;
+            }
+            VlEvent::DismissLoopSuggestion { suggestion_id } => {
+                let _ = self.vivling_context_bus.take_suggestion(&suggestion_id);
+            }
+            VlEvent::ContextBusTurn {
+                summary,
+                active_loops,
+                blockers,
+            } => {
+                self.vivling_context_bus
+                    .record_turn(summary, active_loops, blockers, chrono::Utc::now());
+            }
             VlEvent::SidebarPushMessage {
                 kind,
                 text,
@@ -201,6 +229,51 @@ impl App {
             }
         }
         Ok(AppRunControl::Continue)
+    }
+
+    /// FASE5 5A — applica una suggestion confermata dall'utente (`/loop apply`).
+    /// Mappa la suggestion in un LoopCommandRequest non-distruttivo e lo
+    /// instrada come un normale comando loop. I kind senza azione automatica
+    /// (Unblock/Split) o le proposal invalida producono solo un messaggio:
+    /// NESSUNA azione viene mai presa senza il comando utente esplicito.
+    pub(super) async fn apply_loop_suggestion(&mut self, id: &str) {
+        let Some(sugg) = self.vivling_context_bus.take_suggestion(id) else {
+            self.chat_widget
+                .add_info_message(format!("Nessuna suggestion con id {id}"), None);
+            return;
+        };
+        let Some(thread_id) = self.chat_widget.thread_id() else {
+            self.chat_widget.add_info_message(
+                "Nessun thread attivo: impossibile applicare la suggestion".to_string(),
+                None,
+            );
+            return;
+        };
+        // 5A: MarkDone -> Disable (non distruttivo). Leggere
+        // auto_remove_on_completion reale dal job e' deferred (5B); fallback
+        // false e' safe per la safety 5A (mai Remove automatico).
+        match crate::vl::suggestions::map_to_command(&sugg, false) {
+            Some(req) => {
+                if let Err(err) = self
+                    .apply_loop_command_request(
+                        thread_id,
+                        req,
+                        /*source*/ false,
+                        /*emit_ui_feedback*/ true,
+                    )
+                    .await
+                {
+                    self.chat_widget.add_error_message(err.to_string());
+                }
+            }
+            None => self.chat_widget.add_info_message(
+                format!(
+                    "Suggestion '{}' richiede conferma manuale (nessuna azione automatica in 5A)",
+                    sugg.kind.kind_label()
+                ),
+                None,
+            ),
+        }
     }
 
     /// Memory V2 Step 12.B.D.2 — apply or log an Expression LLM

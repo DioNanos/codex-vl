@@ -185,6 +185,35 @@ impl BottomPane {
         result
     }
 
+    /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
+    /// in volo. Inoltra al wrapper; `false` se uno è già in corso.
+    pub(crate) fn try_begin_vivling_expression(
+        &self,
+        kind: crate::vivling::ExpressionKind,
+    ) -> bool {
+        self.vivling.try_begin_expression(kind)
+    }
+
+    /// FASE5 5A — estrai i dati di gating del Vivling attivo (Adult/brain/
+    /// bond/exposure). None se non c'e' uno stato Vivling attivo. Il
+    /// `confidence` lo passa il chiamante (dal `RawLoopSuggestion` dell'LLM).
+    /// NIENTE brain_profile: a V10 SessionDefault e' target valido.
+    pub(crate) fn vivling_suggestion_gate(
+        &mut self,
+        config: &Config,
+        confidence: f32,
+    ) -> Option<crate::vl::suggestions::SuggestionGate> {
+        self.configure_vivling(config);
+        let state = self.vivling.state.as_ref()?;
+        Some(crate::vl::suggestions::SuggestionGate {
+            is_adult: state.stage() == crate::vivling::Stage::Adult,
+            brain_enabled: state.brain_enabled,
+            bond_value: state.bond.value,
+            loop_exposure: state.loop_exposure,
+            confidence,
+        })
+    }
+
     /// Memory V2 Step 12.B.D.3 — best-effort post-turn / post-loop
     /// trigger for the Expression channel. Forwards to the active
     /// Vivling's reservation + planner pipeline; returns `None`

@@ -72,6 +72,24 @@ impl ChatWidget {
             .record_vivling_expression_failure_for(&self.config, vivling_id)
     }
 
+    /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
+    /// in volo. Inoltra al `BottomPane`/wrapper; `false` se uno è già in corso.
+    pub(crate) fn try_begin_vivling_expression(
+        &self,
+        kind: crate::vivling::ExpressionKind,
+    ) -> bool {
+        self.bottom_pane.try_begin_vivling_expression(kind)
+    }
+
+    /// FASE5 5A — dati di gating suggestion del Vivling attivo.
+    pub(crate) fn vivling_suggestion_gate(
+        &mut self,
+        config: &Config,
+        confidence: f32,
+    ) -> Option<crate::vl::suggestions::SuggestionGate> {
+        self.bottom_pane.vivling_suggestion_gate(config, confidence)
+    }
+
     /// Memory V2 Step 12.B.D.3 — best-effort Expression refresh
     /// trigger called from `record_vivling_turn_completed` and the
     /// loop-event hook. When the planner + reservation succeeds,

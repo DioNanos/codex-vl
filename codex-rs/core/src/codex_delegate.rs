@@ -90,8 +90,11 @@ pub(crate) async fn run_codex_thread_interactive(
         installation_id: parent_session.installation_id.clone(),
         auth_manager,
         models_manager,
-        environment_manager: Arc::clone(&parent_session.services.environment_manager),
-        skills_manager: Arc::clone(&parent_session.services.skills_manager),
+        environment_manager: parent_session
+            .services
+            .turn_environments
+            .environment_manager(),
+        skills_service: Arc::clone(&parent_session.services.skills_service),
         plugins_manager: Arc::clone(&parent_session.services.plugins_manager),
         mcp_manager: Arc::clone(&parent_session.services.mcp_manager),
         extensions: Arc::clone(&parent_session.services.extensions),
@@ -103,17 +106,23 @@ pub(crate) async fn run_codex_thread_interactive(
         agent_control: parent_session.services.agent_control.clone(),
         dynamic_tools: Vec::new(),
         metrics_service_name: None,
-        inherited_shell_snapshot: None,
         user_shell_override: None,
+        inherited_environments: Some(parent_ctx.environments.clone()),
         inherited_exec_policy: Some(Arc::clone(&parent_session.services.exec_policy)),
         parent_rollout_thread_trace: codex_rollout_trace::ThreadTraceContext::disabled(),
         parent_trace: None,
-        environment_selections: parent_ctx.environments.clone(),
+        environment_selections: parent_ctx.environments.to_selections(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
+        supports_openai_form_elicitation: parent_session
+            .services
+            .supports_openai_form_elicitation
+            .load(std::sync::atomic::Ordering::Relaxed),
         analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
         thread_store: Arc::clone(&parent_session.services.thread_store),
         attestation_provider: parent_session.services.attestation_provider.clone(),
+        external_time_provider: Some(Arc::clone(&parent_session.services.time_provider)),
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
+        initial_multi_agent_mode: None,
     }))
     .or_cancel(&cancel_token)
     .await??;
@@ -457,6 +466,7 @@ async fn handle_exec_approval(
     let ExecApprovalRequestEvent {
         call_id,
         approval_id,
+        environment_id,
         command,
         cwd,
         reason,
@@ -502,6 +512,7 @@ async fn handle_exec_approval(
                 parent_ctx,
                 call_id,
                 approval_id,
+                environment_id,
                 command,
                 cwd,
                 reason,

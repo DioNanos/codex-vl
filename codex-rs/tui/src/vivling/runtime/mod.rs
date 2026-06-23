@@ -4,6 +4,7 @@ pub(crate) mod brain_context;
 pub(crate) mod command;
 pub(crate) mod crt_insight;
 pub(crate) mod expression;
+pub(crate) mod lifecycle;
 pub(crate) mod lineage_echo;
 pub(crate) mod live_context;
 pub(crate) mod msa;
@@ -20,6 +21,7 @@ mod tests;
 pub(crate) use action::VivlingAction;
 pub(crate) use expression::VivlingExpressionRequest;
 pub(crate) use expression::VivlingExpressionResult;
+pub(crate) use lifecycle::{ExpressionKind, VivlingLifecyclePhase};
 pub(crate) use live_context::VivlingLiveContext;
 pub(crate) use msa::VivlingMsa;
 pub(crate) use panel::VivlingPanelData;
@@ -103,7 +105,12 @@ pub(crate) struct Vivling {
     pub(crate) active_vivling_id: Option<String>,
     pub(crate) frame_requester: Option<FrameRequester>,
     pub(crate) animations_enabled: bool,
-    pub(crate) task_running: Cell<bool>,
+    /// Step 12.C — fase di dispatch. Sorgente di verità per il task-running
+    /// (il flag legacy `task_running` è stato rimosso in questo step).
+    pub(crate) lifecycle: RefCell<VivlingLifecyclePhase>,
+    /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
+    /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
+    pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
     pub(crate) active_until: Cell<Option<Instant>>,
     pub(crate) active_started_at: Cell<Option<Instant>>,
     pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
@@ -161,7 +168,8 @@ impl Clone for Vivling {
             active_vivling_id: self.active_vivling_id.clone(),
             frame_requester: self.frame_requester.clone(),
             animations_enabled: self.animations_enabled,
-            task_running: self.task_running.clone(),
+            lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
+            expression_in_flight: self.expression_in_flight.clone(),
             active_until: self.active_until.clone(),
             active_started_at: self.active_started_at.clone(),
             next_scheduled_frame_at: self.next_scheduled_frame_at.clone(),

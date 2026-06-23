@@ -35,6 +35,7 @@ fn hooks_file_deserializes_existing_json_shape() {
     assert_eq!(
         parsed,
         HooksFile {
+            description: None,
             hooks: HookEventsToml {
                 pre_tool_use: vec![MatcherGroup {
                     matcher: Some("^Bash$".to_string()),
@@ -49,6 +50,31 @@ fn hooks_file_deserializes_existing_json_shape() {
                 ..Default::default()
             },
         }
+    );
+}
+
+#[test]
+fn hooks_file_accepts_top_level_description() {
+    // Regression: security-guidance 2.0.6 emits a top-level `description` in
+    // hooks.json. The parser must accept it while `deny_unknown_fields` still
+    // rejects genuinely unknown fields.
+    let parsed: HooksFile = serde_json::from_str(
+        r#"{
+  "description": "Security guidance hooks",
+  "hooks": {
+    "PreToolUse": []
+  }
+}"#,
+    )
+    .expect("top-level description should deserialize");
+    assert_eq!(parsed.description.as_deref(), Some("Security guidance hooks"));
+
+    // A genuinely unknown field is still rejected.
+    let error = serde_json::from_str::<HooksFile>(r#"{ "bogus": true, "hooks": {} }"#)
+        .expect_err("unknown fields other than description must be rejected");
+    assert!(
+        error.to_string().contains("unknown field `bogus`"),
+        "unexpected parse error: {error}"
     );
 }
 

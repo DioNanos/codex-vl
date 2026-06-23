@@ -75,6 +75,20 @@ impl ChatWidget {
         // case. Wired here so the freshly-updated work memory has a
         // chance to feed the next CRT phrase + proactive message.
         self.maybe_trigger_vivling_expression_refresh();
+        // FASE5 5A — snapshot del context bus volatile (§5.1). active_loops
+        // dalle label dei job correnti; blockers mai inventati (vuoto qui:
+        // in 5A non c'e un segnale strutturato di blocker dal worker turn).
+        let active_loops: Vec<String> = self
+            .loop_jobs
+            .values()
+            .map(|runtime| runtime.job.label.clone())
+            .collect();
+        self.app_event_tx
+            .send_vl(crate::vl::VlEvent::ContextBusTurn {
+                summary: summary.unwrap_or("").to_string(),
+                active_loops,
+                blockers: Vec::new(),
+            });
     }
 
     #[allow(dead_code)]

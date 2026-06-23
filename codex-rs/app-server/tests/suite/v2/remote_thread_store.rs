@@ -132,6 +132,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
+                parent_thread_id: None,
             },
         })
         .await?
@@ -146,6 +147,7 @@ async fn thread_delete_with_non_local_thread_store_does_not_create_local_persist
     let unloaded_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
     thread_store
         .create_thread(StoreCreateThreadParams {
+            session_id: unloaded_thread_id.into(),
             thread_id: unloaded_thread_id,
             extra_config: None,
             forked_from_id: None,

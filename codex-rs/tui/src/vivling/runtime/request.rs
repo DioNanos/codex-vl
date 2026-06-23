@@ -89,12 +89,28 @@ pub(crate) struct VivlingLoopTickRequest {
     pub(crate) prompt_context: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct VivlingLoopTickResult {
     pub(crate) status: String,
     pub(crate) message: String,
     #[serde(default)]
     pub(crate) loop_action: Option<VivlingLoopTickAction>,
+    /// FASE5 5A — optional NON-automatic loop suggestion (gated, user-applied).
+    /// Distinct from `loop_action` (auto channel on the owned loop).
+    #[serde(default)]
+    pub(crate) suggestion: Option<RawLoopSuggestion>,
+}
+
+/// FASE5 5A — raw suggestion prodotta dall'LLM nel loop tick. `id`/`created_at`
+/// li mette il runtime (non l'LLM). Canale NO-AUTO: applicata solo via `/loop apply`.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct RawLoopSuggestion {
+    pub(crate) loop_label: String,
+    pub(crate) kind: crate::vl::suggestions::VivlingSuggestionKind,
+    pub(crate) reasoning: String,
+    pub(crate) confidence: f32,
+    #[serde(default)]
+    pub(crate) proposed_action: Option<crate::vl::suggestions::VivlingLoopProposedAction>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -128,6 +144,33 @@ pub(crate) struct VivlingBrainProfileRequest {
     pub(crate) vivling_id: String,
     pub(crate) vivling_name: String,
     pub(crate) kind: VivlingBrainProfileRequestKind,
+}
+
+#[cfg(test)]
+mod loop_tick_suggestion_tests {
+    use super::VivlingLoopTickResult;
+
+    #[test]
+    fn result_deserializes_without_suggestion() {
+        let r: VivlingLoopTickResult =
+            serde_json::from_str(r#"{"status":"progress","message":"ok"}"#).unwrap();
+        assert!(r.suggestion.is_none());
+    }
+
+    #[test]
+    fn result_deserializes_with_suggestion() {
+        let r: VivlingLoopTickResult = serde_json::from_str(
+            r#"{"status":"progress","message":"ok","suggestion":{"loop_label":"build","kind":"adjust_interval","reasoning":"r","confidence":0.8,"proposed_action":{"interval_seconds":120}}}"#,
+        )
+        .unwrap();
+        let s = r.suggestion.expect("suggestion present");
+        assert_eq!(s.loop_label, "build");
+        assert!((s.confidence - 0.8).abs() < f32::EPSILON);
+        assert_eq!(
+            s.proposed_action.and_then(|a| a.interval_seconds),
+            Some(120)
+        );
+    }
 }
 
 #[cfg(test)]

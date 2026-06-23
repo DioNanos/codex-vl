@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
-use crate::FileSystemSandboxContext;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use codex_file_system::FileSystemSandboxContext;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
@@ -22,6 +21,9 @@ pub const EXEC_EXITED_METHOD: &str = "process/exited";
 pub const EXEC_CLOSED_METHOD: &str = "process/closed";
 pub const ENVIRONMENT_INFO_METHOD: &str = "environment/info";
 pub const FS_READ_FILE_METHOD: &str = "fs/readFile";
+pub(crate) const FS_OPEN_METHOD: &str = "fs/open";
+pub(crate) const FS_READ_BLOCK_METHOD: &str = "fs/readBlock";
+pub(crate) const FS_CLOSE_METHOD: &str = "fs/close";
 pub const FS_WRITE_FILE_METHOD: &str = "fs/writeFile";
 pub const FS_CREATE_DIRECTORY_METHOD: &str = "fs/createDirectory";
 pub const FS_GET_METADATA_METHOD: &str = "fs/getMetadata";
@@ -77,7 +79,8 @@ pub struct EnvironmentInfo {
 pub struct ShellInfo {
     /// Stable shell name, for example `zsh`, `bash`, `powershell`, `sh`, or `cmd`.
     pub name: String,
-    /// Path the exec server would use for that shell.
+    /// Target-native shell executable path or command name. Fallbacks such as `cmd.exe` need not
+    /// be absolute, so this is not a [`PathUri`].
     pub path: String,
 }
 
@@ -88,7 +91,8 @@ pub struct ExecParams {
     /// This is a protocol key, not an OS pid.
     pub process_id: ProcessId,
     pub argv: Vec<String>,
-    pub cwd: PathBuf,
+    /// Working directory URI, interpreted using the exec-server host's path rules at launch time.
+    pub cwd: PathUri,
     #[serde(default)]
     pub env_policy: Option<ExecEnvPolicy>,
     pub env: HashMap<String, String>,
@@ -96,7 +100,15 @@ pub struct ExecParams {
     /// Keep non-tty stdin writable through `process/write`.
     #[serde(default)]
     pub pipe_stdin: bool,
+    /// Optional process-visible argv0 override. Values such as `codex-linux-sandbox` are command
+    /// names rather than paths, so this is not a [`PathUri`].
     pub arg0: Option<String>,
+    /// Portable sandbox intent. Concrete wrapper argv is resolved by the exec-server.
+    #[serde(default)]
+    pub sandbox: Option<FileSystemSandboxContext>,
+    /// Whether the eventual executor-side sandbox must enforce managed networking.
+    #[serde(default)]
+    pub enforce_managed_network: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +153,9 @@ pub struct ReadResponse {
     pub exit_code: Option<i32>,
     pub closed: bool,
     pub failure: Option<String>,
+    /// Whether the executor classified the process failure as a sandbox denial.
+    #[serde(default)]
+    pub sandbox_denied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +163,7 @@ pub struct ReadResponse {
 pub struct WriteParams {
     pub process_id: ProcessId,
     pub chunk: ByteChunk,
+    pub write_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +222,45 @@ pub struct FsReadFileParams {
 pub struct FsReadFileResponse {
     pub data_base64: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsOpenParams {
+    pub handle_id: String,
+    pub path: PathUri,
+    pub sandbox: Option<FileSystemSandboxContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsOpenResponse {
+    pub handle_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsReadBlockParams {
+    pub handle_id: String,
+    pub offset: u64,
+    pub len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsReadBlockResponse {
+    pub chunk: ByteChunk,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsCloseParams {
+    pub handle_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsCloseResponse {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -451,7 +506,7 @@ mod base64_bytes {
 mod tests {
     use super::FsReadFileParams;
     use super::HttpRequestParams;
-    use crate::FileSystemSandboxContext;
+    use codex_file_system::FileSystemSandboxContext;
     use codex_protocol::models::PermissionProfile;
     use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
@@ -462,18 +517,19 @@ mod tests {
             .expect("current directory")
             .join("legacy-file.txt");
         let legacy_cwd = std::env::current_dir().expect("current directory");
-        let expected_sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+        let native_sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
             PermissionProfile::default(),
             PathUri::from_path(&legacy_cwd).expect("cwd URI"),
         );
         let mut legacy_sandbox =
-            serde_json::to_value(&expected_sandbox).expect("sandbox should serialize");
+            serde_json::to_value(&native_sandbox).expect("sandbox should serialize");
         legacy_sandbox["cwd"] = serde_json::json!(legacy_cwd.to_string_lossy());
         let params: FsReadFileParams = serde_json::from_value(serde_json::json!({
             "path": legacy_path.to_string_lossy(),
             "sandbox": legacy_sandbox,
         }))
         .expect("legacy absolute path should deserialize");
+        let expected_sandbox = native_sandbox;
         let expected = FsReadFileParams {
             path: PathUri::from_path(legacy_path).expect("path URI"),
             sandbox: Some(expected_sandbox.clone()),

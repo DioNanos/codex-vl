@@ -24,7 +24,7 @@ impl Vivling {
     }
 
     pub(crate) fn is_active_at(&self, now: Instant) -> bool {
-        self.task_running.get()
+        self.is_task_running()
             || self
                 .active_until
                 .get()
@@ -110,7 +110,7 @@ impl Renderable for Vivling {
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
         let activity = *self.activity.borrow();
-        let tui_task_running = self.task_running.get();
+        let tui_task_running = self.is_task_running();
         // codex-vl Step 14 Bug 2 fix — short label rendered in the CRT
         // speech panel when the director selects Alert for a non-busy
         // low-energy state. Surfaces the reason so the user understands

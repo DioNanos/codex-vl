@@ -14,7 +14,8 @@ impl Vivling {
             active_vivling_id: None,
             frame_requester: None,
             animations_enabled: false,
-            task_running: Cell::new(false),
+            lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
+            expression_in_flight: Cell::new(None),
             active_until: Cell::new(None),
             active_started_at: Cell::new(None),
             next_scheduled_frame_at: RefCell::new(None),
@@ -72,6 +73,8 @@ impl Vivling {
             // "needs bootstrap" without owning the dispatch itself.
             self.startup_dispatched.set(false);
         }
+        // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
+        self.lifecycle.borrow_mut().set_available();
     }
 
     fn maybe_backfill_msa_index(&self) {
@@ -97,12 +100,48 @@ impl Vivling {
     }
 
     pub(crate) fn set_task_running(&self, running: bool) {
-        self.task_running.set(running);
+        // Step 12.C — la FSM di fase è ora sorgente di verità (flag legacy rimosso).
+        {
+            let mut phase = self.lifecycle.borrow_mut();
+            phase.set_available(); // configure() precede sempre un task
+            if running {
+                phase.begin_task(std::time::Instant::now());
+            } else {
+                phase.end_task();
+            }
+        }
         if running {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         } else {
             self.request_frame();
         }
+    }
+
+    /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
+    pub(crate) fn is_task_running(&self) -> bool {
+        self.lifecycle.borrow().is_task_running()
+    }
+
+    /// Apre un dispatch di espressione se nessuno è in volo. false (skip) altrimenti.
+    pub(crate) fn try_begin_expression(&self, kind: ExpressionKind) -> bool {
+        if self.expression_in_flight.get().is_some() {
+            false
+        } else {
+            self.expression_in_flight.set(Some(kind));
+            true
+        }
+    }
+
+    /// Chiude il dispatch in volo (no-op se nessuno). Fail-safe: invocato da
+    /// ENTRAMBI i completion handler (success + failure).
+    pub(crate) fn finish_expression(&self) {
+        self.expression_in_flight.set(None);
+    }
+
+    /// Step 12.D / test helper: stato del gate di espressione.
+    #[allow(dead_code)]
+    pub(crate) fn expression_in_flight(&self) -> bool {
+        self.expression_in_flight.get().is_some()
     }
 
     /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called

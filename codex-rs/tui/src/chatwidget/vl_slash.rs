@@ -158,6 +158,13 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "rm" => Some(LoopCommandRequest::Remove {
             label: parts.next()?.to_string(),
         }),
+        // FASE5 5A — `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
+        "apply" => Some(LoopCommandRequest::Apply {
+            suggestion_id: parts.next()?.to_string(),
+        }),
+        "dismiss" => Some(LoopCommandRequest::Dismiss {
+            suggestion_id: parts.next()?.to_string(),
+        }),
         "owner" => match parts.next() {
             None => Some(LoopCommandRequest::OwnerShow),
             Some("main") => Some(LoopCommandRequest::OwnerSetMain),
@@ -202,6 +209,21 @@ fn parse_loop_interval_seconds(token: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_loop_command_apply_dismiss_5a() {
+        assert!(matches!(
+            parse_loop_command("apply sg-1"),
+            Some(LoopCommandRequest::Apply { suggestion_id }) if suggestion_id == "sg-1"
+        ));
+        assert!(matches!(
+            parse_loop_command("dismiss sg-2"),
+            Some(LoopCommandRequest::Dismiss { suggestion_id }) if suggestion_id == "sg-2"
+        ));
+        // id mancante -> None (messaggio d'uso gestito dal caller)
+        assert!(parse_loop_command("apply").is_none());
+        assert!(parse_loop_command("dismiss").is_none());
+    }
 
     #[test]
     fn parse_loop_command_recognizes_subcommands() {

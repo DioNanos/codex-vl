@@ -12,14 +12,18 @@ use crate::elicitation::elicitation_is_rejected_by_policy;
 use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
+use crate::server::EffectiveMcpServer;
+use crate::server::McpServerMetadata;
 use crate::server::McpServerOrigin;
 use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
 use crate::tools::normalize_tools_for_model_with_prefix;
 use crate::tools::tool_with_model_visible_input_schema;
+use codex_config::AppToolApproval;
 use codex_config::Constrained;
 use codex_config::McpServerConfig;
+use codex_config::McpServerToolConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_exec_server::EnvironmentManager;
 use codex_protocol::ToolName;
@@ -247,13 +251,15 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
 
     let response = sender(
         NumberOrString::Number(1),
-        CreateElicitationRequestParams::FormElicitationParams {
-            meta: None,
-            message: "Confirm?".to_string(),
-            requested_schema: rmcp::model::ElicitationSchema::builder()
-                .build()
-                .expect("schema should build"),
-        },
+        codex_rmcp_client::Elicitation::Mcp(
+            CreateElicitationRequestParams::FormElicitationParams {
+                meta: None,
+                message: "Confirm?".to_string(),
+                requested_schema: rmcp::model::ElicitationSchema::builder()
+                    .build()
+                    .expect("schema should build"),
+            },
+        ),
     )
     .await
     .expect("elicitation should auto accept");
@@ -280,17 +286,19 @@ async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fiel
 
     let response = sender(
         NumberOrString::Number(1),
-        CreateElicitationRequestParams::FormElicitationParams {
-            meta: None,
-            message: "What should I say?".to_string(),
-            requested_schema: rmcp::model::ElicitationSchema::builder()
-                .required_property(
-                    "message",
-                    rmcp::model::PrimitiveSchema::String(rmcp::model::StringSchema::new()),
-                )
-                .build()
-                .expect("schema should build"),
-        },
+        codex_rmcp_client::Elicitation::Mcp(
+            CreateElicitationRequestParams::FormElicitationParams {
+                meta: None,
+                message: "What should I say?".to_string(),
+                requested_schema: rmcp::model::ElicitationSchema::builder()
+                    .required_property(
+                        "message",
+                        rmcp::model::PrimitiveSchema::String(rmcp::model::StringSchema::new()),
+                    )
+                    .build()
+                    .expect("schema should build"),
+            },
+        ),
     )
     .await
     .expect("elicitation should auto decline");
@@ -604,7 +612,7 @@ fn codex_apps_tools_cache_is_scoped_per_user() {
 }
 
 #[test]
-fn codex_apps_tools_cache_filters_disallowed_connectors() {
+fn codex_apps_tools_cache_preserves_formerly_disallowed_connectors() {
     let codex_home = tempdir().expect("tempdir");
     let cache_context = create_codex_apps_tools_cache_context(
         codex_home.path().to_path_buf(),
@@ -614,13 +622,13 @@ fn codex_apps_tools_cache_filters_disallowed_connectors() {
     let tools = vec![
         create_test_tool_with_connector(
             CODEX_APPS_MCP_SERVER_NAME,
-            "blocked_tool",
+            "formerly_blocked_tool",
             "connector_2b0a9009c9c64bf9933a3dae3f2b1254",
-            Some("Blocked"),
+            Some("Formerly Blocked"),
         ),
         create_test_tool_with_connector(
             CODEX_APPS_MCP_SERVER_NAME,
-            "allowed_tool",
+            "calendar_tool",
             "calendar",
             Some("Calendar"),
         ),
@@ -629,9 +637,19 @@ fn codex_apps_tools_cache_filters_disallowed_connectors() {
     write_cached_codex_apps_tools(&cache_context, &tools);
     let cached = read_cached_codex_apps_tools(&cache_context).expect("cache entry exists for user");
 
-    assert_eq!(cached.len(), 1);
-    assert_eq!(cached[0].callable_name, "allowed_tool");
-    assert_eq!(cached[0].connector_id.as_deref(), Some("calendar"));
+    assert_eq!(
+        cached
+            .iter()
+            .map(|tool| (tool.callable_name.as_str(), tool.connector_id.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "formerly_blocked_tool",
+                Some("connector_2b0a9009c9c64bf9933a3dae3f2b1254")
+            ),
+            ("calendar_tool", Some("calendar")),
+        ]
+    );
 }
 
 #[test]
@@ -1123,11 +1141,14 @@ async fn list_all_tools_adds_server_metadata_to_cached_tools() {
     manager.server_metadata.insert(
         server_name.to_string(),
         McpServerMetadata {
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             pollutes_memory: true,
             origin: Some(McpServerOrigin::StreamableHttp(
                 "https://docs.example".to_string(),
             )),
             supports_parallel_tool_calls: true,
+            default_tools_approval_mode: None,
+            tool_approval_modes: HashMap::new(),
         },
     );
     manager.clients.insert(
@@ -1148,6 +1169,30 @@ async fn list_all_tools_adds_server_metadata_to_cached_tools() {
     assert_eq!(tool.server_name, server_name);
     assert!(tool.supports_parallel_tool_calls);
     assert_eq!(tool.server_origin.as_deref(), Some("https://docs.example"));
+}
+
+#[test]
+fn server_metadata_preserves_tool_approval_policy() {
+    let mut config = crate::codex_apps_mcp_server_config(
+        "https://docs.example",
+        /*apps_mcp_product_sku*/ None,
+    );
+    config.environment_id = "remote".to_string();
+    config.default_tools_approval_mode = Some(AppToolApproval::Prompt);
+    config.tools.insert(
+        "search".to_string(),
+        McpServerToolConfig {
+            approval_mode: Some(AppToolApproval::Approve),
+        },
+    );
+    let metadata = McpServerMetadata::from(&EffectiveMcpServer::configured(config));
+
+    assert_eq!(metadata.environment_id, "remote");
+    assert_eq!(metadata.tool_approval_mode("read"), AppToolApproval::Prompt);
+    assert_eq!(
+        metadata.tool_approval_mode("search"),
+        AppToolApproval::Approve
+    );
 }
 
 #[tokio::test]
@@ -1234,6 +1279,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         /*host_owned_codex_apps_enabled*/ false,
         /*prefix_mcp_tool_names*/ true,
         ElicitationCapability::default(),
+        /*supports_openai_form_elicitation*/ false,
         ToolPluginProvenance::default(),
         /*auth*/ None,
         /*elicitation_reviewer*/ None,

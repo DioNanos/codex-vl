@@ -12,7 +12,7 @@ installs as `codex-vl`, so it can live next to the official `codex` command.
 The fork keeps the upstream Codex runtime model and adds a small set of
 experimental workflow features:
 
-- `/loop` for session-scoped recurring checks and follow-up tasks
+- `/loop` for session-scoped recurring checks and follow-up tasks; `/loop apply` / `/loop dismiss` to action or discard Vivling loop suggestions
 - `/vivling` for a persistent local companion and orchestration foundation
 - `/vl` for direct Vivling chat when a brain profile is configured
 - `/remote-control` for daemon lifecycle checks from inside the TUI
@@ -44,19 +44,18 @@ npm install -g @mmmbuto/codex-vl
 
 ## Release Channels
 
-The npm `next` tag tracks the `0.140.0` line, which merges upstream Codex
-`rust-v0.140.0` while preserving the Codex VL workflow layer (and carries the
-Termux TLS fix plus the native Android V8 149.2.0 build). The `latest` tag
-now tracks the same `0.140.0` line, and the `stable` dist-tag points to the
-`0.135.0` line for conservative installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
+The npm `next` tag tracks the `0.142.0` line, which merges upstream Codex
+`rust-v0.142.0` while preserving the Codex VL workflow layer (and carries the
+Termux TLS fix plus the native Android V8 build). The `latest` and `stable`
+dist-tags stay on the `0.140.0` line for conservative installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
 packages plus a macOS arm64 source-build package, each platform under its own
 `<platform>` dist-tag (`linux-x64`, `linux-arm64`, `android-arm64`,
 `darwin-arm64`).
 
 ```bash
-npm install -g @mmmbuto/codex-vl@next     # 0.140.0
+npm install -g @mmmbuto/codex-vl@next     # 0.142.0
 npm install -g @mmmbuto/codex-vl@latest   # 0.140.0
-npm install -g @mmmbuto/codex-vl@stable   # 0.135.0
+npm install -g @mmmbuto/codex-vl@stable   # 0.140.0
 ```
 
 For macOS, the package is a source-build payload instead of a prebuilt native
