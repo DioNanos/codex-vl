@@ -180,7 +180,13 @@ pub(super) async fn process_submission(
             .chat_widget
             .prepare_vivling_loop_tick(&app.config, &owner_vivling_id, &job)
         {
-            Ok(request) => {
+            Ok(mut request) => {
+                // FASE5 5A — feed del worker context (volatile bus) nel prompt
+                // del loop tick, così il Vivling vede l'attività worker recente.
+                if let Some(summary) = app.vivling_context_bus.worker_context_summary() {
+                    request.prompt_context.push_str("\n\n[recent worker context]\n");
+                    request.prompt_context.push_str(&summary);
+                }
                 state_runtime
                     .update_thread_loop_job_runtime(
                         thread_id,

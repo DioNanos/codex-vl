@@ -4093,6 +4093,7 @@ async fn make_test_app() -> App {
         pending_startup_thread_start: false,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
+        vivling_context_bus: crate::vl::context_bus::VivlingContextBus::default(),
     }
 }
 
@@ -4158,6 +4159,7 @@ async fn make_test_app_with_channels() -> (
             pending_startup_thread_start: false,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            vivling_context_bus: crate::vl::context_bus::VivlingContextBus::default(),
         },
         rx,
         op_rx,
