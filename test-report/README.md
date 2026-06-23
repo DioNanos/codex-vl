@@ -44,6 +44,9 @@ validates the installed CLI and the AI-operated runtime surface.
 - `manual/2026-06-23_0.142.0_ai_guided_surface_termux.md`: 0.142.0
   Termux command surface, runtime exec, MCP visibility, TUI startup/Vivling,
   and slash-command evidence with PTY buffering limitations.
+- `manual/2026-06-23_0.142.0_ai_guided_surface_linux.md`: 0.142.0
+  Linux command surface, runtime exec, AI goal/loop tool surface,
+  TUI startup/Vivling, and sandbox evidence with host bwrap limitations.
 
 ## Report Rules
 
