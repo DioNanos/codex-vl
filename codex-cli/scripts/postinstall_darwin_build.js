@@ -128,8 +128,6 @@ const build = spawnSync(
     "--release",
     "-p",
     "codex-cli",
-    "-p",
-    "codex-exec",
   ],
   {
     cwd: root,
@@ -143,7 +141,7 @@ if (build.status !== 0) {
 }
 
 mkdirSync(vendorCodexDir, { recursive: true });
-for (const binary of ["codex", "codex-exec"]) {
+for (const binary of ["codex"]) {
   const src = path.join(releaseDir, binary);
   const dest = path.join(vendorCodexDir, binary);
   if (!existsSync(src)) {

@@ -48,14 +48,18 @@ if (!targetTriple) {
 }
 
 const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriple];
-const codexExecBinaryName =
-  process.platform === "win32" ? "codex-exec.exe" : "codex-exec";
+// codex-vl fork: `codex-vl-exec` dispatches the single `codex` binary with the
+// `exec` subcommand instead of shipping a standalone `codex-exec` binary. The
+// `codex exec` subcommand uses the same ExecCli, so behavior is identical while
+// the platform package drops ~220 MB (one fewer V8-linked binary).
+const codexBinaryName =
+  process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
 const localBinaryPath = path.join(
   localVendorRoot,
   targetTriple,
   "codex",
-  codexExecBinaryName,
+  codexBinaryName,
 );
 
 let vendorRoot;
@@ -73,7 +77,7 @@ try {
 }
 
 const archRoot = path.join(vendorRoot, targetTriple);
-const binaryPath = path.join(archRoot, "codex", codexExecBinaryName);
+const binaryPath = path.join(archRoot, "codex", codexBinaryName);
 
 function getUpdatedPath(newDirs) {
   const existingPath = process.env.PATH || "";
@@ -124,7 +128,7 @@ if (platform === "android") {
 }
 
 const resolvedBinaryPath = safeRealpath(binaryPath) ?? binaryPath;
-const child = spawn(resolvedBinaryPath, process.argv.slice(2), {
+const child = spawn(resolvedBinaryPath, ["exec", ...process.argv.slice(2)], {
   stdio: "inherit",
   env,
 });

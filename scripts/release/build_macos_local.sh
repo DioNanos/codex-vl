@@ -70,15 +70,13 @@ cargo build \
   --manifest-path "${REPO_ROOT}/codex-rs/Cargo.toml" \
   --target "${TARGET}" \
   --release \
-  --bin codex \
-  --bin codex-exec
+  --bin codex
 
 echo "==> Preparing vendor payload"
 python3 "${REPO_ROOT}/codex-cli/scripts/prepare_local_vendor.py" \
   --vendor-root "${VENDOR_ROOT}" \
   --target "${TARGET}" \
   --codex-binary "${REPO_ROOT}/codex-rs/target/${TARGET}/release/codex" \
-  --codex-exec-binary "${REPO_ROOT}/codex-rs/target/${TARGET}/release/codex-exec" \
   --include-rg
 
 echo "==> Staging side-by-side npm package"

@@ -134,11 +134,12 @@ Minimal flow:
 
 ```bash
 cd codex-rs
-cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
+cargo build --release -p codex-cli --bin codex
 ```
 
 For a local macOS install, build from source with Cargo, then point your local
-wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
+wrapper or npm prefix at the produced `codex` binary (the `codex-vl-exec`
+command dispatches it via the `exec` subcommand). The
 npm `latest` publish includes Linux x64, Linux arm64 and Termux Android arm64
 native packages plus the macOS arm64 source-build package.
 
