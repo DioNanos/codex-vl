@@ -64,9 +64,15 @@ pub(super) async fn run_vivling_assist_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -181,9 +187,15 @@ pub(super) async fn run_vivling_loop_tick_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -320,9 +332,15 @@ pub(super) async fn run_vivling_expression_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features

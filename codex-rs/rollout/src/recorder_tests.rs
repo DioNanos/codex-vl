@@ -107,8 +107,10 @@ async fn state_db_init_backfills_before_returning() -> anyhow::Result<()> {
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
+            selected_capability_roots: Vec::new(),
             memory_mode: None,
             multi_agent_version: None,
+            context_window: None,
         },
         git: None,
     };
@@ -381,6 +383,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
     let config = test_config(home.path());
     let session_id = SessionId::default();
     let thread_id = ThreadId::new();
+    let initial_window_id = Uuid::now_v7().to_string();
     let recorder = RolloutRecorder::new(
         &config,
         RolloutRecorderParams::new(
@@ -389,10 +392,12 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
             /*parent_thread_id*/ None,
             SessionSource::Exec,
             /*thread_source*/ None,
+            "test_originator".to_string(),
             BaseInstructions::default(),
             Vec::new(),
         )
-        .with_session_id(session_id),
+        .with_session_id(session_id)
+        .with_initial_window_id(initial_window_id.clone()),
     )
     .await?;
 
@@ -443,6 +448,13 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
         panic!("expected session metadata in rollout");
     };
     assert_eq!(session_meta.meta.session_id, session_id);
+    assert_eq!(
+        session_meta
+            .meta
+            .context_window
+            .map(|window| window.window_id),
+        Some(initial_window_id)
+    );
     let buffered_idx = text
         .find("buffered-event")
         .expect("buffered event in rollout");
@@ -473,6 +485,7 @@ async fn persist_reports_filesystem_error_and_retries_buffered_items() -> std::i
             /*parent_thread_id*/ None,
             SessionSource::Exec,
             /*thread_source*/ None,
+            "test_originator".to_string(),
             BaseInstructions::default(),
             Vec::new(),
         ),
