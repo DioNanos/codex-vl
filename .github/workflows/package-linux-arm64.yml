@@ -85,18 +85,15 @@ jobs:
           export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
           cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-cli
-          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex)"
-          before_exec="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec)"
           if command -v llvm-strip >/dev/null 2>&1; then
-            llvm-strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+            llvm-strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex
           elif command -v strip >/dev/null 2>&1; then
-            strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+            strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex
           fi
           after_codex="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex)"
-          after_exec="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec)"
-          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
-          ls -lh codex-rs/target/aarch64-unknown-linux-musl/release/codex codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec
+          printf 'codex size: %s -> %s bytes\n' "$before_codex" "$after_codex"
+          ls -lh codex-rs/target/aarch64-unknown-linux-musl/release/codex
           codex-rs/target/aarch64-unknown-linux-musl/release/codex --version
       - name: Stage Linux arm64 npm package
         run: |
@@ -107,9 +104,8 @@ jobs:
           rm -rf "$root"
           mkdir -p "$vendor/codex" "$vendor/codex-resources" "$vendor/path" "$out"
           cp codex-rs/target/aarch64-unknown-linux-musl/release/codex "$vendor/codex/codex"
-          cp codex-rs/target/aarch64-unknown-linux-musl/release/codex-exec "$vendor/codex/codex-exec"
           cp codex-rs/target/aarch64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
-          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex/codex"
           chmod 755 "$vendor/codex-resources/bwrap"
           if command -v rg >/dev/null 2>&1; then
             cp "$(command -v rg)" "$vendor/path/rg"

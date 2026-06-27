@@ -78,18 +78,15 @@ jobs:
           export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
           cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli
-          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
-          before_exec="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec)"
           if command -v llvm-strip >/dev/null 2>&1; then
-            llvm-strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
+            llvm-strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex
           elif command -v strip >/dev/null 2>&1; then
-            strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
+            strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex
           fi
           after_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
-          after_exec="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec)"
-          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
-          ls -lh codex-rs/target/x86_64-unknown-linux-musl/release/codex codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec
+          printf 'codex size: %s -> %s bytes\n' "$before_codex" "$after_codex"
+          ls -lh codex-rs/target/x86_64-unknown-linux-musl/release/codex
           codex-rs/target/x86_64-unknown-linux-musl/release/codex --version
       - name: Stage Linux x64 npm package
         run: |
@@ -100,9 +97,8 @@ jobs:
           rm -rf "$root"
           mkdir -p "$vendor/codex" "$vendor/codex-resources" "$vendor/path" "$out"
           cp codex-rs/target/x86_64-unknown-linux-musl/release/codex "$vendor/codex/codex"
-          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex-exec "$vendor/codex/codex-exec"
           cp codex-rs/target/x86_64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
-          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex/codex"
           chmod 755 "$vendor/codex-resources/bwrap"
           if command -v rg >/dev/null 2>&1; then
             cp "$(command -v rg)" "$vendor/path/rg"
@@ -204,19 +200,16 @@ jobs:
           echo "linking compiler-rt builtins: $builtins"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg=$builtins"
           cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli
-          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-exec
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
-          before_exec="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex-exec)"
           ndk_strip="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           if [ -x "$ndk_strip" ]; then
-            "$ndk_strip" --strip-all codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
+            "$ndk_strip" --strip-all codex-rs/target/aarch64-linux-android/release/codex
           elif command -v llvm-strip >/dev/null 2>&1; then
-            llvm-strip --strip-all codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
+            llvm-strip --strip-all codex-rs/target/aarch64-linux-android/release/codex
           fi
           after_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
-          after_exec="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex-exec)"
-          printf 'codex size: %s -> %s bytes\ncodex-exec size: %s -> %s bytes\n' "$before_codex" "$after_codex" "$before_exec" "$after_exec"
-          ls -lh codex-rs/target/aarch64-linux-android/release/codex codex-rs/target/aarch64-linux-android/release/codex-exec
+          printf 'codex size: %s -> %s bytes\n' "$before_codex" "$after_codex"
+          ls -lh codex-rs/target/aarch64-linux-android/release/codex
       - name: Stage Android arm64 npm package
         run: |
           set -euo pipefail
@@ -226,8 +219,7 @@ jobs:
           rm -rf "$root"
           mkdir -p "$vendor/codex" "$out"
           cp codex-rs/target/aarch64-linux-android/release/codex "$vendor/codex/codex"
-          cp codex-rs/target/aarch64-linux-android/release/codex-exec "$vendor/codex/codex-exec"
-          chmod 755 "$vendor/codex/codex" "$vendor/codex/codex-exec"
+          chmod 755 "$vendor/codex/codex"
           # Bundle libc++_shared.so next to the binaries: the Android binaries are
           # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
           # the shared C++ runtime). Termux/Android has no system libc++_shared.so,

@@ -46,15 +46,16 @@ npm install -g @mmmbuto/codex-vl
 
 The npm `next` tag tracks the `0.142.0` line, which merges upstream Codex
 `rust-v0.142.0` while preserving the Codex VL workflow layer (and carries the
-Termux TLS fix plus the native Android V8 build). The `latest` and `stable`
-dist-tags stay on the `0.140.0` line for conservative installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
+Termux TLS fix plus the native Android V8 build). The `latest` tag tracks
+the same `0.142.0` line; the `stable` dist-tag stays on `0.140.0` for
+conservative installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
 packages plus a macOS arm64 source-build package, each platform under its own
 `<platform>` dist-tag (`linux-x64`, `linux-arm64`, `android-arm64`,
 `darwin-arm64`).
 
 ```bash
 npm install -g @mmmbuto/codex-vl@next     # 0.142.0
-npm install -g @mmmbuto/codex-vl@latest   # 0.140.0
+npm install -g @mmmbuto/codex-vl@latest   # 0.142.0
 npm install -g @mmmbuto/codex-vl@stable   # 0.140.0
 ```
 
@@ -133,11 +134,12 @@ Minimal flow:
 
 ```bash
 cd codex-rs
-cargo build --release -p codex-cli --bin codex -p codex-exec --bin codex-exec
+cargo build --release -p codex-cli --bin codex
 ```
 
 For a local macOS install, build from source with Cargo, then point your local
-wrapper or npm prefix at the produced `codex` and `codex-exec` binaries. The
+wrapper or npm prefix at the produced `codex` binary (the `codex-vl-exec`
+command dispatches it via the `exec` subcommand). The
 npm `latest` publish includes Linux x64, Linux arm64 and Termux Android arm64
 native packages plus the macOS arm64 source-build package.
 

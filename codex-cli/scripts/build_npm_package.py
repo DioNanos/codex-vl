@@ -507,9 +507,11 @@ def validate_native_payload(staging_dir: Path, package: str) -> None:
 
     target = platform_config["target_triple"]
     codex_dir = staging_dir / "vendor" / target / "codex"
+    # codex-vl fork: only the single `codex` binary is shipped; `codex-vl-exec`
+    # dispatches it via the `exec` subcommand (no standalone codex-exec binary).
     missing = [
         binary_name
-        for binary_name in ("codex", "codex-exec")
+        for binary_name in ("codex",)
         if not (codex_dir / binary_name).is_file()
     ]
     if missing:
