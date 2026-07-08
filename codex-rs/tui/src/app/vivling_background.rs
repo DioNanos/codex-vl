@@ -80,7 +80,9 @@ pub(super) async fn run_vivling_assist_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
@@ -203,7 +205,9 @@ pub(super) async fn run_vivling_loop_tick_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
 
     let mut prompt = Prompt::default();
@@ -348,7 +352,9 @@ pub(super) async fn run_vivling_expression_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
 
     let mut prompt = Prompt::default();
