@@ -738,7 +738,10 @@ mod resolve_brain_target_tests {
         // live session resolved one (shown in the status header). The Vivling
         // dispatch must inherit it instead of erroring.
         let base = config_with_model(None).await;
-        assert!(base.model.is_none(), "precondition: fresh config has no model");
+        assert!(
+            base.model.is_none(),
+            "precondition: fresh config has no model"
+        );
         let patched = config_with_session_model(&base, "gpt-5.3-codex");
         assert_eq!(patched.model.as_deref(), Some("gpt-5.3-codex"));
     }

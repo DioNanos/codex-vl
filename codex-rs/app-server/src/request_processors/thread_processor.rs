@@ -3,11 +3,11 @@ use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
-use codex_protocol::dynamic_tools::{
-    DynamicToolFunctionSpec, DynamicToolNamespaceSpec, DynamicToolNamespaceTool,
-};
 use codex_protocol::protocol::ThreadHistoryMode;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
@@ -352,7 +352,8 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
 const MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE: &str = "codex_app";
 const MANAGE_LOOPS_DYNAMIC_TOOL_NAME: &str = "manage_loops";
 const MANAGE_LOOPS_DYNAMIC_TOOL_DESCRIPTION: &str = "Manage local per-thread loop jobs that supervise recurring work while the TUI session stays attached. Use this for polling, retries, recurring status checks, long-running build monitoring, and other monitor-until-done workflows.";
-const MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE_DESCRIPTION: &str = "Codex app built-in dynamic tools (fork).";
+const MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE_DESCRIPTION: &str =
+    "Codex app built-in dynamic tools (fork).";
 
 fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
     DynamicToolFunctionSpec {
