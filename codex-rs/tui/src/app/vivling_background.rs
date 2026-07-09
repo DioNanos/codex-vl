@@ -64,9 +64,15 @@ pub(super) async fn run_vivling_assist_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -74,7 +80,9 @@ pub(super) async fn run_vivling_assist_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
@@ -181,9 +189,15 @@ pub(super) async fn run_vivling_loop_tick_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -191,7 +205,9 @@ pub(super) async fn run_vivling_loop_tick_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
 
     let mut prompt = Prompt::default();
@@ -320,9 +336,15 @@ pub(super) async fn run_vivling_expression_request(
 
     let client = ModelClient::new(
         Some(auth_manager),
+        if profile_config.features.enabled(Feature::UseAgentIdentity) {
+            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
+        } else {
+            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
+        },
         ThreadId::new(),
         profile_config.model_provider.clone(),
         codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
+        codex_login::default_client::originator().value,
         profile_config.model_verbosity,
         profile_config
             .features
@@ -330,7 +352,9 @@ pub(super) async fn run_vivling_expression_request(
         profile_config.features.enabled(Feature::RuntimeMetrics),
         None,
         /*item_ids_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
         None,
+        profile_config.http_client_factory(),
     );
 
     let mut prompt = Prompt::default();
@@ -714,7 +738,10 @@ mod resolve_brain_target_tests {
         // live session resolved one (shown in the status header). The Vivling
         // dispatch must inherit it instead of erroring.
         let base = config_with_model(None).await;
-        assert!(base.model.is_none(), "precondition: fresh config has no model");
+        assert!(
+            base.model.is_none(),
+            "precondition: fresh config has no model"
+        );
         let patched = config_with_session_model(&base, "gpt-5.3-codex");
         assert_eq!(patched.model.as_deref(), Some("gpt-5.3-codex"));
     }

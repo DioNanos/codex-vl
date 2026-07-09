@@ -55,6 +55,7 @@ pub use model::ThreadGoal;
 pub use model::ThreadGoalStatus;
 pub use model::ThreadMetadata;
 pub use model::ThreadMetadataBuilder;
+pub use model::ThreadRelationFilter;
 pub use model::ThreadsPage;
 
 // codex-vl: ThreadLoopJob and ThreadLoopOwner for Vivling loop autonomy.
