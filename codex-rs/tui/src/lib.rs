@@ -3088,6 +3088,9 @@ mod tests {
         // continue to feed our fork-specific test fixtures unchanged.
         TurnContextItem {
             turn_id: None,
+            // codex-vl: upstream 0.144 added approvals_reviewer: Option<ApprovalsReviewer>
+            // to TurnContextItem; test fixtures default to None.
+            approvals_reviewer: None,
             // codex-vl: TurnContextItem.cwd became AbsolutePathBuf upstream; test
             // fixtures pass absolute TempDir paths.
             cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from(cwd)

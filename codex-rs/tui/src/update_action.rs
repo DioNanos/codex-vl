@@ -22,6 +22,9 @@ pub enum UpdateAction {
     NpmGlobalLatest,
     /// Update via `bun install -g @mmmbuto/codex-vl`.
     BunGlobalLatest,
+    /// codex-vl fork: redirects to `pnpm add -g @mmmbuto/codex-vl`
+    /// so pnpm installs stay on the fork package, not upstream codex.
+    PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
     /// codex-vl fork (F-bis): the upstream standalone updater is
@@ -42,6 +45,7 @@ impl UpdateAction {
         match &context.method {
             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
             InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
+            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
             InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
             InstallMethod::Standalone { platform, .. } => Some(match platform {
                 StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
@@ -62,6 +66,7 @@ impl UpdateAction {
             | UpdateAction::StandaloneUnix
             | UpdateAction::StandaloneWindows => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@mmmbuto/codex-vl"]),
+            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
         }
     }
@@ -111,6 +116,13 @@ mod tests {
                 package_layout: None,
             }),
             Some(UpdateAction::BunGlobalLatest)
+        );
+        assert_eq!(
+            UpdateAction::from_install_context(&InstallContext {
+                method: InstallMethod::Pnpm,
+                package_layout: None,
+            }),
+            Some(UpdateAction::PnpmGlobalLatest)
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -180,6 +192,7 @@ mod tests {
         for action in [
             UpdateAction::NpmGlobalLatest,
             UpdateAction::BunGlobalLatest,
+            UpdateAction::PnpmGlobalLatest,
             UpdateAction::BrewUpgrade,
             UpdateAction::StandaloneUnix,
             UpdateAction::StandaloneWindows,
