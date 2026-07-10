@@ -82,6 +82,7 @@ pub const OPENAI_FORM_CAPABILITY: &str = "openai/form";
 pub(crate) const MCP_TOOLS_LIST_DURATION_METRIC: &str = "codex.mcp.tools.list.duration_ms";
 pub(crate) const MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC: &str =
     "codex.mcp.tools.fetch_uncached.duration_ms";
+pub(crate) const CODEX_APPS_REFRESH_DURATION_METRIC: &str = "codex.apps.refresh.duration_ms";
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 const MCP_STARTUP_TOOLS_LIST_ATTEMPTS: usize = 3;
@@ -306,6 +307,7 @@ impl ManagedClientStartup {
             .unwrap_or_default();
         let cancel_token_for_fut = cancel_token;
         async move {
+            let refresh_start = is_codex_apps_mcp_server.then(Instant::now);
             let outcome = match async {
                 if let Err(error) = validate_mcp_server_name(&server_name) {
                     return Err(error.into());
@@ -351,6 +353,15 @@ impl ManagedClientStartup {
                 Ok(result) => result,
                 Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
             };
+            if outcome.is_ok()
+                && let Some(refresh_start) = refresh_start
+            {
+                emit_duration(
+                    CODEX_APPS_REFRESH_DURATION_METRIC,
+                    refresh_start.elapsed(),
+                    &[("path", "legacy"), ("trigger", "initial")],
+                );
+            }
 
             startup_complete.store(true, Ordering::Release);
             outcome
@@ -566,10 +577,12 @@ impl From<anyhow::Error> for StartupOutcomeError {
 pub(crate) async fn list_tools_for_client_uncached(
     server_name: &str,
     is_codex_apps_mcp_server: bool,
+    codex_apps_refresh_trigger: &'static str,
     client: &Arc<RmcpClient>,
     timeout: Option<Duration>,
     server_instructions: Option<&str>,
 ) -> Result<Vec<ToolInfo>> {
+    let fetch_start = Instant::now();
     let resp = client
         .list_tools_with_connector_ids(/*params*/ None, timeout)
         .await?;
@@ -585,6 +598,19 @@ pub(crate) async fn list_tools_for_client_uncached(
             )
         })
         .collect();
+    if is_codex_apps_mcp_server {
+        emit_duration(
+            MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
+            fetch_start.elapsed(),
+            &[("trigger", codex_apps_refresh_trigger)],
+        );
+    } else {
+        emit_duration(
+            MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
+            fetch_start.elapsed(),
+            &[],
+        );
+    }
     Ok(tools)
 }
 
@@ -821,8 +847,10 @@ async fn start_server_task(
         .as_ref()
         .and_then(|exp| exp.get(MCP_SANDBOX_STATE_META_CAPABILITY))
         .is_some();
+    // Times the full tools/list duration (MCP_TOOLS_LIST_DURATION_METRIC below).
+    // NOT the fetch-uncached metric, which is emitted inside
+    // list_tools_for_client_uncached to avoid a double emission.
     let list_start = Instant::now();
-    let fetch_start = Instant::now();
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|cache_context| cache_context.begin_fetch(CodexAppsToolsFetchSource::Startup));
@@ -835,6 +863,7 @@ async fn start_server_task(
         match list_tools_for_client_uncached(
             &server_name,
             is_codex_apps_mcp_server,
+            /*codex_apps_refresh_trigger*/ "initial",
             &client,
             startup_timeout,
             initialize_result.instructions.as_deref(),
@@ -864,11 +893,9 @@ async fn start_server_task(
             ))
         })
         .map_err(StartupOutcomeError::from)?;
-    emit_duration(
-        MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
-        fetch_start.elapsed(),
-        &[],
-    );
+    // Fork note: the fetch-duration metric is emitted INSIDE
+    // list_tools_for_client_uncached (upstream 0.144, with the `trigger`
+    // tag). Do NOT re-emit here or the metric fires twice per startup.
     let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
     let tools = match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
         (Some(cache_context), Some(fetch_ticket)) => {

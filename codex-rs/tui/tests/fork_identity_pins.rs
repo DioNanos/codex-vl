@@ -132,8 +132,8 @@ fn fork_identity_public_install_surfaces_are_fork_owned() {
 fn fork_identity_daemon_managed_install_is_install_context_aware() {
     const SOURCE: &str = include_str!("../../app-server-daemon/src/managed_install.rs");
     assert!(
-        SOURCE.contains("InstallContext::Npm | InstallContext::Bun"),
-        "managed_install.rs must branch npm/bun installs away from the \
+        SOURCE.contains("InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm"),
+        "managed_install.rs must branch npm/bun/pnpm installs away from the \
          standalone managed path.",
     );
     assert!(

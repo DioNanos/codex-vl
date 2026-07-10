@@ -20,6 +20,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const scriptRealPath = safeRealpath(__filename) ?? __filename;
+const codexPackageRoot = realpathSync(path.join(__dirname, ".."));
 const BOOTSTRAP_STATE_SCHEMA_VERSION = 1;
 const bootstrapModeOverride = (process.env.CODEX_VL_BOOTSTRAP || "").toLowerCase();
 const skipNativeExec = process.env.CODEX_VL_SKIP_EXEC === "1";
@@ -126,7 +127,9 @@ if (!nativePackage) {
   const updateCommand =
     packageManager === "bun"
       ? "bun install -g @mmmbuto/codex-vl@latest"
-      : "npm install -g @mmmbuto/codex-vl@latest";
+      : packageManager === "pnpm"
+        ? "pnpm add -g @mmmbuto/codex-vl@latest"
+        : "npm install -g @mmmbuto/codex-vl@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall Codex VL: ${updateCommand}`,
   );
@@ -166,11 +169,50 @@ function sanitizeAndroidLdLibraryPath(binDir) {
   return [binDir, ...extraPaths].join(":");
 }
 
+// codex-vl fork: pnpm links the fork package as @mmmbuto/codex-vl (not
+// @openai/codex), so the ownership probe must resolve the fork scope or
+// pnpm detection is dead for fork users.
+function isPnpmOwnedCodexInstall(nodeModulesDir) {
+  if (!existsSync(path.join(nodeModulesDir, ".modules.yaml"))) {
+    return false;
+  }
+
+  try {
+    return (
+      realpathSync(path.join(nodeModulesDir, "@mmmbuto", "codex-vl")) ===
+      codexPackageRoot
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Use heuristics to detect the package manager that was used to install Codex
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {
+  // pnpm's owning node_modules directory can be several parents above the
+  // package in isolated global layouts. Search ancestors of both the canonical
+  // package root and lexical entrypoint because pnpm may link either path.
+  const entrypointDir = path.dirname(path.resolve(process.argv[1]));
+  for (const startDir of new Set([codexPackageRoot, entrypointDir])) {
+    const filesystemRoot = path.parse(startDir).root;
+    for (
+      let currentDir = startDir;
+      currentDir !== filesystemRoot;
+      currentDir = path.dirname(currentDir)
+    ) {
+      if (isPnpmOwnedCodexInstall(path.join(currentDir, "node_modules"))) {
+        return "pnpm";
+      }
+    }
+
+    if (isPnpmOwnedCodexInstall(path.join(filesystemRoot, "node_modules"))) {
+      return "pnpm";
+    }
+  }
+
   const userAgent = process.env.npm_config_user_agent || "";
   if (/\bbun\//.test(userAgent)) {
     return "bun";
@@ -331,20 +373,27 @@ if (skipNativeExec) {
   process.exit(0);
 }
 
+const packageManager = detectPackageManager();
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  packageManager === "bun"
     ? "CODEX_MANAGED_BY_BUN"
-    : "CODEX_MANAGED_BY_NPM";
+    : packageManager === "pnpm"
+      ? "CODEX_MANAGED_BY_PNPM"
+      : "CODEX_MANAGED_BY_NPM";
 // Single env: the fork launcher needs (PATH update, Android self-exe and
 // LD_LIBRARY_PATH) merged with upstream's managed-package markers — the
 // 0.138.0-alpha.3 merge briefly kept both declarations and broke the
-// launcher with a duplicate `const env`.
+// launcher with a duplicate `const env`. Adopt upstream's delete-then-set
+// so a stale marker from another package manager cannot leak through.
 const env = {
   ...process.env,
   PATH: updatedPath,
-  [packageManagerEnvVar]: "1",
-  CODEX_MANAGED_PACKAGE_ROOT: realpathSync(path.join(__dirname, "..")),
+  CODEX_MANAGED_PACKAGE_ROOT: codexPackageRoot,
 };
+delete env.CODEX_MANAGED_BY_NPM;
+delete env.CODEX_MANAGED_BY_BUN;
+delete env.CODEX_MANAGED_BY_PNPM;
+env[packageManagerEnvVar] = "1";
 if (platform === "android") {
   env.CODEX_SELF_EXE = binaryPath;
   env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));

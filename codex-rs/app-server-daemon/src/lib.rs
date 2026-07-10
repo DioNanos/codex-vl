@@ -818,7 +818,7 @@ fn auto_update_enabled_for_install_context(install_context: &InstallContext) -> 
     // InstallContext refactor moves the method into a nested field.
     !matches!(
         install_context.method,
-        InstallMethod::Npm | InstallMethod::Bun
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm
     )
 }
 
@@ -1082,6 +1082,9 @@ mod tests {
         )));
         assert!(!auto_update_enabled_for_install_context(&ctx(
             InstallMethod::Bun
+        )));
+        assert!(!auto_update_enabled_for_install_context(&ctx(
+            InstallMethod::Pnpm
         )));
         let release_dir = AbsolutePathBuf::from_absolute_path(PathBuf::from("/tmp/codex-release"))
             .expect("absolute path");
