@@ -137,7 +137,7 @@ fn update_action_label(context: &InstallContext) -> &'static str {
         InstallMethod::Npm => "npm install -g @mmmbuto/codex-vl",
         InstallMethod::Bun => "bun install -g @mmmbuto/codex-vl",
         InstallMethod::Pnpm => "pnpm add -g @mmmbuto/codex-vl",
-        InstallMethod::Brew => "brew upgrade --cask codex",
+        InstallMethod::Brew => "npm install -g @mmmbuto/codex-vl",
         InstallMethod::Standalone { .. } => "standalone installer",
         InstallMethod::Other => "manual or unknown",
     }

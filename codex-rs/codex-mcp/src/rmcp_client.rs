@@ -847,6 +847,9 @@ async fn start_server_task(
         .as_ref()
         .and_then(|exp| exp.get(MCP_SANDBOX_STATE_META_CAPABILITY))
         .is_some();
+    // Times the full tools/list duration (MCP_TOOLS_LIST_DURATION_METRIC below).
+    // NOT the fetch-uncached metric, which is emitted inside
+    // list_tools_for_client_uncached to avoid a double emission.
     let list_start = Instant::now();
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
@@ -890,11 +893,9 @@ async fn start_server_task(
             ))
         })
         .map_err(StartupOutcomeError::from)?;
-    emit_duration(
-        MCP_TOOLS_FETCH_UNCACHED_DURATION_METRIC,
-        list_start.elapsed(),
-        &[],
-    );
+    // Fork note: the fetch-duration metric is emitted INSIDE
+    // list_tools_for_client_uncached (upstream 0.144, with the `trigger`
+    // tag). Do NOT re-emit here or the metric fires twice per startup.
     let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
     let tools = match (codex_apps_tools_cache_context.as_ref(), fetch_ticket) {
         (Some(cache_context), Some(fetch_ticket)) => {

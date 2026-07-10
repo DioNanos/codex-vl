@@ -67,7 +67,11 @@ impl UpdateAction {
             | UpdateAction::StandaloneWindows => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@mmmbuto/codex-vl"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
+            // codex-vl fork: the fork ships no Homebrew cask, so `brew upgrade
+            // --cask codex` would pull the UPSTREAM openai cask and silently
+            // replace the fork. Redirect to the supported npm channel, same as
+            // the Standalone* variants.
+            UpdateAction::BrewUpgrade => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
         }
     }
 
