@@ -4,6 +4,17 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.144.3 - Upstream rust-v0.144.3 next candidate
+
+Candidate release on npm `next`, based on OpenAI Codex `rust-v0.144.3`.
+The complete upstream delta is combined with the complete Codex VL feature
+layer, including goals, loop jobs, Vivling runtime and delegation, VL UI,
+remote control, app-server integration, fork identity, and Android/Termux
+carry-forward. npm `latest` remains on `0.144.1` and `stable` on `0.143.0`.
+
+Upstream adds the advanced reasoning picker and persisted per-thread reasoning
+effort, and rolls Guardian review prompting back to the validated layout.
+
 ## 0.140.0 - Upstream rust-v0.140.0 final
 
 Stable release on the npm `latest` tag, based on the OpenAI Codex
