@@ -370,6 +370,7 @@ pub struct ModelInfo {
     pub default_service_tier: Option<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
+    #[serde(default)]
     pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
@@ -1019,6 +1020,20 @@ mod tests {
         assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
+    }
+
+    #[test]
+    fn model_info_defaults_base_instructions_to_empty_when_omitted() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        value
+            .as_object_mut()
+            .expect("model info should be an object")
+            .remove("base_instructions");
+
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+
+        assert!(model.base_instructions.is_empty());
     }
 
     #[test]

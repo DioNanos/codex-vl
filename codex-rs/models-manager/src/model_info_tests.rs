@@ -47,6 +47,76 @@ fn reasoning_summaries_override_false_is_noop_when_model_is_false() {
 }
 
 #[test]
+fn missing_catalog_instructions_use_builtin_fallback() {
+    let mut model = model_info_from_slug("catalog-model");
+    model.base_instructions.clear();
+    model.model_messages = None;
+
+    let config = ModelsManagerConfig {
+        personality_enabled: true,
+        ..Default::default()
+    };
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.base_instructions, BASE_INSTRUCTIONS);
+}
+
+#[test]
+fn catalog_template_allows_missing_base_instructions() {
+    let mut model = model_info_from_slug("catalog-model");
+    model.base_instructions.clear();
+    model.model_messages = Some(ModelMessages {
+        instructions_template: Some("catalog template".to_string()),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+    });
+
+    let config = ModelsManagerConfig {
+        personality_enabled: true,
+        ..Default::default()
+    };
+    let updated = with_config_overrides(model, &config);
+
+    assert!(updated.base_instructions.is_empty());
+    assert_eq!(updated.get_model_instructions(None), "catalog template");
+}
+
+#[test]
+fn disabling_personality_restores_fallback_after_template_removal() {
+    let mut model = model_info_from_slug("catalog-model");
+    model.base_instructions.clear();
+    model.model_messages = Some(ModelMessages {
+        instructions_template: Some("catalog template".to_string()),
+        instructions_variables: None,
+        approvals: None,
+        auto_review: None,
+    });
+    let config = ModelsManagerConfig {
+        personality_enabled: false,
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert_eq!(updated.base_instructions, BASE_INSTRUCTIONS);
+    assert!(updated.model_messages.is_none());
+}
+
+#[test]
+fn explicit_empty_base_instruction_override_is_preserved() {
+    let model = model_info_from_slug("catalog-model");
+    let config = ModelsManagerConfig {
+        base_instructions: Some(String::new()),
+        ..Default::default()
+    };
+
+    let updated = with_config_overrides(model, &config);
+
+    assert!(updated.base_instructions.is_empty());
+}
+
+#[test]
 fn base_instruction_override_preserves_catalog_approval_messages() {
     let mut model = model_info_from_slug("unknown-model");
     let approvals = ApprovalMessages {
