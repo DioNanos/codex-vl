@@ -370,6 +370,7 @@ pub struct ModelInfo {
     pub default_service_tier: Option<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
+    #[serde(default)]
     pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
@@ -486,12 +487,18 @@ pub struct ModelMessages {
     pub instructions_template: Option<String>,
     pub instructions_variables: Option<ModelInstructionsVariables>,
     pub approvals: Option<ApprovalMessages>,
+    pub auto_review: Option<AutoReviewMessages>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ApprovalMessages {
     pub on_request: Option<String>,
     pub on_request_auto_review: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct AutoReviewMessages {
+    pub policy: Option<String>,
 }
 
 impl ModelMessages {
@@ -814,6 +821,7 @@ mod tests {
             instructions_template: Some("Hello {{ personality }}".to_string()),
             instructions_variables: Some(personality_variables()),
             approvals: None,
+            auto_review: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -831,6 +839,7 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
         }));
         assert_eq!(
             model.get_model_instructions(Some(Personality::Friendly)),
@@ -857,6 +866,7 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
         }));
         assert_eq!(
             model_no_personality.get_model_instructions(Some(Personality::Friendly)),
@@ -886,6 +896,7 @@ mod tests {
                 personality_pragmatic: None,
             }),
             approvals: None,
+            auto_review: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -1009,6 +1020,20 @@ mod tests {
         assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
+    }
+
+    #[test]
+    fn model_info_defaults_base_instructions_to_empty_when_omitted() {
+        let mut value =
+            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
+        value
+            .as_object_mut()
+            .expect("model info should be an object")
+            .remove("base_instructions");
+
+        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
+
+        assert!(model.base_instructions.is_empty());
     }
 
     #[test]
