@@ -4,6 +4,18 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.144.4 - Upstream rust-v0.144.4 next candidate
+
+Candidate release on npm `next`, based on the final OpenAI Codex
+`rust-v0.144.4` patch release. Upstream reports no user-facing changes in this
+patch; the complete Codex VL feature layer and Android/Termux carry-forward
+remain intact.
+
+Fork compatibility hardening allows model catalog entries to omit
+`base_instructions`. Explicit configuration overrides remain authoritative,
+while missing or blank catalog instructions safely fall back to the embedded
+base instructions instead of producing an instructionless session.
+
 ## 0.144.3 - Upstream rust-v0.144.3 next candidate
 
 Candidate release on npm `next`, based on OpenAI Codex `rust-v0.144.3`.
