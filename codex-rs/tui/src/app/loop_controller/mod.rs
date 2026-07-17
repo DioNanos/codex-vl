@@ -5,11 +5,13 @@
 //! keeps only the `impl App` public surface (`pub(super)` methods)
 //! plus two small private helpers (`record_vivling_loop_job`,
 //! `record_vivling_loop_runtime`) that the sub-modules call back
-//! into via Rust's default child-sub-module visibility. Every
-//! pub(super) method delegates one-line to a sibling sub-module
-//! function; no behaviour lives in this file. The 8 unit tests that
-//! used to live here have been moved next to the code they cover
-//! (`parsing`, `formatting`, `manage_tool`).
+//! into via Rust's default child-sub-module visibility. Most
+//! `pub(super)` methods delegate one-line to a sibling sub-module;
+//! `loop_state_runtime` is the small boundary that exposes the
+//! process-owned state handle without reopening SQLite. The 8 focused
+//! unit tests that used to live here have been moved next to the code
+//! they cover (`parsing`, `formatting`, `manage_tool`); cross-boundary
+//! state-handle tests remain attached to this facade.
 //!
 //! Sub-modules now isolated:
 //! - `types` — `LoopActionOutcome`, `LoopCommandSource`.
@@ -47,6 +49,10 @@ mod manage_tool;
 mod ticks;
 mod vivling_delegation;
 
+#[cfg(test)]
+#[path = "loop_controller_tests.rs"]
+mod tests;
+
 use super::*;
 use crate::vivling::VivlingLoopEventKind;
 use crate::vivling::VivlingLoopEventSource;
@@ -54,7 +60,6 @@ use crate::vl::events::LoopCommandRequest;
 
 use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
-use self::state::loop_state_error;
 use self::types::LoopCommandSource;
 
 impl App {
@@ -110,12 +115,11 @@ impl App {
     pub(super) async fn loop_state_runtime(
         &self,
     ) -> color_eyre::Result<std::sync::Arc<codex_state::StateRuntime>> {
-        codex_state::StateRuntime::init(
-            self.config.codex_home.to_path_buf(),
-            self.config.model_provider_id.clone(),
-        )
-        .await
-        .map_err(loop_state_error)
+        self.state_db.clone().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "loop jobs are unavailable because the process state database is not initialized"
+            )
+        })
     }
 
     pub(super) async fn refresh_loop_jobs(

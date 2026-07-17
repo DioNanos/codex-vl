@@ -23,7 +23,13 @@ impl App {
                 .await?;
             }
             VlEvent::ReloadLoopJobs { thread_id } => {
-                self.handle_reload_loop_jobs(thread_id).await?;
+                if let Err(err) = self.handle_reload_loop_jobs(thread_id).await {
+                    tracing::warn!(
+                        ?thread_id,
+                        error = %err,
+                        "failed to refresh loop jobs; keeping the TUI active"
+                    );
+                }
             }
             VlEvent::LoopTick { thread_id, job_id } => {
                 self.handle_loop_tick(thread_id, job_id).await?;
