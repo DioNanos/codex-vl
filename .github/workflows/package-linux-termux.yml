@@ -96,17 +96,14 @@ jobs:
           out="$root/npm"
           rm -rf "$root"
           mkdir -p "$vendor/codex" "$vendor/codex-resources" "$vendor/path" "$out"
-          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex "$vendor/codex/codex"
+          python3 codex-cli/scripts/prepare_local_vendor.py \
+            --vendor-root "$root/vendor" \
+            --target x86_64-unknown-linux-musl \
+            --codex-binary codex-rs/target/x86_64-unknown-linux-musl/release/codex \
+            --include-rg
           cp codex-rs/target/x86_64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
-          chmod 755 "$vendor/codex/codex"
           chmod 755 "$vendor/codex-resources/bwrap"
-          if command -v rg >/dev/null 2>&1; then
-            cp "$(command -v rg)" "$vendor/path/rg"
-            chmod 755 "$vendor/path/rg"
-          else
-            printf '#!/usr/bin/env sh\nexec grep "$@"\n' > "$vendor/path/rg"
-            chmod 755 "$vendor/path/rg"
-          fi
+          "$vendor/path/rg" --version | grep -q '^ripgrep '
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-linux-x64 \
             --release-version "$RELEASE_VERSION" \
