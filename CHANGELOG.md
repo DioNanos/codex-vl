@@ -4,6 +4,17 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.144.5 - Upstream rust-v0.144.5 next candidate
+
+Candidate release on npm `next`, based on the final OpenAI Codex
+`rust-v0.144.5` patch release. Upstream expands dangerous-command detection to
+cover additional forced recursive deletion forms before execution.
+
+Loop-job refreshes now reuse the process-owned state database handle instead
+of reopening and migrating SQLite from the event consumer path. A passive
+refresh failure is logged and leaves the TUI running rather than terminating
+the app-server session.
+
 ## 0.144.4 - Upstream rust-v0.144.4 next candidate
 
 Candidate release on npm `next`, based on the final OpenAI Codex

@@ -1,10 +1,10 @@
 //! codex-vl loop_controller: free helpers (timing + error wrapping).
 //!
-//! `loop_state_runtime` rimane metodo `pub(super) async fn` su `impl App`
-//! in `mod.rs` perché il pattern di chiamata esistente è
-//! `self.loop_state_runtime().await` da molti metodi App; estrarlo come
-//! free fn richiederebbe una refactor di tutti i caller. Qui restano
-//! solo i due helper byte-pure.
+//! `loop_state_runtime` remains a `pub(super) async fn` on `impl App`
+//! in `mod.rs` because several App methods share that call pattern. It
+//! clones the process-owned state handle instead of reopening and
+//! migrating SQLite from a consumer path. Only the byte-pure timing and
+//! error helpers remain here.
 
 pub(super) fn loop_now_ms() -> i64 {
     std::time::SystemTime::now()
