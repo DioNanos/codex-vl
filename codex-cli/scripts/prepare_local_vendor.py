@@ -4,22 +4,18 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import shutil
 from pathlib import Path
+import sys
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-INSTALL_NATIVE_DEPS = SCRIPT_DIR / "install_native_deps.py"
+REPO_ROOT = SCRIPT_DIR.parents[1]
+PACKAGE_SCRIPTS_ROOT = REPO_ROOT / "scripts"
+sys.path.insert(0, str(PACKAGE_SCRIPTS_ROOT))
 
-_SPEC = importlib.util.spec_from_file_location("codex_install_native_deps", INSTALL_NATIVE_DEPS)
-if _SPEC is None or _SPEC.loader is None:
-    raise RuntimeError(f"Unable to load module from {INSTALL_NATIVE_DEPS}")
-_INSTALL_NATIVE_DEPS = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_INSTALL_NATIVE_DEPS)
-
-fetch_rg = getattr(_INSTALL_NATIVE_DEPS, "fetch_rg")
-RG_MANIFEST = getattr(_INSTALL_NATIVE_DEPS, "RG_MANIFEST")
+from codex_package.ripgrep import fetch_rg
+from codex_package.targets import TARGET_SPECS
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target",
         required=True,
+        choices=sorted(TARGET_SPECS),
         help="Rust target triple for the package payload.",
     )
     parser.add_argument(
@@ -55,8 +52,17 @@ def parse_args() -> argparse.Namespace:
 
 
 def ensure_executable(path: Path) -> None:
-    mode = path.stat().st_mode
-    path.chmod(mode | 0o755)
+    path.chmod(0o755)
+
+
+def install_ripgrep(vendor_root: Path, target: str) -> Path:
+    spec = TARGET_SPECS[target]
+    source = fetch_rg(spec)
+    dest = vendor_root / target / "path" / spec.rg_name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    ensure_executable(dest)
+    return dest
 
 
 def main() -> int:
@@ -85,7 +91,8 @@ def main() -> int:
         ensure_executable(codex_exec_dest)
 
     if args.include_rg:
-        fetch_rg(vendor_root, [args.target], manifest_path=RG_MANIFEST)
+        rg_dest = install_ripgrep(vendor_root, args.target)
+        print(f"Installed verified ripgrep at {rg_dest}")
 
     print(f"Prepared vendor payload for {args.target} in {vendor_root}")
     return 0

@@ -4,6 +4,17 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.144.6 - Verified ripgrep packaging hotfix
+
+Stable fork hotfix on the final OpenAI Codex `rust-v0.144.5` base. Linux x64
+and Linux arm64 packages now install the target-specific ripgrep 15.1.0
+artifact from the canonical DotSlash manifest instead of copying the host
+binary or generating a GNU grep compatibility stub.
+
+Every artifact is verified against its pinned size and SHA-256 digest before
+extraction. Missing targets, malformed manifests, download failures, and
+integrity mismatches fail the package build closed.
+
 ## 0.144.5 - Upstream rust-v0.144.5 next candidate
 
 Candidate release on npm `next`, based on the final OpenAI Codex
