@@ -66,6 +66,23 @@ fn fork_identity_pin_codex_cli_bin_shims() {
             "{path} reinstall/update guidance must use @mmmbuto/codex-vl@latest",
         );
         assert!(
+            source.contains(
+                "npm install -g @mmmbuto/codex-vl@latest \
+                 --allow-scripts=@mmmbuto/codex-vl --foreground-scripts"
+            ),
+            "{path} macOS recovery must name the package target and allow only its lifecycle scripts",
+        );
+        assert!(
+            !source.contains("npm install -g --allow-scripts=@mmmbuto/codex-vl"),
+            "{path} must not repeat npm's target-less allow-scripts suggestion",
+        );
+        assert!(
+            source.contains("is not installed.")
+                && source.contains("is installed at")
+                && source.contains("postinstall did not run or did not produce"),
+            "{path} must distinguish an absent alias from a postinstall with no native binary",
+        );
+        assert!(
             !source.contains("@mmmbuto/codex-vl@next"),
             "{path} user-facing reinstall/update guidance must not point stable users at @next",
         );

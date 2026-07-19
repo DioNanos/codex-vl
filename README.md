@@ -20,16 +20,33 @@ experimental workflow features:
 
 ## Install
 
+Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
+Android arm64 installs use packaged native binaries:
+
 ```bash
 npm install -g @mmmbuto/codex-vl
 codex-vl --version
 codex-vl login
 ```
 
-Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
-Android arm64 installs use packaged native binaries. On macOS, npm install
-builds the local native binaries with Cargo; install Rust if Cargo is not
-already available.
+The macOS arm64 package builds the native binary locally with Cargo. npm 12
+blocks dependency lifecycle scripts unless the package is explicitly allowed,
+so verify the build prerequisites and use this complete install command:
+
+```bash
+xcode-select -p
+cargo --version
+npm install -g @mmmbuto/codex-vl@latest \
+  --allow-scripts=@mmmbuto/codex-vl \
+  --foreground-scripts
+codex-vl --version
+```
+
+The first macOS build can take 10-30 minutes. If a previous install left the
+platform package or binary incomplete, uninstall `@mmmbuto/codex-vl` first,
+then repeat the complete command above. Do not run npm's target-less
+`npm install -g --allow-scripts=...` hint by itself: it does not name an
+install target.
 
 Codex VL uses the normal Codex configuration and runtime state in `~/.codex/`.
 Installing it does not replace the official `codex` binary.
@@ -38,14 +55,14 @@ For a local npm prefix:
 
 ```bash
 npm config set prefix ~/.local
-npm install -g @mmmbuto/codex-vl
+npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 ~/.local/bin/codex-vl --version
 ```
 
 ## Release Channels
 
-The npm `next` and `latest` tags track the `0.144.6` line, based on upstream
-Codex `rust-v0.144.5` while preserving the complete Codex VL workflow layer
+The npm `next` and `latest` tags track the `0.144.7` line, based on upstream
+Codex `rust-v0.144.6` while preserving the complete Codex VL workflow layer
 (and carrying the Termux TLS fix plus the native Android V8 build). The
 `stable` dist-tag tracks `0.144.5` for conservative
 installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
@@ -54,14 +71,14 @@ candidate `<platform>-next` dist-tag; the production `<platform>` tags match
 the version selected by `latest`.
 
 ```bash
-npm install -g @mmmbuto/codex-vl@next     # 0.144.6
-npm install -g @mmmbuto/codex-vl@latest   # 0.144.6
+npm install -g @mmmbuto/codex-vl@next     # 0.144.7
+npm install -g @mmmbuto/codex-vl@latest   # 0.144.7
 npm install -g @mmmbuto/codex-vl@stable   # 0.144.5
 ```
 
 For macOS, the package is a source-build payload instead of a prebuilt native
 binary; the local install path requires Rust/Cargo on the Mac. The postinstall
-script performs a non-blocking preflight check (Xcode Command Line Tools, Cargo,
+script performs a fail-closed preflight check (Xcode Command Line Tools, Cargo,
 optional rustup target) and prints actionable hints when something is missing.
 
 **Restored on the native Android arm64 package (0.136.x):**
