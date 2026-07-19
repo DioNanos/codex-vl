@@ -4,6 +4,21 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.144.7 - Darwin npm 12 install diagnostics
+
+Stable patch on the OpenAI Codex `rust-v0.144.6` base. On Apple Silicon,
+both launchers now distinguish a missing platform package, an installed
+platform package whose native binary is absent, and a native binary that
+cannot be executed. Each state reports an actionable, path-aware error.
+
+The macOS recovery guidance now uses the complete npm 12 command with an
+explicit install target, a script allowlist limited to `@mmmbuto/codex-vl`,
+and foreground lifecycle output. README, postinstall diagnostics, fork
+identity pins, and CI fixtures enforce the same fail-closed contract.
+
+This release also carries upstream's refreshed bundled model metadata and
+GPT-5.6 prompt/context update from `rust-v0.144.6`.
+
 ## 0.144.6 - Verified ripgrep packaging hotfix
 
 Stable fork hotfix on the final OpenAI Codex `rust-v0.144.5` base. Linux x64

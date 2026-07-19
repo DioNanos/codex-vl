@@ -61,8 +61,8 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The npm `next` and `latest` tags track the `0.144.6` line, based on upstream
-Codex `rust-v0.144.5` while preserving the complete Codex VL workflow layer
+The npm `next` and `latest` tags track the `0.144.7` line, based on upstream
+Codex `rust-v0.144.6` while preserving the complete Codex VL workflow layer
 (and carrying the Termux TLS fix plus the native Android V8 build). The
 `stable` dist-tag tracks `0.144.5` for conservative
 installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
@@ -71,8 +71,8 @@ candidate `<platform>-next` dist-tag; the production `<platform>` tags match
 the version selected by `latest`.
 
 ```bash
-npm install -g @mmmbuto/codex-vl@next     # 0.144.6
-npm install -g @mmmbuto/codex-vl@latest   # 0.144.6
+npm install -g @mmmbuto/codex-vl@next     # 0.144.7
+npm install -g @mmmbuto/codex-vl@latest   # 0.144.7
 npm install -g @mmmbuto/codex-vl@stable   # 0.144.5
 ```
 
