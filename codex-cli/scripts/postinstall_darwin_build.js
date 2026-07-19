@@ -109,12 +109,16 @@ if (!xcodeOk || !cargoOk || targetGateMissing) {
   console.error(
     "[codex-vl] missing build dependencies — install the items marked [MISSING] above, then re-run:",
   );
-  console.error("[codex-vl]   npm install -g @mmmbuto/codex-vl");
+  console.error(
+    "[codex-vl]   npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl --foreground-scripts",
+  );
   process.exit(1);
 }
 
 console.log("[codex-vl] preflight passed");
-console.log("[codex-vl] compiling codex-vl natively (10-30 min on first install)");
+console.log(
+  "[codex-vl] compiling codex-vl natively (10-30 min on first install)",
+);
 console.log("");
 
 const build = spawnSync(

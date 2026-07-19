@@ -35,6 +35,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Test launcher diagnostics
+        run: node --test codex-cli/tests/*.test.mjs
+
       - name: Resolve release version
         shell: bash
         run: |

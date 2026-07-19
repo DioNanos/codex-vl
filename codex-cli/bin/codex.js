@@ -22,7 +22,9 @@ const require = createRequire(import.meta.url);
 const scriptRealPath = safeRealpath(__filename) ?? __filename;
 const codexPackageRoot = realpathSync(path.join(__dirname, ".."));
 const BOOTSTRAP_STATE_SCHEMA_VERSION = 1;
-const bootstrapModeOverride = (process.env.CODEX_VL_BOOTSTRAP || "").toLowerCase();
+const bootstrapModeOverride = (
+  process.env.CODEX_VL_BOOTSTRAP || ""
+).toLowerCase();
 const skipNativeExec = process.env.CODEX_VL_SKIP_EXEC === "1";
 
 const PLATFORM_PACKAGE_BY_TARGET = {
@@ -113,26 +115,24 @@ function resolveNativePackage(vendorRoot) {
 }
 
 let nativePackage;
+let resolvedPlatformPackageRoot = null;
 try {
   const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
+  resolvedPlatformPackageRoot = path.dirname(packageJsonPath);
   nativePackage = resolveNativePackage(
-    path.join(path.dirname(packageJsonPath), "vendor"),
+    path.join(resolvedPlatformPackageRoot, "vendor"),
   );
 } catch {
-  nativePackage = resolveNativePackage(localVendorRoot);
+  // Fall back to a repository-local vendor payload below. Keep package
+  // resolution separate from binary resolution so diagnostics can distinguish
+  // an omitted optional dependency from a postinstall that produced no binary.
 }
+
+nativePackage ??= resolveNativePackage(localVendorRoot);
 
 if (!nativePackage) {
   const packageManager = detectPackageManager();
-  const updateCommand =
-    packageManager === "bun"
-      ? "bun install -g @mmmbuto/codex-vl@latest"
-      : packageManager === "pnpm"
-        ? "pnpm add -g @mmmbuto/codex-vl@latest"
-        : "npm install -g @mmmbuto/codex-vl@latest";
-  throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Codex VL: ${updateCommand}`,
-  );
+  throw new Error(nativePackageDiagnostic(packageManager));
 }
 
 const { binaryPath, pathDir } = nativePackage;
@@ -169,9 +169,9 @@ function sanitizeAndroidLdLibraryPath(binDir) {
   return [binDir, ...extraPaths].join(":");
 }
 
-// codex-vl fork: pnpm links the fork package as @mmmbuto/codex-vl (not
-// @openai/codex), so the ownership probe must resolve the fork scope or
-// pnpm detection is dead for fork users.
+// codex-vl fork: pnpm links the package under the fork-owned scope, so the
+// ownership probe must resolve that scope or pnpm detection is dead for fork
+// users.
 function isPnpmOwnedCodexInstall(nodeModulesDir) {
   if (!existsSync(path.join(nodeModulesDir, ".modules.yaml"))) {
     return false;
@@ -231,6 +231,57 @@ function detectPackageManager() {
   }
 
   return userAgent ? "npm" : null;
+}
+
+function packageManagerInstallCommand(packageManager) {
+  return packageManager === "bun"
+    ? "bun install -g @mmmbuto/codex-vl@latest"
+    : packageManager === "pnpm"
+      ? "pnpm add -g @mmmbuto/codex-vl@latest"
+      : "npm install -g @mmmbuto/codex-vl@latest";
+}
+
+function nativePackageDiagnostic(packageManager) {
+  const targetLabel =
+    targetTriple === "aarch64-apple-darwin"
+      ? "Darwin platform package"
+      : "Platform package";
+  const lines = resolvedPlatformPackageRoot
+    ? [
+        `${targetLabel} ${platformPackage} is installed at ${resolvedPlatformPackageRoot}, but its native binary is missing.`,
+      ]
+    : [`${targetLabel} ${platformPackage} is not installed.`];
+
+  if (targetTriple === "aarch64-apple-darwin") {
+    if (resolvedPlatformPackageRoot) {
+      lines.push(
+        "The macOS postinstall did not run or did not produce the native binary.",
+      );
+    } else {
+      lines.push(
+        "The npm optional dependency may have been omitted or its lifecycle install did not complete.",
+      );
+    }
+    lines.push("Before reinstalling, verify: xcode-select -p; cargo --version");
+    if (packageManager === "bun" || packageManager === "pnpm") {
+      lines.push(
+        `Reinstall Codex VL with lifecycle scripts enabled for ${packageManager}: ${packageManagerInstallCommand(packageManager)}`,
+      );
+    } else {
+      lines.push(
+        "Recover with:",
+        "  npm uninstall -g @mmmbuto/codex-vl",
+        "  npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl --foreground-scripts",
+      );
+    }
+    lines.push("The first macOS build can take 10-30 minutes.");
+  } else {
+    lines.push(
+      `Reinstall Codex VL: ${packageManagerInstallCommand(packageManager)}`,
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function safeRealpath(targetPath) {
@@ -294,9 +345,7 @@ function writeInstallModeState(state) {
 }
 
 function pathEntries() {
-  return (process.env.PATH || "")
-    .split(path.delimiter)
-    .filter(Boolean);
+  return (process.env.PATH || "").split(path.delimiter).filter(Boolean);
 }
 
 function isPathEntryAccessible(dirPath) {
@@ -405,11 +454,9 @@ const child = spawn(binaryPath, process.argv.slice(2), {
 });
 
 child.on("error", (err) => {
-  // Typically triggered when the binary is missing or not executable.
-  // Re-throwing here will terminate the parent with a non-zero exit code
-  // while still printing a helpful stack trace.
-  // eslint-disable-next-line no-console
-  console.error(err);
+  console.error(
+    `Failed to execute Codex VL native binary at ${binaryPath}: ${err.message}`,
+  );
   process.exit(1);
 });
 
