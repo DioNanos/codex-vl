@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -8,6 +9,7 @@ use anyhow::bail;
 use clap::ArgGroup;
 use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerOAuthConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::McpManager;
@@ -122,6 +124,19 @@ pub struct AddMcpStdioArgs {
         value_name = "KEY=VALUE",
     )]
     pub env: Vec<(String, String)>,
+
+    /// Name of a process environment variable to forward to a stdio MCP
+    /// server at launch. Only the name is stored; the value is never read,
+    /// printed, or persisted by the CLI and is resolved from the spawning
+    /// environment at runtime. Repeatable; duplicates collapse to the first
+    /// occurrence. Only valid with stdio servers.
+    #[arg(
+        long = "env-var",
+        value_parser = parse_env_var_name,
+        value_name = "ENV_VAR",
+        conflicts_with = "url",
+    )]
+    pub env_vars: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -312,12 +327,23 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
             } else {
                 Some(stdio.env.into_iter().collect::<HashMap<_, _>>())
             };
+            // `--env-var NAME` records only the name; the value is resolved
+            // from the spawning environment at runtime (see
+            // `create_env_for_mcp_server` in codex-rmcp-client). Deduplicate
+            // preserving the order of first occurrence.
+            let mut env_var_seen = HashSet::new();
+            let env_vars: Vec<McpServerEnvVar> = stdio
+                .env_vars
+                .into_iter()
+                .filter(|name| env_var_seen.insert(name.clone()))
+                .map(McpServerEnvVar::Name)
+                .collect();
             (
                 McpServerTransportConfig::Stdio {
                     command: command_bin,
                     args: command_args,
                     env: env_map,
-                    env_vars: Vec::new(),
+                    env_vars,
                     cwd: None,
                 },
                 None,
@@ -986,6 +1012,31 @@ fn parse_env_pair(raw: &str) -> Result<(String, String), String> {
         .ok_or_else(|| "environment entries must be in KEY=VALUE form".to_string())?;
 
     Ok((key.to_string(), value))
+}
+
+/// Validate a single `--env-var NAME` value.
+///
+/// The name must be a portable environment identifier: the first character is
+/// an ASCII letter or underscore, and the remaining characters are ASCII
+/// letters, digits, or underscores. Empty names, `=`, whitespace, `-`, and a
+/// leading digit are rejected before any config write. Only the name is
+/// retained; the environment value is never read by the CLI.
+fn parse_env_var_name(raw: &str) -> Result<String, String> {
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return Err("environment variable name must not be empty".to_string());
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!(
+            "invalid environment variable name `{raw}`: must start with an ASCII letter or underscore"
+        ));
+    }
+    if let Some(bad) = chars.find(|c| !(c.is_ascii_alphanumeric() || *c == '_')) {
+        return Err(format!(
+            "invalid environment variable name `{raw}`: character `{bad}` is not allowed (use ASCII letters, digits, or underscores)"
+        ));
+    }
+    Ok(raw.to_string())
 }
 
 fn validate_server_name(name: &str) -> Result<()> {
