@@ -61,7 +61,7 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The npm `next` and `latest` tags track the `0.144.7` line, based on upstream
+The npm `next` and `latest` tags track the `0.144.8` line, based on upstream
 Codex `rust-v0.144.6` while preserving the complete Codex VL workflow layer
 (and carrying the Termux TLS fix plus the native Android V8 build). The
 `stable` dist-tag tracks `0.144.5` for conservative
@@ -71,10 +71,26 @@ candidate `<platform>-next` dist-tag; the production `<platform>` tags match
 the version selected by `latest`.
 
 ```bash
-npm install -g @mmmbuto/codex-vl@next     # 0.144.7
-npm install -g @mmmbuto/codex-vl@latest   # 0.144.7
+npm install -g @mmmbuto/codex-vl@next     # 0.144.8
+npm install -g @mmmbuto/codex-vl@latest   # 0.144.8
 npm install -g @mmmbuto/codex-vl@stable   # 0.144.5
 ```
+
+Local stdio MCP servers start with a restricted environment. Forward a
+process variable explicitly by name when the server needs it; repeat the flag
+for multiple names:
+
+```bash
+codex-vl mcp add nexuscrew \
+  --env-var NEXUSCREW_MCP_SESSION \
+  --env-var TMUX \
+  --env-var TMUX_PANE \
+  -- nexuscrew mcp
+```
+
+The command stores only the variable names. Their values are read from the
+launching process when the MCP server starts and are never written to
+`config.toml`.
 
 For macOS, the package is a source-build payload instead of a prebuilt native
 binary; the local install path requires Rust/Cargo on the Mac. The postinstall

@@ -298,6 +298,34 @@ mod tests {
 
     #[test]
     #[serial(extra_rmcp_env)]
+    fn create_env_only_forwards_explicitly_allowlisted_local_vars() {
+        // Contract guard for `--env-var`: the explicit env_var allowlist is the
+        // only way a non-default variable crosses the `env_clear()` boundary for
+        // local stdio. A sibling variable that is merely present in the process
+        // environment, but not named by the config, must NOT be forwarded.
+        let allowlisted = "ALLOWLISTED_RMCP_ENV";
+        let other = "NOT_ALLOWLISTED_RMCP_ENV";
+        let allowlisted_value = OsString::from("allowlisted-value");
+        let _allowlisted_guard = EnvVarGuard::set(allowlisted, &allowlisted_value);
+        let _other_guard = EnvVarGuard::set(other, "should-not-forward");
+
+        let env = create_env_for_mcp_server(/*extra_env*/ None, &[allowlisted.into()])
+            .expect("local MCP env should build");
+
+        assert_eq!(
+            env.get(OsStr::new(allowlisted)),
+            Some(&allowlisted_value),
+            "explicitly allowlisted var must be forwarded"
+        );
+        assert_eq!(
+            env.get(OsStr::new(other)),
+            None,
+            "non-allowlisted var must not leak through the env_clear boundary"
+        );
+    }
+
+    #[test]
+    #[serial(extra_rmcp_env)]
     fn create_remote_env_overlay_only_forwards_explicit_variables() {
         let default_var = DEFAULT_ENV_VARS[0];
         let custom_var = "EXTRA_REMOTE_RMCP_ENV";
@@ -386,8 +414,8 @@ mod tests {
         let prefix_value = OsString::from("/data/data/com.termux/files/usr");
         let _prefix_guard = EnvVarGuard::set("PREFIX", &prefix_value);
 
-        let env = create_env_for_mcp_server(/*extra_env*/ None, &[])
-            .expect("local MCP env should build");
+        let env =
+            create_env_for_mcp_server(/*extra_env*/ None, &[]).expect("local MCP env should build");
 
         assert_eq!(env.get(OsStr::new("PREFIX")), Some(&prefix_value));
         assert_eq!(
@@ -408,8 +436,8 @@ mod tests {
         }
         let _prefix_guard = EnvVarGuard::set("PREFIX", "/opt/leaked");
 
-        let env = create_env_for_mcp_server(/*extra_env*/ None, &[])
-            .expect("local MCP env should build");
+        let env =
+            create_env_for_mcp_server(/*extra_env*/ None, &[]).expect("local MCP env should build");
 
         assert_eq!(env.get(OsStr::new("PREFIX")), None);
 

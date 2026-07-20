@@ -5,6 +5,7 @@ use codex_config::types::McpServerTransportConfig;
 use codex_core::config::load_global_mcp_servers;
 use predicates::str::contains;
 use pretty_assertions::assert_eq;
+use serde_json::Value as JsonValue;
 use tempfile::TempDir;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
@@ -281,6 +282,274 @@ async fn add_cant_add_command_and_url() -> Result<()> {
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
     assert!(servers.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_env_var_persists_name_only() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    // Even with a live value present in the child environment, the CLI must
+    // persist only the name and never copy the value into the config file.
+    let mut add_cmd = codex_command(codex_home.path())?;
+    add_cmd
+        .env("NEXUSCREW_MCP_SESSION", "super-secret-value-do-not-persist")
+        .args([
+            "mcp",
+            "add",
+            "nexuscrew",
+            "--env-var",
+            "NEXUSCREW_MCP_SESSION",
+            "--",
+            "nexuscrew",
+            "mcp",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Added global MCP server 'nexuscrew'."));
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    let nexuscrew = servers.get("nexuscrew").expect("server should exist");
+    match &nexuscrew.transport {
+        McpServerTransportConfig::Stdio {
+            env, env_vars, cwd, ..
+        } => {
+            assert_eq!(env_vars, &vec!["NEXUSCREW_MCP_SESSION".into()]);
+            assert!(env.is_none(), "no literal env map should be written");
+            assert!(cwd.is_none());
+        }
+        other => panic!("unexpected transport: {other:?}"),
+    }
+
+    // The value must never reach the config file: only the name is stored.
+    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    assert!(config.contains("NEXUSCREW_MCP_SESSION"));
+    assert!(
+        !config.contains("super-secret-value-do-not-persist"),
+        "env value leaked into config file"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_multiple_env_vars_preserves_order() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    codex_command(codex_home.path())?
+        .args([
+            "mcp",
+            "add",
+            "srv",
+            "--env-var",
+            "FOO",
+            "--env-var",
+            "BAR",
+            "--env-var",
+            "BAZ",
+            "--",
+            "echo",
+        ])
+        .assert()
+        .success();
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    match &servers.get("srv").expect("server should exist").transport {
+        McpServerTransportConfig::Stdio { env_vars, .. } => {
+            assert_eq!(env_vars, &vec!["FOO".into(), "BAR".into(), "BAZ".into()]);
+        }
+        other => panic!("unexpected transport: {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_env_var_dedups_preserving_first_occurrence() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    codex_command(codex_home.path())?
+        .args([
+            "mcp",
+            "add",
+            "srv",
+            "--env-var",
+            "FOO",
+            "--env-var",
+            "BAR",
+            "--env-var",
+            "FOO",
+            "--env-var",
+            "BAZ",
+            "--env-var",
+            "BAR",
+            "--",
+            "echo",
+        ])
+        .assert()
+        .success();
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    match &servers.get("srv").expect("server should exist").transport {
+        McpServerTransportConfig::Stdio { env_vars, .. } => {
+            assert_eq!(env_vars, &vec!["FOO".into(), "BAR".into(), "BAZ".into()]);
+        }
+        other => panic!("unexpected transport: {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_env_var_and_env_coexist() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    codex_command(codex_home.path())?
+        .args([
+            "mcp",
+            "add",
+            "srv",
+            "--env",
+            "FOO=bar",
+            "--env-var",
+            "BAZ",
+            "--",
+            "echo",
+        ])
+        .assert()
+        .success();
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    match &servers.get("srv").expect("server should exist").transport {
+        McpServerTransportConfig::Stdio { env, env_vars, .. } => {
+            let env = env.as_ref().expect("literal env map should be present");
+            assert_eq!(env.get("FOO"), Some(&"bar".to_string()));
+            assert_eq!(env_vars, &vec!["BAZ".into()]);
+        }
+        other => panic!("unexpected transport: {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_invalid_env_var_name_fails_without_writing() -> Result<()> {
+    // Each invalid name must be rejected by the value parser before any config
+    // write. Use a fresh CODEX_HOME per case so a buggy write in one case
+    // cannot mask another.
+    for invalid in ["FOO=bar", "1FOO", "FOO-BAR", "FOO BAR", ""] {
+        let codex_home = TempDir::new()?;
+        codex_command(codex_home.path())?
+            .args(["mcp", "add", "srv", "--env-var", invalid, "--", "echo"])
+            .assert()
+            .failure();
+        let servers = load_global_mcp_servers(codex_home.path()).await?;
+        assert!(
+            servers.is_empty(),
+            "config was mutated for invalid env-var name `{invalid}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_streamable_http_rejects_env_var() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    codex_command(codex_home.path())?
+        .args([
+            "mcp",
+            "add",
+            "github",
+            "--url",
+            "https://example.com/mcp",
+            "--env-var",
+            "FOO",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("--env-var"));
+
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    assert!(servers.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn add_env_var_appears_in_help() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    let output = codex_command(codex_home.path())?
+        .args(["mcp", "add", "--help"])
+        .output()?;
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("--env-var"),
+        "help should document --env-var"
+    );
+    assert!(
+        stdout.contains("<ENV_VAR>"),
+        "help should show the ENV_VAR value placeholder"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_with_env_var_round_trips_through_list_and_get_json() -> Result<()> {
+    let codex_home = TempDir::new()?;
+
+    codex_command(codex_home.path())?
+        .args([
+            "mcp",
+            "add",
+            "docs",
+            "--env-var",
+            "APP_TOKEN",
+            "--env-var",
+            "WORKSPACE_ID",
+            "--",
+            "docs-server",
+            "--port",
+            "4000",
+        ])
+        .assert()
+        .success();
+
+    // TOML round-trip: only the names are persisted, in insertion order.
+    let servers = load_global_mcp_servers(codex_home.path()).await?;
+    match &servers.get("docs").expect("server should exist").transport {
+        McpServerTransportConfig::Stdio { env_vars, .. } => {
+            assert_eq!(env_vars, &vec!["APP_TOKEN".into(), "WORKSPACE_ID".into()]);
+        }
+        other => panic!("unexpected transport: {other:?}"),
+    }
+
+    // `mcp list --json` must surface the allowlisted names and no values.
+    let list_json = codex_command(codex_home.path())?
+        .args(["mcp", "list", "--json"])
+        .output()?;
+    assert!(list_json.status.success());
+    let parsed: JsonValue = serde_json::from_str(&String::from_utf8(list_json.stdout)?)?;
+    assert_eq!(
+        &parsed[0]["transport"]["env_vars"],
+        &serde_json::json!(["APP_TOKEN", "WORKSPACE_ID"]),
+        "list --json must show env_var names only"
+    );
+
+    // `mcp get` must render the names with masked values.
+    let get_output = codex_command(codex_home.path())?
+        .args(["mcp", "get", "docs"])
+        .output()?;
+    assert!(get_output.status.success());
+    let stdout = String::from_utf8(get_output.stdout)?;
+    assert!(stdout.contains("APP_TOKEN=*****"));
+    assert!(stdout.contains("WORKSPACE_ID=*****"));
 
     Ok(())
 }
