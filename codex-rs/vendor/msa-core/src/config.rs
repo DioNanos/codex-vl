@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::error::{MsaError, Result};
+use crate::error::MsaError;
+use crate::error::Result;
 use crate::schema::ChunkConfig;
 
 /// Runtime configuration. Loaded from `MCP_MSA_CONFIG` (TOML) or filled with

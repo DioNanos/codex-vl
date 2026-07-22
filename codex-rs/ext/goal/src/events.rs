@@ -3,8 +3,8 @@ use std::sync::Arc;
 use codex_extension_api::ExtensionEventSink;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ThreadGoalClearedEvent;
 use codex_protocol::protocol::ThreadGoal;
+use codex_protocol::protocol::ThreadGoalClearedEvent;
 use codex_protocol::protocol::ThreadGoalUpdatedEvent;
 
 #[derive(Clone)]
@@ -45,10 +45,7 @@ impl GoalEventEmitter {
     ) {
         self.sink.emit(Event {
             id: event_id.into(),
-            msg: EventMsg::ThreadGoalCleared(ThreadGoalClearedEvent {
-                thread_id,
-                turn_id,
-            }),
+            msg: EventMsg::ThreadGoalCleared(ThreadGoalClearedEvent { thread_id, turn_id }),
         });
     }
 }

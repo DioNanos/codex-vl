@@ -54,9 +54,13 @@ pub(crate) enum LoopCommandRequest {
     OwnerSetMain,
     OwnerSetVivling,
     /// FASE5 5A — apply a pending suggestion by id (user-confirmed via `/loop apply`).
-    Apply { suggestion_id: String },
+    Apply {
+        suggestion_id: String,
+    },
     /// FASE5 5A — dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
-    Dismiss { suggestion_id: String },
+    Dismiss {
+        suggestion_id: String,
+    },
 }
 
 /// Aggregated codex-vl app events. Dispatching goes through a single

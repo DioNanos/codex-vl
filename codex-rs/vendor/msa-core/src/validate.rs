@@ -8,7 +8,8 @@
 //! registry calls [`validate_collection_name`] before building any path, so a
 //! name like `../../etc` or `/abs` never reaches the filesystem.
 
-use crate::error::{MsaError, Result};
+use crate::error::MsaError;
+use crate::error::Result;
 
 /// Max bytes for a collection name. Collection names map to directory names.
 pub const MAX_COLLECTION_NAME_LEN: usize = 128;
@@ -112,7 +113,7 @@ pub fn clamp_top_k(top_k: usize) -> usize {
     top_k.clamp(1, MAX_TOP_K)
 }
 
-/// Max bytes for a `source_id` (a sync-scope label, e.g. `"docshub"`).
+/// Max bytes for a `source_id` (a sync-scope label, e.g. `"project-docs"`).
 pub const MAX_SOURCE_ID_LEN: usize = 256;
 
 /// Validate a `source_id`: non-empty, bounded, no NUL. Used to scope sync/
@@ -144,7 +145,9 @@ pub fn validate_doc_id_filter(value: &str) -> Result<()> {
         )));
     }
     if value.contains('\0') {
-        return Err(MsaError::InvalidInput("doc_id filter contains NUL byte".into()));
+        return Err(MsaError::InvalidInput(
+            "doc_id filter contains NUL byte".into(),
+        ));
     }
     Ok(())
 }

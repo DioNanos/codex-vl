@@ -2,25 +2,23 @@
 //!
 //! Contains the async functions invoked by `App::run_vivling_assist` and
 //! `App::run_vivling_loop_tick` (in `app/loop_controller.rs`). The brain
-//! talks to the configured model via `codex_core::client::ModelClient`
-//! using the same plumbing the main session uses.
+//! talks to the configured model through the background-client boundary
+//! exposed by `codex-core`.
 //!
 //! Keeping these functions in their own module limits the surface of our
 //! changes to the rest of the app dispatcher, so upstream edits to
 //! `background_requests.rs` do not have to be merged around them.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use codex_core::CodexResponsesMetadata;
-use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
-use codex_core::build_models_manager;
+use codex_core::build_background_model_client;
 use codex_core::content_items_to_text;
-use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionSource;
 use codex_rollout_trace::InferenceTraceContext;
 use tokio_stream::StreamExt;
 use tracing::debug;
@@ -45,45 +43,12 @@ pub(super) async fn run_vivling_assist_request(
     let (profile_config, model_name) =
         resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
 
-    let auth_manager = Arc::new(
-        codex_login::AuthManager::new(
-            profile_config.codex_home.to_path_buf(),
-            /*enable_codex_api_key_env*/ false,
-            profile_config.cli_auth_credentials_store_mode,
-            /*forced_chatgpt_workspace_id*/ None,
-            Some(profile_config.chatgpt_base_url.clone()),
-            codex_login::AuthKeyringBackendKind::default(),
-            None,
-        )
-        .await,
-    );
-    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_info = models_manager
-        .get_model_info(&model_name, &profile_config.to_models_manager_config())
-        .await;
-
-    let client = ModelClient::new(
-        Some(auth_manager),
-        if profile_config.features.enabled(Feature::UseAgentIdentity) {
-            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
-        } else {
-            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
-        },
-        ThreadId::new(),
-        profile_config.model_provider.clone(),
-        codex_protocol::protocol::SessionSource::Custom("vivling".to_string()),
-        codex_login::default_client::originator().value,
-        profile_config.model_verbosity,
-        profile_config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        profile_config.features.enabled(Feature::RuntimeMetrics),
-        None,
-        /*item_ids_enabled*/ false,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        None,
-        profile_config.http_client_factory(),
-    );
+    let (client, model_info) = build_background_model_client(
+        &profile_config,
+        &model_name,
+        SessionSource::Custom("vivling".to_string()),
+    )
+    .await;
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
         id: None,
@@ -170,45 +135,12 @@ pub(super) async fn run_vivling_loop_tick_request(
     let (profile_config, model_name) =
         resolve_vivling_brain_target_config(&config, &request.brain_target).await?;
 
-    let auth_manager = Arc::new(
-        codex_login::AuthManager::new(
-            profile_config.codex_home.to_path_buf(),
-            false,
-            profile_config.cli_auth_credentials_store_mode,
-            /*forced_chatgpt_workspace_id*/ None,
-            Some(profile_config.chatgpt_base_url.clone()),
-            codex_login::AuthKeyringBackendKind::default(),
-            None,
-        )
-        .await,
-    );
-    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_info = models_manager
-        .get_model_info(&model_name, &profile_config.to_models_manager_config())
-        .await;
-
-    let client = ModelClient::new(
-        Some(auth_manager),
-        if profile_config.features.enabled(Feature::UseAgentIdentity) {
-            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
-        } else {
-            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
-        },
-        ThreadId::new(),
-        profile_config.model_provider.clone(),
-        codex_protocol::protocol::SessionSource::Custom("vivling-loop".to_string()),
-        codex_login::default_client::originator().value,
-        profile_config.model_verbosity,
-        profile_config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        profile_config.features.enabled(Feature::RuntimeMetrics),
-        None,
-        /*item_ids_enabled*/ false,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        None,
-        profile_config.http_client_factory(),
-    );
+    let (client, model_info) = build_background_model_client(
+        &profile_config,
+        &model_name,
+        SessionSource::Custom("vivling-loop".to_string()),
+    )
+    .await;
 
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
@@ -282,8 +214,8 @@ Omit `suggestion` (or null) when you have no high-confidence advice; never inven
 }
 
 /// Memory V2 Step 12.B.D.2 — async runner for the Expression channel
-/// (CRT live phrase + proactive). Same `ModelClient` plumbing as the
-/// other Vivling background runners, but with two important tweaks:
+/// (CRT live phrase + proactive). Uses the same core-owned client boundary as
+/// the other Vivling background runners, but with two important tweaks:
 ///
 /// 1. The model is forced into single-shot JSON mode via the system
 ///    instruction — the runtime cache only consumes the validated
@@ -317,45 +249,12 @@ pub(super) async fn run_vivling_expression_request(
         "vivling expression brain target resolved",
     );
 
-    let auth_manager = Arc::new(
-        codex_login::AuthManager::new(
-            profile_config.codex_home.to_path_buf(),
-            false,
-            profile_config.cli_auth_credentials_store_mode,
-            /*forced_chatgpt_workspace_id*/ None,
-            Some(profile_config.chatgpt_base_url.clone()),
-            codex_login::AuthKeyringBackendKind::default(),
-            None,
-        )
-        .await,
-    );
-    let models_manager = build_models_manager(&profile_config, Arc::clone(&auth_manager));
-    let model_info = models_manager
-        .get_model_info(&model_name, &profile_config.to_models_manager_config())
-        .await;
-
-    let client = ModelClient::new(
-        Some(auth_manager),
-        if profile_config.features.enabled(Feature::UseAgentIdentity) {
-            codex_login::auth::AgentIdentityAuthPolicy::ChatGptAuth
-        } else {
-            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly
-        },
-        ThreadId::new(),
-        profile_config.model_provider.clone(),
-        codex_protocol::protocol::SessionSource::Custom("vivling-expression".to_string()),
-        codex_login::default_client::originator().value,
-        profile_config.model_verbosity,
-        profile_config
-            .features
-            .enabled(Feature::EnableRequestCompression),
-        profile_config.features.enabled(Feature::RuntimeMetrics),
-        None,
-        /*item_ids_enabled*/ false,
-        /*concurrent_reasoning_summaries_enabled*/ false,
-        None,
-        profile_config.http_client_factory(),
-    );
+    let (client, model_info) = build_background_model_client(
+        &profile_config,
+        &model_name,
+        SessionSource::Custom("vivling-expression".to_string()),
+    )
+    .await;
 
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {

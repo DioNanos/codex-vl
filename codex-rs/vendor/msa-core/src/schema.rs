@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 pub type DocId = String;
 pub type CollectionName = String;

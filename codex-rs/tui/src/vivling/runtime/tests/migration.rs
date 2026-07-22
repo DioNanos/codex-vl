@@ -679,11 +679,22 @@ fn normalize_drops_bookkeeping_distillates_and_clamps_counters() {
     assert_eq!(state.distilled_summaries.len(), 1, "bookkeeping dropped");
     let kept = &state.distilled_summaries[0];
     assert_eq!(kept.kind, "turn");
-    assert!(kept.observations <= 64, "obs clamped: {}", kept.observations);
-    assert!(kept.total_weight <= 64 * 12, "weight clamped: {}", kept.total_weight);
+    assert!(
+        kept.observations <= 64,
+        "obs clamped: {}",
+        kept.observations
+    );
+    assert!(
+        kept.total_weight <= 64 * 12,
+        "weight clamped: {}",
+        kept.total_weight
+    );
 
     // Idempotent: a second load changes nothing.
     let snapshot = state.distilled_summaries.clone();
     state.normalize_loaded_state();
-    assert_eq!(format!("{snapshot:?}"), format!("{:?}", state.distilled_summaries));
+    assert_eq!(
+        format!("{snapshot:?}"),
+        format!("{:?}", state.distilled_summaries)
+    );
 }

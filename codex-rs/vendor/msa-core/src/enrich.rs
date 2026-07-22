@@ -205,7 +205,16 @@ const SENSITIVE_KEYS: &[&str] = &[
 
 /// Prefixes that mark a token as a credential regardless of context.
 const SECRET_PREFIXES: &[&str] = &[
-    "sk-", "ghp_", "gho_", "ghu_", "ghs_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "xoxs-",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxs-",
 ];
 
 fn redact_line(line: &str) -> String {
@@ -298,15 +307,16 @@ fn is_secret_token(tok: &str, lower: &str) -> bool {
         !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.' | '+' | '/' | '=')
     });
 
-    if SECRET_PREFIXES.iter().any(|p| bare_lower.starts_with(p))
-        && bare.chars().count() >= 12
-    {
+    if SECRET_PREFIXES.iter().any(|p| bare_lower.starts_with(p)) && bare.chars().count() >= 12 {
         return true;
     }
 
     // AWS access key id: AKIA + 16 uppercase alphanumerics.
-    if bare.len() == 20 && bare.starts_with("AKIA")
-        && bare[4..].chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    if bare.len() == 20
+        && bare.starts_with("AKIA")
+        && bare[4..]
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
     {
         return true;
     }
@@ -391,8 +401,14 @@ mod tests {
         let s = sanitize_detail(raw);
         assert!(!s.contains("AKIAIOSFODNN7EXAMPLE"), "{s}");
         assert!(!s.contains("eyJhbGciOiJIUzI1NiJ9"), "{s}");
-        assert!(!s.contains("0123456789abcdef0123456789abcdef01234567"), "{s}");
-        assert!(!s.contains("QWJjRGVmR2hpSmtsTW5vUHFyU3R1dndYeXowMTIzNDU2Nzg5"), "{s}");
+        assert!(
+            !s.contains("0123456789abcdef0123456789abcdef01234567"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("QWJjRGVmR2hpSmtsTW5vUHFyU3R1dndYeXowMTIzNDU2Nzg5"),
+            "{s}"
+        );
     }
 
     #[test]
@@ -442,7 +458,8 @@ mod tests {
     fn rich_text_round_trip_index_search_secret_not_retrievable() {
         use crate::config::MsaConfig;
         use crate::index::CollectionRegistry;
-        use crate::schema::{ChunkConfig, Document};
+        use crate::schema::ChunkConfig;
+        use crate::schema::Document;
         use std::collections::HashSet;
 
         let dir = tempfile::tempdir().expect("tempdir");

@@ -17,16 +17,24 @@
 //! state. Raw injected text never does — it would bloat the payload and echo
 //! user content back through the client on every round.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
-use crate::error::{MsaError, Result};
+use crate::error::MsaError;
+use crate::error::Result;
 use crate::index::MsaIndex;
-use crate::schema::{ChunkHit, Document, SearchFilter};
-use crate::validate::{clamp_top_k, validate_doc_id, validate_query};
+use crate::schema::ChunkHit;
+use crate::schema::Document;
+use crate::schema::SearchFilter;
+use crate::validate::clamp_top_k;
+use crate::validate::validate_doc_id;
+use crate::validate::validate_query;
 
 /// Wire schema version of the interleave state. Bumped only on a breaking
 /// change to the on-wire state shape; the client echoes it back and the server
@@ -560,7 +568,9 @@ fn pre_stopped_response(state: &InterleaveStateV1, params: &InterleaveParams) ->
         budget: RoundBudget {
             max_total_chars: params.max_total_chars,
             used_chars_total: state.used_chars_total,
-            remaining_chars: params.max_total_chars.saturating_sub(state.used_chars_total),
+            remaining_chars: params
+                .max_total_chars
+                .saturating_sub(state.used_chars_total),
             max_chars_per_doc: params.max_chars_per_doc,
             truncated_docs: 0,
         },
@@ -616,8 +626,14 @@ pub fn run_round(
     // Route. No retrieval-time exclude: we dedup afterward so dedup_ratio is an
     // honest, observable signal (M3). search_hybrid validates dense_alpha and
     // the embedding requirement, returning a clean error on misuse.
-    let hits =
-        index.search_hybrid(query, params.top_k, filter, &HashSet::new(), dense_alpha, query_emb)?;
+    let hits = index.search_hybrid(
+        query,
+        params.top_k,
+        filter,
+        &HashSet::new(),
+        dense_alpha,
+        query_emb,
+    )?;
     let candidates_considered = hits.len();
 
     let prior_seen = state.seen_doc_id_set();
@@ -741,7 +757,8 @@ pub fn run_round(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{ChunkConfig, Document};
+    use crate::schema::ChunkConfig;
+    use crate::schema::Document;
     use chrono::Utc;
 
     #[test]
@@ -778,7 +795,10 @@ mod tests {
             schema_version: 1,
             round: 2,
             seen_doc_ids: vec!["docA".into(), "docB".into()],
-            injected_units: vec![EvidenceUnitId::doc("docA"), EvidenceUnitId::chunk("docB", 3)],
+            injected_units: vec![
+                EvidenceUnitId::doc("docA"),
+                EvidenceUnitId::chunk("docB", 3),
+            ],
             used_chars_total: 1800,
             empty_rounds: 1,
             low_gain_rounds: 0,
@@ -913,12 +933,12 @@ mod tests {
     #[test]
     fn params_clamp_into_server_ranges() {
         let p = InterleaveParams::clamped(
-            0,           // top_k -> 1
-            999,         // fetch_top_n -> min(ceiling, top_k) = 1
-            usize::MAX,  // max_chars_per_doc -> ceiling
-            usize::MAX,  // max_total_chars -> ceiling
-            u32::MAX,    // max_rounds -> ceiling
-            2.0,         // low_gain -> 1.0
+            0,          // top_k -> 1
+            999,        // fetch_top_n -> min(ceiling, top_k) = 1
+            usize::MAX, // max_chars_per_doc -> ceiling
+            usize::MAX, // max_total_chars -> ceiling
+            u32::MAX,   // max_rounds -> ceiling
+            2.0,        // low_gain -> 1.0
             DedupMode::Id,
         );
         assert_eq!(p.top_k, 1);
@@ -942,7 +962,10 @@ mod tests {
         assert_eq!(clamp_low_gain_threshold(-1.0), 0.0);
         assert_eq!(clamp_low_gain_threshold(0.5), 0.5);
         assert_eq!(clamp_low_gain_threshold(2.0), 1.0);
-        assert_eq!(clamp_low_gain_threshold(f32::NAN), DEFAULT_LOW_GAIN_THRESHOLD);
+        assert_eq!(
+            clamp_low_gain_threshold(f32::NAN),
+            DEFAULT_LOW_GAIN_THRESHOLD
+        );
         assert_eq!(
             clamp_low_gain_threshold(f32::INFINITY),
             DEFAULT_LOW_GAIN_THRESHOLD
@@ -976,8 +999,12 @@ mod tests {
     /// doc is one chunk under the default 64-word chunk size.
     fn idx_with(docs: &[(&str, &str)]) -> (tempfile::TempDir, MsaIndex) {
         let dir = tempfile::tempdir().unwrap();
-        let idx =
-            MsaIndex::open("test".into(), dir.path().to_path_buf(), ChunkConfig::default()).unwrap();
+        let idx = MsaIndex::open(
+            "test".into(),
+            dir.path().to_path_buf(),
+            ChunkConfig::default(),
+        )
+        .unwrap();
         for (id, text) in docs {
             idx.index_document(
                 &Document {
@@ -994,8 +1021,22 @@ mod tests {
     }
 
     /// Default BM25-only params with explicit caps for deterministic tests.
-    fn params(top_k: usize, fetch_top_n: usize, per_doc: usize, total: usize, rounds: u32) -> InterleaveParams {
-        InterleaveParams::clamped(top_k, fetch_top_n, per_doc, total, rounds, 0.05, DedupMode::Id)
+    fn params(
+        top_k: usize,
+        fetch_top_n: usize,
+        per_doc: usize,
+        total: usize,
+        rounds: u32,
+    ) -> InterleaveParams {
+        InterleaveParams::clamped(
+            top_k,
+            fetch_top_n,
+            per_doc,
+            total,
+            rounds,
+            0.05,
+            DedupMode::Id,
+        )
     }
 
     #[test]
@@ -1031,8 +1072,16 @@ mod tests {
             ("c", "interleave memory charlie"),
         ]);
         let p = params(8, 2, 2000, 16000, 5);
-        let r1 = run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r1 = run_round(
+            &idx,
+            "interleave",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         // Feed r1.state back — same query, so the round-1 docs must dedup out.
         let r2 = run_round(&idx, "interleave", &r1.state, &p, None, 1.0, None).unwrap();
 
@@ -1054,20 +1103,40 @@ mod tests {
     fn exhausted_when_query_has_no_match() {
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 5);
-        let r = run_round(&idx, "nonexistentterm", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r = run_round(
+            &idx,
+            "nonexistentterm",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         assert_eq!(r.stats.candidates_considered, 0);
         assert!(r.injected_docs.is_empty());
         assert!(r.stop_hints.exhausted);
         assert_eq!(r.state.empty_rounds, 1);
-        assert!(!r.stop_hints.exhausted_2_rounds, "single empty round is a hint, not a 2-round stop");
+        assert!(
+            !r.stop_hints.exhausted_2_rounds,
+            "single empty round is a hint, not a 2-round stop"
+        );
     }
 
     #[test]
     fn two_empty_rounds_raise_exhausted_2_rounds() {
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 5);
-        let r1 = run_round(&idx, "nope", &InterleaveStateV1::fresh(), &p, None, 1.0, None).unwrap();
+        let r1 = run_round(
+            &idx,
+            "nope",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         let r2 = run_round(&idx, "nope", &r1.state, &p, None, 1.0, None).unwrap();
         assert_eq!(r2.state.empty_rounds, 2);
         assert!(r2.stop_hints.exhausted_2_rounds);
@@ -1078,8 +1147,16 @@ mod tests {
         let (_d, idx) = idx_with(&[("a", "interleave aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]);
         // Cap each doc to 5 chars; the stored original is much longer.
         let p = params(8, 2, 5, 16000, 5);
-        let r = run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r = run_round(
+            &idx,
+            "interleave",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         assert_eq!(r.injected_docs.len(), 1);
         let inj = &r.injected_docs[0];
         assert_eq!(inj.chars, 5);
@@ -1098,21 +1175,43 @@ mod tests {
         // Total budget of 6 chars: the first injected doc fills it, the second
         // fresh doc (within fetch_top_n=2) is budget-skipped.
         let p = params(8, 2, 1000, 6, 5);
-        let r = run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r = run_round(
+            &idx,
+            "interleave",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         assert_eq!(r.injected_docs.len(), 1, "only the first fresh doc fits");
         assert_eq!(r.stats.budget_skipped_count, 1);
         assert!(r.budget.used_chars_total <= 6);
-        assert!(r.stop_hints.hard_stop, "used >= max_total_chars is a hard stop");
-        assert_eq!(r.stop_hints.reason.as_deref(), Some("max_total_chars reached"));
+        assert!(
+            r.stop_hints.hard_stop,
+            "used >= max_total_chars is a hard stop"
+        );
+        assert_eq!(
+            r.stop_hints.reason.as_deref(),
+            Some("max_total_chars reached")
+        );
     }
 
     #[test]
     fn hard_stop_on_max_rounds() {
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 1); // max_rounds = 1
-        let r = run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r = run_round(
+            &idx,
+            "interleave",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         assert_eq!(r.round, 1);
         assert!(r.stop_hints.hard_stop);
         assert_eq!(r.stop_hints.reason.as_deref(), Some("max_rounds reached"));
@@ -1150,7 +1249,15 @@ mod tests {
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 5);
         assert!(matches!(
-            run_round(&idx, "   ", &InterleaveStateV1::fresh(), &p, None, 1.0, None),
+            run_round(
+                &idx,
+                "   ",
+                &InterleaveStateV1::fresh(),
+                &p,
+                None,
+                1.0,
+                None
+            ),
             Err(MsaError::InvalidInput(_))
         ));
     }
@@ -1161,15 +1268,34 @@ mod tests {
         // rejected by the search layer (clean error, not a silent BM25 fallback).
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 5);
-        assert!(run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 0.5, None).is_err());
+        assert!(
+            run_round(
+                &idx,
+                "interleave",
+                &InterleaveStateV1::fresh(),
+                &p,
+                None,
+                0.5,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn run_round_reports_no_fetch_errors_on_healthy_index() {
         let (_d, idx) = idx_with(&[("a", "interleave memory alpha")]);
         let p = params(8, 2, 2000, 16000, 5);
-        let r = run_round(&idx, "interleave", &InterleaveStateV1::fresh(), &p, None, 1.0, None)
-            .unwrap();
+        let r = run_round(
+            &idx,
+            "interleave",
+            &InterleaveStateV1::fresh(),
+            &p,
+            None,
+            1.0,
+            None,
+        )
+        .unwrap();
         assert!(r.fetch_errors.is_empty());
     }
 
@@ -1225,7 +1351,10 @@ mod tests {
         assert!(r.hits.is_empty());
         assert!(r.injected_docs.is_empty());
         assert!(r.stop_hints.hard_stop);
-        assert_eq!(r.stop_hints.reason.as_deref(), Some("max_rounds already reached"));
+        assert_eq!(
+            r.stop_hints.reason.as_deref(),
+            Some("max_rounds already reached")
+        );
     }
 
     #[test]

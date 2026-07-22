@@ -1,4 +1,5 @@
-use super::objects::{CrtObject, draw_object};
+use super::objects::CrtObject;
+use super::objects::draw_object;
 use super::palette::Palette;
 use super::surface::CrtSurface;
 use crate::vl::VivlingActivity;

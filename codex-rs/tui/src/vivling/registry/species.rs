@@ -1,10 +1,13 @@
-use super::super::model::{Stage, WorkAffinitySet};
+use super::super::model::Stage;
+use super::super::model::WorkAffinitySet;
 use super::card_art::stage_card_art;
 use super::footer::footer_sprite_for_species;
-use super::types::{
-    BiasProfile, CardArtFamily, SpeciesSeed, VivlingAvailability, VivlingRarity,
-    VivlingSpeciesDefinition,
-};
+use super::types::BiasProfile;
+use super::types::CardArtFamily;
+use super::types::SpeciesSeed;
+use super::types::VivlingAvailability;
+use super::types::VivlingRarity;
+use super::types::VivlingSpeciesDefinition;
 
 const COMMON_SPECIES: &[SpeciesSeed] = &[
     SpeciesSeed {

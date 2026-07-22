@@ -259,9 +259,7 @@ impl VivlingMsa {
         // (not allowlist) so future knowledge kinds flow by default. This
         // single choke point also gates the setup backfill (F7) and the
         // lineage echo path.
-        if crate::vivling::model::constants::BOOKKEEPING_KINDS
-            .contains(&capsule.kind.as_str())
-        {
+        if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
             return;
         }
 

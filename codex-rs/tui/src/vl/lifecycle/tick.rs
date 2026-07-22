@@ -1,8 +1,13 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
-use super::activity::{
-    EATING_DURATION, SLEEP_ENERGY_GAIN, SLEEP_ENERGY_INTERVAL, VivlingActivity, compute_activity,
-};
+use super::activity::EATING_DURATION;
+use super::activity::SLEEP_ENERGY_GAIN;
+use super::activity::SLEEP_ENERGY_INTERVAL;
+use super::activity::VivlingActivity;
+use super::activity::compute_activity;
 use super::animation::VivlingAnimation;
 use super::baby_thoughts::idle_thought;
 use super::stats::VivlingLiveStats;
@@ -152,7 +157,8 @@ impl LifecycleState {
         } else if self.activity == VivlingActivity::Eating {
             self.stats.bites_eaten = self.stats.bites_eaten.saturating_add(1);
         } else if self.activity == VivlingActivity::Playing {
-            use super::activity::{PLAYING_MAX_DURATION, PLAYING_MIN_DURATION};
+            use super::activity::PLAYING_MAX_DURATION;
+            use super::activity::PLAYING_MIN_DURATION;
             let range = PLAYING_MAX_DURATION.as_secs() - PLAYING_MIN_DURATION.as_secs();
             let extra = (self.stats.games_played as u64) % (range + 1);
             self.playing_duration = Some(PLAYING_MIN_DURATION + Duration::from_secs(extra));
