@@ -174,6 +174,61 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn builtin_manage_loops_preserves_existing_codex_app_namespace() {
+        let tools = with_builtin_dynamic_tools(vec![dynamic_tool(
+            Some(MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE),
+            "client_tool",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ false,
+        )]);
+
+        validate_dynamic_tools(&tools).expect("builtins should not duplicate codex_app namespace");
+        let namespaces = tools
+            .iter()
+            .filter_map(|tool| match tool {
+                DynamicToolSpec::Namespace(namespace)
+                    if namespace.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE =>
+                {
+                    Some(namespace)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(namespaces.len(), 1);
+        assert_eq!(namespaces[0].description, "test namespace");
+        assert!(namespaces[0].tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolNamespaceTool::Function(function) if function.name == "client_tool"
+            )
+        }));
+        assert!(namespaces[0].tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolNamespaceTool::Function(function)
+                    if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+            )
+        }));
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| {
+                    matches!(
+                        tool,
+                        DynamicToolSpec::Function(function)
+                            if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+                    )
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
@@ -1016,6 +1071,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp: timestamp.clone(),
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta.clone(),
                 git: None,
@@ -1083,6 +1139,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp,
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta,
                 git: None,
@@ -1125,6 +1182,7 @@ mod thread_processor_behavior_tests {
 
         let line = RolloutLine {
             timestamp,
+            ordinal: None,
             item: RolloutItem::SessionMeta(SessionMetaLine {
                 meta: session_meta,
                 git: None,

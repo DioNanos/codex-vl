@@ -15,9 +15,11 @@
 //! state on server restart is acceptable: the AI client can simply restart
 //! the loop with the original query.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct MsaSession {

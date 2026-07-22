@@ -178,9 +178,7 @@ impl VivlingAction {
             "language" | "lang" => Self::parse_language_action(rest),
             // 0.134.0 F.2 — accept the short `crt` alias alongside the
             // historical `crt-brain` / `crt_brain` / `crtbrain` spellings.
-            "crt" | "crt-brain" | "crt_brain" | "crtbrain" => {
-                Self::parse_crt_brain_action(rest)
-            }
+            "crt" | "crt-brain" | "crt_brain" | "crtbrain" => Self::parse_crt_brain_action(rest),
             "reset" => Ok(Self::Reset),
             _ => Ok(Self::DirectMessage(trimmed.to_string())),
         }

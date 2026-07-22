@@ -4,6 +4,18 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.145.0 - Upstream rust-v0.145.0 stable
+
+Stable release based on the final OpenAI Codex `rust-v0.145.0` tag. The full
+Codex VL workflow layer remains available across goals, loop jobs, Vivling,
+the VL interface, remote control, app-server integration, fork-owned update
+surfaces, and the Linux, macOS, and Android package lanes.
+
+This release also carries forward the explicit MCP environment-name
+allowlists introduced in 0.144.8. Linux x64, Linux arm64, and Android arm64
+ship native packages; macOS arm64 remains a source-build package with its
+fail-closed prerequisite checks.
+
 ## 0.144.8 - Explicit MCP environment allowlists
 
 Stable patch on the OpenAI Codex `rust-v0.144.6` base. The `mcp add`

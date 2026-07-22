@@ -10,18 +10,12 @@ use super::session::Session;
 impl Session {
     pub(crate) async fn build_vl_loop_awareness_developer_instructions(&self) -> Option<String> {
         let state_db = self.services.state_db.as_deref()?;
-        let jobs = state_db
-            .list_thread_loop_jobs(self.thread_id)
-            .await
-            .ok()?;
+        let jobs = state_db.list_thread_loop_jobs(self.thread_id).await.ok()?;
         if jobs.is_empty() {
             return None;
         }
 
-        let owner = state_db
-            .get_thread_loop_owner(self.thread_id)
-            .await
-            .ok()?;
+        let owner = state_db.get_thread_loop_owner(self.thread_id).await.ok()?;
         let labels = jobs
             .iter()
             .take(4)

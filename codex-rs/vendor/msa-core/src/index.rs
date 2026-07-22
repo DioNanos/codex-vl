@@ -15,21 +15,42 @@
 //! Persistence is handled by tantivy itself (mmap on disk). No WAL needed
 //! for v0.2; tantivy commits are atomic.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
+use tantivy::Index;
+use tantivy::IndexReader;
+use tantivy::IndexWriter;
+use tantivy::ReloadPolicy;
+use tantivy::TantivyDocument;
+use tantivy::Term;
 use tantivy::collector::TopDocs;
+use tantivy::doc;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
+use tantivy::schema::Field;
+use tantivy::schema::OwnedValue;
+use tantivy::schema::STORED;
+use tantivy::schema::STRING;
+use tantivy::schema::Schema;
+use tantivy::schema::TEXT;
 
-use crate::embeddings::{EmbeddingScorer, cosine_unit, pack_f32, unpack_f32};
+use crate::embeddings::EmbeddingScorer;
+use crate::embeddings::cosine_unit;
+use crate::embeddings::pack_f32;
+use crate::embeddings::unpack_f32;
 
 use crate::chunker::chunk_text;
-use crate::error::{MsaError, Result};
-use crate::schema::{ChunkConfig, ChunkHit, Document, MsaStats, SearchFilter};
+use crate::error::MsaError;
+use crate::error::Result;
+use crate::schema::ChunkConfig;
+use crate::schema::ChunkHit;
+use crate::schema::Document;
+use crate::schema::MsaStats;
+use crate::schema::SearchFilter;
 
 /// Sentinel value in `chunk_idx` that marks the full-document record.
 const SENTINEL_CHUNK_IDX: u64 = u64::MAX;

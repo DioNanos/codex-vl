@@ -202,28 +202,30 @@ pub(crate) fn record_expression_result(
     };
     let expires = now + Duration::minutes(ttl_minutes);
 
-    let crt_written = if let Some(text) = sanitize_phrase(reply.crt_phrase.as_deref(), EXPRESSION_CRT_MAX) {
-        state.cached_crt_phrase = Some(CachedCrtPhrase {
-            text,
-            generated_at: Some(now),
-            prompt_hash: Some(reply.prompt_hash),
-            ttl_expires_at: Some(expires),
-        });
-        true
-    } else {
-        false
-    };
-    let proactive_written = if let Some(text) = sanitize_phrase(reply.proactive.as_deref(), EXPRESSION_PROACTIVE_MAX) {
-        state.cached_proactive = Some(CachedProactive {
-            text,
-            generated_at: Some(now),
-            prompt_hash: Some(reply.prompt_hash),
-            ttl_expires_at: Some(expires),
-        });
-        true
-    } else {
-        false
-    };
+    let crt_written =
+        if let Some(text) = sanitize_phrase(reply.crt_phrase.as_deref(), EXPRESSION_CRT_MAX) {
+            state.cached_crt_phrase = Some(CachedCrtPhrase {
+                text,
+                generated_at: Some(now),
+                prompt_hash: Some(reply.prompt_hash),
+                ttl_expires_at: Some(expires),
+            });
+            true
+        } else {
+            false
+        };
+    let proactive_written =
+        if let Some(text) = sanitize_phrase(reply.proactive.as_deref(), EXPRESSION_PROACTIVE_MAX) {
+            state.cached_proactive = Some(CachedProactive {
+                text,
+                generated_at: Some(now),
+                prompt_hash: Some(reply.prompt_hash),
+                ttl_expires_at: Some(expires),
+            });
+            true
+        } else {
+            false
+        };
     // F.3 debug telemetry: record which cache slots the LLM reply
     // actually filled, so a stale CRT footer can be traced back to
     // either an LLM that returned no usable text or to a sanitizer

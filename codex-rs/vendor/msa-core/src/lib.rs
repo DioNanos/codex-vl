@@ -20,6 +20,11 @@ pub mod session;
 pub mod validate;
 
 pub use config::MsaConfig;
-pub use error::{MsaError, Result};
-pub use index::{CollectionRegistry, MsaIndex};
-pub use schema::{ChunkHit, Document, MsaStats, SearchFilter};
+pub use error::MsaError;
+pub use error::Result;
+pub use index::CollectionRegistry;
+pub use index::MsaIndex;
+pub use schema::ChunkHit;
+pub use schema::Document;
+pub use schema::MsaStats;
+pub use schema::SearchFilter;

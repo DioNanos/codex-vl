@@ -47,11 +47,8 @@ impl App {
                         // set. We bypass profile-v2 selection here and just
                         // read the legacy table directly to confirm the
                         // profile exists and resolves to a model.
-                        match read_legacy_brain_profile(
-                            &self.config.codex_home,
-                            profile.as_str(),
-                        )
-                        .await
+                        match read_legacy_brain_profile(&self.config.codex_home, profile.as_str())
+                            .await
                         {
                             Ok(legacy) => (profile.clone(), legacy.model),
                             Err(err) => {
@@ -222,8 +219,12 @@ impl App {
                 active_loops,
                 blockers,
             } => {
-                self.vivling_context_bus
-                    .record_turn(summary, active_loops, blockers, chrono::Utc::now());
+                self.vivling_context_bus.record_turn(
+                    summary,
+                    active_loops,
+                    blockers,
+                    chrono::Utc::now(),
+                );
             }
             VlEvent::SidebarPushMessage {
                 kind,
@@ -262,10 +263,7 @@ impl App {
             Some(req) => {
                 if let Err(err) = self
                     .apply_loop_command_request(
-                        thread_id,
-                        req,
-                        /*source*/ false,
-                        /*emit_ui_feedback*/ true,
+                        thread_id, req, /*source*/ false, /*emit_ui_feedback*/ true,
                     )
                     .await
                 {

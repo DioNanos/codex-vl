@@ -15,11 +15,6 @@ INSTALL_SCRIPT = Path(__file__).with_name("install.sh")
 VERSION = "0.142.5"
 
 
-@unittest.skip(
-    "codex-vl fork: installer is fork-owned (DioNanos/codex-vl, vX.Y.Z tags, "
-    "pre-#31056 fetch logic); upstream reuse-release-metadata assertions diverge. "
-    "Re-enable when the fork adopts the upstream reuse-metadata refactor."
-)
 class InstallShTest(unittest.TestCase):
     def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
         result, requests = run_installer(VERSION, metadata_failure=True)
@@ -29,7 +24,7 @@ class InstallShTest(unittest.TestCase):
             requests,
             [
                 "https://api.github.com/repos/DioNanos/codex-vl/releases/tags/"
-                f"rust-v{VERSION}"
+                f"v{VERSION}"
             ],
         )
         self.assertIn(
@@ -46,9 +41,9 @@ class InstallShTest(unittest.TestCase):
             requests,
             [
                 "https://api.github.com/repos/DioNanos/codex-vl/releases/tags/"
-                f"rust-v{VERSION}",
+                f"v{VERSION}",
                 "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                f"v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
         self.assertIn(f"Resolved version: {VERSION}", result.stdout)
@@ -62,7 +57,7 @@ class InstallShTest(unittest.TestCase):
             [
                 "https://api.github.com/repos/DioNanos/codex-vl/releases/latest",
                 "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                f"v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
         self.assertIn(f"Resolved version: {VERSION}", result.stdout)
@@ -78,7 +73,7 @@ class InstallShTest(unittest.TestCase):
             [
                 "https://api.github.com/repos/DioNanos/codex-vl/releases/latest",
                 "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                f"v{VERSION}/codex-package_SHA256SUMS",
             ],
         )
         self.assertIn(f"Resolved version: {VERSION}", result.stdout)
@@ -280,7 +275,7 @@ def create_package_release(root: Path) -> tuple[Path, Path, str]:
                     "digest": f"sha256:{checksum_digest}",
                 },
             ],
-            "tag_name": f"rust-v{VERSION}",
+            "tag_name": f"v{VERSION}",
         },
         indent=2,
     )
@@ -315,7 +310,7 @@ def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
     )
     separators = (",", ":") if compact else None
     return json.dumps(
-        {"assets": assets, "body": "braces: { } [ ]", "tag_name": f"rust-v{VERSION}"},
+        {"assets": assets, "body": "braces: { } [ ]", "tag_name": f"v{VERSION}"},
         indent=None if compact else 2,
         separators=separators,
     )
@@ -346,7 +341,7 @@ def legacy_release_metadata_with_decoys() -> str:
                 f'fake: {{"name":"codex-package_SHA256SUMS","digest":"{fake_digest}"}}'
             ),
             "assets": assets,
-            "tag_name": f"rust-v{VERSION}",
+            "tag_name": f"v{VERSION}",
         },
         separators=(",", ":"),
     )

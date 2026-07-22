@@ -235,18 +235,30 @@ impl VivlingLanguageState {
     /// Unknown locales fall back to English.
     pub fn chat_panel_hint(lang: &str) -> &'static str {
         match lang {
-            "it" => "Suggerimento: premi Ctrl+J per aprire la chat dedicata del Vivling \
-                     (storia preservata, scroll line-based, niente clutter del thread principale).",
-            "es" => "Sugerencia: pulsa Ctrl+J para abrir el chat dedicado del Vivling \
-                     (historial preservado, scroll por línea, sin saturar el hilo principal).",
-            "fr" => "Astuce : appuie sur Ctrl+J pour ouvrir le chat dédié du Vivling \
-                     (historique préservé, défilement ligne par ligne, sans encombrer le thread principal).",
-            "pt" => "Dica: pressione Ctrl+J para abrir o chat dedicado do Vivling \
-                     (histórico preservado, rolagem por linha, sem poluir o thread principal).",
-            "de" => "Tipp: Drücke Strg+J, um das dedizierte Vivling-Chatfenster zu öffnen \
-                     (Verlauf bleibt erhalten, zeilenweises Scrollen, ohne den Hauptthread zu überladen).",
-            _ => "Tip: press Ctrl+J to open the dedicated Vivling chat panel \
-                  (history preserved, line-based scroll, no clutter in the main thread).",
+            "it" => {
+                "Suggerimento: premi Ctrl+J per aprire la chat dedicata del Vivling \
+                     (storia preservata, scroll line-based, niente clutter del thread principale)."
+            }
+            "es" => {
+                "Sugerencia: pulsa Ctrl+J para abrir el chat dedicado del Vivling \
+                     (historial preservado, scroll por línea, sin saturar el hilo principal)."
+            }
+            "fr" => {
+                "Astuce : appuie sur Ctrl+J pour ouvrir le chat dédié du Vivling \
+                     (historique préservé, défilement ligne par ligne, sans encombrer le thread principal)."
+            }
+            "pt" => {
+                "Dica: pressione Ctrl+J para abrir o chat dedicado do Vivling \
+                     (histórico preservado, rolagem por linha, sem poluir o thread principal)."
+            }
+            "de" => {
+                "Tipp: Drücke Strg+J, um das dedizierte Vivling-Chatfenster zu öffnen \
+                     (Verlauf bleibt erhalten, zeilenweises Scrollen, ohne den Hauptthread zu überladen)."
+            }
+            _ => {
+                "Tip: press Ctrl+J to open the dedicated Vivling chat panel \
+                  (history preserved, line-based scroll, no clutter in the main thread)."
+            }
         }
     }
 

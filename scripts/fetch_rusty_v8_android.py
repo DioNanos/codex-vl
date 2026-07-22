@@ -43,7 +43,9 @@ def auth_headers_for_base_url(base_url: str) -> dict[str, str]:
     return {"Authorization": f"token {token}"}
 
 
-def download(url: str, destination: Path, headers: dict[str, str] | None = None) -> None:
+def download(
+    url: str, destination: Path, headers: dict[str, str] | None = None
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(request) as response, destination.open("wb") as output:
@@ -120,15 +122,15 @@ def github_release_base_url(repository: str, release_tag: str) -> str:
     return f"https://github.com/{repository}/releases/download/{release_tag}"
 
 
-def manifest_base_urls(
-    manifest: dict[str, Any] | None, release_tag: str
-) -> list[str]:
+def manifest_base_urls(manifest: dict[str, Any] | None, release_tag: str) -> list[str]:
     if not manifest:
         return []
 
     base_urls = manifest.get("base_urls")
     if isinstance(base_urls, list):
-        values = [value.strip().rstrip("/") for value in base_urls if isinstance(value, str)]
+        values = [
+            value.strip().rstrip("/") for value in base_urls if isinstance(value, str)
+        ]
         return [value for value in values if value]
 
     repository = manifest.get("repository")
@@ -209,7 +211,9 @@ def main() -> int:
     )
 
     candidate_base_urls: list[str] = []
-    candidate_base_urls.extend(base_url.strip().rstrip("/") for base_url in args.base_url)
+    candidate_base_urls.extend(
+        base_url.strip().rstrip("/") for base_url in args.base_url
+    )
     candidate_base_urls.extend(manifest_base_urls(manifest, release_tag))
     candidate_base_urls.append(github_release_base_url(args.repository, release_tag))
 

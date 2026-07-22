@@ -1,6 +1,9 @@
 use super::super::model::Stage;
 use super::symbols::species_variant;
-use super::types::{CardArtFamily, SpeciesSeed, VivlingRarity, VivlingSpeciesDefinition};
+use super::types::CardArtFamily;
+use super::types::SpeciesSeed;
+use super::types::VivlingRarity;
+use super::types::VivlingSpeciesDefinition;
 
 pub(super) fn footer_sprite_for_species(
     seed: &SpeciesSeed,

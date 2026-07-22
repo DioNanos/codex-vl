@@ -1,9 +1,15 @@
 use super::super::model::Stage;
-use super::symbols::{eye_symbol, rarity_badge, species_mark, species_variant, variant_symbol};
-use super::types::{
-    CardArtFamily, SpeciesSeed, VivlingCardArt, VivlingRarity, VivlingSpeciesDefinition,
-    VivlingStageCardArt,
-};
+use super::symbols::eye_symbol;
+use super::symbols::rarity_badge;
+use super::symbols::species_mark;
+use super::symbols::species_variant;
+use super::symbols::variant_symbol;
+use super::types::CardArtFamily;
+use super::types::SpeciesSeed;
+use super::types::VivlingCardArt;
+use super::types::VivlingRarity;
+use super::types::VivlingSpeciesDefinition;
+use super::types::VivlingStageCardArt;
 
 pub(crate) fn card_art_for_species(
     species: &VivlingSpeciesDefinition,

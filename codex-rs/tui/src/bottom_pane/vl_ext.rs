@@ -18,7 +18,7 @@
 //!   state for Vivling activity (sleeping/eating/working/animation
 //!   text). Lazy-initialized via `ensure_vl_lifecycle`.
 //! - `loop_context_label: Option<String>` — textual summary of active
-//!   loop jobs surfaced in the chat composer footer.
+//!   loop jobs surfaced in the dedicated VL row below the upstream footer.
 //!
 //! ## Boundary helpers extracted in iter C (2026-05-16)
 //!
@@ -428,7 +428,8 @@ impl BottomPane {
     }
 
     /// codex-vl: surface for `ChatWidget::replace_loop_jobs_with_owner` to
-    /// publish the current loop summary into both footer UI and Vivling context.
+    /// publish the current loop summary into both the VL context row and
+    /// Vivling context.
     pub(crate) fn set_loop_context_label(&mut self, label: Option<String>) {
         let pane_changed = self.loop_context_label != label;
         let composer_changed = self.composer.set_loop_context_label(label.clone());

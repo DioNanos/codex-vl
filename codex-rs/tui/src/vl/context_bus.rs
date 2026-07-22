@@ -2,9 +2,11 @@
 //! persistito, NON memoria. Sintetizza il contesto del worker per il Vivling
 //! senza fondere le memorie. Regole di troncamento dure.
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
+use chrono::Utc;
 
-use super::suggestions::{VivlingLoopSuggestion, VivlingSuggestionKind};
+use super::suggestions::VivlingLoopSuggestion;
+use super::suggestions::VivlingSuggestionKind;
 
 const TURN_SUMMARY_MAX: usize = 500;
 const ACTIVE_LOOPS_MAX: usize = 10;

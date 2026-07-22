@@ -23,7 +23,9 @@
 use std::sync::Arc;
 
 #[allow(unused_imports)]
-use crate::error::{MsaError, Result};
+use crate::error::MsaError;
+#[allow(unused_imports)]
+use crate::error::Result;
 
 /// Sync embedding scorer abstraction. Sync because index_document and the
 /// search hot path are not async and we do not want to drag tokio into
@@ -84,7 +86,8 @@ pub fn unpack_f32(b: &[u8]) -> Vec<f32> {
 #[cfg(feature = "embeddings")]
 mod ollama {
     use super::*;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
+    use serde::Serialize;
     use std::time::Duration;
 
     /// Embedding client for Ollama (`POST /api/embeddings`). Other backends

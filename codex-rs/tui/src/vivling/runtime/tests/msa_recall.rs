@@ -66,7 +66,10 @@ fn recall_saturation_resets_and_recovers() {
     let storage = TempDir::new().expect("msa storage tempdir");
     let msa = VivlingMsa::open_for_tests(storage.path());
     let vid = "viv-saturate";
-    msa.index_capsule(vid, &capsule("turn", "alpha beta gamma delta payload memory"));
+    msa.index_capsule(
+        vid,
+        &capsule("turn", "alpha beta gamma delta payload memory"),
+    );
 
     let payload = "alpha beta gamma payload";
     assert!(
@@ -123,7 +126,10 @@ fn rich_capsule_falls_back_summary_only() {
     let hits = idx.search("routine", 3, None).expect("search");
     assert!(!hits.is_empty());
     let doc = idx.fetch_doc(&hits[0].doc_id).expect("fetch");
-    assert_eq!(doc.text, cap.summary, "low-signal deve restare summary-only");
+    assert_eq!(
+        doc.text, cap.summary,
+        "low-signal deve restare summary-only"
+    );
     assert_eq!(doc.metadata.get("rich"), Some(&serde_json::json!(false)));
     assert_eq!(
         doc.metadata.get("index_text_version"),

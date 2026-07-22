@@ -208,9 +208,8 @@ impl VivlingState {
     /// 6-week vivling; inflated total_weight made them permanently sticky in
     /// the weight-sorted list). Runs on every load — a no-op on clean states.
     pub(super) fn normalize_distilled_summaries(&mut self) {
-        self.distilled_summaries.retain(|entry| {
-            !super::constants::BOOKKEEPING_KINDS.contains(&entry.kind.as_str())
-        });
+        self.distilled_summaries
+            .retain(|entry| !super::constants::BOOKKEEPING_KINDS.contains(&entry.kind.as_str()));
         let obs_cap = MAX_WORK_MEMORY_ENTRIES as u64;
         let weight_cap = obs_cap * 12;
         for entry in &mut self.distilled_summaries {
