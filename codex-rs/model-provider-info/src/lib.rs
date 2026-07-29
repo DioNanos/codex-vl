@@ -145,6 +145,9 @@ pub struct ModelProviderInfo {
     /// function tools instead.
     #[serde(default)]
     pub namespace_tools: Option<bool>,
+    /// Whether this provider supports the standalone web-search endpoint.
+    #[serde(default)]
+    pub supports_standalone_web_search: bool,
 }
 
 /// AWS SigV4 auth configuration for a model provider.
@@ -368,6 +371,7 @@ impl ModelProviderInfo {
             requires_openai_auth: true,
             supports_websockets: true,
             namespace_tools: None,
+            supports_standalone_web_search: true,
         }
     }
 
@@ -402,6 +406,7 @@ impl ModelProviderInfo {
             requires_openai_auth: false,
             supports_websockets: false,
             namespace_tools: None,
+            supports_standalone_web_search: false,
         }
     }
 
@@ -550,6 +555,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         requires_openai_auth: false,
         supports_websockets: false,
         namespace_tools: None,
+        supports_standalone_web_search: false,
     }
 }
 

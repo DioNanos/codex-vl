@@ -4,6 +4,19 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.146.0 - Upstream rust-v0.146.0 candidate
+
+Candidate update on the final OpenAI Codex `rust-v0.146.0` tag. The full
+Codex VL workflow layer remains present across goal state, loop jobs, Vivling,
+the VL interface, remote control, app-server integration, and the fork-owned
+package and update channels.
+
+The merge retains the no-upstream-installer contract, MCP startup retry and
+provider tool-namespace support, while adapting the state runtime to upstream's
+resolved SQLite configuration. Legacy Vivling loop migrations remain reconciled
+before upstream state migrations run. Publication remains subject to the
+feature-register audit and sanitized artifact verification.
+
 ## 0.145.0 - Upstream rust-v0.145.0 stable
 
 Stable release based on the final OpenAI Codex `rust-v0.145.0` tag. The full
