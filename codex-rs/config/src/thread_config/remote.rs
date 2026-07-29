@@ -191,6 +191,7 @@ fn model_provider_from_proto(
         requires_openai_auth: provider.requires_openai_auth,
         supports_websockets: provider.supports_websockets,
         namespace_tools: None,
+        supports_standalone_web_search: provider.supports_standalone_web_search,
     };
     Ok((id, info))
 }
@@ -219,6 +220,7 @@ fn model_provider_to_proto(
         requires_openai_auth,
         supports_websockets,
         namespace_tools: _,
+        supports_standalone_web_search,
     } = provider;
 
     proto::ModelProvider {
@@ -239,6 +241,7 @@ fn model_provider_to_proto(
         websocket_connect_timeout_ms,
         requires_openai_auth,
         supports_websockets,
+        supports_standalone_web_search,
     }
 }
 
@@ -540,6 +543,7 @@ mod tests {
             supports_websockets: true,
             aws: None,
             namespace_tools: None,
+            supports_standalone_web_search: true,
         }
     }
 

@@ -449,6 +449,7 @@ mod tests {
             requires_openai_auth: false,
             supports_websockets: false,
             namespace_tools: None,
+            supports_standalone_web_search: false,
         }
     }
 

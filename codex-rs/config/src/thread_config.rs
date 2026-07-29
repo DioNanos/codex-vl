@@ -313,6 +313,7 @@ mod tests {
             requires_openai_auth: false,
             supports_websockets: true,
             namespace_tools: None,
+            supports_standalone_web_search: true,
         }
     }
 }

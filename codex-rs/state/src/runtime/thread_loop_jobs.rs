@@ -345,11 +345,16 @@ WHERE thread_id = ? AND id = ?
 mod tests {
     use super::*;
     use crate::runtime::test_support::unique_temp_dir;
+    use codex_utils_absolute_path::test_support::PathExt;
 
     #[tokio::test]
     async fn thread_loop_job_crud_roundtrip() -> anyhow::Result<()> {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         let thread_id = ThreadId::new();
         let now = 1_700_000_000_000i64;
 
@@ -422,7 +427,11 @@ mod tests {
     #[tokio::test]
     async fn replace_by_label_resets_runtime_metadata() -> anyhow::Result<()> {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home, "test-provider".to_string()).await?;
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         let thread_id = ThreadId::new();
         let now = 1_700_000_000_000i64;
 

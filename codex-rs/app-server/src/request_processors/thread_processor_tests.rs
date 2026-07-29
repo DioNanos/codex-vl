@@ -535,6 +535,7 @@ mod thread_processor_behavior_tests {
             updated_at: updated_at.with_timezone(&Utc),
             recency_at: updated_at.with_timezone(&Utc),
             archived_at: None,
+            is_pinned: false,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
@@ -575,12 +576,14 @@ mod thread_processor_behavior_tests {
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Path { path: cwd.clone() },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::GlobPattern {
                             pattern: "/tmp/project/**/*.env".to_string(),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ]),
                 NetworkSandboxPolicy::Restricted,
@@ -742,6 +745,7 @@ mod thread_processor_behavior_tests {
             requires_openai_auth: false,
             supports_websockets: true,
             namespace_tools: None,
+            supports_standalone_web_search: false,
         };
         let config_manager = ConfigManager::new(
             temp_dir.path().to_path_buf(),

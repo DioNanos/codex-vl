@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use codex_utils_absolute_path::test_support::PathExt;
 use tempfile::tempdir;
 
 use super::super::AppRunControl;
@@ -11,7 +12,7 @@ async fn loop_state_runtime_reuses_process_state_db_handle() {
     let mut app = make_test_app().await;
     let codex_home = tempdir().expect("temporary Codex home should be created");
     let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         "test-provider".to_string(),
     )
     .await

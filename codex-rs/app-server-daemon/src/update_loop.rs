@@ -8,9 +8,8 @@ use anyhow::Context;
 use anyhow::Result;
 #[cfg(not(unix))]
 use anyhow::bail;
-#[cfg(unix)]
+use codex_http_client::HttpClientFactory;
 use codex_install_context::InstallContext;
-#[cfg(unix)]
 use codex_install_context::InstallMethod;
 #[cfg(unix)]
 use futures::FutureExt;
@@ -46,9 +45,8 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
-
 #[cfg(unix)]
-pub(crate) async fn run() -> Result<()> {
+pub(crate) async fn run(_http_client_factory: HttpClientFactory) -> Result<()> {
     let mut terminate =
         signal(SignalKind::terminate()).context("failed to install updater shutdown handler")?;
     let running_updater_identity = current_updater_identity().await?;
@@ -67,7 +65,7 @@ pub(crate) async fn run() -> Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) async fn run() -> Result<()> {
+pub(crate) async fn run(_http_client_factory: HttpClientFactory) -> Result<()> {
     bail!("pid-managed updater loop is unsupported on this platform")
 }
 

@@ -61,20 +61,17 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The npm `next` and `latest` tags track the `0.145.0` line, based on upstream
-Codex `rust-v0.145.0` while preserving the complete Codex VL workflow layer
-(and carrying the Termux TLS fix plus the native Android V8 build). The
-`stable` dist-tag tracks `0.144.5` for conservative
-installs. All ship Linux x64, Linux arm64 (musl) and Android arm64 native
-packages plus a macOS arm64 source-build package, each platform under its own
-candidate `<platform>-next` dist-tag; the production `<platform>` tags match
-the version selected by `latest`.
+The `0.146.0` line tracks upstream Codex `rust-v0.146.0` while preserving the
+complete Codex VL workflow layer, including the Termux TLS fix and the native
+Android V8 build. The npm dist-tags and the corresponding GitHub release are
+the authoritative publication status for each version.
 
-```bash
-npm install -g @mmmbuto/codex-vl@next     # 0.145.0
-npm install -g @mmmbuto/codex-vl@latest   # 0.145.0
-npm install -g @mmmbuto/codex-vl@stable   # 0.144.5
-```
+After the sanitized package, checksums, and install smoke are verified, a
+final upstream release can promote `next` and `latest` to the approved version.
+The conservative `stable` tag changes only under an explicit compatibility
+decision. Packages cover Linux x64, Linux arm64 (musl), Android arm64, and
+macOS arm64 source builds; each platform uses its corresponding release channel
+before production promotion.
 
 Local stdio MCP servers start with a restricted environment. Forward a
 process variable explicitly by name when the server needs it; repeat the flag

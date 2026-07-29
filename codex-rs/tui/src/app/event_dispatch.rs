@@ -26,10 +26,10 @@ impl App {
                 let _ = app_server;
                 return self.handle_vl_event(vl_event).await;
             }
-            AppEvent::NewSession => {
+            AppEvent::NewSession { name } => {
                 self.start_fresh_session_with_summary_hint(
                     tui, app_server, /*session_start_source*/ None,
-                    /*initial_user_message*/ None,
+                    /*initial_user_message*/ None, name,
                 )
                 .await;
             }
@@ -37,7 +37,7 @@ impl App {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
             }
-            AppEvent::ClearUi => {
+            AppEvent::ClearUi { name } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
@@ -46,6 +46,7 @@ impl App {
                     app_server,
                     Some(ThreadStartSource::Clear),
                     /*initial_user_message*/ None,
+                    name,
                 )
                 .await;
             }
@@ -65,6 +66,7 @@ impl App {
                         Vec::new(),
                         Vec::new(),
                     ),
+                    /*new_thread_name*/ None,
                 )
                 .await;
             }
@@ -415,7 +417,8 @@ impl App {
                 return Ok(AppRunControl::Exit(ExitReason::Fatal(message)));
             }
             AppEvent::CodexOp(op) => {
-                if matches!(&op, AppCommand::UserTurn { .. }) {
+                let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
+                if is_user_turn {
                     self.handle_draw_pre_render(tui)?;
                     if self.transcript_reflow.has_pending_reflow() {
                         self.transcript_reflow.schedule_immediate();
@@ -425,7 +428,21 @@ impl App {
                     self.render_chat_widget_frame(tui)?;
                 }
                 self.chat_widget.prepare_local_op_submission(&op);
-                self.submit_active_thread_op(app_server, op).await?;
+                if let Err(err) = self.submit_active_thread_op(app_server, op).await {
+                    let handled = is_user_turn
+                        && matches!(
+                            err.downcast_ref::<TypedRequestError>(),
+                            Some(TypedRequestError::Server { method, .. })
+                                if method == "turn/start"
+                        )
+                        && self
+                            .chat_widget
+                            .handle_turn_start_rejection(format!("Failed to start turn: {err:#}"));
+                    if !handled {
+                        return Err(err);
+                    }
+                    tracing::error!(error = ?err, "failed to start turn through app server");
+                }
             }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
@@ -2389,6 +2406,7 @@ impl App {
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);
+                self.sync_side_thread_ui();
                 self.chat_widget
                     .return_to_keymap_picker(&context, &action, &runtime_keymap);
                 self.chat_widget.add_info_message(message, /*hint*/ None);
@@ -2439,6 +2457,7 @@ impl App {
                 self.keymap = runtime_keymap.clone();
                 self.chat_widget
                     .apply_keymap_update(keymap_config, &runtime_keymap);
+                self.sync_side_thread_ui();
                 self.chat_widget
                     .return_to_keymap_picker(&context, &action, &runtime_keymap);
                 self.chat_widget.add_info_message(
