@@ -9,9 +9,9 @@ use color_eyre::eyre::Result;
 use super::App;
 use super::AppRunControl;
 use super::vivling_background::read_legacy_brain_profile;
+use crate::app_server_session::AppServerSession;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
-use crate::app_server_session::AppServerSession;
 use crate::vl::VlEvent;
 
 impl App {
@@ -37,9 +37,11 @@ impl App {
     /// Request a global MCP configuration reload.
     ///
     /// The app-server owns the reload; this reports what happened. A failure
-    /// here does not mean "nothing reloaded" — the request may have been
-    /// applied for some sessions and not others — so the message says exactly
-    /// that instead of claiming a clean failure.
+    /// here does not mean "nothing reloaded": upstream loads the configuration
+    /// for every thread before applying any of it, so a server-side error
+    /// changes nothing, while a lost response can hide a reload that fully
+    /// succeeded. Either way we only know that it was not acknowledged, which
+    /// is what the message says instead of claiming a clean failure.
     async fn handle_mcp_reload(
         &mut self,
         app_server: &mut AppServerSession,
@@ -51,7 +53,7 @@ impl App {
                 self.chat_widget.add_info_message(
                     "MCP reload queued for all active sessions.".to_string(),
                     Some(
-                        "The refreshed MCP configuration applies at the next turn boundary."
+                        "The refreshed MCP configuration applies from each session's next model step; a turn already running may pick it up before it ends."
                             .to_string(),
                     ),
                 );
