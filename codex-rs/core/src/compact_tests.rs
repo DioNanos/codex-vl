@@ -280,6 +280,10 @@ fn should_use_remote_compact_task_for_azure_provider() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        // Fork field: upstream's fixture cannot know about it, and the struct is
+        // built exhaustively here, so every upstream merge that adds a fixture
+        // like this breaks the test target while `cargo check` stays green.
+        namespace_tools: None,
         supports_standalone_web_search: false,
     };
 
