@@ -574,6 +574,37 @@ fn loaded_instructions_with_only_empty_or_whitespace_entries_are_empty() {
     assert!(whitespace.is_empty());
 }
 
+/// `/init` writes AGENTS.md mid-session. Discovery is keyed on the environment
+/// selection, which does not change when a file appears, so the session kept
+/// reporting that no instructions existed (codex-termux#14).
+#[tokio::test]
+async fn discovery_picks_up_an_agents_md_created_mid_session() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = make_config(&tmp, /*limit*/ 4096, /*instructions*/ None).await;
+    let environments = resolved_local_environments([("local", config.config.cwd.clone())]);
+    let manager = crate::agents_md_manager::AgentsMdManager::new(None);
+
+    manager.refresh(&config.config, &environments).await;
+    assert!(
+        manager.get_loaded().await.is_none(),
+        "there is no AGENTS.md yet, so discovery must find nothing"
+    );
+
+    fs::write(tmp.path().join("AGENTS.md"), "written by /init").unwrap();
+
+    // Same selection as before: the old cache key would short-circuit here.
+    manager.refresh(&config.config, &environments).await;
+    let loaded = manager
+        .get_loaded()
+        .await
+        .expect("the file created mid-session must be discovered");
+    assert!(
+        loaded.text().contains("written by /init"),
+        "discovery must return the new file's contents, got: {}",
+        loaded.text()
+    );
+}
+
 /// Small file within the byte-limit is returned unmodified.
 #[tokio::test]
 async fn doc_smaller_than_limit_is_returned() {
