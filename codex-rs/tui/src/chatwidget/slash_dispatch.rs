@@ -700,7 +700,8 @@ impl ChatWidget {
             }
             SlashCommand::Mcp => match trimmed.to_ascii_lowercase().as_str() {
                 "verbose" => self.add_mcp_output(McpServerStatusDetail::Full),
-                _ => self.add_error_message("Usage: /mcp [verbose]".to_string()),
+                "reload" => super::vl_slash::dispatch_mcp_reload(self),
+                _ => self.add_error_message(super::vl_slash::MCP_USAGE.to_string()),
             },
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),

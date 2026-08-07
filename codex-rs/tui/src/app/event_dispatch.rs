@@ -24,8 +24,9 @@ impl App {
     ) -> Result<AppRunControl> {
         match event {
             AppEvent::Vl(vl_event) => {
-                let _ = app_server;
-                return self.handle_vl_event(vl_event).await;
+                return self
+                    .handle_vl_event_with_app_server(app_server, vl_event)
+                    .await;
             }
             AppEvent::NewSession { name } => {
                 self.start_fresh_session_with_summary_hint(

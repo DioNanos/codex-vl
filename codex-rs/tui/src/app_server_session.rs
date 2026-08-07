@@ -43,6 +43,7 @@ use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::MemoryResetResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
@@ -505,6 +506,26 @@ impl AppServerSession {
     ///
     /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
     /// (to check auth mode without the overhead of a full bootstrap).
+    /// Ask the app-server to reload the MCP configuration for every active
+    /// thread.
+    ///
+    /// The reload itself is upstream's (`config/mcpServer/reload`); this only
+    /// requests it. The refreshed configuration takes effect at the next turn
+    /// boundary rather than immediately, so a turn already in flight keeps the
+    /// tool set it started with instead of having it change underneath.
+    pub(crate) async fn mcp_server_reload(&mut self) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: McpServerRefreshResponse = self
+            .client
+            .request_typed(ClientRequest::McpServerRefresh {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("config/mcpServer/reload failed in TUI")?;
+        Ok(())
+    }
+
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
         let account_request_id = self.next_request_id();
         self.client

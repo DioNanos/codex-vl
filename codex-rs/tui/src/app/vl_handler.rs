@@ -11,11 +11,70 @@ use super::AppRunControl;
 use super::vivling_background::read_legacy_brain_profile;
 use crate::legacy_core::config::edit::ConfigEdit;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
+use crate::app_server_session::AppServerSession;
 use crate::vl::VlEvent;
 
 impl App {
+    /// Entry point for VL events that need the app-server connection.
+    ///
+    /// Only `McpReload` does; everything else is handled locally and is routed
+    /// straight through, so the two paths cannot drift into separate copies of
+    /// the same match.
+    pub(super) async fn handle_vl_event_with_app_server(
+        &mut self,
+        app_server: &mut AppServerSession,
+        event: VlEvent,
+    ) -> Result<AppRunControl> {
+        match event {
+            VlEvent::McpReload { thread_id } => {
+                self.handle_mcp_reload(app_server, thread_id).await;
+                Ok(AppRunControl::Continue)
+            }
+            event => self.handle_vl_event(event).await,
+        }
+    }
+
+    /// Request a global MCP configuration reload.
+    ///
+    /// The app-server owns the reload; this reports what happened. A failure
+    /// here does not mean "nothing reloaded" — the request may have been
+    /// applied for some sessions and not others — so the message says exactly
+    /// that instead of claiming a clean failure.
+    async fn handle_mcp_reload(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: codex_protocol::ThreadId,
+    ) {
+        match app_server.mcp_server_reload().await {
+            Ok(()) => {
+                tracing::info!(%thread_id, "queued global MCP reload request");
+                self.chat_widget.add_info_message(
+                    "MCP reload queued for all active sessions.".to_string(),
+                    Some(
+                        "The refreshed MCP configuration applies at the next turn boundary."
+                            .to_string(),
+                    ),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(%thread_id, error = %err, "global MCP reload request failed");
+                self.chat_widget.add_error_message(
+                    "MCP reload was not acknowledged for every active session. Review the MCP configuration and retry."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     pub(super) async fn handle_vl_event(&mut self, event: VlEvent) -> Result<AppRunControl> {
         match event {
+            VlEvent::McpReload { .. } => {
+                // Reached only if an McpReload is routed through the local path,
+                // which cannot serve it: say so rather than silently dropping it.
+                self.chat_widget.add_error_message(
+                    "MCP reload lost its app-server context; no reload was requested.".to_string(),
+                );
+            }
             VlEvent::LoopCommand { thread_id, request } => {
                 self.apply_loop_command_request(
                     thread_id, request, /*source*/ false, /*emit_ui_feedback*/ true,
