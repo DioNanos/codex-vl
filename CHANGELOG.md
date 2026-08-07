@@ -4,6 +4,23 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.146.1 - Upstream rust-v0.146.1 candidate
+
+Candidate update on the upstream OpenAI Codex `rust-v0.146.1` patch release
+(backported safer cyber-model auto-review defaults). The merge touched no
+fork-owned path. The full Codex VL workflow layer remains present across goal
+state, loop jobs, Vivling, the VL interface, remote control, app-server
+integration, and the fork-owned package and update channels.
+
+### Fixed
+
+- The Windows installer resolves releases from the fork only. It previously
+  preferred upstream's distribution channel with an upstream GitHub fallback,
+  so running it installed upstream Codex under the fork's name.
+- The message-history batch reader falls back when advisory file locking is
+  unsupported, matching every other lock call site. Without it, batch history
+  reads failed outright on Android/Termux storage.
+
 ## 0.146.0 - Upstream rust-v0.146.0 candidate
 
 Candidate update on the final OpenAI Codex `rust-v0.146.0` tag. The full

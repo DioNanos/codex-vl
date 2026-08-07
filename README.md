@@ -61,7 +61,7 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.146.0` line tracks upstream Codex `rust-v0.146.0` while preserving the
+The `0.146.1` line tracks upstream Codex `rust-v0.146.1` while preserving the
 complete Codex VL workflow layer, including the Termux TLS fix and the native
 Android V8 build. The npm dist-tags and the corresponding GitHub release are
 the authoritative publication status for each version.
