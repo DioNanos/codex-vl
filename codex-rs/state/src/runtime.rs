@@ -11,6 +11,7 @@ use crate::migrations::repair_legacy_recency_migration_version;
 use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
 use crate::migrations::runtime_memories_migrator;
+use crate::migrations::runtime_queue_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_thread_history_migrator;
 use crate::model::ThreadRow;
@@ -58,11 +59,14 @@ mod external_agent_config_imports;
 mod goals;
 mod logs;
 mod memories;
+mod queued_items;
 mod recovery;
 mod remote_control;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod thread_loop_jobs;
+mod thread_section_order;
+mod thread_sections;
 mod threads;
 
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
@@ -74,6 +78,7 @@ pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
+pub use queued_items::SqliteQueueStore;
 pub use recovery::RuntimeDbBackup;
 pub(super) use recovery::RuntimeDbInitError;
 pub use recovery::backup_runtime_db_for_fresh_start;
@@ -148,6 +153,7 @@ pub struct StateRuntime {
     logs_pool: Arc<sqlx::SqlitePool>,
     thread_goals: GoalStore,
     memories: MemoryStore,
+    thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
 }
@@ -182,10 +188,15 @@ impl StateRuntime {
         let logs_migrator = runtime_logs_migrator();
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
+        let queue_migrator = runtime_queue_migrator();
         let state_path = sqlite.state_db_path();
         let logs_path = sqlite.logs_db_path();
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
+        let queue_path = sqlite.queue_db_path();
+        // Fork: open_state_sqlite wraps sqlite.open_state_db with the VL migration
+        // reconciliation (device-key renumber, legacy loop migration numbers), so the
+        // upstream call has to stay behind it — see its tests below.
         let pool = match open_state_sqlite(
             &sqlite,
             &state_path,
@@ -261,6 +272,23 @@ impl StateRuntime {
                 return Err(err);
             }
         };
+        let queue_pool = match sqlite
+            .open_queue_db(&queue_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open queue db at {}: {err}", queue_path.display());
+                close_sqlite_pools(&[
+                    pool.as_ref(),
+                    logs_pool.as_ref(),
+                    goals_pool.as_ref(),
+                    memories_pool.as_ref(),
+                ])
+                .await;
+                return Err(err);
+            }
+        };
         let started = Instant::now();
         let backfill_state_result = ensure_backfill_state_row_in_pool(pool.as_ref()).await;
         crate::telemetry::record_init_result(
@@ -276,6 +304,7 @@ impl StateRuntime {
                 logs_pool.as_ref(),
                 goals_pool.as_ref(),
                 memories_pool.as_ref(),
+                queue_pool.as_ref(),
             ])
             .await;
             return Err(err);
@@ -304,6 +333,7 @@ impl StateRuntime {
                         logs_pool.as_ref(),
                         goals_pool.as_ref(),
                         memories_pool.as_ref(),
+                        queue_pool.as_ref(),
                     ])
                     .await;
                     return Err(err);
@@ -314,6 +344,7 @@ impl StateRuntime {
         let runtime = Arc::new(Self {
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
+            thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
             sqlite,
@@ -343,8 +374,14 @@ impl StateRuntime {
         &self.memories
     }
 
+    /// Return the durable, SQLite-backed user-message queue.
+    pub fn thread_queue(&self) -> &SqliteQueueStore {
+        &self.thread_queue
+    }
+
     /// Close all SQLite pools and wait for outstanding pool workers to exit.
     pub async fn close(&self) {
+        self.thread_queue.close().await;
         self.memories.close().await;
         self.thread_goals.close().await;
         self.logs_pool.close().await;
@@ -933,6 +970,8 @@ mod tests {
             "migrate_goals",
             "open_memories",
             "migrate_memories",
+            "open_queue",
+            "migrate_queue",
             "ensure_backfill_state",
             "post_init_query",
         ]

@@ -478,6 +478,7 @@ mod tests {
                             websocket_connect_timeout_ms: Some(10_000),
                             requires_openai_auth: false,
                             supports_websockets: true,
+                            supports_standalone_web_search: true,
                         }],
                         features: HashMap::from([
                             ("plugins".to_string(), false),

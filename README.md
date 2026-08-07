@@ -61,17 +61,17 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.146.1` line tracks upstream Codex `rust-v0.146.1` while preserving the
-complete Codex VL workflow layer, including the Termux TLS fix and the native
-Android V8 build. The npm dist-tags and the corresponding GitHub release are
-the authoritative publication status for each version.
+The `0.147.0` line is based on upstream Codex `rust-v0.147.0` and preserves the
+complete Codex VL workflow layer, alongside the native Android V8 build. The
+Termux TLS root fix carried here for parity was retired at this version:
+upstream removed the client it wrapped, and MCP OAuth discovery now runs on the
+injected `codex-http-client`.
 
-After the sanitized package, checksums, and install smoke are verified, a
-final upstream release can promote `next` and `latest` to the approved version.
-The conservative `stable` tag changes only under an explicit compatibility
-decision. Packages cover Linux x64, Linux arm64 (musl), Android arm64, and
-macOS arm64 source builds; each platform uses its corresponding release channel
-before production promotion.
+`0.147.0` is published on the `latest` channel with a matching GitHub tag and
+release. The conservative `stable` tag remains on `0.145.0` until a later
+explicitly authorized promotion. Packages cover Linux x64,
+Linux arm64 (musl), Android arm64, and macOS arm64 source builds; each platform
+uses its corresponding candidate channel before production promotion.
 
 Local stdio MCP servers start with a restricted environment. Forward a
 process variable explicitly by name when the server needs it; repeat the flag

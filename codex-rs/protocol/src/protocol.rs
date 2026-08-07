@@ -182,6 +182,8 @@ pub struct Submission {
     pub client_user_message_id: Option<String>,
     /// Optional W3C trace carrier propagated across async submission handoffs.
     pub trace: Option<W3cTraceContext>,
+    /// Core-provided ID of the parent turn that directly initiated this submission.
+    pub parent_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -198,6 +200,9 @@ pub struct W3cTraceContext {
 pub struct ConversationStartParams {
     /// Whether Codex response handoffs are managed through explicit client append calls.
     pub client_managed_handoffs: bool,
+    /// Whether a realtime V3 delegation produces an acknowledgement filler.
+    /// `None` preserves the Realtime API's default behavior.
+    pub delegation_ack_filler: Option<bool>,
     /// Whether to route any remaining transcript tail through Codex when the session ends.
     /// TODO: Remove this rollout knob once transcript-tail flushing is always enabled.
     pub flush_transcript_tail_on_session_end: bool,
@@ -218,6 +223,10 @@ pub struct ConversationStartParams {
     pub include_startup_context: bool,
     /// Complete role-bearing text items to include in the initial realtime session history.
     pub initial_items: Vec<ConversationTextParams>,
+    /// Developer instructions given to Codex when this realtime session starts.
+    pub realtime_start_instructions: Option<String>,
+    /// Developer instructions given to Codex when this realtime session ends.
+    pub realtime_end_instructions: Option<String>,
     pub prompt: Option<Option<String>>,
     pub realtime_session_id: Option<String>,
     pub transport: Option<ConversationStartTransport>,
@@ -2097,6 +2106,11 @@ pub struct TokenUsage {
     pub reasoning_output_tokens: i64,
     #[ts(type = "number")]
     pub total_tokens: i64,
+    /// Provider-reported units consumed from the shared rollout budget.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub codex_rollout_budget_units: Option<serde_json::Number>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -2493,6 +2507,10 @@ pub struct McpToolCallBeginEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
+    /// Whether the selected tool is annotated as read-only, not its execution outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read_only_hint: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq)]
@@ -2518,6 +2536,9 @@ pub struct McpToolCallEndEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read_only_hint: Option<bool>,
     #[ts(type = "string")]
     pub duration: Duration,
     /// Result of the tool call. Note this could be an error.
@@ -2588,6 +2609,9 @@ pub struct ImageGenerationEndEvent {
     #[ts(optional)]
     pub revised_prompt: Option<String>,
     pub result: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transparent_background: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub saved_path: Option<AbsolutePathBuf>,
@@ -3833,6 +3857,7 @@ pub struct McpStartupFailure {
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum McpAuthStatus {
+    Unknown,
     Unsupported,
     NotLoggedIn,
     BearerToken,
@@ -3842,6 +3867,7 @@ pub enum McpAuthStatus {
 impl fmt::Display for McpAuthStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
+            McpAuthStatus::Unknown => "Unknown",
             McpAuthStatus::Unsupported => "Unsupported",
             McpAuthStatus::NotLoggedIn => "Not logged in",
             McpAuthStatus::BearerToken => "Bearer token",
@@ -5389,6 +5415,7 @@ mod tests {
                 app_name: Some("Calendar".into()),
                 action_name: Some("create_event".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: Some(false),
                 status: McpToolCallStatus::InProgress,
                 result: None,
                 error: None,
@@ -5412,6 +5439,7 @@ mod tests {
                 assert_eq!(event.app_name.as_deref(), Some("Calendar"));
                 assert_eq!(event.action_name.as_deref(), Some("create_event"));
                 assert_eq!(event.plugin_id.as_deref(), Some("sample@test"));
+                assert_eq!(event.read_only_hint, Some(false));
             }
             _ => panic!("expected McpToolCallBegin event"),
         }
@@ -5507,6 +5535,7 @@ mod tests {
                 app_name: Some("Calendar".into()),
                 action_name: Some("create_event".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: None,
                 status: McpToolCallStatus::Completed,
                 result: Some(CallToolResult {
                     content: vec![json!({"type": "text", "text": "ok"})],
@@ -6373,6 +6402,7 @@ mod tests {
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
+            codex_rollout_budget_units: None,
         });
 
         let info = TokenUsageInfo::new_or_append(&initial, &last, Some(128_000))
@@ -6395,6 +6425,7 @@ mod tests {
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 10,
+            codex_rollout_budget_units: None,
         });
 
         let info =
