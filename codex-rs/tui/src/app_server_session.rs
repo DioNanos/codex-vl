@@ -502,10 +502,6 @@ impl AppServerSession {
         self.managed_new_thread_defaults.as_ref()
     }
 
-    /// Fetches the current account info without refreshing the auth token.
-    ///
-    /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
-    /// (to check auth mode without the overhead of a full bootstrap).
     /// Ask the app-server to reload the MCP configuration for every active
     /// thread.
     ///
@@ -526,6 +522,10 @@ impl AppServerSession {
         Ok(())
     }
 
+    /// Fetches the current account info without refreshing the auth token.
+    ///
+    /// Used by both `bootstrap` (to populate the initial UI) and `get_login_status`
+    /// (to check auth mode without the overhead of a full bootstrap).
     pub(crate) async fn read_account(&mut self) -> Result<GetAccountResponse> {
         let account_request_id = self.next_request_id();
         self.client

@@ -197,12 +197,13 @@ fn format_single_output(action: RemoteControlAction, output: CliOutput) -> Strin
 
 fn format_success(heading: &str, action: RemoteControlAction, json: &Value) -> String {
     if action == RemoteControlAction::Pair {
-        // The app accepts the manual code; `pairingCode` is the transport-level
-        // one and is not what the user types. Fall back to it only so that a
-        // response shaped differently still shows something usable rather than
-        // an empty panel.
-        let code = string_field(json, "manualPairingCode")
-            .or_else(|| string_field(json, "pairingCode"));
+        // Only the manual code. `pairingCode` is the transport handle and the
+        // app rejects it, so falling back to it would produce exactly the
+        // failure this action exists to avoid: a panel that looks right and a
+        // code that does not work, with nothing on screen to explain why. It is
+        // a reachable shape — `pairingCode` is always present, the manual one is
+        // optional — so the absence has to be reported, not papered over.
+        let code = string_field(json, "manualPairingCode");
         let mut lines = vec![heading.to_string()];
         match code {
             Some(code) => {
@@ -305,19 +306,26 @@ mod tests {
     }
 
     #[test]
-    fn pair_output_stays_useful_when_no_manual_code_is_returned() {
+    fn pair_output_never_offers_the_transport_code_as_a_fallback() {
+        // The reachable degraded shape: `pairingCode` is always serialized,
+        // `manualPairingCode` is optional. Showing the transport code here would
+        // hand the user something the app rejects with no explanation.
         let text = format_single_output(
             RemoteControlAction::Pair,
             CliOutput {
                 status: Some(0),
-                stdout: r#"{"environmentId":"env-1","expiresAt":1786139629}"#.to_string(),
+                stdout: r#"{"pairingCode":"transport-xyz","environmentId":"env-1","expiresAt":1786139629}"#.to_string(),
                 stderr: String::new(),
             },
         );
 
         assert!(
+            !text.contains("transport-xyz"),
+            "the transport code must never be offered as a fallback: {text}"
+        );
+        assert!(
             text.contains("remote-control pair"),
-            "with no code, the panel must point at the command that shows the raw output: {text}"
+            "with no manual code, the panel must point at the command that shows the raw output: {text}"
         );
     }
 
