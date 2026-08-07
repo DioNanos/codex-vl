@@ -61,16 +61,15 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The source is prepared for the `0.146.0` line, based on upstream Codex
-`rust-v0.146.0` while preserving the complete Codex VL workflow layer (and
-carrying the Termux TLS fix plus the native Android V8 build). It is not yet
-published: no npm dist-tag, GitHub tag, or GitHub release has been created for
-this candidate.
+The `0.147.0` line is based on upstream Codex `rust-v0.147.0` and preserves the
+complete Codex VL workflow layer, alongside the native Android V8 build. The
+Termux TLS root fix carried here for parity was retired at this version:
+upstream removed the client it wrapped, and MCP OAuth discovery now runs on the
+injected `codex-http-client`.
 
-After the sanitized package, checksums, install smoke, and explicit release
-authorization are complete, the `next` and `latest` tags may be promoted to
-the approved version. The conservative `stable` tag remains on `0.145.0`
-until a later explicitly authorized promotion. Packages cover Linux x64,
+`0.147.0` is published on the `latest` channel with a matching GitHub tag and
+release. The conservative `stable` tag remains on `0.145.0` until a later
+explicitly authorized promotion. Packages cover Linux x64,
 Linux arm64 (musl), Android arm64, and macOS arm64 source builds; each platform
 uses its corresponding candidate channel before production promotion.
 

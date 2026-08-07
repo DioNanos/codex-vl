@@ -1199,6 +1199,30 @@ mod tests {
     }
 
     #[test]
+    fn get_model_instructions_falls_back_to_base_instructions_when_template_missing() {
+        // Fork guarantee (Patch #26). Upstream's version of this branch returns an
+        // empty string, and the rust-v0.147.0 merge silently took it: the code
+        // compiled, no conflict was raised, and every catalog entry without a
+        // template would have shipped with no instructions at all.
+        //
+        // The sibling test above cannot catch that — its fixture leaves
+        // `base_instructions` empty, so it passes whichever branch is in place.
+        // This one gives the field a value, which is what makes it a check on
+        // behaviour rather than on the shape of the source.
+        let mut model = test_model(/*spec*/ None);
+        model.base_instructions = "fork fallback instructions".to_string();
+
+        assert_eq!(
+            model.get_model_instructions(/*personality*/ None),
+            "fork fallback instructions"
+        );
+        assert_eq!(
+            model.get_model_instructions(Some(Personality::Friendly)),
+            "fork fallback instructions"
+        );
+    }
+
+    #[test]
     fn models_response_promotes_legacy_base_instructions() {
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(/*spec*/ None)],

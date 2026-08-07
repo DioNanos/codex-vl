@@ -4,6 +4,49 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.147.0 - Upstream rust-v0.147.0
+
+Update onto the upstream OpenAI Codex `rust-v0.147.0` stable release, published
+on the `latest` channel. Upstream tagged it a day after `0.147.0-alpha.13`; the
+two are siblings off the same parent and differ only in the workspace version.
+The full Codex VL workflow layer remains present across goal state, loop jobs,
+Vivling, the VL interface, remote control, app-server integration, and the
+fork-owned package and update channels.
+
+### Fixed
+
+- An `AGENTS.md` created during a session — which is what `/init` does — is now
+  discovered. Discovery cached its result under the environment selection, which
+  does not change when a file appears, so the session kept reporting that none
+  existed.
+- The model catalog parses again. Upstream added its own legacy
+  `base_instructions` key whose serializer also flattens `ModelInfo`, so with the
+  fork field serialized too the catalog carried the key twice.
+- Models whose catalog entry ships no instruction template get the fork's
+  fallback instructions again. The merge had replaced that branch with upstream's,
+  which returns an empty string; a behavioural test now fails if it is emptied
+  again.
+- musl packaging keeps working: the Linux workflows extract exactly two V8
+  checksums per target from the versioned manifest, and upstream ships that file
+  for 150.4.0 with Windows entries only.
+
+### Changed
+
+- The state runtime keeps the fork's VL migration reconciliation around
+  upstream's refactored DB open path.
+- `manage_loops` still resolves as a dynamic tool call, after upstream's new
+  rejection path for requests belonging to abandoned side threads.
+- MCP startup keeps its bounded tools-list retry, adapted to upstream's new
+  catalog item limit.
+
+### Removed
+
+- The Termux TLS root patch carried here for parity: upstream removed the client
+  it wrapped and `reqwest` left the crate's dependencies, so it no longer
+  compiled.
+- The fork's by-name session lookup test, superseded by upstream's
+  `named_session_lookup` and its own tests.
+
 ## 0.146.1 - Upstream rust-v0.146.1 candidate
 
 Candidate update on the upstream OpenAI Codex `rust-v0.146.1` patch release
