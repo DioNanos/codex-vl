@@ -47,13 +47,16 @@ fork-owned package and update channels.
 - The fork's by-name session lookup test, superseded by upstream's
   `named_session_lookup` and its own tests.
 
-## 0.146.1 - Upstream rust-v0.146.1 candidate
+## 0.146.1 - Upstream rust-v0.146.1
 
-Candidate update on the upstream OpenAI Codex `rust-v0.146.1` patch release
-(backported safer cyber-model auto-review defaults). The merge touched no
-fork-owned path. The full Codex VL workflow layer remains present across goal
-state, loop jobs, Vivling, the VL interface, remote control, app-server
-integration, and the fork-owned package and update channels.
+Update on the upstream OpenAI Codex `rust-v0.146.1` patch release (backported
+safer cyber-model auto-review defaults). The merge touched no fork-owned path.
+Published on the `next` channel; `latest` later moved to `0.147.0`. (Amended:
+this entry originally described a gated candidate.)
+
+The full Codex VL workflow layer remains present across goal state, loop jobs,
+Vivling, the VL interface, remote control, app-server integration, and the
+fork-owned package and update channels.
 
 ### Fixed
 
