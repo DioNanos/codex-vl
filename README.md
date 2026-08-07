@@ -15,7 +15,8 @@ experimental workflow features:
 - `/loop` for session-scoped recurring checks and follow-up tasks; `/loop apply` / `/loop dismiss` to action or discard Vivling loop suggestions
 - `/vivling` for a persistent local companion and orchestration foundation
 - `/vl` for direct Vivling chat when a brain profile is configured
-- `/remote-control` for daemon lifecycle checks from inside the TUI
+- `/remote-control` for daemon lifecycle checks and app pairing from inside the TUI
+- `/mcp reload` to apply MCP server configuration changes without restarting
 - side-by-side npm packaging under `@mmmbuto/codex-vl`
 
 ## Install
@@ -68,7 +69,7 @@ upstream removed the client it wrapped, and MCP OAuth discovery now runs on the
 injected `codex-http-client`.
 
 `0.147.0` is published on the `latest` channel with a matching GitHub tag and
-release. The conservative `stable` tag remains on `0.145.0` until a later
+release. The conservative `stable` tag remains on `0.144.5` until a later
 explicitly authorized promotion. Packages cover Linux x64,
 Linux arm64 (musl), Android arm64, and macOS arm64 source builds; each platform
 uses its corresponding candidate channel before production promotion.
@@ -139,8 +140,23 @@ local fallback reply path.
 ### `/remote-control`
 
 Checks and controls the Codex remote-control daemon without leaving the TUI.
-Supported subcommands are `status`, `start`, `stop`, and `restart`. Enrollment
-toggles are intentionally not implemented in this command yet.
+Supported subcommands are `status`, `start`, `stop`, `restart`, and `pair`.
+
+`pair` prints the code the ChatGPT mobile app asks for. It attaches to a daemon
+that is already listening and starts one only when none is, so pairing does not
+need a separate `start` first. `status` is the only read-only subcommand: it
+probes the daemon without starting it. Client enrollment toggles are
+intentionally not implemented in this command.
+
+### `/mcp`
+
+Lists the configured MCP servers; `/mcp verbose` also lists their tools.
+
+`/mcp reload` re-reads the MCP server configuration and applies it to every
+active session, so a server added, removed, or re-pointed in `config.toml`
+takes effect without restarting Codex VL. Each session picks the new
+configuration up when it resolves its MCP runtime for the next model step,
+which means a turn already running can adopt it before it ends.
 
 ## Configuration
 
