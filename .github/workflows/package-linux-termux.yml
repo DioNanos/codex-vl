@@ -238,10 +238,11 @@ jobs:
           # The Android package is the one closest to npm's unpacked-size limit,
           # so record what the extra binary costs instead of discovering it in a
           # rejected publish.
+          # The release profile already sets strip=symbols, so no strip runs here:
+          # `ndk_strip` belongs to the Build step and does not cross into this one,
+          # and a "size after strip" line that never stripped anything is a
+          # measurement that lies. One honest number instead.
           ls -l "$vendor/codex/codex-code-mode-host" | awk '{print "code-mode host size:", $5, "bytes"}'
-          if [ -x "${ndk_strip:-}" ]; then "$ndk_strip" --strip-all "$vendor/codex/codex-code-mode-host" || true; fi
-          ls -l "$vendor/codex/codex-code-mode-host" | awk '{print "code-mode host size after strip:", $5, "bytes"}'
-          du -sh "$vendor" | awk '{print "android vendor payload:", $1}'
           # Bundle libc++_shared.so next to the binaries: the Android binaries are
           # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
           # the shared C++ runtime). Termux/Android has no system libc++_shared.so,
@@ -251,6 +252,9 @@ jobs:
           if [ -z "$libcxx" ]; then echo "libc++_shared.so for aarch64-linux-android not found under NDK" >&2; exit 1; fi
           cp "$libcxx" "$vendor/codex/libc++_shared.so"
           chmod 755 "$vendor/codex/libc++_shared.so"
+          # Measured last: this package is the closest to npm's unpacked-size
+          # limit, and a total taken before the last copy understates it.
+          du -sh "$vendor" | awk '{print "android vendor payload:", $1}'
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-android-arm64 \
             --release-version "$RELEASE_VERSION" \
