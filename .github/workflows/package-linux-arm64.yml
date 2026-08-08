@@ -106,25 +106,29 @@ jobs:
           printf 'codex size: %s -> %s bytes\n' "$before_codex" "$after_codex"
           ls -lh codex-rs/target/aarch64-unknown-linux-musl/release/codex
           codex-rs/target/aarch64-unknown-linux-musl/release/codex --version
-          # Prove the linked V8 really has the sandbox, from inside the step
-          # that owns RUSTY_V8_ARCHIVE. Run anywhere else and the test resolves
-          # whatever a fresh environment picks, which is not what ships.
-          # The dev profile is deliberate: the release profile sets panic=abort
-          # and no test harness can run under it. The override decides the
-          # archive irrespective of profile, so this still links the shipped one.
-          test_log="$(mktemp)"
-          if ! cargo test --manifest-path codex-rs/Cargo.toml \
-            --target aarch64-unknown-linux-musl \
-            -p codex-code-mode-runtime --lib linked_v8_has_sandbox_enabled \
-            > "$test_log" 2>&1; then
-            cat "$test_log"
+          # Check the archive this build actually linked, not a rebuild of it.
+          # RUSTY_V8_ARCHIVE is the input to the link, so reading it answers the
+          # question that matters: does the V8 going into these binaries carry
+          # the sandbox? The count of defined `v8::internal::Sandbox` symbols
+          # separates the two prebuilds of the same source tree, zero without
+          # the feature and non-zero with it, and needs no toolchain for the
+          # target. Running the crate's own invariant test here instead would
+          # compile a far larger graph in a second profile for no more truth.
+          v8_archive_a="${RUNNER_TEMP:-/tmp}/rusty_v8_linked.a"
+          gzip -dc "$RUSTY_V8_ARCHIVE" > "$v8_archive_a"
+          v8_symbols="${RUNNER_TEMP:-/tmp}/rusty_v8_linked_symbols.txt"
+          nm --defined-only "$v8_archive_a" > "$v8_symbols"
+          if [ ! -s "$v8_symbols" ]; then
+            echo "nm produced no symbols for the linked V8 archive; cannot judge it." >&2
             exit 1
           fi
-          cat "$test_log"
-          if ! grep -q "test result: ok. 1 passed" "$test_log"; then
-            echo "The V8 sandbox invariant test did not run; a filter that matches nothing is not a pass." >&2
+          sandbox_symbols="$(grep -c '2v88internal7Sandbox' "$v8_symbols" || true)"
+          echo "linked V8 archive defines ${sandbox_symbols} v8::internal::Sandbox symbols"
+          if [ "$sandbox_symbols" -eq 0 ]; then
+            echo "The linked V8 has no sandbox; code mode would run without it." >&2
             exit 1
           fi
+          rm -f "$v8_archive_a"
       - name: Stage Linux arm64 npm package
         run: |
           set -euo pipefail
