@@ -17,6 +17,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPOSITORY = "DioNanos/codex-termux"
 DEFAULT_TARGET = "aarch64-linux-android"
+# code-mode-runtime enables the v8 `v8_enable_sandbox` feature, which also
+# turns on pointer compression. The v8 build script encodes the enabled
+# features in the prebuilt name, so anything else here hands code mode a V8
+# whose sandbox is absent while the build still succeeds.
+DEFAULT_PROFILE = "ptrcomp_sandbox_release"
+LEGACY_PROFILE = "release"
 MANIFEST_PATH = ROOT / "third_party" / "v8" / "android-artifacts.toml"
 
 
@@ -88,6 +94,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional release tag. Defaults to rusty-v8-v<resolved_v8_version>.",
     )
     parser.add_argument(
+        "--profile",
+        default=DEFAULT_PROFILE,
+        help=(
+            "Artifact profile to fetch. Must match the v8 Cargo features the "
+            "workspace enables, because the archive name encodes them "
+            f"(default: {DEFAULT_PROFILE})."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default=str(ROOT / ".artifacts" / "rusty_v8"),
         help="Directory where the archive and binding will be stored.",
@@ -116,6 +131,42 @@ def manifest_entry(version: str, target: str) -> dict[str, Any] | None:
     if not isinstance(target_entry, dict):
         return None
     return dict(target_entry)
+
+
+def expected_checksums(
+    manifest: dict[str, Any] | None, profile: str
+) -> tuple[str | None, str | None]:
+    """Return the pinned (archive, binding) checksums for one artifact profile.
+
+    The manifest predates having more than one profile per target, so its
+    top-level `archive_sha256`/`binding_sha256` keys still mean the plain
+    `release` build. Every other profile lives under `profiles.<name>`, and an
+    absent entry returns None so the caller can refuse to build rather than
+    download something unpinned.
+    """
+    if not manifest:
+        return None, None
+
+    profiles = manifest.get("profiles")
+    if isinstance(profiles, dict):
+        entry = profiles.get(profile)
+        if isinstance(entry, dict):
+            archive = entry.get("archive_sha256")
+            binding = entry.get("binding_sha256")
+            return (
+                archive if isinstance(archive, str) else None,
+                binding if isinstance(binding, str) else None,
+            )
+
+    if profile == LEGACY_PROFILE:
+        archive = manifest.get("archive_sha256")
+        binding = manifest.get("binding_sha256")
+        return (
+            archive if isinstance(archive, str) else None,
+            binding if isinstance(binding, str) else None,
+        )
+
+    return None, None
 
 
 def github_release_base_url(repository: str, release_tag: str) -> str:
@@ -194,21 +245,19 @@ def main() -> int:
     )
     output_dir = Path(args.output_dir).resolve()
 
-    archive_name = f"librusty_v8_release_{args.target}.a.gz"
-    binding_name = f"src_binding_release_{args.target}.rs"
+    profile = args.profile
+    archive_name = f"librusty_v8_{profile}_{args.target}.a.gz"
+    binding_name = f"src_binding_{profile}_{args.target}.rs"
     archive_path = output_dir / release_tag / archive_name
     binding_path = output_dir / release_tag / binding_name
 
-    expected_archive_sha = (
-        manifest.get("archive_sha256")
-        if manifest and isinstance(manifest.get("archive_sha256"), str)
-        else None
-    )
-    expected_binding_sha = (
-        manifest.get("binding_sha256")
-        if manifest and isinstance(manifest.get("binding_sha256"), str)
-        else None
-    )
+    expected_archive_sha, expected_binding_sha = expected_checksums(manifest, profile)
+    if manifest and expected_archive_sha is None:
+        raise SystemExit(
+            f"{MANIFEST_PATH} describes {args.target} at v8 {version} but carries no "
+            f"checksums for the {profile!r} profile. Publish that pair and pin it "
+            "before building: an unpinned download is not a substitute."
+        )
 
     candidate_base_urls: list[str] = []
     candidate_base_urls.extend(
