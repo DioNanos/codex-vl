@@ -132,6 +132,11 @@ const build = spawnSync(
     "--release",
     "-p",
     "codex-cli",
+    // Code mode runs out-of-process since rust-v0.147.0: the CLI spawns this
+    // host next to itself and fails closed without it. Building only codex-cli
+    // leaves macOS installs with code mode permanently unavailable.
+    "-p",
+    "codex-code-mode-host",
   ],
   {
     cwd: root,
@@ -145,7 +150,7 @@ if (build.status !== 0) {
 }
 
 mkdirSync(vendorCodexDir, { recursive: true });
-for (const binary of ["codex"]) {
+for (const binary of ["codex", "codex-code-mode-host"]) {
   const src = path.join(releaseDir, binary);
   const dest = path.join(vendorCodexDir, binary);
   if (!existsSync(src)) {
