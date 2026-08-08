@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
-const { chmodSync, copyFileSync, existsSync, mkdirSync } = require("node:fs");
+const {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+} = require("node:fs");
+const { createHash } = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -121,6 +128,55 @@ console.log(
 );
 console.log("");
 
+// V8 prebuilt. code-mode-runtime enables `v8_enable_sandbox`, so the v8 build
+// script derives the archive name from the enabled Cargo features and asks for
+// `librusty_v8_ptrcomp_sandbox_release_<target>`. denoland/rusty_v8 v150.4.0
+// publishes no sandbox assets at all, so the default download is a 404 and the
+// build stops there. The matching archive and binding come from this project's
+// own rusty-v8 release; both are pinned by checksum, and a mismatch aborts.
+const v8Version = "150.4.0";
+const v8Base = `https://github.com/openai/codex/releases/download/rusty-v8-v${v8Version}`;
+const v8Dir = path.join(root, ".rusty_v8");
+const v8Archive = path.join(
+  v8Dir,
+  `librusty_v8_ptrcomp_sandbox_release_${target}.a.gz`,
+);
+const v8Binding = path.join(
+  v8Dir,
+  `src_binding_ptrcomp_sandbox_release_${target}.rs`,
+);
+const v8Checksums = {
+  [path.basename(v8Archive)]:
+    "00adbb48798848c77550441c68673a5e8529b8e1b73eabcdee232cb39b40f4a1",
+  [path.basename(v8Binding)]:
+    "ca5adf0cf89c9a70ad460ae73648b2fe89b74aa113b3cb7f757b6a02b758394f",
+};
+
+mkdirSync(v8Dir, { recursive: true });
+for (const dest of [v8Archive, v8Binding]) {
+  const name = path.basename(dest);
+  if (!existsSync(dest)) {
+    console.log(`[codex-vl] downloading ${name}`);
+    const curl = spawnSync(
+      "curl",
+      ["-fsSL", `${v8Base}/${name}`, "-o", dest],
+      { stdio: "inherit" },
+    );
+    if (curl.status !== 0) {
+      fail(`failed to download ${name} from ${v8Base}`);
+    }
+  }
+  const actual = createHash("sha256")
+    .update(readFileSync(dest))
+    .digest("hex");
+  if (actual !== v8Checksums[name]) {
+    fail(
+      `checksum mismatch for ${name}: expected ${v8Checksums[name]}, got ${actual}`,
+    );
+  }
+}
+console.log("[codex-vl] V8 prebuilt verified");
+
 const build = spawnSync(
   "cargo",
   [
@@ -140,7 +196,11 @@ const build = spawnSync(
   ],
   {
     cwd: root,
-    env: appendRustflags(process.env, "-C target-cpu=native"),
+    env: {
+      ...appendRustflags(process.env, "-C target-cpu=native"),
+      RUSTY_V8_ARCHIVE: v8Archive,
+      RUSTY_V8_SRC_BINDING_PATH: v8Binding,
+    },
     stdio: "inherit",
   },
 );
