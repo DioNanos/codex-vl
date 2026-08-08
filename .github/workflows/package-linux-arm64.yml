@@ -84,7 +84,12 @@ jobs:
           fi
           export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
-          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-unknown-linux-musl --release -p codex-cli -p codex-code-mode-host
+          host_path="codex-rs/target/aarch64-unknown-linux-musl/release/codex-code-mode-host"
+          if [ ! -f "$host_path" ]; then
+            echo "code-mode host ${host_path} not found" >&2
+            exit 1
+          fi
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-unknown-linux-musl/release/codex)"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip --strip-all codex-rs/target/aarch64-unknown-linux-musl/release/codex
@@ -108,6 +113,10 @@ jobs:
             --target aarch64-unknown-linux-musl \
             --codex-binary codex-rs/target/aarch64-unknown-linux-musl/release/codex \
             --include-rg
+          # Code mode runs out-of-process since rust-v0.147.0 and fails closed
+          # when this binary is missing, so it must travel in the package.
+          cp codex-rs/target/aarch64-unknown-linux-musl/release/codex-code-mode-host "$vendor/codex/codex-code-mode-host"
+          chmod 755 "$vendor/codex/codex-code-mode-host"
           cp codex-rs/target/aarch64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
           chmod 755 "$vendor/codex-resources/bwrap"
           "$vendor/path/rg" --version | grep -q '^ripgrep '

@@ -69,9 +69,9 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     # the generic upstream `codex-package` layout. Linux x64 and Linux
     # arm64 ship the same set; Android arm64 ships codex only; Darwin
     # arm64 ships nothing prebuilt (post-install local build).
-    "codex-linux-x64": ["bwrap", "codex", "rg"],
-    "codex-linux-arm64": ["bwrap", "codex", "rg"],
-    "codex-android-arm64": ["codex"],
+    "codex-linux-x64": ["bwrap", "codex", "codex-code-mode-host", "rg"],
+    "codex-linux-arm64": ["bwrap", "codex", "codex-code-mode-host", "rg"],
+    "codex-android-arm64": ["codex", "codex-code-mode-host"],
     "codex-darwin-arm64": [],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
@@ -91,6 +91,9 @@ PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 COMPONENT_DEST_DIR: dict[str, str] = {
     "bwrap": "codex-resources",
     "codex": "codex",
+    # Sits next to the codex binary: upstream resolves the code-mode host
+    # relative to it, so a different directory makes code mode fail closed.
+    "codex-code-mode-host": "codex",
     "codex-responses-api-proxy": "codex-responses-api-proxy",
     "codex-windows-sandbox-setup": "codex",
     "codex-command-runner": "codex",

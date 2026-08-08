@@ -77,7 +77,12 @@ jobs:
           fi
           export CODEX_BWRAP_SHA256="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "bwrap sha256=${CODEX_BWRAP_SHA256}"
-          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target x86_64-unknown-linux-musl --release -p codex-cli -p codex-code-mode-host
+          host_path="codex-rs/target/x86_64-unknown-linux-musl/release/codex-code-mode-host"
+          if [ ! -f "$host_path" ]; then
+            echo "code-mode host ${host_path} not found" >&2
+            exit 1
+          fi
           before_codex="$(stat -c '%s' codex-rs/target/x86_64-unknown-linux-musl/release/codex)"
           if command -v llvm-strip >/dev/null 2>&1; then
             llvm-strip --strip-all codex-rs/target/x86_64-unknown-linux-musl/release/codex
@@ -103,6 +108,10 @@ jobs:
             --include-rg
           cp codex-rs/target/x86_64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
           chmod 755 "$vendor/codex-resources/bwrap"
+          # Code mode runs out-of-process since rust-v0.147.0 and fails closed
+          # when this binary is missing, so it must travel in the package.
+          cp codex-rs/target/x86_64-unknown-linux-musl/release/codex-code-mode-host "$vendor/codex/codex-code-mode-host"
+          chmod 755 "$vendor/codex/codex-code-mode-host"
           "$vendor/path/rg" --version | grep -q '^ripgrep '
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-linux-x64 \
@@ -196,7 +205,12 @@ jobs:
           if [ -z "$builtins" ]; then echo "clang_rt builtins for aarch64-android not found under NDK" >&2; exit 1; fi
           echo "linking compiler-rt builtins: $builtins"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg=$builtins"
-          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli
+          cargo build --manifest-path codex-rs/Cargo.toml --target aarch64-linux-android --release -p codex-cli -p codex-code-mode-host
+          host_path="codex-rs/target/aarch64-linux-android/release/codex-code-mode-host"
+          if [ ! -f "$host_path" ]; then
+            echo "code-mode host ${host_path} not found" >&2
+            exit 1
+          fi
           before_codex="$(stat -c '%s' codex-rs/target/aarch64-linux-android/release/codex)"
           ndk_strip="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           if [ -x "$ndk_strip" ]; then
@@ -217,6 +231,10 @@ jobs:
           mkdir -p "$vendor/codex" "$out"
           cp codex-rs/target/aarch64-linux-android/release/codex "$vendor/codex/codex"
           chmod 755 "$vendor/codex/codex"
+          # Code mode runs out-of-process since rust-v0.147.0 and fails closed
+          # when this binary is missing, so it must travel in the package.
+          cp codex-rs/target/aarch64-linux-android/release/codex-code-mode-host "$vendor/codex/codex-code-mode-host"
+          chmod 755 "$vendor/codex/codex-code-mode-host"
           # Bundle libc++_shared.so next to the binaries: the Android binaries are
           # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
           # the shared C++ runtime). Termux/Android has no system libc++_shared.so,
