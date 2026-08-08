@@ -298,7 +298,10 @@ mod tests {
             },
         );
 
-        assert!(text.contains("ABCD-1234"), "manual code must be shown: {text}");
+        assert!(
+            text.contains("ABCD-1234"),
+            "manual code must be shown: {text}"
+        );
         assert!(
             !text.contains("transport-xyz"),
             "the transport code must not be offered to the user: {text}"

@@ -1,6 +1,6 @@
 use super::*;
-use crate::vl::VlEvent;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::vl::VlEvent;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -2995,4 +2995,3 @@ async fn slash_mcp_reload_requires_started_session() {
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
-
