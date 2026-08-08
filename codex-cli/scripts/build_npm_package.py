@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import tarfile
 import sys
 import tempfile
 from pathlib import Path
@@ -247,6 +248,7 @@ def main() -> int:
 
         if args.pack_output is not None:
             output_path = run_npm_pack(staging_dir, args.pack_output)
+            assert_tarball_contains_native_payload(output_path, package)
             print(f"npm pack output written to {output_path}")
     finally:
         if created_temp:
@@ -502,6 +504,39 @@ def copy_native_binaries(
             missing_list = ", ".join(missing_targets)
             raise RuntimeError(f"Missing target directories in vendor source: {missing_list}")
 
+def assert_tarball_contains_native_payload(tarball_path: Path, package: str) -> None:
+    """Prove the produced tarball really carries the required binaries.
+
+    The staging checks and the declaration lists can all agree while the tgz
+    comes out incomplete: `npm pack` drops a missing file without failing, and
+    a component that shares its destination directory with another one is
+    invisible to any directory-level check. This reads the finished archive —
+    the only artifact that gets published.
+    """
+    platform_config = CODEX_PLATFORM_PACKAGES.get(package)
+    if platform_config is None:
+        return
+    components = PACKAGE_NATIVE_COMPONENTS.get(package, [])
+    if not components:
+        return
+
+    target = platform_config["target_triple"]
+    expected = {
+        f"package/vendor/{target}/{COMPONENT_DEST_DIR.get(component, component)}/{component}"
+        for component in components
+    }
+    with tarfile.open(tarball_path, "r:gz") as archive:
+        present = set(archive.getnames())
+
+    missing = sorted(expected - present)
+    if missing:
+        raise RuntimeError(
+            f"{tarball_path.name} is missing required native payload: "
+            + ", ".join(missing)
+        )
+    print(f"native payload verified inside {tarball_path.name}: {len(expected)} entries")
+
+
 def validate_native_payload(staging_dir: Path, package: str) -> None:
     """codex-vl fork: per-package native payload validator (linux/android/darwin)."""
     platform_config = CODEX_PLATFORM_PACKAGES.get(package)
@@ -512,9 +547,16 @@ def validate_native_payload(staging_dir: Path, package: str) -> None:
     codex_dir = staging_dir / "vendor" / target / "codex"
     # codex-vl fork: only the single `codex` binary is shipped; `codex-vl-exec`
     # dispatches it via the `exec` subcommand (no standalone codex-exec binary).
+    required: tuple[str, ...] = ("codex",)
+    # Since rust-v0.147.0 code mode runs out-of-process and the CLI fails closed
+    # without this host. It shares the `codex` destination directory, so checking
+    # the directory proves nothing: name the file, or a package that silently
+    # lost it still validates.
+    if "codex-code-mode-host" in PACKAGE_NATIVE_COMPONENTS.get(package, []):
+        required += ("codex-code-mode-host",)
     missing = [
         binary_name
-        for binary_name in ("codex",)
+        for binary_name in required
         if not (codex_dir / binary_name).is_file()
     ]
     if missing:

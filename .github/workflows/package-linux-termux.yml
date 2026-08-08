@@ -235,6 +235,13 @@ jobs:
           # when this binary is missing, so it must travel in the package.
           cp codex-rs/target/aarch64-linux-android/release/codex-code-mode-host "$vendor/codex/codex-code-mode-host"
           chmod 755 "$vendor/codex/codex-code-mode-host"
+          # The Android package is the one closest to npm's unpacked-size limit,
+          # so record what the extra binary costs instead of discovering it in a
+          # rejected publish.
+          ls -l "$vendor/codex/codex-code-mode-host" | awk '{print "code-mode host size:", $5, "bytes"}'
+          if [ -x "${ndk_strip:-}" ]; then "$ndk_strip" --strip-all "$vendor/codex/codex-code-mode-host" || true; fi
+          ls -l "$vendor/codex/codex-code-mode-host" | awk '{print "code-mode host size after strip:", $5, "bytes"}'
+          du -sh "$vendor" | awk '{print "android vendor payload:", $1}'
           # Bundle libc++_shared.so next to the binaries: the Android binaries are
           # linked with RUNPATH=$ORIGIN and NEED libc++_shared.so (V8 + oboe use
           # the shared C++ runtime). Termux/Android has no system libc++_shared.so,
