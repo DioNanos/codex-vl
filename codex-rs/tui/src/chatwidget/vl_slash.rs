@@ -1,4 +1,4 @@
-//! codex-vl: Slash-command boundary for `/vivling`, `/vl`, `/loop`.
+//! codex-vl: Slash-command boundary for `/vivling`, `/vl`, `/loop`, and MCP reload.
 //!
 //! Keeps the Vivling/Loop dispatch body out of the upstream-heavy
 //! `slash_dispatch.rs`. The dispatch entry points stay there as thin
@@ -14,6 +14,20 @@ use crate::vivling::VivlingCommandOutcome;
 use crate::vl::VivlingLogKind;
 use crate::vl::VlEvent;
 use crate::vl::events::LoopCommandRequest;
+
+pub(super) const MCP_USAGE: &str = "Usage: /mcp [verbose|reload]";
+
+/// `/mcp reload` — request a global MCP config reload through the app-server.
+///
+/// The reload is asynchronous and owned by the app-server, so this only emits
+/// the event; the outcome is reported when the request is acknowledged.
+pub(super) fn dispatch_mcp_reload(cw: &mut ChatWidget) {
+    let Some(thread_id) = cw.thread_id else {
+        cw.add_error_message("'/mcp reload' is unavailable before the session starts.".to_string());
+        return;
+    };
+    cw.app_event_tx.send_vl(VlEvent::McpReload { thread_id });
+}
 
 pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
 

@@ -434,6 +434,7 @@ fn wrap_text_lines(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn collapsed_log_stays_hidden_under_crt_strip() {
@@ -494,18 +495,21 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn expanded_empty_sidebar_renders_default_height() {
         let mut sidebar = VivlingSidebar::new();
         sidebar.toggle();
         assert!(sidebar.should_render());
         // Step 12.B.P — default panel height bumped 20 → 25.
-        // SAFETY: clear env first so the default kicks in regardless
-        // of test runner state.
+        // The panel height is read from a process-global env var, so this
+        // test is serialized against the one that sets it. Clearing here
+        // still matters: the runner may have inherited a value.
         unsafe { std::env::remove_var("CODEX_VL_VIVLING_PANEL_HEIGHT") };
         assert_eq!(sidebar.desired_height(80), DEFAULT_EXPANDED_HEIGHT);
     }
 
     #[test]
+    #[serial]
     fn expanded_sidebar_uses_default_expanded_height() {
         let mut sidebar = VivlingSidebar::new();
         for i in 0..40 {
@@ -513,8 +517,9 @@ mod tests {
         }
         sidebar.toggle();
         // Step 12.B.P — default panel height bumped 20 → 25.
-        // SAFETY: clear env first so the default kicks in regardless
-        // of test runner state.
+        // The panel height is read from a process-global env var, so this
+        // test is serialized against the one that sets it. Clearing here
+        // still matters: the runner may have inherited a value.
         unsafe { std::env::remove_var("CODEX_VL_VIVLING_PANEL_HEIGHT") };
         assert_eq!(sidebar.desired_height(80), DEFAULT_EXPANDED_HEIGHT);
     }
@@ -686,11 +691,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn expanded_height_env_override_clamps_to_range() {
-        // SAFETY: tests in this module are not parallel-sensitive
-        // because the env is read on every render, but we should
-        // restore. Use a unique value within range and check upper
-        // clamp via a deliberately out-of-range string.
+        // This mutates a process-global env var that two other tests read,
+        // so all three are serialized. Without that they race: those tests
+        // clear the var and assert the default while this one sets it.
         unsafe { std::env::set_var("CODEX_VL_VIVLING_PANEL_HEIGHT", "9999") };
         assert_eq!(expanded_height_from_env(), MAX_EXPANDED_HEIGHT);
         unsafe { std::env::set_var("CODEX_VL_VIVLING_PANEL_HEIGHT", "1") };

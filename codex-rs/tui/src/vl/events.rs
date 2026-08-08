@@ -75,6 +75,8 @@ pub(crate) enum VlEvent {
     },
     /// Reload loop jobs from local state for the active primary thread.
     ReloadLoopJobs { thread_id: ThreadId },
+    /// Reload the complete MCP configuration for every active app-server thread.
+    McpReload { thread_id: ThreadId },
     /// Fired by a local timer when a loop job reaches its next run time.
     LoopTick { thread_id: ThreadId, job_id: String },
     /// Persist or assign the brain profile for the active Vivling.

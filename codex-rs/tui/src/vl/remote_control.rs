@@ -23,6 +23,7 @@ pub(crate) enum RemoteControlAction {
     Start,
     Stop,
     Restart,
+    Pair,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -44,6 +45,7 @@ pub(crate) fn parse_action(args: &str) -> Result<RemoteControlAction, RemoteCont
         "start" => Ok(RemoteControlAction::Start),
         "stop" => Ok(RemoteControlAction::Stop),
         "restart" => Ok(RemoteControlAction::Restart),
+        "pair" => Ok(RemoteControlAction::Pair),
         "on" | "off" | "enable" | "disable" => Err(RemoteControlParseError::UnsupportedToggle),
         _ => Err(RemoteControlParseError::Usage),
     }
@@ -52,12 +54,12 @@ pub(crate) fn parse_action(args: &str) -> Result<RemoteControlAction, RemoteCont
 pub(crate) fn parse_error_message(error: RemoteControlParseError) -> (&'static str, &'static str) {
     match error {
         RemoteControlParseError::UnsupportedToggle => (
-            "Usage: /remote-control [status|start|stop|restart]",
+            "Usage: /remote-control [status|start|stop|restart|pair]",
             "`on` and `off` need the upstream remote-control client and are not enabled in this build.",
         ),
         RemoteControlParseError::Usage => (
-            "Usage: /remote-control [status|start|stop|restart]",
-            "V1 manages daemon lifecycle only.",
+            "Usage: /remote-control [status|start|stop|restart|pair]",
+            "Supported: daemon lifecycle, plus `pair` for a manual pairing code.",
         ),
     }
 }
@@ -68,6 +70,7 @@ pub(crate) fn action_label(action: RemoteControlAction) -> &'static str {
         RemoteControlAction::Start => "start",
         RemoteControlAction::Stop => "stop",
         RemoteControlAction::Restart => "restart",
+        RemoteControlAction::Pair => "pair",
     }
 }
 
@@ -101,6 +104,22 @@ pub(crate) async fn run_action(action: RemoteControlAction) -> String {
             wait_for_daemon_down(RESTART_DAEMON_DOWN_TIMEOUT).await;
             let start_output = run_current_exe(["remote-control", "start"]).await;
             format_single_output(RemoteControlAction::Restart, start_output)
+        }
+        RemoteControlAction::Pair => {
+            // `remote-control pair` attaches to a running daemon; it does not
+            // start one. Outside the TUI that costs the user a failed command
+            // and a second invocation, which is the whole friction this action
+            // exists to remove: probe first, start only if nothing answers,
+            // then ask for the code.
+            let probe = run_current_exe(["app-server", "daemon", "version"]).await;
+            if !probe.status.is_some_and(|code| code == 0) {
+                let start_output = run_current_exe(["remote-control", "start"]).await;
+                if start_output.status.is_some_and(|code| code != 0) {
+                    return format_single_output(RemoteControlAction::Pair, start_output);
+                }
+            }
+            let output = run_current_exe(["remote-control", "pair", "--json"]).await;
+            format_single_output(RemoteControlAction::Pair, output)
         }
     }
 }
@@ -177,6 +196,28 @@ fn format_single_output(action: RemoteControlAction, output: CliOutput) -> Strin
 }
 
 fn format_success(heading: &str, action: RemoteControlAction, json: &Value) -> String {
+    if action == RemoteControlAction::Pair {
+        // Only the manual code. `pairingCode` is the transport handle and the
+        // app rejects it, so falling back to it would produce exactly the
+        // failure this action exists to avoid: a panel that looks right and a
+        // code that does not work, with nothing on screen to explain why. It is
+        // a reachable shape — `pairingCode` is always present, the manual one is
+        // optional — so the absence has to be reported, not papered over.
+        let code = string_field(json, "manualPairingCode");
+        let mut lines = vec![heading.to_string()];
+        match code {
+            Some(code) => {
+                lines.push(format!("Pairing code: {code}"));
+                lines.push("Short-lived: request another if it expires.".to_string());
+            }
+            None => lines.push(
+                "Status: no pairing code in the response; run `codex remote-control pair` for the raw output."
+                    .to_string(),
+            ),
+        }
+        return lines.join("\n");
+    }
+
     let mut lines = vec![heading.to_string()];
     let status = string_field(json, "status").unwrap_or("ok");
     let daemon = match action {
@@ -239,6 +280,70 @@ mod tests {
         assert_eq!(parse_action("start"), Ok(RemoteControlAction::Start));
         assert_eq!(parse_action("stop"), Ok(RemoteControlAction::Stop));
         assert_eq!(parse_action("restart"), Ok(RemoteControlAction::Restart));
+        assert_eq!(parse_action("pair"), Ok(RemoteControlAction::Pair));
+        assert_eq!(parse_action("  PAIR  "), Ok(RemoteControlAction::Pair));
+    }
+
+    #[test]
+    fn pair_output_shows_the_code_the_app_asks_for() {
+        // `manualPairingCode` is what the user types into the app;
+        // `pairingCode` is the transport-level one. Showing the wrong field
+        // would look right on screen and fail in the app, so pin the choice.
+        let text = format_single_output(
+            RemoteControlAction::Pair,
+            CliOutput {
+                status: Some(0),
+                stdout: r#"{"pairingCode":"transport-xyz","manualPairingCode":"ABCD-1234","environmentId":"env-1","expiresAt":1786139629}"#.to_string(),
+                stderr: String::new(),
+            },
+        );
+
+        assert!(
+            text.contains("ABCD-1234"),
+            "manual code must be shown: {text}"
+        );
+        assert!(
+            !text.contains("transport-xyz"),
+            "the transport code must not be offered to the user: {text}"
+        );
+    }
+
+    #[test]
+    fn pair_output_never_offers_the_transport_code_as_a_fallback() {
+        // The reachable degraded shape: `pairingCode` is always serialized,
+        // `manualPairingCode` is optional. Showing the transport code here would
+        // hand the user something the app rejects with no explanation.
+        let text = format_single_output(
+            RemoteControlAction::Pair,
+            CliOutput {
+                status: Some(0),
+                stdout: r#"{"pairingCode":"transport-xyz","environmentId":"env-1","expiresAt":1786139629}"#.to_string(),
+                stderr: String::new(),
+            },
+        );
+
+        assert!(
+            !text.contains("transport-xyz"),
+            "the transport code must never be offered as a fallback: {text}"
+        );
+        assert!(
+            text.contains("remote-control pair"),
+            "with no manual code, the panel must point at the command that shows the raw output: {text}"
+        );
+    }
+
+    #[test]
+    fn pair_failure_reports_the_underlying_error() {
+        let text = format_single_output(
+            RemoteControlAction::Pair,
+            CliOutput {
+                status: Some(1),
+                stdout: String::new(),
+                stderr: "no app-server is listening".to_string(),
+            },
+        );
+
+        assert!(text.contains("no app-server is listening"), "{text}");
     }
 
     #[test]

@@ -42,6 +42,7 @@ use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::LogoutAccountResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
@@ -499,6 +500,29 @@ impl AppServerSession {
 
     pub(crate) fn managed_new_thread_defaults(&self) -> Option<&NewThreadModelDefaults> {
         self.managed_new_thread_defaults.as_ref()
+    }
+
+    /// Ask the app-server to reload the MCP configuration for every active
+    /// thread.
+    ///
+    /// The reload itself is upstream's (`config/mcpServer/reload`); this only
+    /// requests it. Upstream replaces the live configuration right away and
+    /// marks the MCP runtime dirty; each session then rebuilds it when it
+    /// resolves the runtime for its next model step. A turn already running
+    /// therefore picks the new tool set up between steps — it is not held to
+    /// the one it started with. On an idle session that next step is simply
+    /// the start of the next turn.
+    pub(crate) async fn mcp_server_reload(&mut self) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: McpServerRefreshResponse = self
+            .client
+            .request_typed(ClientRequest::McpServerRefresh {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("config/mcpServer/reload failed in TUI")?;
+        Ok(())
     }
 
     /// Fetches the current account info without refreshing the auth token.

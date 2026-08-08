@@ -1,5 +1,6 @@
 use super::*;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::vl::VlEvent;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -2287,7 +2288,7 @@ async fn slash_mcp_invalid_args_show_usage() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Usage: /mcp [verbose]"),
+        rendered.contains("Usage: /mcp [verbose|reload]"),
         "expected usage message, got: {rendered:?}"
     );
     assert_eq!(recall_latest_after_clearing(&mut chat), "/mcp full");
@@ -2955,4 +2956,42 @@ async fn compact_queues_user_messages_snapshot() {
         "compact_queues_user_messages_snapshot",
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
     );
+}
+
+#[tokio::test]
+async fn slash_mcp_reload_emits_global_reload_vl_event() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+
+    submit_composer_text(&mut chat, "/mcp reload");
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::Vl(VlEvent::McpReload {
+            thread_id: actual_thread_id
+        })) if actual_thread_id == thread_id
+    );
+    // The reload is an app-server request, not a turn: nothing must reach the
+    // core op channel, or a reload would perturb the conversation.
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_mcp_reload_requires_started_session() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/mcp reload");
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("'/mcp reload' is unavailable before the session starts."),
+        "expected session error, got: {rendered:?}"
+    );
+    assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
 }
