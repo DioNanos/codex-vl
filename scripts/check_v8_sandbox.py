@@ -92,6 +92,38 @@ def ar_members(blob: bytes):
         offset += 60 + size + (size & 1)
 
 
+def reject_relocated_body(
+    obj: bytes,
+    sections: list[tuple[int, int, int, int, int, int]],
+    section_index: int,
+    st_value: int,
+    st_size: int,
+) -> None:
+    """Refuse a wrapper whose bytes the linker will rewrite.
+
+    The bytes in an object file are not always the bytes that end up in the
+    binary: a relocation covering the immediate operand replaces it at link
+    time. An object can therefore read `mov $1,%eax; ret` here and return 0 once
+    linked, which makes this whole check answer a question about the wrong file.
+    There is no reason for a constant-returning wrapper to carry relocations, so
+    any that land inside it stop the build rather than being resolved.
+    """
+    for sh_type, sh_offset, sh_size, _sh_link, sh_info, sh_entsize in sections:
+        if sh_type not in (4, 9) or sh_entsize == 0:  # SHT_RELA, SHT_REL
+            continue
+        if sh_info != section_index:
+            continue
+        for entry in range(0, sh_size, sh_entsize):
+            (r_offset,) = struct.unpack_from("<Q", obj, sh_offset + entry)
+            if st_value <= r_offset < st_value + st_size:
+                raise CannotJudge(
+                    f"{WRAPPER} carries a relocation at offset "
+                    f"{r_offset - st_value} of its body. The linker rewrites "
+                    "those bytes, so what this file shows is not what the "
+                    "binary would return."
+                )
+
+
 def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
     """Return (e_machine, instruction bytes) for the linkable WRAPPER definition.
 
@@ -115,14 +147,15 @@ def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
         _name, sh_type, _flags, _addr, sh_offset, sh_size, sh_link = struct.unpack_from(
             "<IIQQQQI", obj, base
         )
+        (sh_info,) = struct.unpack_from("<I", obj, base + 44)
         (sh_entsize,) = struct.unpack_from("<Q", obj, base + 56)
-        sections.append((sh_type, sh_offset, sh_size, sh_link, sh_entsize))
+        sections.append((sh_type, sh_offset, sh_size, sh_link, sh_info, sh_entsize))
 
     found: list[bytes] = []
-    for sh_type, sh_offset, sh_size, sh_link, sh_entsize in sections:
+    for sh_type, sh_offset, sh_size, sh_link, _sh_info, sh_entsize in sections:
         if sh_type != 2 or sh_entsize == 0:  # SHT_SYMTAB
             continue
-        _t, str_offset, str_size, _l, _e = sections[sh_link]
+        _t, str_offset, str_size, _l, _i, _e = sections[sh_link]
         strings = obj[str_offset : str_offset + str_size]
         for entry in range(0, sh_size, sh_entsize):
             base = sh_offset + entry
@@ -138,7 +171,7 @@ def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
             end = strings.find(b"\x00", st_name)
             if strings[st_name:end].decode("ascii", "replace") != WRAPPER:
                 continue
-            _t, target_offset, _s, _l, _e = sections[st_shndx]
+            _t, target_offset, _s, _l, _i, _e = sections[st_shndx]
             start = target_offset + st_value
             body = obj[start : start + st_size]
             if len(body) != st_size:
@@ -146,6 +179,7 @@ def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
                     f"{WRAPPER} claims {st_size} bytes but the section holds "
                     f"{len(body)}; the object is truncated"
                 )
+            reject_relocated_body(obj, sections, st_shndx, st_value, st_size)
             found.append(body)
 
     if not found:
