@@ -94,3 +94,8 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+
+# Downloaded rusty_v8 prebuilts. fetch_rusty_v8_android.py writes here by
+# default, and its output is a 36 MB archive plus a generated binding: exactly
+# what a careless `git add -A` puts in a public commit.
+.artifacts/
