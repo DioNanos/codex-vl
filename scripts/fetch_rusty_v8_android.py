@@ -54,7 +54,13 @@ def download(
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(request) as response, destination.open("wb") as output:
+    # Without a timeout a mirror that accepts the connection and then stops
+    # sending hangs the job until the workflow's own limit, hours later, and the
+    # remaining mirrors are never tried.
+    with (
+        urllib.request.urlopen(request, timeout=120) as response,
+        destination.open("wb") as output,
+    ):
         shutil.copyfileobj(response, output)
 
 
@@ -251,13 +257,32 @@ def main() -> int:
     archive_path = output_dir / release_tag / archive_name
     binding_path = output_dir / release_tag / binding_name
 
+    # Refuse on any missing pin, not only when the manifest happens to describe
+    # this target. Without an entry at all -- which is what a v8 version bump
+    # produces until someone publishes the artifacts -- `expected_checksums`
+    # yields None, `checksum_matches` then accepts anything, and the build links
+    # an unverified archive while reporting success. That is the same silent
+    # substitution this whole change exists to stop.
     expected_archive_sha, expected_binding_sha = expected_checksums(manifest, profile)
-    if manifest and expected_archive_sha is None:
-        raise SystemExit(
-            f"{MANIFEST_PATH} describes {args.target} at v8 {version} but carries no "
-            f"checksums for the {profile!r} profile. Publish that pair and pin it "
-            "before building: an unpinned download is not a substitute."
+    if expected_archive_sha is None or expected_binding_sha is None:
+        known = (
+            f"describes {args.target} at v8 {version} but carries no checksum pair "
+            f"for the {profile!r} profile"
+            if manifest
+            else f"has no entry at all for {args.target} at v8 {version}"
         )
+        raise SystemExit(
+            f"{MANIFEST_PATH} {known}. Publish that pair and pin it before building: "
+            "an unpinned download is not a substitute."
+        )
+    for field, digest in (
+        ("archive_sha256", expected_archive_sha),
+        ("binding_sha256", expected_binding_sha),
+    ):
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise SystemExit(
+                f"invalid lowercase SHA-256 in manifest field {field}: {digest}"
+            )
 
     candidate_base_urls: list[str] = []
     candidate_base_urls.extend(
