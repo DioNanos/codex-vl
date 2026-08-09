@@ -14,10 +14,14 @@ have to grow a Python dependency to run one. Pinning by checksum is enough there
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
+import sys
 import unittest
 
-from .targets import REPO_ROOT
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from codex_package.targets import REPO_ROOT
 
 POSTINSTALL = REPO_ROOT / "codex-cli" / "scripts" / "postinstall_darwin_build.js"
 PROFILE = "ptrcomp_sandbox_release"
