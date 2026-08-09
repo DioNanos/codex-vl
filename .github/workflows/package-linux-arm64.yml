@@ -55,18 +55,24 @@ jobs:
           rustup default 1.95.0
           rustup target add aarch64-unknown-linux-musl
           target="aarch64-unknown-linux-musl"
+          # code-mode-runtime depends on v8 with `v8_enable_sandbox`, so the
+          # prebuilt has to be the matching profile. Overriding RUSTY_V8_ARCHIVE
+          # with the plain build silently wins over the name the v8 build script
+          # derives from the enabled features, producing a binary whose
+          # IsSandboxEnabled() is false while everything still links and runs.
+          profile="ptrcomp_sandbox_release"
           version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
           release_tag="rusty-v8-v${version}"
           base_url="https://github.com/openai/codex/releases/download/${release_tag}"
           binding_dir="${RUNNER_TEMP:-/tmp}/rusty_v8"
-          archive_path="${binding_dir}/librusty_v8_release_${target}.a.gz"
-          binding_path="${binding_dir}/src_binding_release_${target}.rs"
-          checksums_path="${binding_dir}/rusty_v8_release_${target}.sha256"
+          archive_path="${binding_dir}/librusty_v8_${profile}_${target}.a.gz"
+          binding_path="${binding_dir}/src_binding_${profile}_${target}.rs"
+          checksums_path="${binding_dir}/rusty_v8_${profile}_${target}.sha256"
           checksums_source="third_party/v8/rusty_v8_${version//./_}.sha256"
           mkdir -p "$binding_dir"
-          curl -fsSL "${base_url}/librusty_v8_release_${target}.a.gz" -o "$archive_path"
-          curl -fsSL "${base_url}/src_binding_release_${target}.rs" -o "$binding_path"
-          grep -E "  (librusty_v8_release_${target}[.]a[.]gz|src_binding_release_${target}[.]rs)$" \
+          curl -fsSL "${base_url}/librusty_v8_${profile}_${target}.a.gz" -o "$archive_path"
+          curl -fsSL "${base_url}/src_binding_${profile}_${target}.rs" -o "$binding_path"
+          grep -E "  (librusty_v8_${profile}_${target}[.]a[.]gz|src_binding_${profile}_${target}[.]rs)$" \
             "$checksums_source" > "$checksums_path"
           if [ "$(wc -l < "$checksums_path")" -ne 2 ]; then
             echo "Expected exactly two checksums for ${target} in ${checksums_source}" >&2
@@ -100,6 +106,17 @@ jobs:
           printf 'codex size: %s -> %s bytes\n' "$before_codex" "$after_codex"
           ls -lh codex-rs/target/aarch64-unknown-linux-musl/release/codex
           codex-rs/target/aarch64-unknown-linux-musl/release/codex --version
+          # Check the archive this build actually linked, not a rebuild of it.
+          # RUSTY_V8_ARCHIVE is the input to the link, so reading it answers the
+          # question that matters: does the V8 going into these binaries carry
+          # the sandbox? The check decodes what `v8__V8__IsSandboxEnabled`
+          # returns -- the function the Rust side calls. It replaced a count of
+          # `v8::internal::Sandbox` symbol names, which a plain archive passes as
+          # soon as it carries one extra object mentioning the name, so the count
+          # never separated the two builds. Running the crate's own invariant test
+          # here instead would compile a far larger graph in a second profile for
+          # no more truth.
+          python3 scripts/check_v8_sandbox.py "$RUSTY_V8_ARCHIVE"
       - name: Stage Linux arm64 npm package
         run: |
           set -euo pipefail
