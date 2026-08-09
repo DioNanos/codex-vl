@@ -93,9 +93,19 @@ def ar_members(blob: bytes):
 
 
 def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
-    """Return (e_machine, instruction bytes) for WRAPPER, if this object defines it."""
+    """Return (e_machine, instruction bytes) for the linkable WRAPPER definition.
+
+    Only GLOBAL and WEAK definitions count. A LOCAL symbol of the same name is
+    invisible to the linker, so an archive holding a LOCAL "returns true" next
+    to a GLOBAL "returns false" links the false one -- reading whichever came
+    first would certify a sandbox that is not in the final binary.
+    """
     if obj[:4] != b"\x7fELF" or obj[4] != 2:
         return None
+    if obj[5] != 1:
+        # EI_DATA: every offset below is decoded little-endian. A big-endian
+        # object would parse into plausible nonsense rather than fail.
+        raise CannotJudge("big-endian ELF; this check decodes little-endian only")
     machine = struct.unpack_from("<H", obj, 18)[0]
     (e_shoff,) = struct.unpack_from("<Q", obj, 40)
     e_shentsize, e_shnum, _e_shstrndx = struct.unpack_from("<HHH", obj, 58)
@@ -108,6 +118,7 @@ def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
         (sh_entsize,) = struct.unpack_from("<Q", obj, base + 56)
         sections.append((sh_type, sh_offset, sh_size, sh_link, sh_entsize))
 
+    found: list[bytes] = []
     for sh_type, sh_offset, sh_size, sh_link, sh_entsize in sections:
         if sh_type != 2 or sh_entsize == 0:  # SHT_SYMTAB
             continue
@@ -115,19 +126,36 @@ def wrapper_body(obj: bytes) -> tuple[int, bytes] | None:
         strings = obj[str_offset : str_offset + str_size]
         for entry in range(0, sh_size, sh_entsize):
             base = sh_offset + entry
-            st_name, _st_info, _st_other, st_shndx = struct.unpack_from(
+            st_name, st_info, _st_other, st_shndx = struct.unpack_from(
                 "<IBBH", obj, base
             )
             st_value, st_size = struct.unpack_from("<QQ", obj, base + 8)
             if st_shndx == 0 or st_shndx >= len(sections):
+                continue
+            binding = st_info >> 4
+            if binding not in (1, 2):  # STB_GLOBAL, STB_WEAK
                 continue
             end = strings.find(b"\x00", st_name)
             if strings[st_name:end].decode("ascii", "replace") != WRAPPER:
                 continue
             _t, target_offset, _s, _l, _e = sections[st_shndx]
             start = target_offset + st_value
-            return machine, obj[start : start + st_size]
-    return None
+            body = obj[start : start + st_size]
+            if len(body) != st_size:
+                raise CannotJudge(
+                    f"{WRAPPER} claims {st_size} bytes but the section holds "
+                    f"{len(body)}; the object is truncated"
+                )
+            found.append(body)
+
+    if not found:
+        return None
+    if len({bytes(body) for body in found}) > 1:
+        raise CannotJudge(
+            f"one object defines {WRAPPER} more than once with different bodies; "
+            "which one the linker takes is not something to guess at"
+        )
+    return machine, found[0]
 
 
 def returned_constant_aarch64(body: bytes) -> int:
@@ -173,10 +201,14 @@ def returned_constant_x86_64(body: bytes) -> int:
             index += 2
             continue
         if opcode == 0xB0:  # mov $imm8,%al
+            if index + 2 > len(body):
+                raise Undecodable("body ends inside a mov $imm8,%al")
             value = body[index + 1]
             index += 2
             continue
         if opcode == 0xB8:  # mov $imm32,%eax
+            if index + 5 > len(body):
+                raise Undecodable("body ends inside a mov $imm32,%eax")
             (value,) = struct.unpack_from("<I", body, index + 1)
             index += 5
             continue
@@ -201,24 +233,44 @@ def main() -> int:
     blob = read_archive(path)
 
     sandbox_symbol_hits = 0
-    found: tuple[str, int, bytes] | None = None
+    # Collect every member that defines it, rather than stopping at the first.
+    # Which member an archive's definition comes from is the linker's decision,
+    # and reading one while it links another is how a check certifies something
+    # that is not in the binary.
+    definitions: list[tuple[str, int, bytes]] = []
+    elf_members = 0
     for member, obj in ar_members(blob):
         sandbox_symbol_hits += obj.count(SANDBOX_SYMBOL_FRAGMENT)
-        if found is not None:
-            continue
+        if obj[:4] == b"\x7fELF":
+            elf_members += 1
         candidate = wrapper_body(obj)
         if candidate is not None:
             machine, body = candidate
-            found = (member, machine, body)
+            definitions.append((member, machine, body))
 
-    if found is None:
+    if elf_members == 0:
         raise CannotJudge(
-            f"{path} defines no {WRAPPER}. Either it is not a rusty_v8 archive or "
-            "the binding was renamed; this check must be revisited rather than "
-            "skipped, because skipping it is how the plain build shipped."
+            f"{path} holds no ELF members. A Windows .lib holds COFF objects, "
+            "which this check does not decode -- teach it that format rather "
+            "than letting the archive through unjudged."
+        )
+    if not definitions:
+        raise CannotJudge(
+            f"{path} defines no linkable {WRAPPER}. Either it is not a rusty_v8 "
+            "archive, or the binding was renamed, or the only definition is LOCAL "
+            "and the linker cannot see it; this check must be revisited rather "
+            "than skipped, because skipping it is how the plain build shipped."
+        )
+    distinct = {(machine, bytes(body)) for _member, machine, body in definitions}
+    if len(distinct) > 1:
+        members = ", ".join(member for member, _m, _b in definitions)
+        raise CannotJudge(
+            f"{path} carries {len(definitions)} definitions of {WRAPPER} that do "
+            f"not agree ({members}). The linker takes one of them and this check "
+            "would be reading another."
         )
 
-    member, machine, body = found
+    member, machine, body = definitions[0]
     architecture = MACHINE_NAMES.get(machine, f"e_machine 0x{machine:x}")
     decoder = DECODERS.get(machine)
     if decoder is None:
@@ -243,7 +295,21 @@ def main() -> int:
             "be looked at rather than assumed good."
         ) from exc
 
-    print(f"{WRAPPER} returns: {value}")
+    # The wrapper returns `bool`, and both ABIs put that in the low byte of the
+    # return register with only 0 and 1 defined. Treating "any non-zero" as true
+    # is what the caller does not do: a function returning 256 leaves the low
+    # byte clear, so C and Rust read false while a whole-register check reads
+    # true. Decide on the byte the caller reads, and refuse anything that is not
+    # a valid bool rather than pick an interpretation for it.
+    print(f"{WRAPPER} returns: {value} (bool ABI reads low byte: {value & 0xFF})")
+    if value not in (0, 1):
+        raise CannotJudge(
+            f"{WRAPPER} returns {value}, which is not a bool a compiler emits. Its "
+            f"low byte is {value & 0xFF}, so the caller would read "
+            f"{'true' if value & 0xFF else 'false'} while a whole-register reading "
+            "says the opposite -- exactly the disagreement that must not be "
+            "resolved by picking one."
+        )
     if value == 0:
         print(
             "VERDICT: this V8 has no sandbox. Code mode would run without it, and "
@@ -260,4 +326,15 @@ if __name__ == "__main__":
         sys.exit(main())
     except CannotJudge as exc:
         print(f"cannot judge this archive: {exc}", file=sys.stderr)
+        sys.exit(EXIT_CANNOT_JUDGE)
+    except Exception as exc:  # noqa: BLE001
+        # Everything unplanned lands here on purpose. A struct.error from a
+        # truncated object, an OverflowError, a gzip read failure -- each one
+        # exits 1 by default, and the producer's plain branch reads exit 1 as
+        # "confirmed plain" and publishes an archive nobody judged. Say so
+        # instead.
+        print(
+            f"cannot judge this archive: unexpected {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_CANNOT_JUDGE)
