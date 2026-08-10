@@ -246,6 +246,7 @@ deny = [
         "codex-otel",
         # Third-party crates that own their reqwest integration. These are not part of the
         # first-party migration count above.
+        "msa-core",
         "oauth2",
         "opentelemetry-http",
         "opentelemetry-otlp",
