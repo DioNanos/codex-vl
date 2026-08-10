@@ -107,10 +107,10 @@ optional rustup target) and prints actionable hints when something is missing.
 
 Upstream OpenAI Codex removed the experimental TUI realtime voice/audio feature
 in `rust-v0.140.0` (openai/codex#27801). Codex VL no longer ships it on any
-platform. The Android cpal/oboe enablement this fork used to carry — never
-usable from a plain Termux CLI anyway, since the audio backend (cpal → oboe →
+platform. The Android cpal/oboe enablement this fork used to carry - never
+usable from a plain Termux CLI anyway, since the audio backend (cpal -> oboe ->
 `ndk-context`) needs an Android `JavaVM`/`Activity` a command-line process does
-not have — was dropped along with it. A Termux-native audio backend remains a
+not have - was dropped along with it. A Termux-native audio backend remains a
 possible future direction, not a current capability.
 
 Vivling behavior is still experimental. It is intended to become a workflow

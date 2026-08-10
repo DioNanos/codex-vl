@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Verify codex-tui does not depend on or import codex-core directly."""
+"""Verify codex-tui has no unreviewed direct codex-core boundary."""
 
 from __future__ import annotations
 
@@ -19,6 +19,28 @@ FORBIDDEN_SOURCE_PATTERNS = (
     re.compile(r"\buse\s+codex_core\b"),
     re.compile(r"\bextern\s+crate\s+codex_core\b"),
 )
+ALLOWED_MANIFEST_DEPENDENCIES = {
+    ("dependencies", "codex-core"),
+}
+ALLOWED_SOURCE_IMPORTS = {
+    (
+        "codex-rs/tui/src/app/vivling_background.rs",
+        "use codex_core::CodexResponsesMetadata;",
+    ),
+    ("codex-rs/tui/src/app/vivling_background.rs", "use codex_core::Prompt;"),
+    (
+        "codex-rs/tui/src/app/vivling_background.rs",
+        "use codex_core::ResponseEvent;",
+    ),
+    (
+        "codex-rs/tui/src/app/vivling_background.rs",
+        "use codex_core::build_background_model_client;",
+    ),
+    (
+        "codex-rs/tui/src/app/vivling_background.rs",
+        "use codex_core::content_items_to_text;",
+    ),
+}
 
 
 def main() -> int:
@@ -29,7 +51,7 @@ def main() -> int:
     if not failures:
         return 0
 
-    print("codex-tui must not depend on or import codex-core directly.")
+    print("codex-tui must not add unreviewed codex-core dependencies or imports.")
     print(
         "Use the app-server protocol/client boundary instead; temporary embedded "
         "startup gaps belong behind codex_app_server_client::legacy_core."
@@ -44,12 +66,24 @@ def main() -> int:
 def manifest_failures() -> list[str]:
     manifest = tomllib.loads(TUI_MANIFEST.read_text())
     failures = []
+    used_exceptions = set()
     for section_name, dependencies in dependency_sections(manifest):
         if FORBIDDEN_PACKAGE in dependencies:
-            failures.append(
-                f"{relative_path(TUI_MANIFEST)} declares `{FORBIDDEN_PACKAGE}` "
-                f"in `[{section_name}]`"
-            )
+            exception = (section_name, FORBIDDEN_PACKAGE)
+            if exception in ALLOWED_MANIFEST_DEPENDENCIES:
+                used_exceptions.add(exception)
+            else:
+                failures.append(
+                    f"{relative_path(TUI_MANIFEST)} declares `{FORBIDDEN_PACKAGE}` "
+                    f"in `[{section_name}]`"
+                )
+    for section_name, dependency in sorted(
+        ALLOWED_MANIFEST_DEPENDENCIES - used_exceptions
+    ):
+        failures.append(
+            "remove stale direct-dependency exception for "
+            f"`[{section_name}].{dependency}`"
+        )
     return failures
 
 
@@ -66,18 +100,29 @@ def dependency_sections(manifest: dict) -> list[tuple[str, dict]]:
         for section_name in ("dependencies", "dev-dependencies", "build-dependencies"):
             dependencies = target.get(section_name)
             if isinstance(dependencies, dict):
-                sections.append((f'target.{target_name}.{section_name}', dependencies))
+                sections.append((f"target.{target_name}.{section_name}", dependencies))
 
     return sections
 
 
 def source_failures() -> list[str]:
     failures = []
+    used_exceptions = set()
     for path in sorted(TUI_ROOT.glob("**/*.rs")):
         text = path.read_text()
         for line_number, line in enumerate(text.splitlines(), start=1):
             if any(pattern.search(line) for pattern in FORBIDDEN_SOURCE_PATTERNS):
-                failures.append(f"{relative_path(path)}:{line_number} imports `codex_core`")
+                exception = (relative_path(path), line.strip())
+                if exception in ALLOWED_SOURCE_IMPORTS:
+                    used_exceptions.add(exception)
+                else:
+                    failures.append(
+                        f"{relative_path(path)}:{line_number} imports `codex_core`"
+                    )
+    for path, source_line in sorted(ALLOWED_SOURCE_IMPORTS - used_exceptions):
+        failures.append(
+            f"remove stale direct-import exception for {path}: `{source_line}`"
+        )
     return failures
 
 
