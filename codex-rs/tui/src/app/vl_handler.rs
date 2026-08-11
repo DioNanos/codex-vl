@@ -190,71 +190,93 @@ impl App {
                     Err(err) => self.chat_widget.add_error_message(err),
                 }
             }
-            VlEvent::RunVivlingAssist { request } => {
-                self.run_vivling_assist(request);
+            VlEvent::RunVivlingAssist { thread_id, request } => {
+                self.run_vivling_assist(thread_id, request);
             }
             VlEvent::VivlingAssistFinished {
+                thread_id,
                 vivling_id,
                 kind,
                 task,
                 result,
-            } => match result {
-                Ok(reply) => {
-                    if let Err(err) = self.chat_widget.mark_vivling_brain_reply(&reply) {
-                        tracing::warn!(
-                            "failed to persist Vivling brain reply for {vivling_id}: {err}"
-                        );
-                        // do not early-exit: bond success bonus must still record
-                        // (Codex design review iter 4 §7).
-                    }
-                    if let Err(err) = self.chat_widget.record_vivling_brain_success(kind) {
-                        tracing::warn!(
-                            "failed to record Vivling bond success for {vivling_id}: {err}"
-                        );
-                    }
-                    let log_kind = match kind {
-                        crate::vivling::VivlingBrainRequestKind::Chat => {
-                            crate::vl::VivlingLogKind::Chat
-                        }
+            } => {
+                if self.current_displayed_thread_id() != Some(thread_id) {
+                    tracing::warn!(
+                        %thread_id,
+                        current_thread_id = ?self.current_displayed_thread_id(),
+                        "discarding Vivling reply after the displayed thread changed"
+                    );
+                    let message = match kind {
                         crate::vivling::VivlingBrainRequestKind::Assist => {
-                            crate::vl::VivlingLogKind::Assist
+                            "Vivling Assist completed for a different thread. No worker turn was started."
+                        }
+                        crate::vivling::VivlingBrainRequestKind::Chat => {
+                            "Vivling chat completed for a different thread and was not applied."
                         }
                     };
-                    let visible_reply = format_vivling_brain_reply(kind, &reply);
-                    self.chat_widget
-                        .add_vivling_message(visible_reply, log_kind);
-                    if let Some(kickoff_prompt) = vivling_assist_kickoff_prompt(kind, &task, &reply)
-                    {
-                        // Submit through the normal ChatWidget worker-turn path.
-                        // The dedicated entry point rejects delayed replies on
-                        // parent-owned threads and disables `!` shell escape.
-                        let _ = self
-                            .chat_widget
-                            .submit_vivling_assist_kickoff(kickoff_prompt);
-                    }
-                    // Memory V2 Step 12.B.H: pre-warm the CRT live
-                    // phrase after every successful brain reply. Slash
-                    // commands like `/vl` do NOT fire the upstream
-                    // `record_vivling_turn_completed` hook (that one
-                    // only runs at the end of a Codex agent turn), so
-                    // without this trigger the CRT footer stays on
-                    // the template chain even though the Vivling just
-                    // produced fresh content. The Expression channel
-                    // still obeys throttle/dedup/budget, so a chat
-                    // turn never overspends.
-                    self.chat_widget.maybe_trigger_vivling_expression_refresh();
+                    self.chat_widget.add_error_message(message.to_string());
+                    return Ok(AppRunControl::Continue);
                 }
-                Err(err) => {
-                    if let Err(persist_err) =
-                        self.chat_widget.mark_vivling_brain_runtime_error(&err)
-                    {
-                        tracing::warn!(
-                            "failed to persist Vivling brain error for {vivling_id}: {persist_err}"
-                        );
+
+                match result {
+                    Ok(reply) => {
+                        if let Err(err) = self.chat_widget.mark_vivling_brain_reply(&reply) {
+                            tracing::warn!(
+                                "failed to persist Vivling brain reply for {vivling_id}: {err}"
+                            );
+                            // do not early-exit: bond success bonus must still record
+                            // (Codex design review iter 4 §7).
+                        }
+                        if let Err(err) = self.chat_widget.record_vivling_brain_success(kind) {
+                            tracing::warn!(
+                                "failed to record Vivling bond success for {vivling_id}: {err}"
+                            );
+                        }
+                        let log_kind = match kind {
+                            crate::vivling::VivlingBrainRequestKind::Chat => {
+                                crate::vl::VivlingLogKind::Chat
+                            }
+                            crate::vivling::VivlingBrainRequestKind::Assist => {
+                                crate::vl::VivlingLogKind::Assist
+                            }
+                        };
+                        let visible_reply = format_vivling_brain_reply(kind, &reply);
+                        self.chat_widget
+                            .add_vivling_message(visible_reply, log_kind);
+                        if let Some(kickoff_prompt) =
+                            vivling_assist_kickoff_prompt(kind, &task, &reply)
+                        {
+                            // Submit through the normal ChatWidget worker-turn path.
+                            // The dedicated entry point rejects delayed replies on
+                            // parent-owned threads and disables `!` shell escape.
+                            let _ = self
+                                .chat_widget
+                                .submit_vivling_assist_kickoff(kickoff_prompt);
+                        }
+                        // Memory V2 Step 12.B.H: pre-warm the CRT live
+                        // phrase after every successful brain reply. Slash
+                        // commands like `/vl` do NOT fire the upstream
+                        // `record_vivling_turn_completed` hook (that one
+                        // only runs at the end of a Codex agent turn), so
+                        // without this trigger the CRT footer stays on
+                        // the template chain even though the Vivling just
+                        // produced fresh content. The Expression channel
+                        // still obeys throttle/dedup/budget, so a chat
+                        // turn never overspends.
+                        self.chat_widget.maybe_trigger_vivling_expression_refresh();
                     }
-                    self.chat_widget.add_error_message(err);
+                    Err(err) => {
+                        if let Err(persist_err) =
+                            self.chat_widget.mark_vivling_brain_runtime_error(&err)
+                        {
+                            tracing::warn!(
+                                "failed to persist Vivling brain error for {vivling_id}: {persist_err}"
+                            );
+                        }
+                        self.chat_widget.add_error_message(err);
+                    }
                 }
-            },
+            }
             VlEvent::RunVivlingLoopTick {
                 thread_id,
                 job_id,

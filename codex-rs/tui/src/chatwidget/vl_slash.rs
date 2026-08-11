@@ -128,6 +128,12 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
             cw.request_redraw();
         }
         Ok(VivlingCommandOutcome::DispatchAssist(request)) => {
+            let Some(thread_id) = cw.thread_id() else {
+                cw.add_error_message(
+                    "Vivling brain requests are unavailable before the session starts.".to_string(),
+                );
+                return;
+            };
             let log_kind = match &request.kind {
                 VivlingBrainRequestKind::Chat => VivlingLogKind::Chat,
                 VivlingBrainRequestKind::Assist => VivlingLogKind::Assist,
@@ -141,7 +147,7 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
             // says "thinking…" with no extra framing.
             let pending_message = "thinking…".to_string();
             cw.app_event_tx
-                .send_vl(VlEvent::RunVivlingAssist { request });
+                .send_vl(VlEvent::RunVivlingAssist { thread_id, request });
             cw.add_vivling_message(pending_message, log_kind);
         }
         Ok(VivlingCommandOutcome::CrtBrainRefresh) => {

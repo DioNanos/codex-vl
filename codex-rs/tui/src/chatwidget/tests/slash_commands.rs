@@ -63,6 +63,7 @@ fn submit_current_composer(chat: &mut ChatWidget) {
 }
 
 fn configure_adult_vivling_brain(chat: &mut ChatWidget) {
+    chat.thread_id = Some(ThreadId::new());
     let config = chat.config.clone();
     chat.bottom_pane
         .run_vivling_command(&config, VivlingAction::Hatch)
@@ -77,10 +78,12 @@ fn configure_adult_vivling_brain(chat: &mut ChatWidget) {
 
 fn next_vivling_brain_request(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
-) -> crate::vivling::VivlingAssistRequest {
+) -> (ThreadId, crate::vivling::VivlingAssistRequest) {
     loop {
         match rx.try_recv() {
-            Ok(AppEvent::Vl(VlEvent::RunVivlingAssist { request })) => return request,
+            Ok(AppEvent::Vl(VlEvent::RunVivlingAssist { thread_id, request })) => {
+                return (thread_id, request);
+            }
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected RunVivlingAssist event"),
             Err(TryRecvError::Disconnected) => panic!("app event channel disconnected"),
@@ -3035,7 +3038,8 @@ async fn slash_vla_dispatches_the_same_assist_action_as_long_form() {
         "taskdapreparare".to_string(),
         Vec::new(),
     );
-    let alias_request = next_vivling_brain_request(&mut alias_rx);
+    let (alias_thread_id, alias_request) = next_vivling_brain_request(&mut alias_rx);
+    assert_eq!(alias_chat.thread_id(), Some(alias_thread_id));
     assert_eq!(alias_request.kind, VivlingBrainRequestKind::Assist);
     assert_eq!(alias_request.task, "taskdapreparare");
     assert!(
@@ -3051,7 +3055,8 @@ async fn slash_vla_dispatches_the_same_assist_action_as_long_form() {
         "assist taskdapreparare".to_string(),
         Vec::new(),
     );
-    let long_request = next_vivling_brain_request(&mut long_rx);
+    let (long_thread_id, long_request) = next_vivling_brain_request(&mut long_rx);
+    assert_eq!(long_chat.thread_id(), Some(long_thread_id));
     assert_eq!(long_request.kind, alias_request.kind);
     assert_eq!(long_request.task, alias_request.task);
     assert!(long_op_rx.try_recv().is_err());
@@ -3091,7 +3096,8 @@ async fn slash_vl_remains_chat_only_at_dispatch() {
         Vec::new(),
     );
 
-    let request = next_vivling_brain_request(&mut rx);
+    let (thread_id, request) = next_vivling_brain_request(&mut rx);
+    assert_eq!(chat.thread_id(), Some(thread_id));
     assert_eq!(request.kind, VivlingBrainRequestKind::Chat);
     assert_eq!(request.task, "just chat");
     assert!(op_rx.try_recv().is_err());

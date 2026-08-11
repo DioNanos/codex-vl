@@ -4740,12 +4740,14 @@ async fn clear_ui_header_shows_fast_status_for_fast_capable_models() {
 async fn successful_vivling_assist_reply_submits_exactly_one_plain_worker_turn() {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let cwd = app.config.cwd.to_path_buf();
+    let thread_id = ThreadId::new();
     app.chat_widget
-        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+        .handle_thread_session(test_thread_session(thread_id, cwd));
     while app_event_rx.try_recv().is_ok() {}
     while op_rx.try_recv().is_ok() {}
 
     app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        thread_id,
         vivling_id: "vivling-test".to_string(),
         kind: crate::vivling::VivlingBrainRequestKind::Assist,
         task: "/vivling assist do not recurse".to_string(),
@@ -4789,13 +4791,15 @@ async fn successful_vivling_assist_reply_submits_exactly_one_plain_worker_turn()
 async fn delayed_vivling_assist_reply_cannot_submit_to_parent_owned_thread() {
     let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let cwd = app.config.cwd.to_path_buf();
+    let thread_id = ThreadId::new();
     app.chat_widget
-        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+        .handle_thread_session(test_thread_session(thread_id, cwd));
     app.chat_widget.set_parent_owned_thread();
     while app_event_rx.try_recv().is_ok() {}
     while op_rx.try_recv().is_ok() {}
 
     app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        thread_id,
         vivling_id: "vivling-test".to_string(),
         kind: crate::vivling::VivlingBrainRequestKind::Assist,
         task: "must respect thread ownership".to_string(),
@@ -4823,14 +4827,59 @@ async fn delayed_vivling_assist_reply_cannot_submit_to_parent_owned_thread() {
 }
 
 #[tokio::test]
-async fn successful_vivling_chat_reply_does_not_submit_worker_turn() {
-    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+async fn delayed_vivling_assist_reply_cannot_cross_into_another_thread() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let cwd = app.config.cwd.to_path_buf();
+    let origin_thread_id = ThreadId::new();
     app.chat_widget
-        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+        .handle_thread_session(test_thread_session(origin_thread_id, cwd.clone()));
+    let displayed_thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(displayed_thread_id, cwd));
+    assert_eq!(app.current_displayed_thread_id(), Some(displayed_thread_id));
+    while app_event_rx.try_recv().is_ok() {}
     while op_rx.try_recv().is_ok() {}
 
     app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        thread_id: origin_thread_id,
+        vivling_id: "vivling-test".to_string(),
+        kind: crate::vivling::VivlingBrainRequestKind::Assist,
+        task: "must remain bound to its origin".to_string(),
+        result: Ok("advice arrived after the user changed threads".to_string()),
+    })
+    .await
+    .expect("cross-thread assist event should remain in the TUI");
+
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a delayed Assist reply must not submit to the newly displayed thread"
+    );
+
+    let mut rendered_cells = Vec::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            rendered_cells.push(lines_to_single_string(&cell.display_lines(/*width*/ 120)));
+        }
+    }
+    assert!(
+        rendered_cells.iter().any(|rendered| rendered.contains(
+            "Vivling Assist completed for a different thread. No worker turn was started."
+        )),
+        "the cross-thread rejection should be visible, got {rendered_cells:?}"
+    );
+}
+
+#[tokio::test]
+async fn successful_vivling_chat_reply_does_not_submit_worker_turn() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let cwd = app.config.cwd.to_path_buf();
+    let thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(thread_id, cwd));
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        thread_id,
         vivling_id: "vivling-test".to_string(),
         kind: crate::vivling::VivlingBrainRequestKind::Chat,
         task: "chat only".to_string(),
@@ -4849,11 +4898,13 @@ async fn successful_vivling_chat_reply_does_not_submit_worker_turn() {
 async fn failed_vivling_assist_reply_does_not_submit_worker_turn() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let cwd = app.config.cwd.to_path_buf();
+    let thread_id = ThreadId::new();
     app.chat_widget
-        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+        .handle_thread_session(test_thread_session(thread_id, cwd));
     while op_rx.try_recv().is_ok() {}
 
     app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        thread_id,
         vivling_id: "vivling-test".to_string(),
         kind: crate::vivling::VivlingBrainRequestKind::Assist,
         task: "must not run".to_string(),

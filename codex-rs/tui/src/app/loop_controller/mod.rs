@@ -187,8 +187,12 @@ impl App {
     }
 
     /// codex-vl: dispatch a Vivling brain assist request.
-    pub(super) fn run_vivling_assist(&mut self, request: crate::vivling::VivlingAssistRequest) {
-        vivling_delegation::run_assist(self, request);
+    pub(super) fn run_vivling_assist(
+        &mut self,
+        thread_id: ThreadId,
+        request: crate::vivling::VivlingAssistRequest,
+    ) {
+        vivling_delegation::run_assist(self, thread_id, request);
     }
 
     /// codex-vl: dispatch a Vivling-managed loop tick.
