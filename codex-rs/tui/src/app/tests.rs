@@ -4786,6 +4786,43 @@ async fn successful_vivling_assist_reply_submits_exactly_one_plain_worker_turn()
 }
 
 #[tokio::test]
+async fn delayed_vivling_assist_reply_cannot_submit_to_parent_owned_thread() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+    app.chat_widget.set_parent_owned_thread();
+    while app_event_rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        vivling_id: "vivling-test".to_string(),
+        kind: crate::vivling::VivlingBrainRequestKind::Assist,
+        task: "must respect thread ownership".to_string(),
+        result: Ok("advice arrived after ownership changed".to_string()),
+    })
+    .await
+    .expect("assist finished event should remain in the TUI");
+
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a delayed Assist reply must not submit to a parent-owned thread"
+    );
+
+    let mut rendered_cells = Vec::new();
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            rendered_cells.push(lines_to_single_string(&cell.display_lines(/*width*/ 120)));
+        }
+    }
+    assert!(
+        rendered_cells.iter().any(|rendered| rendered
+            .contains("This sub-agent is controlled by its parent. Direct input is disabled.")),
+        "the canonical parent-owned input error should be visible, got {rendered_cells:?}"
+    );
+}
+
+#[tokio::test]
 async fn successful_vivling_chat_reply_does_not_submit_worker_turn() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
     let cwd = app.config.cwd.to_path_buf();

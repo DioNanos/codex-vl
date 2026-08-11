@@ -6,10 +6,30 @@
 //! `chatwidget.rs` means upstream edits to the main widget don't have
 //! to be merged around our code.
 
+use super::AppCommand;
 use super::ChatWidget;
+use super::PARENT_OWNED_INPUT_MESSAGE;
 use crate::legacy_core::config::Config;
 
 impl ChatWidget {
+    /// Submit an Adult Vivling assist kickoff through the normal worker-turn
+    /// pipeline without interpreting shell escapes.
+    ///
+    /// Unlike side-conversation submission, a Vivling kickoff is direct input
+    /// to the active thread. A delayed brain reply must therefore respect the
+    /// parent-owned thread boundary that the composer enforces.
+    pub(crate) fn submit_vivling_assist_kickoff(
+        &mut self,
+        kickoff_prompt: String,
+    ) -> Option<AppCommand> {
+        if self.blocks_direct_input {
+            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            return None;
+        }
+
+        self.submit_user_message_as_plain_user_turn(kickoff_prompt.into())
+    }
+
     pub(crate) fn assign_vivling_brain_profile(
         &mut self,
         profile: String,

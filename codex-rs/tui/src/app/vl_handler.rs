@@ -217,13 +217,12 @@ impl App {
                         .add_vivling_message(visible_reply, log_kind);
                     if let Some(kickoff_prompt) = vivling_assist_kickoff_prompt(kind, &task, &reply)
                     {
-                        // Submit through the same ChatWidget path as a normal
-                        // user turn. This preserves model, collaboration mode,
-                        // permissions, thread ownership, and queue/steer
-                        // behavior while explicitly disabling `!` shell escape.
+                        // Submit through the normal ChatWidget worker-turn path.
+                        // The dedicated entry point rejects delayed replies on
+                        // parent-owned threads and disables `!` shell escape.
                         let _ = self
                             .chat_widget
-                            .submit_user_message_as_plain_user_turn(kickoff_prompt.into());
+                            .submit_vivling_assist_kickoff(kickoff_prompt);
                     }
                     // Memory V2 Step 12.B.H: pre-warm the CRT live
                     // phrase after every successful brain reply. Slash
