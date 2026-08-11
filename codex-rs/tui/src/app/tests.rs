@@ -39,6 +39,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
+use crate::vl::VlEvent;
 use assert_matches::assert_matches;
 
 use crate::app_command::AppCommand as Op;
@@ -4733,6 +4734,101 @@ async fn clear_ui_header_shows_fast_status_for_fast_capable_models() {
         .join("\n");
 
     assert_app_snapshot!("clear_ui_header_fast_status_fast_capable_models", rendered);
+}
+
+#[tokio::test]
+async fn successful_vivling_assist_reply_submits_exactly_one_plain_worker_turn() {
+    let (mut app, mut app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+    while app_event_rx.try_recv().is_ok() {}
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        vivling_id: "vivling-test".to_string(),
+        kind: crate::vivling::VivlingBrainRequestKind::Assist,
+        task: "/vivling assist do not recurse".to_string(),
+        result: Ok("!echo this is advice, not a shell command".to_string()),
+    })
+    .await
+    .expect("assist finished event should remain in the TUI");
+
+    let submitted = op_rx
+        .try_recv()
+        .expect("successful Assist reply should submit one worker turn");
+    let Op::UserTurn { items, .. } = submitted else {
+        panic!("expected normal UserTurn, got {submitted:?}");
+    };
+    let [
+        UserInput::Text {
+            text,
+            text_elements,
+        },
+    ] = items.as_slice()
+    else {
+        panic!("expected one text item, got {items:?}");
+    };
+    assert!(text_elements.is_empty());
+    assert!(text.starts_with("Vivling Assist kickoff"));
+    assert!(text.contains("> /vivling assist do not recurse"));
+    assert!(text.contains("> !echo this is advice, not a shell command"));
+    assert!(
+        op_rx.try_recv().is_err(),
+        "one Assist reply must submit exactly one worker turn"
+    );
+    while let Ok(event) = app_event_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Vl(VlEvent::RunVivlingAssist { .. })),
+            "kickoff must bypass slash redispatch and cannot recurse"
+        );
+    }
+}
+
+#[tokio::test]
+async fn successful_vivling_chat_reply_does_not_submit_worker_turn() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        vivling_id: "vivling-test".to_string(),
+        kind: crate::vivling::VivlingBrainRequestKind::Chat,
+        task: "chat only".to_string(),
+        result: Ok("conversation reply".to_string()),
+    })
+    .await
+    .expect("chat finished event should remain in the TUI");
+
+    assert!(
+        op_rx.try_recv().is_err(),
+        "successful /vl chat must not submit a worker turn"
+    );
+}
+
+#[tokio::test]
+async fn failed_vivling_assist_reply_does_not_submit_worker_turn() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(ThreadId::new(), cwd));
+    while op_rx.try_recv().is_ok() {}
+
+    app.handle_vl_event(VlEvent::VivlingAssistFinished {
+        vivling_id: "vivling-test".to_string(),
+        kind: crate::vivling::VivlingBrainRequestKind::Assist,
+        task: "must not run".to_string(),
+        result: Err("brain unavailable".to_string()),
+    })
+    .await
+    .expect("failed assist event should remain in the TUI");
+
+    assert!(
+        op_rx.try_recv().is_err(),
+        "failed Assist reply must not submit a worker turn"
+    );
 }
 
 async fn make_test_app() -> App {

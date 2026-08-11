@@ -87,6 +87,9 @@ pub(crate) enum VlEvent {
     VivlingAssistFinished {
         vivling_id: String,
         kind: VivlingBrainRequestKind,
+        /// Original user payload. The app uses it only for a successful
+        /// Adult `Assist` reply; `Chat` replies never enter the worker pipeline.
+        task: String,
         result: Result<String, String>,
     },
     /// Start a background one-shot loop tick request for the current Vivling loop owner.

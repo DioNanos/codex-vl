@@ -301,6 +301,7 @@ pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRe
     tokio::spawn(async move {
         let vivling_id = request.vivling_id.clone();
         let kind = request.kind.clone();
+        let task = request.task.clone();
         let result = crate::app::vivling_background::run_vivling_assist_request(
             config,
             session_telemetry,
@@ -310,6 +311,7 @@ pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRe
         app_event_tx.send_vl(VlEvent::VivlingAssistFinished {
             vivling_id,
             kind,
+            task,
             result,
         });
     });

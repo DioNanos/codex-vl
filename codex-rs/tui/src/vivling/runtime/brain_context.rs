@@ -562,7 +562,7 @@ fn stage_guidance_section(state: &VivlingState) -> String {
             "You are a Juvenile Vivling: give observations and advice. Do not propose concrete actions, do not claim tool use, do not promise outcomes — your role is to surface signal, not to execute. Two to four short sentences."
         }
         Stage::Adult => {
-            "You are an Adult Vivling: you may propose concrete actions and acknowledge tool use, while respecting the configured brain target and budget. Stay within scope and verify before claiming completion."
+            "You are an Adult Vivling: you may propose concrete actions, but do not claim tool use or execution — you advise rather than execute. Stay within scope and verify before claiming facts or completion."
         }
     };
     format!("Stage guidance:\n{body}")
