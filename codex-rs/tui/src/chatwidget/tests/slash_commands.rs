@@ -1,5 +1,7 @@
 use super::*;
 use crate::bottom_pane::slash_commands::ServiceTierCommand;
+use crate::vivling::VivlingAction;
+use crate::vivling::VivlingBrainRequestKind;
 use crate::vl::VlEvent;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
@@ -58,6 +60,32 @@ fn submit_current_composer(chat: &mut ChatWidget) {
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+fn configure_adult_vivling_brain(chat: &mut ChatWidget) {
+    let config = chat.config.clone();
+    chat.bottom_pane
+        .run_vivling_command(&config, VivlingAction::Hatch)
+        .expect("hatch test Vivling");
+    chat.bottom_pane
+        .run_vivling_command(&config, VivlingAction::PromoteAdult)
+        .expect("promote test Vivling to Adult");
+    chat.bottom_pane
+        .run_vivling_command(&config, VivlingAction::Brain(true))
+        .expect("enable test Vivling brain");
+}
+
+fn next_vivling_brain_request(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> crate::vivling::VivlingAssistRequest {
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::Vl(VlEvent::RunVivlingAssist { request })) => return request,
+            Ok(_) => continue,
+            Err(TryRecvError::Empty) => panic!("expected RunVivlingAssist event"),
+            Err(TryRecvError::Disconnected) => panic!("app event channel disconnected"),
+        }
+    }
 }
 
 fn queue_composer_text_with_tab(chat: &mut ChatWidget, text: &str) {
@@ -2994,4 +3022,77 @@ async fn slash_mcp_reload_requires_started_session() {
         "expected session error, got: {rendered:?}"
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
+}
+
+#[tokio::test]
+async fn slash_vla_dispatches_the_same_assist_action_as_long_form() {
+    let (mut alias_chat, mut alias_rx, mut alias_op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    configure_adult_vivling_brain(&mut alias_chat);
+
+    alias_chat.dispatch_command_with_args(
+        SlashCommand::VivlingAssistAlias,
+        "taskdapreparare".to_string(),
+        Vec::new(),
+    );
+    let alias_request = next_vivling_brain_request(&mut alias_rx);
+    assert_eq!(alias_request.kind, VivlingBrainRequestKind::Assist);
+    assert_eq!(alias_request.task, "taskdapreparare");
+    assert!(
+        alias_op_rx.try_recv().is_err(),
+        "brain dispatch must not submit the worker turn before its reply"
+    );
+
+    let (mut long_chat, mut long_rx, mut long_op_rx) =
+        make_chatwidget_manual(/*model_override*/ None).await;
+    configure_adult_vivling_brain(&mut long_chat);
+    long_chat.dispatch_command_with_args(
+        SlashCommand::Vivling,
+        "assist taskdapreparare".to_string(),
+        Vec::new(),
+    );
+    let long_request = next_vivling_brain_request(&mut long_rx);
+    assert_eq!(long_request.kind, alias_request.kind);
+    assert_eq!(long_request.task, alias_request.task);
+    assert!(long_op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn slash_vla_without_task_shows_usage_and_dispatches_nothing() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    configure_adult_vivling_brain(&mut chat);
+
+    chat.dispatch_command(SlashCommand::VivlingAssistAlias);
+
+    let mut rendered = String::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                rendered.push_str(&lines_to_single_string(&cell.display_lines(/*width*/ 80)));
+            }
+            AppEvent::Vl(VlEvent::RunVivlingAssist { .. }) => {
+                panic!("bare /vla must not dispatch a brain request")
+            }
+            _ => {}
+        }
+    }
+    assert!(rendered.contains("Usage: /vla <task>"));
+    assert!(op_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn slash_vl_remains_chat_only_at_dispatch() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    configure_adult_vivling_brain(&mut chat);
+
+    chat.dispatch_command_with_args(
+        SlashCommand::VivlingAlias,
+        "just chat".to_string(),
+        Vec::new(),
+    );
+
+    let request = next_vivling_brain_request(&mut rx);
+    assert_eq!(request.kind, VivlingBrainRequestKind::Chat);
+    assert_eq!(request.task, "just chat");
+    assert!(op_rx.try_recv().is_err());
 }

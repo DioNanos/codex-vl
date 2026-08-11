@@ -223,6 +223,7 @@ fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
     assert!(message.contains("/vivling switch"));
     assert!(message.contains("/vivling spawn"));
     assert!(message.contains("/vivling assist <task>"));
+    assert!(message.contains("/vla <task>"));
     assert!(message.contains("/vivling brain <on|off>"));
     assert!(message.contains("/vivling model"));
     assert!(message.contains("/vivling model list"));
