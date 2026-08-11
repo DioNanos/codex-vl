@@ -431,6 +431,25 @@ mod tests {
     }
 
     #[test]
+    fn vivling_assist_alias_command_popup_snapshot() {
+        let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
+        popup.on_composer_text_change("/vla".to_string());
+
+        let commands = popup
+            .filtered_items()
+            .into_iter()
+            .map(|item| {
+                let command = item.command();
+                let description = item.description();
+                format!("/{command} - {description}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        insta::assert_snapshot!("command_popup_vla_items", commands);
+    }
+
+    #[test]
     fn prefix_filter_limits_matches_for_ac() {
         let mut popup = CommandPopup::new(CommandPopupFlags::default(), Vec::new());
         popup.on_composer_text_change("/ac".to_string());
