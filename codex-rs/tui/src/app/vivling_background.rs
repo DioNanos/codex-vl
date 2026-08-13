@@ -71,6 +71,7 @@ pub(super) async fn run_vivling_assist_request(
     };
     prompt.base_instructions = codex_protocol::models::BaseInstructions {
         text: instruction_text,
+        provenance: None,
     };
 
     let mut client_session = client.new_session();
@@ -161,6 +162,7 @@ Do NOT duplicate a suggestion into `loop_action` — `loop_action` is the AUTO c
 Omit `suggestion` (or null) when you have no high-confidence advice; never invent blockers.",
             request.vivling_name
         ),
+        provenance: None,
     };
 
     let mut client_session = client.new_session();
@@ -301,6 +303,7 @@ Either or both fields may be omitted when nothing is worth saying. \
 Do not include markdown fences, code blocks, or commentary outside the JSON object.",
             request.vivling_name, request.language, request.language
         ),
+        provenance: None,
     };
 
     let mut client_session = client.new_session();
