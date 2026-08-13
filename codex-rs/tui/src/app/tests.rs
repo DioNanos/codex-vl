@@ -4,6 +4,8 @@
 mod advanced_reasoning_tests;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
+#[path = "tests/mcp_startup.rs"]
+mod mcp_startup;
 mod model_catalog;
 mod plugin_catalog;
 mod rate_limits;
@@ -12,6 +14,8 @@ mod safety_buffering;
 mod session_lifecycle_requests;
 mod session_summary;
 mod startup;
+#[path = "tests/thread_usage.rs"]
+mod thread_usage;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
 
@@ -75,6 +79,7 @@ use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadArchivedNotification;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
@@ -92,6 +97,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::UserInput as AppServerUserInput;
 use codex_app_server_protocol::WarningNotification;
+use codex_history::RolloutItem;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_otel::SessionTelemetry;
@@ -107,10 +113,10 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -222,6 +228,7 @@ async fn handle_mcp_inventory_result_respects_origin_thread() {
     app.handle_mcp_inventory_result(
         Ok(vec![McpServerStatus {
             name: "docs".to_string(),
+            plugin_id: None,
             server_info: None,
             tools: HashMap::new(),
             resources: Vec::new(),
@@ -1434,6 +1441,43 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     )));
 
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
+}
+
+#[tokio::test]
+async fn archived_untracked_threads_do_not_appear_in_agent_picker() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await?;
+    let primary_thread_id = ThreadId::new();
+    app.enqueue_primary_thread_session(
+        test_thread_session(primary_thread_id, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+
+    let archived_thread_id = ThreadId::new();
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ServerNotification(Box::new(
+            ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                thread_id: archived_thread_id.to_string(),
+            }),
+        )),
+    )
+    .await;
+
+    assert!(!app.thread_event_channels.contains_key(&archived_thread_id));
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_eq!(
+        app.agent_navigation.ordered_thread_ids(),
+        vec![primary_thread_id]
+    );
+    assert_eq!(app.active_thread_id, Some(primary_thread_id));
+    Ok(())
 }
 
 #[tokio::test]
@@ -4943,6 +4987,9 @@ async fn make_test_app() -> App {
         runtime_permission_profile_override: None,
         file_search,
         transcript_cells: Vec::new(),
+        last_rendered_history_tail: None,
+        last_thread_usage_status_cell: None,
+        pending_thread_usage_history_refresh: false,
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -5014,6 +5061,9 @@ async fn make_test_app_with_channels() -> (
             runtime_permission_profile_override: None,
             file_search,
             transcript_cells: Vec::new(),
+            last_rendered_history_tail: None,
+            last_thread_usage_status_cell: None,
+            pending_thread_usage_history_refresh: false,
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -6735,8 +6785,38 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
             crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig,
         )
         .await?;
+    let selected_turn = started.turns[1].clone();
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
+    {
+        let mut store = app
+            .thread_event_channels
+            .get(&source_thread_id)
+            .expect("source thread event channel")
+            .store
+            .lock()
+            .await;
+        store.turns.pop();
+        store.push_notification(turn_started_notification(
+            source_thread_id,
+            &selected_turn.id,
+        ));
+        for item in selected_turn.items {
+            store.push_notification(ServerNotification::ItemCompleted(
+                codex_app_server_protocol::ItemCompletedNotification {
+                    thread_id: source_thread_id.to_string(),
+                    turn_id: selected_turn.id.clone(),
+                    completed_at_ms: 0,
+                    item,
+                },
+            ));
+        }
+        store.push_notification(turn_completed_notification(
+            source_thread_id,
+            &selected_turn.id,
+            TurnStatus::Interrupted,
+        ));
+    }
     while app_event_rx.try_recv().is_ok() {}
     let source_before = std::fs::read_to_string(&source_path)?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -7434,7 +7514,7 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
             .into_iter()
             .find(|model| model.model == "gpt-5.4")
             .expect("gpt-5.4 model");
-        model.model_specialty = Some("cyber".to_string());
+        model.model_specialty = Some(MODEL_SPECIALTY_CYBER.to_string());
         app.model_catalog = Arc::new(ModelCatalog::new(vec![model]));
 
         let mut app_server =
@@ -7497,7 +7577,7 @@ async fn changing_cyber_model_reasoning_preserves_selected_permissions() {
             .into_iter()
             .find(|model| model.model == model_name)
             .expect("current model");
-        model.model_specialty = Some("cyber".to_string());
+        model.model_specialty = Some(MODEL_SPECIALTY_CYBER.to_string());
         app.model_catalog = Arc::new(ModelCatalog::new(vec![model]));
 
         assert!(
@@ -7600,7 +7680,7 @@ async fn selecting_cyber_model_falls_back_to_user_when_auto_review_is_unavailabl
         .into_iter()
         .find(|model| model.model == "gpt-5.4")
         .expect("gpt-5.4 model");
-    model.model_specialty = Some("cyber".to_string());
+    model.model_specialty = Some(MODEL_SPECIALTY_CYBER.to_string());
     app.model_catalog = Arc::new(ModelCatalog::new(vec![model]));
     let _ = app.config.features.disable(Feature::GuardianApproval);
     app.chat_widget
@@ -7655,7 +7735,7 @@ async fn selecting_cyber_model_respects_auto_review_requirements() {
             .into_iter()
             .find(|model| model.model == "gpt-5.4")
             .expect("gpt-5.4 model");
-        model.model_specialty = Some("cyber".to_string());
+        model.model_specialty = Some(MODEL_SPECIALTY_CYBER.to_string());
         app.model_catalog = Arc::new(ModelCatalog::new(vec![model]));
 
         let mut app_server =

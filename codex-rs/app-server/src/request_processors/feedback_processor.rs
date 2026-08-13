@@ -432,8 +432,8 @@ fn windows_sandbox_log_attachment(_codex_home: &Path) -> Option<FeedbackAttachme
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_protocol::protocol::RolloutLine;
     use codex_protocol::protocol::TurnContextItem;
+    use codex_rollout::RolloutLine;
     use pretty_assertions::assert_eq;
     #[test]
     fn feedback_tags_drop_unverified_client_prompt_tags() {
@@ -624,6 +624,7 @@ mod tests {
                     cwd: tempdir.path().to_path_buf(),
                     base_instructions: Some(codex_protocol::models::BaseInstructions {
                         text: "actual developer prompt".to_string(),
+                        provenance: None,
                     }),
                     ..Default::default()
                 },

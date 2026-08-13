@@ -271,6 +271,13 @@ fn create_bwrap_flags_full_filesystem(command: Vec<String>, options: BwrapOption
         "--bind".to_string(),
         "/".to_string(),
         "/".to_string(),
+        // Preserve nodev on the root bind while exposing only standard devices.
+        "--dev".to_string(),
+        "/dev".to_string(),
+        // Restore shared memory without exposing other host devices.
+        "--bind-try".to_string(),
+        "/dev/shm".to_string(),
+        "/dev/shm".to_string(),
         // Always enter a fresh user namespace so root inside a container does
         // not need ambient CAP_SYS_ADMIN to create the remaining namespaces.
         "--unshare-user".to_string(),
@@ -711,9 +718,12 @@ fn expand_unreadable_globs_with_ripgrep(
     // lets one `rg --files` call handle all patterns under the same root.
     let mut patterns_by_search_root: BTreeMap<AbsolutePathBuf, Vec<String>> = BTreeMap::new();
     for pattern in patterns {
-        if let Some((search_root, glob)) = split_pattern_for_ripgrep(pattern, cwd)
-            && search_root.as_path().is_dir()
-        {
+        let Some((search_root, glob)) = split_pattern_for_ripgrep(pattern, cwd) else {
+            return Err(CodexErr::Fatal(format!(
+                "unreadable glob `{pattern}` cannot be safely expanded; use a pattern with a non-root directory prefix"
+            )));
+        };
+        if search_root.as_path().is_dir() {
             patterns_by_search_root
                 .entry(search_root)
                 .or_default()
@@ -1401,6 +1411,11 @@ mod tests {
                 "--bind".to_string(),
                 "/".to_string(),
                 "/".to_string(),
+                "--dev".to_string(),
+                "/dev".to_string(),
+                "--bind-try".to_string(),
+                "/dev/shm".to_string(),
+                "/dev/shm".to_string(),
                 "--unshare-user".to_string(),
                 "--unshare-pid".to_string(),
                 "--unshare-net".to_string(),
@@ -2662,10 +2677,20 @@ mod tests {
     }
 
     #[test]
-    fn root_prefix_unreadable_globs_are_too_broad_for_linux_expansion() {
+    fn root_prefix_unreadable_globs_fail_closed_on_linux() {
+        let policy = default_policy_with_unreadable_glob("/**/*.env".to_string());
+        let error = create_bwrap_command_args(
+            vec!["/bin/true".to_string()],
+            &policy,
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            BwrapOptions::default(),
+        )
+        .expect_err("root-prefix deny-read glob must reject sandbox construction");
+
         assert_eq!(
-            split_pattern_for_ripgrep("/**/*.env", Path::new("/tmp")),
-            None
+            error.to_string(),
+            "Fatal error: unreadable glob `/**/*.env` cannot be safely expanded; use a pattern with a non-root directory prefix"
         );
     }
 

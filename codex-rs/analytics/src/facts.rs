@@ -29,6 +29,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -43,6 +44,27 @@ pub struct TrackEventsContext {
     pub thread_id: String,
     pub turn_id: String,
     pub product_client_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOperationLifecycle {
+    Started,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactOperation {
+    pub item_id: String,
+    pub lifecycle: ArtifactOperationLifecycle,
+    pub occurred_at_ms: u64,
+    pub plugin_id: String,
+    pub script_path: String,
+    pub skill: String,
+    pub artifact_type: String,
+    pub operation_kind: String,
+    pub expected_output_count: u32,
+    pub output_format: String,
+    pub execution_backend: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,11 +329,23 @@ impl From<InputError> for TurnSteerRejectionReason {
 #[derive(Clone, Debug)]
 pub struct SkillInvocation {
     pub skill_name: String,
-    pub skill_scope: SkillScope,
-    pub skill_path: PathBuf,
+    pub location: SkillInvocationLocation,
     pub plugin_id: Option<String>,
     pub remote_plugin_id: Option<String>,
     pub invocation_type: InvocationType,
+}
+
+#[derive(Clone, Debug)]
+pub enum SkillInvocationLocation {
+    Host {
+        path: PathBuf,
+        scope: SkillScope,
+    },
+    Resource {
+        id: String,
+        skill_id: Option<String>,
+        scope: Option<SkillScope>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -489,6 +523,7 @@ pub(crate) enum AnalyticsFact {
 }
 
 pub(crate) enum CustomAnalyticsFact {
+    ArtifactOperation(ArtifactOperationInput),
     CodeModeToolCall(CodeModeToolCallFact),
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
@@ -507,8 +542,32 @@ pub(crate) enum CustomAnalyticsFact {
     PluginInstallRequested(PluginInstallRequestedInput),
     PluginStateChanged(PluginStateChangedInput),
     PluginInstallFailed(PluginInstallFailedInput),
+    PluginMeasurements(PluginMeasurementsInput),
     ExternalAgentConfigImportCompleted(ExternalAgentConfigImportCompletedInput),
     ExternalAgentConfigImportFailure(ExternalAgentConfigImportFailureInput),
+}
+
+pub(crate) struct ArtifactOperationInput {
+    pub tracking: TrackEventsContext,
+    pub operation: ArtifactOperation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginMeasurementRow {
+    pub measurement_name: String,
+    pub number_value: f64,
+    pub dimensions: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginMeasurementsInput {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub plugin_id: String,
+    pub execution_id: String,
+    pub operation: String,
+    pub rows: Vec<PluginMeasurementRow>,
 }
 
 pub(crate) struct SkillInvokedInput {

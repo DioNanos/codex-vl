@@ -40,6 +40,7 @@ use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
+use crate::request_processors::read_server_diagnostics;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
@@ -66,6 +67,7 @@ use codex_chatgpt::workspace_settings;
 use codex_code_mode::CodeModeSessionProvider;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::config::ThreadStoreConfig;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
@@ -77,6 +79,8 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::StateDbHandle;
 use codex_state::log_db::LogDbLayer;
+use codex_thread_store::LocalQueueStore;
+use codex_thread_store::QueueStore;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
@@ -247,6 +251,14 @@ impl MessageProcessor {
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
         let thread_store = codex_core::thread_store_from_config(config.as_ref(), state_db.clone());
+        // Queue persistence requires SQLite, so in-memory thread stores and
+        // app servers without a state database do not have a queue backend.
+        let queue_store: Option<Arc<dyn QueueStore>> = match &config.experimental_thread_store {
+            ThreadStoreConfig::Local => state_db.as_ref().map(|state_db| {
+                Arc::new(LocalQueueStore::new(Arc::clone(state_db))) as Arc<dyn QueueStore>
+            }),
+            ThreadStoreConfig::InMemory { .. } => None,
+        };
         let environment_manager_for_requests = Arc::clone(&environment_manager);
         let environment_manager_for_extensions = Arc::clone(&environment_manager);
         let restriction_product = session_source.restriction_product();
@@ -281,7 +293,7 @@ impl MessageProcessor {
                         executor_skill_provider: Arc::clone(&executor_skill_provider),
                         git_attribution_base_url: config.chatgpt_base_url.clone(),
                         http_client_factory: config.http_client_factory(),
-                        thread_store: Arc::clone(&thread_store),
+                        queue_store,
                     },
                 ),
                 Arc::new(CodexHomeUserInstructionsProvider::new(
@@ -889,6 +901,7 @@ impl MessageProcessor {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
             }
+            ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)
@@ -1168,6 +1181,16 @@ impl MessageProcessor {
                     .thread_rollback(&request_id, params, app_server_client_name.as_deref())
                     .await
             }
+            ClientRequest::ThreadRevert { params, .. } => {
+                self.thread_processor
+                    .thread_revert(
+                        request_id.clone(),
+                        params,
+                        app_server_client_name.clone(),
+                        client_version.clone(),
+                    )
+                    .await
+            }
             ClientRequest::ThreadList { params, .. } => {
                 self.thread_processor.thread_list(params).await
             }
@@ -1396,8 +1419,8 @@ impl MessageProcessor {
                     .consume_account_rate_limit_reset_credit(params)
                     .await
             }
-            ClientRequest::GetAccountTokenUsage { .. } => {
-                self.account_processor.get_account_token_usage().await
+            ClientRequest::GetAccountTokenUsage { params, .. } => {
+                self.account_processor.get_account_token_usage(params).await
             }
             ClientRequest::GetWorkspaceMessages { .. } => {
                 self.account_processor.get_workspace_messages().await

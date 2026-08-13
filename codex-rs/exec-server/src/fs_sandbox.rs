@@ -13,6 +13,7 @@ use codex_sandboxing::SandboxDirectSpawnTransformRequest;
 use codex_sandboxing::SandboxExecRequest;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxTransformRequest;
+use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::canonicalize_preserving_symlinks;
@@ -66,6 +67,15 @@ impl FileSystemSandboxRunner {
         sandbox: &FileSystemSandboxContext,
         request: FsHelperRequest,
     ) -> Result<FsHelperPayload, JSONRPCErrorError> {
+        let command = self.sandbox_command(sandbox)?;
+        let request_json = serde_json::to_vec(&request).map_err(json_error)?;
+        run_command(command, request_json).await
+    }
+
+    pub(crate) fn sandbox_command(
+        &self,
+        sandbox: &FileSystemSandboxContext,
+    ) -> Result<SandboxExecRequest, JSONRPCErrorError> {
         let cwd = sandbox_cwd(sandbox)?;
         let native_workspace_roots = sandbox
             .workspace_roots
@@ -97,10 +107,7 @@ impl FileSystemSandboxRunner {
             &file_system_policy,
             network_policy,
         );
-        let command =
-            self.sandbox_exec_request(&permission_profile, &cwd, workspace_roots, sandbox)?;
-        let request_json = serde_json::to_vec(&request).map_err(json_error)?;
-        run_command(command, request_json).await
+        self.sandbox_exec_request(&permission_profile, &cwd, workspace_roots, sandbox)
     }
 
     fn sandbox_exec_request(
@@ -114,10 +121,15 @@ impl FileSystemSandboxRunner {
         let sandbox_manager = SandboxManager::new();
         let sandbox = sandbox_manager.select_initial(
             permission_profile,
-            SandboxablePreference::Auto,
+            SandboxablePreference::Require,
             sandbox_context.windows_sandbox_level,
             /*has_managed_network_requirements*/ false,
         );
+        if sandbox == SandboxType::None {
+            return Err(invalid_request(
+                "filesystem sandbox cannot be enforced on this executor".to_string(),
+            ));
+        }
         let command = SandboxCommand {
             program: helper.as_path().as_os_str().to_owned(),
             args: vec![CODEX_FS_HELPER_ARG1.to_string()],
@@ -299,7 +311,7 @@ async fn run_command(
     command: SandboxExecRequest,
     request_json: Vec<u8>,
 ) -> Result<FsHelperPayload, JSONRPCErrorError> {
-    let mut child = spawn_command(command)?;
+    let mut child = spawn_command(command, std::process::Stdio::piped())?;
     let mut stdin = child
         .stdin
         .take()
@@ -308,6 +320,17 @@ async fn run_command(
     stdin.shutdown().await.map_err(io_error)?;
     drop(stdin);
 
+    let output = wait_for_helper_output(child).await?;
+    let response: FsHelperResponse = serde_json::from_slice(&output.stdout).map_err(json_error)?;
+    match response {
+        FsHelperResponse::Ok(payload) => Ok(payload),
+        FsHelperResponse::Error(error) => Err(error),
+    }
+}
+
+pub(crate) async fn wait_for_helper_output(
+    child: tokio::process::Child,
+) -> Result<std::process::Output, JSONRPCErrorError> {
     let output = child.wait_with_output().await.map_err(io_error)?;
     if !output.status.success() {
         return Err(internal_error(format!(
@@ -316,21 +339,18 @@ async fn run_command(
             stderr = String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    let response: FsHelperResponse = serde_json::from_slice(&output.stdout).map_err(json_error)?;
-    match response {
-        FsHelperResponse::Ok(payload) => Ok(payload),
-        FsHelperResponse::Error(error) => Err(error),
-    }
+    Ok(output)
 }
 
-fn spawn_command(
+pub(crate) fn spawn_command(
     SandboxExecRequest {
         command: argv,
         cwd,
-        env,
+        mut env,
         arg0,
         ..
     }: SandboxExecRequest,
+    stdin: std::process::Stdio,
 ) -> Result<tokio::process::Child, JSONRPCErrorError> {
     let Some((program, args)) = argv.split_first() else {
         return Err(invalid_request("fs sandbox command was empty".to_string()));
@@ -346,16 +366,26 @@ fn spawn_command(
     // TODO(anp): Keep PathUri through the filesystem helper launch boundary.
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     command.current_dir(cwd.as_path());
+    env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_env_var(name));
     command.env_clear();
     command.envs(env);
-    command.stdin(std::process::Stdio::piped());
+    command.stdin(stdin);
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
     command.kill_on_drop(true);
+    // macOS cannot receive passed fds with close-on-exec set atomically.
+    #[cfg(target_os = "macos")]
+    // SAFETY: Descriptor cleanup only uses fork-safe system calls.
+    unsafe {
+        command.pre_exec(|| {
+            codex_utils_pty::pty::close_inherited_fds_except(&[]);
+            Ok(())
+        });
+    }
     command.spawn().map_err(io_error)
 }
 
-fn io_error(err: std::io::Error) -> JSONRPCErrorError {
+pub(crate) fn io_error(err: std::io::Error) -> JSONRPCErrorError {
     internal_error(err.to_string())
 }
 
@@ -544,10 +574,11 @@ mod tests {
         let runner = FileSystemSandboxRunner::new(runtime_paths);
         let native_cwd = AbsolutePathBuf::current_dir().expect("cwd");
         let cwd = PathUri::from_abs_path(&native_cwd);
-        let file_system_policy = restricted_policy(vec![path_entry(
-            native_cwd.clone(),
-            FileSystemAccessMode::Write,
-        )]);
+        let file_system_policy = restricted_policy(vec![
+            #[cfg(windows)]
+            special_entry(FileSystemSpecialPath::Root, FileSystemAccessMode::Read),
+            path_entry(native_cwd.clone(), FileSystemAccessMode::Write),
+        ]);
         let network_policy = NetworkSandboxPolicy::Restricted;
         let permission_profile =
             PermissionProfile::from_runtime_permissions(&file_system_policy, network_policy);
@@ -555,6 +586,26 @@ mod tests {
         let sandbox_cwd = SandboxCwd {
             uri: cwd,
             native: native_cwd,
+        };
+        #[cfg(windows)]
+        let sandbox_context = {
+            let error = runner
+                .sandbox_exec_request(
+                    &permission_profile,
+                    &sandbox_cwd,
+                    std::slice::from_ref(&sandbox_cwd.native),
+                    &sandbox_context,
+                )
+                .expect_err("disabled Windows sandbox must not run the helper unsandboxed");
+            assert_eq!(
+                error.message,
+                "filesystem sandbox cannot be enforced on this executor"
+            );
+            crate::FileSystemSandboxContext {
+                windows_sandbox_level:
+                    codex_protocol::config_types::WindowsSandboxLevel::RestrictedToken,
+                ..sandbox_context
+            }
         };
 
         let request = runner

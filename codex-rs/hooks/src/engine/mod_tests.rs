@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use codex_config::AbsolutePathBuf;
 use codex_config::ConfigLayerEntry;
@@ -20,6 +21,7 @@ use codex_config::TomlValue;
 use codex_plugin::PluginHookSource;
 use codex_plugin::PluginId;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
@@ -29,11 +31,68 @@ use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
 use super::ClaudeHooksEngine;
+use super::CommandHookRuntime;
 use super::CommandShell;
+use super::ConfiguredHandler;
+use super::ConfiguredHandlerKind;
 use crate::events::pre_tool_use::PreToolUseRequest;
 
 fn cwd() -> AbsolutePathBuf {
     AbsolutePathBuf::current_dir().expect("current dir")
+}
+
+fn command_runtime(shell: CommandShell) -> CommandHookRuntime {
+    let (result_sender, _result_receiver) = async_channel::unbounded();
+    CommandHookRuntime::new(shell, ThreadId::new(), result_sender)
+}
+
+#[test]
+fn permission_request_timeout_only_counts_synchronous_handlers() {
+    let mut engine = ClaudeHooksEngine::new(
+        /*enabled*/ true,
+        /*bypass_hook_trust*/ false,
+        /*config_layer_stack*/ None,
+        Vec::new(),
+        Vec::new(),
+        command_runtime(CommandShell {
+            program: String::new(),
+            args: Vec::new(),
+        }),
+    );
+    let command = "echo synchronous permission hook";
+    let synchronous_handler = ConfiguredHandler {
+        event_name: HookEventName::PermissionRequest,
+        matcher: None,
+        timeout_sec: 5,
+        status_message: None,
+        additional_context_limit: Default::default(),
+        source_path: cwd().join("hooks.json"),
+        source: HookSource::User,
+        display_order: 0,
+        kind: ConfiguredHandlerKind::Command {
+            command: command.to_string(),
+            r#async: false,
+            env: HashMap::new(),
+        },
+    };
+    let asynchronous_handler = ConfiguredHandler {
+        timeout_sec: 600,
+        kind: ConfiguredHandlerKind::Command {
+            command: command.to_string(),
+            r#async: true,
+            env: HashMap::new(),
+        },
+        ..synchronous_handler.clone()
+    };
+
+    engine.handlers = vec![synchronous_handler, asynchronous_handler.clone()];
+    assert_eq!(
+        engine.max_permission_request_timeout(),
+        Duration::from_secs(5)
+    );
+
+    engine.handlers = vec![asynchronous_handler];
+    assert_eq!(engine.max_permission_request_timeout(), Duration::ZERO);
 }
 
 fn managed_hooks_for_current_platform(
@@ -139,6 +198,234 @@ fn requirements_with_managed_hooks_only(
     )
 }
 
+fn required_hooks_stack(
+    managed_hooks: ManagedHooksRequirementsToml,
+    source: RequirementSource,
+) -> ConfigLayerStack {
+    ConfigLayerStack::new(
+        Vec::new(),
+        ConfigRequirements {
+            managed_hooks: Some(ConstrainedWithSource::new(
+                Constrained::allow_any(managed_hooks.clone()),
+                Some(source),
+            )),
+            ..ConfigRequirements::default()
+        },
+        ConfigRequirementsToml {
+            hooks: Some(managed_hooks),
+            ..ConfigRequirementsToml::default()
+        },
+    )
+    .expect("config layer stack")
+}
+
+#[test]
+fn required_managed_hooks_allow_disabled_hooks_feature() {
+    let temp = tempdir().expect("create temp dir");
+    let managed_hooks =
+        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("echo managed"));
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks,
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let (hooks, _result_receiver) = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: false,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .expect("disabled hooks feature should not enforce managed requirements hooks");
+
+    assert!(hooks.startup_warnings().is_empty());
+}
+
+#[test]
+fn required_managed_hooks_reject_invalid_matchers() {
+    let temp = tempdir().expect("create temp dir");
+    let mut events = pre_tool_use_hook_events("echo managed");
+    events.pre_tool_use[0].matcher = Some("[".to_string());
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), events),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let error = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .err()
+    .expect("invalid required managed matcher should reject startup");
+
+    assert!(error.to_string().contains("invalid matcher"));
+}
+
+#[test]
+fn required_managed_hooks_allow_invalid_matchers_without_handlers() {
+    let temp = tempdir().expect("create temp dir");
+    let mut events = pre_tool_use_hook_events("echo managed");
+    events.pre_tool_use.push(MatcherGroup {
+        matcher: Some("[".to_string()),
+        hooks: Vec::new(),
+    });
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), events),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let (hooks, _result_receiver) = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .expect("an empty matcher group should not prevent required managed hooks from loading");
+
+    assert_eq!(hooks.startup_warnings().len(), 1);
+    assert!(hooks.startup_warnings()[0].contains("invalid matcher"));
+}
+
+#[test]
+fn required_managed_hooks_reject_empty_commands() {
+    let temp = tempdir().expect("create temp dir");
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("  ")),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let error = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .err()
+    .expect("empty required managed command should reject startup");
+
+    assert!(error.to_string().contains("skipping empty hook command"));
+}
+
+#[test]
+fn required_managed_hooks_reject_unsupported_handler_types() {
+    let temp = tempdir().expect("create temp dir");
+    let events = HookEventsToml {
+        pre_tool_use: vec![MatcherGroup {
+            matcher: Some("^Bash$".to_string()),
+            hooks: vec![HookHandlerConfig::McpTool {
+                server: "policy".to_string(),
+                tool: "check".to_string(),
+                input: Default::default(),
+                timeout_sec: None,
+                status_message: None,
+            }],
+        }],
+        ..Default::default()
+    };
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), events),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let error = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .err()
+    .expect("unsupported required managed handler should reject startup");
+
+    assert!(
+        error
+            .to_string()
+            .contains("MCP tool hooks are not supported yet")
+    );
+}
+
+#[test]
+fn required_managed_hooks_with_unknown_source_still_reject_discovery_failures() {
+    let temp = tempdir().expect("create temp dir");
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("")),
+        RequirementSource::Unknown,
+    );
+
+    let error = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .err()
+    .expect("unknown-source managed requirements hook should still reject startup");
+
+    assert!(error.to_string().contains("skipping empty hook command"));
+}
+
+#[test]
+fn valid_required_managed_hooks_allow_startup() {
+    let temp = tempdir().expect("create temp dir");
+    let config_layer_stack = required_hooks_stack(
+        managed_hooks_for_current_platform(temp.path(), pre_tool_use_hook_events("echo managed")),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    );
+
+    let (hooks, _result_receiver) = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .expect("valid managed requirements hook should allow startup");
+
+    assert!(hooks.startup_warnings().is_empty());
+}
+
+#[test]
+fn managed_config_layer_hook_failures_remain_startup_warnings() {
+    let temp = tempdir().expect("create temp dir");
+    let config_path =
+        AbsolutePathBuf::try_from(temp.path().join("config.toml")).expect("absolute config path");
+    let config_layer_stack = ConfigLayerStack::new(
+        vec![ConfigLayerEntry::new(
+            ConfigLayerSource::System { file: config_path },
+            config_toml_with_pre_tool_use("  "),
+        )],
+        ConfigRequirements::default(),
+        ConfigRequirementsToml::default(),
+    )
+    .expect("config layer stack");
+
+    let (hooks, _result_receiver) = crate::Hooks::new(
+        crate::HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(config_layer_stack),
+            ..Default::default()
+        },
+        ThreadId::new(),
+    )
+    .expect("managed config layer hooks should remain optional");
+
+    assert_eq!(hooks.startup_warnings().len(), 1);
+    assert!(hooks.startup_warnings()[0].contains("skipping empty hook command"));
+}
+
 #[tokio::test]
 async fn requirements_managed_hooks_execute_from_managed_dir() {
     let temp = tempdir().expect("create temp dir");
@@ -202,10 +489,10 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -309,10 +596,10 @@ async fn requirements_managed_hooks_execute_windows_command_override() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     let outcome = engine
@@ -389,10 +676,10 @@ fn unknown_requirement_source_hooks_stay_managed() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert_eq!(engine.handlers.len(), 1);
@@ -472,10 +759,10 @@ fn user_disablement_filters_non_managed_hooks_but_not_managed_hooks() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert_eq!(engine.handlers.len(), 1);
@@ -538,10 +825,10 @@ fn user_disablement_does_not_filter_managed_layer_hooks() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert_eq!(engine.handlers.len(), 1);
@@ -700,10 +987,10 @@ fn requirements_managed_hooks_load_when_managed_dir_is_missing() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -722,7 +1009,14 @@ fn requirements_managed_hooks_load_when_managed_dir_is_missing() {
         tool_input: serde_json::json!({ "command": "echo hello" }),
     });
     assert_eq!(preview.len(), 1);
-    assert_eq!(engine.handlers[0].command, "echo hi");
+    assert_eq!(
+        engine.handlers[0].kind,
+        ConfiguredHandlerKind::Command {
+            command: "echo hi".to_string(),
+            r#async: false,
+            env: HashMap::new(),
+        }
+    );
     assert_eq!(
         engine.handlers[0].source_path,
         AbsolutePathBuf::try_from(missing_dir).expect("absolute missing dir")
@@ -756,10 +1050,10 @@ fn allow_managed_hooks_only_false_keeps_unmanaged_hooks() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -810,10 +1104,10 @@ fn allow_managed_hooks_only_in_config_toml_does_not_enable_policy() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -880,10 +1174,10 @@ fn allow_managed_hooks_only_skips_unmanaged_json_and_toml_hooks() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.handlers.is_empty());
@@ -919,10 +1213,10 @@ fn allow_managed_hooks_only_skips_unmanaged_plugin_hooks() {
         Some(&config_layer_stack),
         plugin_hook_sources,
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.handlers.is_empty());
@@ -991,10 +1285,10 @@ fn allow_managed_hooks_only_keeps_managed_requirement_and_config_layer_hooks() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -1002,14 +1296,16 @@ fn allow_managed_hooks_only_keeps_managed_requirement_and_config_layer_hooks() {
         engine
             .handlers
             .iter()
-            .map(|handler| handler.command.as_str())
+            .map(|handler| match &handler.kind {
+                ConfiguredHandlerKind::Command { command, .. } => Some(command.as_str()),
+            })
             .collect::<Vec<_>>(),
         vec![
-            "python3 /tmp/requirements-hook.py",
-            "python3 /tmp/mdm-hook.py",
-            "python3 /tmp/system-hook.py",
-            "python3 /tmp/legacy-file-hook.py",
-            "python3 /tmp/legacy-mdm-hook.py",
+            Some("python3 /tmp/requirements-hook.py"),
+            Some("python3 /tmp/mdm-hook.py"),
+            Some("python3 /tmp/system-hook.py"),
+            Some("python3 /tmp/legacy-file-hook.py"),
+            Some("python3 /tmp/legacy-mdm-hook.py"),
         ]
     );
     let discovered = super::discovery::discover_handlers(
@@ -1101,10 +1397,10 @@ fn discovers_hooks_from_json_and_toml_in_the_same_layer() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().iter().any(|warning| {
@@ -1196,10 +1492,10 @@ fn profile_user_layers_load_shared_hooks_json_once() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.warnings().is_empty());
@@ -1270,10 +1566,10 @@ fn malformed_hooks_json_is_reported_as_startup_warning() {
         Some(&config_layer_stack),
         Vec::new(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert!(engine.handlers.is_empty());
@@ -1342,10 +1638,10 @@ print(json.dumps({
         Some(&config_layer_stack),
         plugin_hook_sources.clone(),
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     let preview = engine.preview_pre_tool_use(&PreToolUseRequest {
@@ -1462,39 +1758,39 @@ fn plugin_hook_sources_expand_plugin_placeholders() {
         Some(&config_layer_stack),
         plugin_hook_sources,
         Vec::new(),
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert_eq!(
-        engine.handlers[0].command,
-        format!(
-            "run {} {} {} {}",
-            plugin_root.display(),
-            plugin_root.display(),
-            plugin_data_root.display(),
-            plugin_data_root.display()
-        )
-    );
-    assert_eq!(
-        engine.handlers[0].env,
-        HashMap::from([
-            ("PLUGIN_ROOT".to_string(), plugin_root.display().to_string()),
-            (
-                "CLAUDE_PLUGIN_ROOT".to_string(),
-                plugin_root.display().to_string()
+        engine.handlers[0].kind,
+        ConfiguredHandlerKind::Command {
+            command: format!(
+                "run {} {} {} {}",
+                plugin_root.display(),
+                plugin_root.display(),
+                plugin_data_root.display(),
+                plugin_data_root.display()
             ),
-            (
-                "PLUGIN_DATA".to_string(),
-                plugin_data_root.display().to_string()
-            ),
-            (
-                "CLAUDE_PLUGIN_DATA".to_string(),
-                plugin_data_root.display().to_string()
-            ),
-        ])
+            r#async: false,
+            env: HashMap::from([
+                ("PLUGIN_ROOT".to_string(), plugin_root.display().to_string()),
+                (
+                    "CLAUDE_PLUGIN_ROOT".to_string(),
+                    plugin_root.display().to_string(),
+                ),
+                (
+                    "PLUGIN_DATA".to_string(),
+                    plugin_data_root.display().to_string(),
+                ),
+                (
+                    "CLAUDE_PLUGIN_DATA".to_string(),
+                    plugin_data_root.display().to_string(),
+                ),
+            ]),
+        }
     );
 }
 
@@ -1506,10 +1802,10 @@ fn plugin_hook_load_warnings_are_startup_warnings() {
         /*config_layer_stack*/ None,
         Vec::new(),
         vec!["failed plugin hook".to_string()],
-        CommandShell {
+        command_runtime(CommandShell {
             program: String::new(),
             args: Vec::new(),
-        },
+        }),
     );
 
     assert_eq!(engine.warnings(), &["failed plugin hook".to_string()]);
