@@ -116,30 +116,85 @@ const UPSTREAM_HOST: &str = "github.com";
 const UPSTREAM_REPO: &str = "openai/codex";
 
 /// Normalizza un URL di remote git alla forma canonica "host/owner/repo"
-/// (lowercase, senza suffisso .git). Riconosce le forme HTTPS
-/// (https://host/owner/repo[.git]), SSH con scheme (ssh://git@host/owner/repo)
-/// e scp-like (git@host:owner/repo). Restituisce None se la forma non e'
-/// riconosciuta: un URL non interpretabile e' comunque un fail del gate, non
-/// un degrade silenzioso.
+/// (lowercase, senza suffisso .git). Riconosce SOLO le forme HTTPS
+/// (https://host/owner/repo[.git]) e SSH con scheme (ssh://git@host/owner/repo)
+/// e scp-like (git@host:owner/repo). Tutto il resto viene RIFIUTATO (None).
+///
+/// Questo e' un confine di sicurezza, non un normalizzatore tollerante: un
+/// parser permissivo qui fabbrica una prova falsa invece di nessuna prova. Il
+/// difetto che chiude: un URL locale come
+/// `file:///tmp/source@github.com/openai/codex.git` si canonizzava come
+/// `github.com/openai/codex` — scheme qualunque accettato e '@' raccolto
+/// ovunque (rfind su tutta la stringa, anche nel path) — per cui sia la
+/// configurazione sia FETCH_HEAD passavano per il repository atteso e un
+/// commit vietato restava nascosto. Regole:
+/// - scheme ammessi elencati (https, ssh); ogni altro scheme (file, git, http,
+///   ...) e' None;
+/// - '@' interpretato solo dove ha significato di userinfo: nell'autorita'
+///   (fra "://" e il primo '/'), non nel path; nella forma scp-like, solo se
+///   non c'e' un '/' prima del ':' (un '/' prima del ':' significa che il ':'
+///   sta nel path, non e' scp-like);
+/// - host preso per intero e confrontato per intero dai chiamanti (== / !=):
+///   un lookalike come github.com.altro.example non coincide.
+/// In dubbio si rifiuta (None), non si normalizza: un falso positivo costa una
+/// verifica umana, un falso negativo fa uscire una traccia.
 fn canonical_remote(url: &str) -> Option<String> {
     let u = url.trim();
     let u = u.strip_suffix(".git").unwrap_or(u);
-    // scheme://... (https, ssh): tutto dopo "://", scartando l'eventuale
-    // userinfo "user@host" — si tiene da host in poi.
+
+    // scheme://... : SOLO https e ssh. L'autorita' e' la porzione fra "://" e
+    // il primo '/': li', e solo li', l' '@' ha significato di userinfo
+    // (user@host). Un '@' nel path non e' userinfo: rfind su tutta la stringa
+    // lo raccoglieva e fabbricava l'host atteso da un percorso qualunque.
     if let Some(idx) = u.find("://") {
+        let scheme = u.get(..idx)?.to_ascii_lowercase();
+        if scheme != "https" && scheme != "ssh" {
+            return None;
+        }
         let after = &u[idx + 3..];
-        let after = after.rfind('@').map(|a| &after[a + 1..]).unwrap_or(after);
-        return Some(after.trim_end_matches('/').to_ascii_lowercase());
+        if after.is_empty() {
+            return None;
+        }
+        let auth_end = after.find('/').unwrap_or(after.len());
+        let (auth, path) = after.split_at(auth_end);
+        // host: dopo l'ultimo '@' DENTRO l'autorita', prima di ':' (porta).
+        let host = match auth.rfind('@') {
+            Some(a) => &auth[a + 1..],
+            None => auth,
+        };
+        let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+        if host.is_empty() {
+            return None;
+        }
+        let tail = path.trim_matches('/');
+        if tail.is_empty() {
+            return None;
+        }
+        return Some(format!("{host}/{tail}").to_ascii_lowercase());
     }
-    // forma scp-like: git@host:owner/repo
-    if let Some(at) = u.rfind('@') {
-        let after = &u[at + 1..];
-        if let Some(c) = after.find(':') {
-            let host = &after[..c];
-            let tail = &after[c + 1..];
-            return Some(format!("{host}/{}", tail.trim_end_matches('/')).to_ascii_lowercase());
+
+    // forma scp-like: [user@]host:owner/repo. Qui l' '@' e' userinfo (forma
+    // canonica scp) e il ':' separa host da path. Ma la forma e' valida SOLO
+    // se non c'e' nessun '/' prima del ':': un '/' prima del ':' significa che
+    // il ':' sta nel path (forma locale o altro), non e' scp-like. Senza questo
+    // controllo, "tmp/source@github.com:owner/repo" — '@' in un prefisso di
+    // path — si canonizzava come l'host atteso: la stessa decisione permissiva
+    // del ramo scheme, fatta in un altro modo.
+    if let Some(c) = u.find(':') {
+        let before = &u[..c];
+        if !before.contains('/') {
+            let host = match before.rfind('@') {
+                Some(a) => &before[a + 1..],
+                None => before,
+            };
+            let tail = u[c + 1..].trim_end_matches('/');
+            if host.is_empty() || tail.is_empty() {
+                return None;
+            }
+            return Some(format!("{host}/{tail}").to_ascii_lowercase());
         }
     }
+
     None
 }
 
@@ -302,7 +357,10 @@ fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(),
                         if fail.len() < 5 {
                             fail.push(format!(
                                 "ref refs/remotes/upstream/{name}: URL di provenienza in \
-                                 FETCH_HEAD non interpretabile come host/owner/repo."
+                                 FETCH_HEAD non interpretabile come host/owner/repo (atteso \
+                                 {expected_canonical}). Un URL non riconoscibile — scheme non \
+                                 ammesso o forma ambigua — e' un fail, non un degrade: esegui \
+                                 `git fetch upstream` dal remote attualmente configurato."
                             ));
                         }
                     }
@@ -887,6 +945,37 @@ fn i_motivi_mordano_ancora() {
     assert!(
         canonical_remote("non-e-un-url").is_none(),
         "un URL non interpretabile deve dare None, non un canonical fittizio"
+    );
+
+    // CONTROLLO NEGATIVO — il gate che guardava e veniva ingannato. Un parser
+    // permissivo in un confine di sicurezza fabbrica una prova falsa invece di
+    // nessuna prova: scheme qualunque + '@' raccolto ovunque (rfind su tutta la
+    // stringa, anche nel path) faceva canonizzare un URL locale come il repo
+    // atteso, per cui sia la configurazione sia FETCH_HEAD passavano per
+    // github.com/openai/codex e un commit vietato restava nascosto. Ora cio'
+    // che non e' inequivocabilmente il repository atteso viene RIFIUTATO.
+    //
+    // (1) L'URL ESATTO dell'audit: scheme file + '@' nel path. Misurato prima
+    // della correzione: canonizzava come github.com/openai/codex (== atteso).
+    assert!(
+        canonical_remote("file:///tmp/source@github.com/openai/codex.git").is_none(),
+        "un URL file:// con '@' nel path non deve canonizzarsi come upstream: scheme non ammesso"
+    );
+    // (2) '@' nel path SENZA scheme file: la stessa idea, via forma scp-like.
+    // Un prefisso con '/' prima del ':' non e' scp-like (il ':' e' nel path).
+    // Misurato prima: canonizzava come github.com/openai/codex.
+    assert!(
+        canonical_remote("tmp/source@github.com:openai/codex").is_none(),
+        "un input con '@' in un prefisso di path e ':' dopo non e' scp-like: deve dare None"
+    );
+    // (3) host che CONTIENE quello atteso come sottostringa: l'host e' preso
+    // per intero e confrontato per intero (== / !=), non per sottostringa — un
+    // lookalike non coincide con github.com/openai/codex.
+    let lookalike = canonical_remote("https://github.com.altro.example/openai/codex.git");
+    assert!(
+        lookalike.as_deref() != Some(expected.as_str()),
+        "un host lookalike (github.com.altro.example) non deve passare per github.com: {:?} == {expected:?}",
+        lookalike
     );
 
     // L'identita' PUBBLICA del progetto NON e' un leak: non deve essere
