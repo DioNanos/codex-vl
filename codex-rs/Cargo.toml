@@ -137,6 +137,7 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+    "fork-gate",
 ]
 resolver = "2"
 
