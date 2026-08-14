@@ -169,6 +169,26 @@ fn canonical_remote(url: &str) -> Option<String> {
             .find(|c| c == '/' || c == '?' || c == '#')
             .unwrap_or(after.len());
         let (auth, path) = after.split_at(auth_end);
+        // https con PIU' di un '@' nell'autorita': Git (curl) tratta il
+        // PRIMO '@' come separatore userinfo/host e lascia tutto il resto —
+        // ogni '@' aggiuntivo incluso — come stringa host. Quella stringa
+        // contiene '@', non e' un hostname valido, e curl rifiuta la
+        // richiesta con "Bad hostname" PRIMA di qualunque connessione: non
+        // esiste un host DNS-risolvibile diverso da quello atteso che Git
+        // contatterebbe davvero in questo caso — solo un fallimento sempre e
+        // comunque. Misurato (git credential fill e git ls-remote, nessun
+        // dato sensibile in gioco): "https://a@b@github.com/..." -> Git
+        // prova ad accedere a "https://b@github.com/..." e fallisce "URL
+        // rejected: Bad hostname" — mai su github.com. Leggere qui l'ULTIMO
+        // '@' (rfind) come faceva prima produceva "github.com": un host che
+        // il parser dichiarava atteso mentre Git non l'avrebbe MAI
+        // contattato. Per ssh:// e scp-like il discorso e' diverso: Git
+        // passa la stringa intera a ssh senza parsarla lui stesso, ed e' SSH
+        // (verificato con `ssh -G`) a usare l'ULTIMO '@' — li' rfind resta
+        // corretto, per questo il controllo qui e' ristretto a https.
+        if scheme == "https" && auth.matches('@').count() > 1 {
+            return None;
+        }
         // host: dopo l'ultimo '@' DENTRO l'autorita', prima di ':' (porta).
         let host = match auth.rfind('@') {
             Some(a) => &auth[a + 1..],
@@ -214,6 +234,145 @@ fn canonical_remote(url: &str) -> Option<String> {
     }
 
     None
+}
+
+// ---- concordanza col comportamento REALE di Git ----------------------------
+//
+// La conformita' a RFC 3986 non e' la proprieta' che serve: e' un mezzo. La
+// proprieta' che serve e': il parser deve vedere LO STESSO HOST che
+// contatterebbe Git. Oggi coincidono per ogni URL provato, ma nessun test le
+// legava — la conformita' RFC era verificata contro un'interpretazione
+// scritta a mano dentro il test, non contro Git stesso. Le funzioni sotto
+// chiedono a Git quale autorita' risolverebbe per un URL, SENZA MAI aprire
+// una connessione di rete.
+//
+// https:// e ssh://: `git credential fill` fa il PARSING REALE che il
+// trasporto userebbe per il lookup delle credenziali (stessa logica di
+// http.c/connect.c) — non una ricostruzione a mano. Il credential.helper va
+// SEMPRE azzerato esplicitamente (`-c credential.helper=`) PRIMA di
+// aggiungerne uno fittizio: altrimenti si accoda a un helper REALE gia'
+// configurato a livello di sistema/globale, che per un host reale (es.
+// github.com) puo' restituire una credenziale VERA dell'operatore in chiaro
+// sullo stdout del comando — misurato durante lo sviluppo di questo stesso
+// test. L'helper fittizio risponde SEMPRE con user/pass finti, cosi' `git
+// credential fill` non tenta mai I/O interattivo ne' di rete.
+//
+// scp-like ([user@]host:owner/repo): per SSH, Git passa la stringa
+// "destination" COSI' COM'E' al comando ssh, senza interpretarla lui
+// stesso. Si intercetta quel comando con GIT_SSH_COMMAND — uno script che
+// stampa il suo primo argomento su STDERR e muore subito, prima di aprire
+// un socket — per catturare la destination esatta che Git avrebbe usato,
+// poi si chiede a `ssh -G <destination>` come SSH stesso la risolverebbe
+// (hostname reale): di nuovo nessuna connessione, `-G` stampa la
+// configurazione effettiva e basta.
+//
+// Limite dichiarato: per scp-like, se `destination` non e' un target SSH
+// valido (es. contiene un carattere che OpenSSH stesso rifiuta nello
+// username), `ssh -G` fallisce e la funzione ritorna None — non e' un'
+// assenza di prova sull'host, e' l'assenza dell'oggetto da confrontare.
+// Il test che usa queste funzioni tratta None come "nessuna concordanza da
+// verificare", mai come "concordanza silenziosa".
+
+/// Legge un campo (`host`, `path`, ...) dall'output di `git credential
+/// fill` per `url`. None se Git stesso non riesce a interpretare l'URL.
+fn credential_fill_field(url: &str, field: &str) -> Option<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("git")
+        .args(["-c", "credential.helper="])
+        .args([
+            "-c",
+            "credential.helper=!f() { echo username=probe; echo password=probe; }; f",
+        ])
+        .args(["credential", "fill"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child
+        .stdin
+        .take()?
+        .write_all(format!("url={url}\n\n").as_bytes())
+        .ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let prefix = format!("{field}=");
+    text.lines()
+        .find_map(|l| l.strip_prefix(prefix.as_str()).map(str::to_string))
+}
+
+/// Cattura la "destination" SSH che Git passerebbe DAVVERO al comando ssh
+/// per `url` (scp-like o ssh://), senza mai aprire una connessione: il
+/// comando ssh e' sostituito con uno script che stampa il suo primo
+/// argomento su stderr e muore subito. `git ls-remote` fallisce SEMPRE (lo
+/// script non implementa alcun protocollo git) — e' il fallimento atteso,
+/// il dato utile e' nello stderr catturato prima di quel fallimento.
+fn ssh_destination_for(url: &str) -> Option<String> {
+    let output = Command::new("git")
+        .env(
+            "GIT_SSH_COMMAND",
+            r#"sh -c 'echo "GATE_SSH_DEST:$1" >&2; exit 1' --"#,
+        )
+        .args(["ls-remote", url])
+        .output()
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("GATE_SSH_DEST:").map(str::to_string))
+}
+
+/// Hostname che SSH risolverebbe per `destination` (`[user@]host`),
+/// interrogando la configurazione effettiva di SSH (`-G`) senza mai
+/// connettersi. None se SSH stesso rifiuta la destination.
+fn ssh_resolved_host(destination: &str) -> Option<String> {
+    let output = Command::new("ssh")
+        .args(["-G", destination])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|l| l.strip_prefix("hostname ").map(|h| h.trim().to_string()))
+}
+
+/// Rimuove una porta finale (":NNNN") da un host/autorita', se presente.
+fn strip_port(host: &str) -> &str {
+    host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+}
+
+/// Autorita' (solo hostname, senza porta) che GIT contatterebbe DAVVERO per
+/// `url`, secondo Git/SSH stessi. None se Git non ha un'opinione
+/// utilizzabile: uno scheme che il credential subsystem non copre e che non
+/// e' nemmeno una destination SSH interpretabile.
+fn git_authority_for(url: &str) -> Option<String> {
+    if url.starts_with("https://") {
+        return credential_fill_field(url, "host").map(|h| strip_port(&h).to_string());
+    }
+    if url.starts_with("ssh://") {
+        let dest = ssh_destination_for(url)?;
+        return ssh_resolved_host(&dest);
+    }
+    // forma scp-like: nessuno scheme, "host:path" — SOLO se non c'e' un '/'
+    // prima del ':' (altrimenti il ':' e' nel path, non separa host) e
+    // l'URL non ha comunque un "://" altrove (uno scheme sconosciuto come
+    // file:// non e' scp-like solo perche' contiene un ':'). Stessa
+    // condizione di canonical_remote: non e' una coincidenza, e' l'unico
+    // modo per cui la domanda "Git la tratterebbe come SSH?" ha senso per
+    // questa forma.
+    let colon = url.find(':')?;
+    if url[..colon].contains('/') || url[colon..].starts_with("://") {
+        return None;
+    }
+    let dest = ssh_destination_for(url)?;
+    ssh_resolved_host(&dest)
 }
 
 // ---- provenienza dei ref: il gate si fida solo se puo' provarla -----------
@@ -965,6 +1124,34 @@ fn i_motivi_mordano_ancora() {
         "un URL non interpretabile deve dare None, non un canonical fittizio"
     );
 
+    // https con PIU' di un '@' nell'autorita': None, non un canonical
+    // fittizio. Questo URL viveva prima nella lista "honest" con la
+    // giustificazione "l'host e' dopo l'ULTIMO '@'" — ma quella e' una
+    // regola scritta a mano nel test, non il comportamento di Git. Misurato
+    // (git credential fill, nessuna connessione: `git -c credential.helper=
+    // -c 'credential.helper=!f(){ echo username=x; echo password=x; };f'
+    // credential fill` con url=... in input) e confermato con `git
+    // ls-remote` (fallisce sempre, nessun dato sensibile in gioco perche'
+    // l'hostname e' rifiutato prima di qualunque tentativo di rete): Git
+    // tratta il PRIMO '@' come separatore userinfo/host, non l'ultimo — per
+    // "https://a@b@github.com/..." risolve host="b@github.com" (userinfo
+    // "a"), non "github.com". "b@github.com" non e' un hostname valido:
+    // curl rifiuta con "URL rejected: Bad hostname" prima di qualunque
+    // connessione. Non esiste quindi un host DNS-risolvibile diverso da
+    // quello atteso che Git contatterebbe con questo URL — ma il vecchio
+    // parser lo dichiarava "atteso" (github.com) quando Git non ci sarebbe
+    // MAI andato: la proprieta' che conta ("il parser vede lo stesso host
+    // che contatterebbe Git") era violata anche se l'esito di sicurezza
+    // pratico restava innocuo. Vedi il test
+    // `canonical_remote_concorda_con_git_sullautorita` per la verifica
+    // sistematica di questa proprieta' su tutti i casi qui sopra.
+    assert!(
+        canonical_remote("https://a@b@github.com/openai/codex.git").is_none(),
+        "https con piu' di un '@' nell'autorita' deve dare None: Git tratta \
+         il primo '@' come separatore, non l'ultimo, e il resto contenente \
+         '@' non e' un hostname valido (misurato: Bad hostname, mai github.com)"
+    );
+
     // CONTROLLO NEGATIVO — il gate che guardava e veniva ingannato. Un parser
     // permissivo in un confine di sicurezza fabbrica una prova falsa invece di
     // nessuna prova: scheme qualunque + '@' raccolto ovunque (rfind su tutta la
@@ -1072,14 +1259,12 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
         );
     }
 
-    // Credenziali con '@' multipli e URL onesti con query/fragment: NON sono
-    // inganni. L'host e' dopo l'ultimo '@' DENTRO l'autorita'; `a@b@github.com`
-    // ha host github.com (userinfo `a@b`), e una query/fragment dopo il path
-    // non cambia il repo. Il gate non deve over-restringere e rifiutare un
-    // remote onesto: un falso positivo costa una verifica umana, ma accusare
-    // l'innocente erode il guardiano quanto fidarsi del colpevole.
+    // Una singola credenziale userinfo e URL onesti con query/fragment: NON
+    // sono inganni. Una query/fragment dopo il path non cambia il repo. Il
+    // gate non deve over-restringere e rifiutare un remote onesto: un falso
+    // positivo costa una verifica umana, ma accusare l'innocente erode il
+    // guardiano quanto fidarsi del colpevole.
     for honest in [
-        "https://a@b@github.com/openai/codex.git",
         "https://token@github.com/openai/codex.git",
         "https://github.com/openai/codex?foo=bar",
         "https://github.com/openai/codex#readme",
@@ -1089,6 +1274,139 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
             got, expected,
             "URL onesto deve passare per atteso: {honest:?} -> {got:?} (atteso {expected:?})"
         );
+    }
+}
+
+// ---- la proprieta' che conta: il parser vede lo stesso host di Git -------
+//
+// Non "canonical_remote e' conforme a RFC 3986" — quella e' un mezzo. La
+// proprieta' e': quando canonical_remote() accetta un URL, l'host che
+// estrae deve coincidere con l'host che GIT STESSO risolverebbe per quello
+// stesso URL. Se canonical_remote rifiuta (None), va sempre bene: un
+// rifiuto e' fail-closed per costruzione, non richiede che Git concordi
+// sul rifiuto (Git potrebbe comunque "avere un'opinione" su un URL che il
+// gate ha gia' scartato — non e' un problema, e' prudenza in piu').
+//
+// Questo test non inventa l'interpretazione di nessun URL: la chiede a Git
+// (git_authority_for, sopra). E' rosso di suo se e solo se emerge una vera
+// divergenza — non era mai successo finora nello sviluppo di questo file,
+// ma la proprieta' era comunque non verificata: la conformita' RFC 3986
+// veniva controllata contro un'attesa scritta a mano nel test, mai contro
+// Git.
+#[test]
+fn canonical_remote_concorda_con_git_sullautorita() {
+    let expected_host = UPSTREAM_HOST;
+
+    // Ogni URL gia' esercitato altrove in questo file dai test sopra, piu'
+    // il caso rifiutato per la divergenza trovata scrivendo QUESTO test
+    // (vedi sotto): l'insieme e' lo stesso, la domanda e' diversa — non
+    // "canonical_remote da' l'esito che il test si aspetta" ma "quando
+    // canonical_remote accetta, Git concorda sull'host".
+    let urls: &[&str] = &[
+        // legittimi (tutte le forme)
+        "https://github.com/openai/codex.git",
+        "https://github.com/openai/codex",
+        "git@github.com:openai/codex.git",
+        "ssh://git@github.com/openai/codex.git",
+        // sbagliati ma interpretabili (host reale, diverso da quello atteso)
+        "https://github.com/DioNanos/codex-vl.git",
+        "https://github.com/openai/codex-cli.git",
+        "git@github.com:forks/codex-mirror.git",
+        // non interpretabile
+        "non-e-un-url",
+        // rifiutati per scheme non ammesso o forma non scp-like
+        "file:///tmp/source@github.com/openai/codex.git",
+        "tmp/source@github.com:openai/codex",
+        // lookalike host (sottostringa, non identita')
+        "https://github.com.altro.example/openai/codex.git",
+        // RFC 3986: autorita' delimitata da '/','?','#', '@' cercato solo
+        // dentro l'autorita' cosi' delimitata
+        "https://127.0.0.1:9?@github.com/openai/codex.git",
+        "https://127.0.0.1:9#@github.com/openai/codex.git",
+        "https://127.0.0.1:9?#@github.com/openai/codex.git",
+        "https://127.0.0.1:9#?@github.com/openai/codex.git",
+        "https://127.0.0.1:9/openai/codex?@github.com/openai/codex.git",
+        "https://evil.example.com/github.com/openai/codex.git",
+        "https://github.com@evil.example/openai/codex.git",
+        // onesti con credenziale singola o query/fragment
+        "https://token@github.com/openai/codex.git",
+        "https://github.com/openai/codex?foo=bar",
+        "https://github.com/openai/codex#readme",
+        // divergenza trovata scrivendo questo test (vedi sotto per la misura
+        // e il fix): https con PIU' di un '@' nell'autorita'.
+        "https://a@b@github.com/openai/codex.git",
+    ];
+
+    let mut checked = 0usize;
+    let mut no_git_opinion = Vec::new();
+    for url in urls {
+        let parser_host = canonical_remote(url).map(|c| canonical_host(&c).to_string());
+        let Some(parser_host) = parser_host else {
+            // Rifiuto: sempre sicuro, non richiede concordanza da Git.
+            continue;
+        };
+        match git_authority_for(url) {
+            Some(git_host) => {
+                checked += 1;
+                assert_eq!(
+                    parser_host, git_host,
+                    "canonical_remote accetta {url:?} come host {parser_host:?}, \
+                     ma Git risolverebbe {git_host:?}: il parser non vede lo \
+                     stesso host che contatterebbe Git"
+                );
+            }
+            None => no_git_opinion.push(*url),
+        }
+    }
+    assert!(
+        no_git_opinion.is_empty(),
+        "canonical_remote accetta un URL su cui Git non ha nemmeno un'opinione \
+         interrogabile (nessun oggetto da confrontare, non una concordanza): {no_git_opinion:?}"
+    );
+    assert!(
+        checked >= 10,
+        "il test deve aver confrontato un numero sostanziale di URL con Git, \
+         non solo aver attraversato rifiuti: controllati {checked}"
+    );
+
+    // Il caso che sopra e' nella lista ma per costruzione (canonical_remote
+    // rifiuta) non entra nel confronto host-per-host: verificarlo
+    // esplicitamente e' il punto di questo test. MISURA (nessuna
+    // connessione: git credential fill con helper azzerato; confermato con
+    // git ls-remote reale, che fallisce sempre e non scambia mai dati
+    // sensibili perche' l'hostname e' rifiutato prima di qualunque
+    // connessione): per "https://a@b@github.com/openai/codex.git" Git
+    // risolve host="b@github.com" (userinfo "a", separatore = PRIMO '@',
+    // non l'ultimo) — un hostname che CONTIENE '@' e che curl rifiuta con
+    // "URL rejected: Bad hostname" prima di qualunque tentativo di rete.
+    // canonical_remote rifiuta (None): corretto, perche' Git non
+    // contatterebbe MAI un host DNS-risolvibile per questo URL — ma il
+    // vecchio parser (rfind, ultimo '@') leggeva "github.com" qui, una
+    // proprieta' falsa anche se innocua in pratica (nessun host malevolo
+    // realmente raggiungibile: qualunque autorita' https con 2+ '@' produce
+    // sempre, dopo il primo '@', un resto che CONTIENE '@' e viene sempre
+    // rifiutato da curl come hostname malformato — verificato anche con 3
+    // '@' consecutivi).
+    let deceptive_multi_at = "https://a@b@github.com/openai/codex.git";
+    assert!(
+        canonical_remote(deceptive_multi_at).is_none(),
+        "https con piu' di un '@' deve restare rifiutato"
+    );
+    match git_authority_for(deceptive_multi_at) {
+        Some(git_host) => assert_ne!(
+            strip_port(&git_host),
+            expected_host,
+            "se Git avesse un'opinione su questo URL, non deve MAI essere \
+             l'host atteso (altrimenti rifiutarlo sarebbe un falso negativo, \
+             non prudenza): {git_host:?}"
+        ),
+        None => {
+            // Anche se in questa esecuzione git_authority_for non riesce a
+            // interrogare Git (es. `git credential fill` fallisse per un
+            // motivo ambientale), il rifiuto di canonical_remote resta
+            // corretto e verificato sopra: non e' un requisito che questo
+            // ramo produca Some per essere una consegna valida.
+        }
     }
 }
 
