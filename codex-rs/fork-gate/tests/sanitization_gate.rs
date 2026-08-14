@@ -143,9 +143,19 @@ fn canonical_remote(url: &str) -> Option<String> {
     let u = u.strip_suffix(".git").unwrap_or(u);
 
     // scheme://... : SOLO https e ssh. L'autorita' e' la porzione fra "://" e
-    // il primo '/': li', e solo li', l' '@' ha significato di userinfo
-    // (user@host). Un '@' nel path non e' userinfo: rfind su tutta la stringa
-    // lo raccoglieva e fabbricava l'host atteso da un percorso qualunque.
+    // il primo dei caratteri '/', '?' o '#' (RFC 3986 §3.2: l'autorita'
+    // termina al primo di path / query / fragment). Solo DENTRO l'autorita'
+    // cosi' delimitata l' '@' ha significato di userinfo (user@host); un '@'
+    // che cade nel path, nella query o nel fragment non e' userinfo.
+    //
+    // Il difetto che questo chiude: delimitare l'autorita' solo sul '/' faceva
+    // considerare authority tutta la porzione fino al primo '/', inclusi eventuali
+    // '?' e '#'. Cosi' `https://127.0.0.1:9?@github.com/openai/codex.git` — dove
+    // l'autorita' reale e' `127.0.0.1:9` e `@github.com` e' QUERY — veniva
+    // canonizzato come `github.com/openai/codex` (l' '@' dopo '?' raccolto come
+    // userinfo): il gate si fidava di un remote che Git contatta altrove. Lo
+    // stesso con '#' al posto di '?'. Ora l'autorita' termina al primo di '/?#
+    // e l' '@' e' cercato solo dentro essa.
     if let Some(idx) = u.find("://") {
         let scheme = u.get(..idx)?.to_ascii_lowercase();
         if scheme != "https" && scheme != "ssh" {
@@ -155,7 +165,9 @@ fn canonical_remote(url: &str) -> Option<String> {
         if after.is_empty() {
             return None;
         }
-        let auth_end = after.find('/').unwrap_or(after.len());
+        let auth_end = after
+            .find(|c| c == '/' || c == '?' || c == '#')
+            .unwrap_or(after.len());
         let (auth, path) = after.split_at(auth_end);
         // host: dopo l'ultimo '@' DENTRO l'autorita', prima di ':' (porta).
         let host = match auth.rfind('@') {
@@ -166,6 +178,12 @@ fn canonical_remote(url: &str) -> Option<String> {
         if host.is_empty() {
             return None;
         }
+        // tail: path SENZA query/fragment. Dopo l'autorita' ci puo' essere una
+        // query ('?') o un fragment ('#') prima del path: le si scarta, il
+        // canonical e' host/path — un URL con query/fragment che falsifica il
+        // path atteso non deve passare per il repo atteso.
+        let path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
+        let path = path.split_once('#').map(|(p, _)| p).unwrap_or(path);
         let tail = path.trim_matches('/');
         if tail.is_empty() {
             return None;
@@ -984,6 +1002,92 @@ fn i_motivi_mordano_ancora() {
         assert!(
             !has_isolated(identity, &handle),
             "l'identita' pubblica del progetto non e' un leak: {identity}"
+        );
+    }
+}
+
+// ---- CONTROLLO NEGATIVO: autorita' reale != attesa, l'URL ingannevole viene
+// rifiutato comunque sia scritto. Pinna la proprieta' RFC 3986 che
+// l'autenticazione del remote avrebbe dovuto chiudere ma non chiudeva:
+// l'autorita' di un URL termina al primo di '/', '?' o '#' (RFC 3986 §3.2), e
+// l' '@' di userinfo va cercato SOLO dentro l'autorita' cosi' delimitata.
+// Delimitare solo sul '/' faceva canonizzare
+// `https://127.0.0.1:9?@github.com/openai/codex.git` come
+// `github.com/openai/codex` (l' '@' dopo '?' raccolto come userinfo): il gate
+// si fidava di un remote che Git contatta a 127.0.0.1:9. Il discriminante non
+// e' "il test fallisce" (classe1 e' gia' rosso di suo) ma il MOTIVO: un remote
+// onesto e uno ingannevole producevano lo stesso panic (classe1, attribuzione
+// AI), cioe' il gate si fidava di entrambi. Qui si verifica che il parser
+// espone l'autorita' REALE — host diverso da github.com, o None — che e' il
+// motivo per cui il gate di integrazione rifiuta invece di fidarsene.
+
+/// Host di un canonical "host/owner/repo": la porzione prima del primo '/'.
+fn canonical_host(c: &str) -> &str {
+    c.split_once('/').map(|(h, _)| h).unwrap_or(c)
+}
+
+#[test]
+fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
+    let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+
+    // URL ingannevoli: l'autorita' reale NON e' github.com, ma l'URL e'
+    // scritto per far sembrare che lo sia ( '@' nella query/fragment, host
+    // atteso nel path, '@' con host finto prima di quello reale). Tutti
+    // devono essere rifiutati come upstream, e il MOTIVO deve essere visibile:
+    // l'host che il parser estrae non e' github.com.
+    let deceptive: &[&str] = &[
+        // '?@' : '@github.com' e' QUERY, l'autorita' reale e' 127.0.0.1:9.
+        "https://127.0.0.1:9?@github.com/openai/codex.git",
+        // '#@' : '@github.com' e' FRAGMENT, stessa idea via '#'.
+        "https://127.0.0.1:9#@github.com/openai/codex.git",
+        // '?' e '#' combinati.
+        "https://127.0.0.1:9?#@github.com/openai/codex.git",
+        "https://127.0.0.1:9#?@github.com/openai/codex.git",
+        // '@' dopo '?' con un path reale prima della query: l'autorita' reale
+        // 127.0.0.1 resta visibile nel canonical (motivo osservabile).
+        "https://127.0.0.1:9/openai/codex?@github.com/openai/codex.git",
+        // host atteso che compare nel PATH, non nell'autorita'.
+        "https://evil.example.com/github.com/openai/codex.git",
+        // confusione '@' classica: github.com come userinfo, host reale altrove.
+        "https://github.com@evil.example/openai/codex.git",
+    ];
+    for url in deceptive {
+        let got = canonical_remote(url);
+        // Proprieta': non passa per il repo atteso.
+        assert_ne!(
+            got.as_deref(),
+            Some(expected.as_str()),
+            "URL ingannevole non deve passare per upstream atteso: {url:?} -> {got:?}"
+        );
+        // MOTIVO: l'host che il parser estrae (l'autorita' reale) non e'
+        // github.com. Per None l'autorita' reale non lascia un path
+        // interpretabile — comunque non github.com. Questo e' il punto: il
+        // parser vede DENTRO l'URL, non si fida dell'apparenza.
+        let host = got.as_deref().map(canonical_host);
+        assert_ne!(
+            host,
+            Some(UPSTREAM_HOST),
+            "il canonical deve mostrare l'autorita' reale, non l'host atteso: \
+             {url:?} -> host {host:?}"
+        );
+    }
+
+    // Credenziali con '@' multipli e URL onesti con query/fragment: NON sono
+    // inganni. L'host e' dopo l'ultimo '@' DENTRO l'autorita'; `a@b@github.com`
+    // ha host github.com (userinfo `a@b`), e una query/fragment dopo il path
+    // non cambia il repo. Il gate non deve over-restringere e rifiutare un
+    // remote onesto: un falso positivo costa una verifica umana, ma accusare
+    // l'innocente erode il guardiano quanto fidarsi del colpevole.
+    for honest in [
+        "https://a@b@github.com/openai/codex.git",
+        "https://token@github.com/openai/codex.git",
+        "https://github.com/openai/codex?foo=bar",
+        "https://github.com/openai/codex#readme",
+    ] {
+        let got = canonical_remote(honest).expect("URL onesto non interpretato");
+        assert_eq!(
+            got, expected,
+            "URL onesto deve passare per atteso: {honest:?} -> {got:?} (atteso {expected:?})"
         );
     }
 }
