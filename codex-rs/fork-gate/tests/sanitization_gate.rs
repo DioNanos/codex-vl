@@ -156,7 +156,21 @@ fn canonical_remote(url: &str) -> Option<String> {
     // stesso con '#' al posto di '?'. Ora l'autorita' termina al primo di '/?#
     // e l' '@' e' cercato solo dentro essa.
     if let Some(idx) = u.find("://") {
-        let scheme = u.get(..idx)?.to_ascii_lowercase();
+        // scheme CASE-SENSITIVE: non e' RFC 3986 (che lo vorrebbe
+        // case-insensitive), e' il vero trasporto Git. Misurato (nessuna
+        // connessione: fallisce PRIMA di ogni I/O): `git ls-remote
+        // 'HTTPS://127.0.0.1:1/x'` -> "git: 'remote-HTTPS' is not a git
+        // command" — Git cerca un remote helper esterno chiamato
+        // git-remote-<scheme ESATTO, case preservato>, e solo git-remote-
+        // https/git-remote-ssh minuscoli sono built-in. Con lo scheme
+        // minuscolo verso lo stesso indirizzo, Git TENTA davvero la
+        // connessione ("Failed to connect", non "is not a git command"):
+        // il case conta per il dispatch, non e' un dettaglio cosmetico.
+        // Un canonical_remote che lowercased lo scheme accettava
+        // "HTTPS://github.com/..." come repository atteso — un URL che
+        // Git stesso rifiuta di usare per QUALSIASI fetch reale, prima di
+        // contattare alcunche'.
+        let scheme = u.get(..idx)?;
         if scheme != "https" && scheme != "ssh" {
             return None;
         }
@@ -367,8 +381,28 @@ fn strip_port(host: &str) -> &str {
 
 /// Autorita' (solo hostname, senza porta) che GIT contatterebbe DAVVERO per
 /// `url`, secondo Git/SSH stessi. None se Git non ha un'opinione
-/// utilizzabile: uno scheme che il credential subsystem non copre e che non
-/// e' nemmeno una destination SSH interpretabile.
+/// utilizzabile: uno scheme che ne' il credential subsystem ne' SSH
+/// coprono, o un URL che nessuno dei due sa interpretare affatto.
+///
+/// Riconsegna (due giri, non uno): un primo giro aveva reso questa
+/// funzione case-INSENSITIVE sullo scheme (misurato con `git credential
+/// fill` su "HTTPS://...": risponde host=github.com). Sembrava corretto —
+/// ma quella misura guardava il CREDENTIAL SUBSYSTEM, non il vero
+/// dispatch del trasporto. Verificato *anche* quello (nessuna rete: fallisce
+/// PRIMA di ogni I/O): `git ls-remote 'HTTPS://127.0.0.1:1/x'` -> "git:
+/// 'remote-HTTPS' is not a git command"; con lo scheme minuscolo verso lo
+/// stesso indirizzo, Git TENTA davvero la connessione ("Failed to
+/// connect"). Il vero trasporto di Git cerca un remote helper chiamato
+/// `git-remote-<scheme ESATTO>`, e solo `git-remote-https`/`-ssh`
+/// minuscoli sono built-in: uno scheme con case diverso non produce MAI
+/// un fetch riuscito, qualunque cosa dica il credential subsystem (che
+/// serve solo al lookup delle credenziali, non al dispatch del trasporto).
+/// `credential fill` e il trasporto reale sono due sotto-sistemi diversi
+/// di Git, e qui NON concordano fra loro. La proprieta' che questo file
+/// deve misurare e' "l'host che Git contatterebbe per un fetch reale", non
+/// "l'host che il credential subsystem crede di dover cercare" — quindi lo
+/// scheme resta case-SENSITIVE qui, ed e' `canonical_remote` (sopra) che
+/// e' stato corretto per allinearsi, non questa funzione.
 fn git_authority_for(url: &str) -> Option<String> {
     if url.starts_with("https://") {
         return credential_fill_field(url, "host").map(|h| strip_port(&h).to_string());
@@ -377,13 +411,14 @@ fn git_authority_for(url: &str) -> Option<String> {
         let dest = ssh_destination_for(url)?;
         return ssh_resolved_host(&dest);
     }
-    // forma scp-like: nessuno scheme, "host:path" — SOLO se non c'e' un '/'
-    // prima del ':' (altrimenti il ':' e' nel path, non separa host) e
-    // l'URL non ha comunque un "://" altrove (uno scheme sconosciuto come
-    // file:// non e' scp-like solo perche' contiene un ':'). Stessa
+    // forma scp-like: nessuno scheme ("https://"/"ssh://" gia' esclusi
+    // sopra) — valida SOLO se non c'e' un '/' prima del ':' (altrimenti il
+    // ':' e' nel path, non separa host) e l'URL non ha comunque un "://"
+    // altrove (uno scheme sconosciuto o mal capitalizzato come "HTTPS://"
+    // o "file://" non e' scp-like solo perche' contiene un ':'). Stessa
     // condizione di canonical_remote: non e' una coincidenza, e' l'unico
-    // modo per cui la domanda "Git la tratterebbe come SSH?" ha senso per
-    // questa forma.
+    // modo per cui la domanda "Git la tratterebbe
+    // come SSH?" ha senso per questa forma.
     let colon = url.find(':')?;
     if url[..colon].contains('/') || url[colon..].starts_with("://") {
         return None;
@@ -1452,6 +1487,41 @@ fn canonical_remote_concorda_con_git_sullautorita() {
             // corretto e verificato sopra: non e' un requisito che questo
             // ramo produca Some per essere una consegna valida.
         }
+    }
+
+    // Secondo giro sullo stesso test, stesso principio ("chiedi a Git, non
+    // ricostruire"): un primo tentativo aveva reso l'oracolo case-
+    // insensitive sullo scheme, misurando SOLO `git credential fill`
+    // (che risponde a "HTTPS://..." con host=github.com). Verificato
+    // *anche* il vero trasporto (nessuna rete: fallisce PRIMA di ogni I/O
+    // in entrambi i casi): `git ls-remote 'HTTPS://127.0.0.1:1/x'` -> "git:
+    // 'remote-HTTPS' is not a git command"; con lo scheme minuscolo verso
+    // lo stesso indirizzo, Git TENTA davvero la connessione ("Failed to
+    // connect"). Il credential subsystem e il dispatch del trasporto sono
+    // due sotto-sistemi DIVERSI di Git e qui non concordano: "HTTPS://..."
+    // non produce MAI un fetch riuscito, qualunque cosa dica il
+    // credential lookup. La proprieta' che conta e' "l'host che Git
+    // contatterebbe per un fetch reale" — quindi lo scheme resta
+    // case-sensitive, ed e' canonical_remote che e' stato corretto per
+    // allinearsi (era lui il permissivo di troppo, non l'oracolo).
+    for mismatched_case in ["HTTPS://github.com/openai/codex.git", "SSH://git@github.com/openai/codex.git"] {
+        assert!(
+            canonical_remote(mismatched_case).is_none(),
+            "uno scheme con case diverso da \"https\"/\"ssh\" non produce mai un \
+             fetch riuscito (Git cerca un remote helper esterno case-preservato \
+             che non esiste): {mismatched_case:?} deve restare rifiutato"
+        );
+        // L'oracolo deve concordare sul rifiuto: nessuna opinione
+        // utilizzabile, non "nessun oggetto da confrontare per un bug
+        // dell'oracolo" — la distinzione che questo intero test esiste per
+        // fare. Qui il None e' quello giusto: sia canonical_remote sia
+        // git_authority_for lo dicono per lo STESSO motivo (lo scheme non
+        // e' quello che Git dispatcha), non per due motivi diversi.
+        assert!(
+            git_authority_for(mismatched_case).is_none(),
+            "l'oracolo deve concordare che Git non ha un'opinione utilizzabile \
+             per {mismatched_case:?} (nessun trasporto la riconoscerebbe)"
+        );
     }
 }
 
