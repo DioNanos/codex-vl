@@ -61,17 +61,6 @@ fn git(root: &Path, args: &[&str]) -> String {
     }
 }
 
-/// Vero se `git rev-parse --verify <ref>` ha successo.
-fn ref_exists(root: &Path, refname: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--verify", refname])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Concatena frammenti in una String: un needle costruito non e' mai un
 /// letterale nel sorgente del gate.
 fn joined(parts: &[&str]) -> String {
@@ -82,10 +71,27 @@ fn joined(parts: &[&str]) -> String {
     s
 }
 
-/// Un needle vietato col suo PERCHE'.
+/// Vero se `haystack` contiene `needle`, case-insensitive (ASCII). Per i
+/// trailer git e le firme di generazione: il trailer `co-authored-by`
+/// scritto in minuscolo da un tool diverso deve mordere quanto `Co-Authored-By`
+/// o `CO-AUTHORED-BY`. NON si usa per l'handle dell'operatore, che resta
+/// case-sensitive (vedi `op_handle`): `dag` minuscolo e' un'altra cosa
+/// (directed acyclic graph) e intercettarlo sarebbe gridare al lupo.
+fn contains_ci(haystack: &str, needle: &str) -> bool {
+    haystack
+        .to_ascii_lowercase()
+        .contains(needle.to_ascii_lowercase().as_str())
+}
+
+/// Un needle vietato col suo PERCHE' e il regime di case.
+/// `ci = true`  => confronto case-insensitive (trailer/firme/marker: il
+///                trailer git `co-authored-by` vale in ogni casing).
+/// `ci = false` => case-sensitive (l'handle dell'operatore: il suo minuscolo
+///                 non e' l'handle, vedi `op_handle`).
 struct Vietato {
     needle: String,
     perche: &'static str,
+    ci: bool,
 }
 
 // ---- needle vietati (costruiti a frammenti) --------------------------------
@@ -99,14 +105,17 @@ fn ai_vietati() -> Vec<Vietato> {
         Vietato {
             needle: joined(&["Co-", "Authored-", "By"]),
             perche: "trailer git di co-autoria AI nel corpo del commit",
+            ci: true,
         },
         Vietato {
             needle: joined(&["Generated", " with"]),
             perche: "firma di generazione AI nel corpo del commit",
+            ci: true,
         },
         Vietato {
             needle: String::from("\u{1F916}"),
             perche: "emoji del robot (attribuzione AI) nel corpo del commit",
+            ci: true,
         },
     ]
 }
@@ -125,10 +134,12 @@ fn audit_vietati() -> Vec<Vietato> {
         Vietato {
             needle: joined(&["merge", "-feature-", "register"]),
             perche: "marker del register di merge (audit interno) in note di release",
+            ci: true,
         },
         Vietato {
             needle: joined(&["APPROVE", ":"]),
             perche: "marker di verdetto del register (audit interno) in note di release",
+            ci: true,
         },
     ]
 }
@@ -178,6 +189,8 @@ fn scan_text(rel: &str, bytes: &[u8], vietati: &[Vietato], isolated: bool) -> Ve
         for v in vietati {
             let hit = if isolated {
                 has_isolated(line, &v.needle)
+            } else if v.ci {
+                contains_ci(line, v.needle.as_str())
             } else {
                 line.contains(v.needle.as_str())
             };
@@ -196,36 +209,74 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     let root = repo_root();
 
     // CRITERIO (dichiarato): un commit e' "nostro" se e' raggiungibile da
-    // HEAD ma NON da upstream/main. Usa l'ancestry di git — verita' di terra,
-    // non euristiche su autore o data. I commit upstream pubblici prima del
-    // fork stanno nella storia di upstream/main e sono quindi esclusi: e'
-    // proprio cio' che li distingue dai nostri.
+    // HEAD ma NON da alcun ref remotizzato di upstream
+    // (refs/remotes/upstream/*), non solo da upstream/main. Usa l'ancestry di
+    // git — verita' di terra, non euristiche su autore o data.
+    //
+    // PERCHE' TUTTI I REF E NON SOLO upstream/main. I commit di release
+    // upstream fuori dal ramo principale — backport su rami release/0.144,
+    // [0.146], tag di release che vivono su rami di manutenzione — entrano
+    // nella storia del fork via merge ma NON stanno su upstream/main.
+    // Escluderli solo via upstream/main li attribuirebbe a noi: falso
+    // positivo, il guardiano accusa l'innocente. Escludere TUTTI i ref
+    // remotizzati di upstream li restituisce a chi di diritto.
+    //
+    // Questo non puo' mai escludere un commit NOSTRO: non pubblichiamo su
+    // upstream (siamo un fork downstream), quindi un nostro commit non e'
+    // raggiungibile da refs/remotes/upstream/*. L'allargamento rimuove solo
+    // falsi positivi, non introduce falsi negativi.
+    //
+    // RESIDUO DICHIARATO (verso d'errore scelto): un commit upstream
+    // raggiungibile SOLO da un tag — non da alcun ramo remotizzato — resterebbe
+    // classificato "nostro". E' un FALSO POSITIVO: il gate si arrossa,
+    // l'operatore verifica, vede che e' upstream, lo smista. Si sceglie questo
+    // verso (falso positivo che chiede verifica umana) invece del falso
+    // negativo (un commit nostro escluso e una traccia che esce): il gate
+    // esiste per non far uscire tracce, e un falso positivo si chiarisce a
+    // mente, un falso negativo non si chiarisce mai. I tag non si escludono
+    // proprio per non allargare il verso sbagliato: distinguere un tag upstream
+    // da uno nostro e' fragile, e in dubbio si flagga.
     //
     // Perche' non autore: il merge commit che porta upstream e' comunque
     // nostro (autore del fork), e upstream contribuisce con email eterogenee
     // — l'autore e' un proxy, non la verita'. Perche' non data: la data del
     // fork non e' un confine netto (mergiamo upstream continuamente).
-    // L'ancestry lo e': un commit o sta nella storia pubblica upstream, o no.
+    // L'ancestry lo e': un commit o sta nella storia pubblicata da upstream
+    // (qualsiasi suo ramo remotizzato), o e' nostro.
     //
-    // Dipendenza: upstream/main deve essere presente (`git fetch upstream`).
-    // Se manca, il gate FALLISCE forte invece di passare verde per assenza di
-    // ispezione. Un upstream/main stallo genera SOLO falsi positivi (piu'
-    // commit classificati come nostri, mai meno): e' safe-failing, non silente.
+    // Dipendenza: almeno un ref refs/remotes/upstream/* deve esistere
+    // (`git fetch upstream`). Se non c'e' neanche uno, il gate FALLISCE: il
+    // criterio non e' applicabile e non si passa verde per assenza di ispezione.
+    let upstream_refs: Vec<String> = git(
+        &root,
+        &["for-each-ref", "--format=%(refname)", "refs/remotes/upstream"],
+    )
+    .lines()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .collect();
     assert!(
-        ref_exists(&root, "upstream/main"),
-        "upstream/main mancante: il criterio 'nostro vs upstream' non e' applicabile. \
-         Esegui `git fetch upstream`. Il gate non passa verde per assenza di ispezione."
+        !upstream_refs.is_empty(),
+        "nessun ref refs/remotes/upstream/* presente: il criterio 'nostro vs upstream' \
+         non e' applicabile. Esegui `git fetch upstream`. Il gate non passa verde \
+         per assenza di ispezione."
     );
 
     // Un'unica invocazione: %x00 separa l'hash dal corpo; il corpo e' NUL-free,
-    // lo split e' robusto. Molto piu' veloce di un git log per commit.
-    let raw = git(
-        &root,
-        &["log", "HEAD", "--not", "upstream/main", "--format=%H%x00%B%x00"],
-    );
+    // lo split e' robusto. --not applica ogni ref upstream come limite negativo
+    // (esclusione ancestry): un commit raggiungibile da HEAD e da qualsiasi ref
+    // upstream e' upstream, non nostro.
+    let mut log_args: Vec<&str> = vec!["log", "HEAD", "--not"];
+    for r in &upstream_refs {
+        log_args.push(r.as_str());
+    }
+    log_args.push("--format=%H%x00%B%x00");
+    let raw = git(&root, &log_args);
+
     let parts: Vec<&str> = raw.split('\0').collect();
     let needles = ai_vietati();
     let mut colpe: Vec<String> = Vec::new();
+    let mut visti = 0usize;
     let mut i = 0;
     while i + 1 < parts.len() {
         let sha = parts[i].trim();
@@ -234,9 +285,18 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
         if sha.is_empty() {
             continue;
         }
+        visti += 1;
+        // I needle di attribuzione AI sono case-insensitive (ci = true): un
+        // trailer `co-authored-by` in minuscolo morde quanto `Co-Authored-By`.
         let hit: Vec<&str> = needles
             .iter()
-            .filter(|n| body.contains(n.needle.as_str()))
+            .filter(|n| {
+                if n.ci {
+                    contains_ci(body, n.needle.as_str())
+                } else {
+                    body.contains(n.needle.as_str())
+                }
+            })
             .map(|v| v.perche)
             .collect();
         if !hit.is_empty() {
@@ -248,9 +308,36 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
             ));
         }
     }
+
+    // DIFETTO 1 — il gate non passa verde perche' l'insieme e' vuoto. Questo e'
+    // il punto piu' insidioso: un test che itera su niente passa sempre, e un
+    // gate anti-verde-vuoto che diventa verde-vuoto e' il fallimento piu'
+    // istruttivo. Un insieme vuoto di commit "nostri" NON e' successo: e'
+    // l'impossibilita di misurare, e va detta.
+    //
+    // Cause: (1) un ref upstream e' andato oltre HEAD (ref stallo / fetch non
+    //   aggiornato) — HEAD e' antenato di un ref upstream, quindi
+    //   `HEAD --not <upstream>` seleziona zero commit;
+    // (2) HEAD non ha diverguto da upstream, cioe' non ci sono commit nostri
+    //   da sanificare — situazione legittima ma che il gate non puo' assumere;
+    // (3) il selettore non seleziona (ref sbagliati, refspaces mutati).
+    // In tutti i casi il gate non ha guardato nulla: lo dichiara e fallisce.
+    assert!(
+        visti > 0,
+        "l'insieme dei commit da ispezionare (HEAD --not <refs/remotes/upstream/*>) \
+         e' vuoto: il gate ha iterato su nulla e non ha guardato nessun commit. \
+         Non e' un successo, e' l'impossibilita di misurare. Cause possibili: \
+         (1) un ref upstream e' andato oltre HEAD (ref stallo): HEAD e' antenato \
+         di un ref upstream e `HEAD --not <upstream>` seleziona zero commit — \
+         esegui `git fetch upstream` e verifica; (2) HEAD non ha diverguto da \
+         upstream, nessun commit nostro da sanificare; (3) il selettore non \
+         seleziona (refspaces mutati). Un insieme vuoto va detto, non passato."
+    );
+
     assert!(
         colpe.is_empty(),
-        "la storia del fork (HEAD --not upstream/main) non deve contenere attribuzione AI:\n  {}",
+        "la storia del fork (HEAD --not <refs/remotes/upstream/*>) non deve contenere \
+         attribuzione AI:\n  {}",
         colpe.join("\n  ")
     );
 }
@@ -359,6 +446,15 @@ fn i_motivi_mordano_ancora() {
             "falso positivo su sottostringa non isolata: {ok}"
         );
     }
+    // handle resta CASE-SENSITIVE: "dag" minuscolo (directed acyclic graph,
+    // struttura dati comune in codice reale) NON e' l'handle dell'operatore e
+    // non deve mordere. Questa e' l'asimmetria voluta dal difetto 2: i
+    // trailer/firme diventano case-insensitive, l'handle no — altrimenti il
+    // guardiano griderebbe al lupo su ogni grafo di dipendenze.
+    assert!(
+        !has_isolated("let dag = build_dag();", &handle),
+        "l'handle e' case-sensitive: 'dag' minuscolo non e' un leak"
+    );
 
     // attribuzione AI: tutti i needle mordono nel corpo di un commit.
     let ai = ai_vietati();
@@ -370,6 +466,22 @@ fn i_motivi_mordano_ancora() {
         ai.iter().all(|v| bad_body.contains(v.needle.as_str())),
         "ogni needle di attribuzione AI deve mordere"
     );
+    // attribuzione AI: i needle mordono anche in casing NON canonico. Un
+    // trailer scritto in minuscolo da un tool diverso (`co-authored-by`) o in
+    // maiuscolo (`CO-AUTHORED-BY`, `GENERATED WITH`) deve cadere nel gate:
+    // e' proprio il caso che il gate case-sensitive lasciava passare.
+    assert!(
+        contains_ci("co-authored-by: any assistant <x@y>", ai[0].needle.as_str()),
+        "co-authored-by (minuscolo) deve mordere: confronto case-insensitive"
+    );
+    assert!(
+        contains_ci("CO-AUTHORED-BY: x", ai[0].needle.as_str()),
+        "CO-AUTHORED-BY (maiuscolo) deve mordere"
+    );
+    assert!(
+        contains_ci("GENERATED WITH a tool", ai[1].needle.as_str()),
+        "GENERATED WITH (maiuscolo) deve mordere"
+    );
 
     // marker di audit: tutti i needle mordono in una riga di release.
     let am = audit_vietati();
@@ -377,6 +489,16 @@ fn i_motivi_mordano_ancora() {
     assert!(
         am.iter().all(|v| bad_release.contains(v.needle.as_str())),
         "ogni needle di audit deve mordere"
+    );
+    // marker di audit: mordono anche in casing diverso (marker scritti a mano
+    // maiuscolo/minuscolo).
+    assert!(
+        contains_ci("merge-FEATURE-register:verdetto", am[0].needle.as_str()),
+        "merge-feature-register in casing misto deve mordere"
+    );
+    assert!(
+        contains_ci("verdetto approve: ok", am[1].needle.as_str()),
+        "approve: (minuscolo) deve mordere"
     );
 
     // L'identita' PUBBLICA del progetto NON e' un leak: non deve essere
@@ -399,6 +521,7 @@ fn un_binario_inatteso_in_testo_fa_fallire_non_essere_saltato() {
     let v = vec![Vietato {
         needle: op_handle(),
         perche: "handle operatore (di prova)",
+        ci: false,
     }];
     let f = scan_text("src/fittizio.dat", b"before\x00after", &v, true);
     assert!(
