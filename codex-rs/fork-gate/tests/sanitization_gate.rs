@@ -83,6 +83,56 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
         .contains(needle.to_ascii_lowercase().as_str())
 }
 
+// ---- autenticazione del remote upstream ------------------------------------
+
+// Repository upstream atteso: il CRITERIO e' scritto qui nel test, non
+// assunto dall'ambiente. codex-vl e' un fork DOWNSTREAM di openai/codex su
+// GitHub: solo quello e' il riferimento contro cui ha senso misurare i commit
+// "nostri". Si accetta sia HTTPS sia SSH dello STESSO repo: l'identita' e'
+// "host/owner/repo", il protocollo e' un dettaglio che non deve far fallire
+// un remote legittimo. Ma un remote che punta a un ALTRO repo — un fork
+// qualunque, un mirror, un repo sbagliato — NON e' ammesso. Il difetto che
+// questo chiude: il gate verificava che l'insieme dei commit "nostri" fosse
+// NON VUOTO, non che fosse quello GIUSTO. Se il remote punta altrove,
+// l'insieme risulta non vuoto e SBAGLIATO: superata la guardia sul vuoto, il
+// confronto avviene contro il riferimento sbagliato e un commit con
+// attribuzione AI resterebbe nascosto (presente nel remote sbagliato =>
+// classificato "upstream" => non ispezionato). La stessa forma di ieri —
+// "il gate seleziona qualcosa" contro "il gate seleziona cio' che dichiara
+// di guardare". Ora il gate autentica il remote PRIMA di fidarsene: se non
+// e' quello atteso, FALLISCE dicendo perche' — non prova a indovinare e non
+// degrada silenziosamente.
+const UPSTREAM_HOST: &str = "github.com";
+const UPSTREAM_REPO: &str = "openai/codex";
+
+/// Normalizza un URL di remote git alla forma canonica "host/owner/repo"
+/// (lowercase, senza suffisso .git). Riconosce le forme HTTPS
+/// (https://host/owner/repo[.git]), SSH con scheme (ssh://git@host/owner/repo)
+/// e scp-like (git@host:owner/repo). Restituisce None se la forma non e'
+/// riconosciuta: un URL non interpretabile e' comunque un fail del gate, non
+/// un degrade silenzioso.
+fn canonical_remote(url: &str) -> Option<String> {
+    let u = url.trim();
+    let u = u.strip_suffix(".git").unwrap_or(u);
+    // scheme://... (https, ssh): tutto dopo "://", scartando l'eventuale
+    // userinfo "user@host" — si tiene da host in poi.
+    if let Some(idx) = u.find("://") {
+        let after = &u[idx + 3..];
+        let after = after.rfind('@').map(|a| &after[a + 1..]).unwrap_or(after);
+        return Some(after.trim_end_matches('/').to_ascii_lowercase());
+    }
+    // forma scp-like: git@host:owner/repo
+    if let Some(at) = u.rfind('@') {
+        let after = &u[at + 1..];
+        if let Some(c) = after.find(':') {
+            let host = &after[..c];
+            let tail = &after[c + 1..];
+            return Some(format!("{host}/{}", tail.trim_end_matches('/')).to_ascii_lowercase());
+        }
+    }
+    None
+}
+
 /// Un needle vietato col suo PERCHE' e il regime di case.
 /// `ci = true`  => confronto case-insensitive (trailer/firme/marker: il
 ///                trailer git `co-authored-by` vale in ogni casing).
@@ -208,6 +258,56 @@ fn scan_text(rel: &str, bytes: &[u8], vietati: &[Vietato], isolated: bool) -> Ve
 fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     let root = repo_root();
 
+    // AUTENTICAZIONE DEL REMOTE prima di fidarsene. Il gate esclude i commit
+    // raggiungibili da refs/remotes/upstream/*: se quel remote punta altrove
+    // (un fork, un mirror, un repo sbagliato), l'insieme dei commit "nostri" e'
+    // SBAGLIATO — non vuoto, ma misurato contro il riferimento sbagliato.
+    // Superata la guardia sul vuoto, il confronto avverrebbe contro il remote
+    // sbagliato e un commit con attribuzione AI resterebbe nascosto (presente
+    // nel remote sbagliato => classificato "upstream" => non ispezionato). L'URL
+    // del remote deve corrispondere al repository upstream atteso: il criterio
+    // e' la costante UPSTREAM_HOST/UPSTREAM_REPO, scritta qui nel test, non
+    // assunta dall'ambiente. Se non corrisponde, il gate FALLISCE dicendo
+    // perche' — non prova a indovinare, non degrada silenziosamente. Questo
+    // precede la raccolta dei ref: l'autenticazione avviene prima che un
+    // qualsiasi ref venga consultato, quindi lo stato di fetch e' irrilevante
+    // per il gate fissato (un remote sbagliato cade all'URL, non ai ref).
+    let upstream_url = match Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["remote", "get-url", "upstream"])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => panic!(
+            "il remote 'upstream' non esiste o 'git remote get-url' e' fallito (status {}): {}. \
+             Il criterio 'nostro vs upstream' non e' applicabile senza un remote upstream \
+             autenticato. Il gate non passa verde per assenza di ispezione.",
+            o.status,
+            String::from_utf8_lossy(&o.stderr)
+        ),
+        Err(e) => panic!("git non eseguibile: {e}"),
+    };
+    let upstream_url = upstream_url.trim();
+    let canonical = canonical_remote(upstream_url).unwrap_or_else(|| {
+        panic!(
+            "URL del remote 'upstream' non interpretabile come host/owner/repo: \
+             {upstream_url:?}. Il gate non degrada su un remote di forma ignota: un \
+             URL non riconoscibile e' un fail, non un silenzio."
+        );
+    });
+    let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+    assert!(
+        canonical == expected,
+        "il remote 'upstream' non e' il repository upstream atteso: trovato {canonical:?} \
+         (URL {upstream_url:?}), atteso {expected:?}. Un remote che punta altrove — un fork, \
+         un mirror, un repo sbagliato — rende l'insieme dei commit 'nostri' SBAGLIATO: superata \
+         la guardia sul vuoto, il confronto avviene contro il riferimento sbagliato e un commit \
+         con attribuzione AI resta nascosto (presente nel remote sbagliato => classificato \
+         'upstream' => non ispezionato). Correggi il remote con `git remote set-url upstream \
+         <URL atteso>`. Il gate non prova a indovinare e non degrada silenziosamente."
+    );
+
     // CRITERIO (dichiarato): un commit e' "nostro" se e' raggiungibile da
     // HEAD ma NON da alcun ref remotizzato di upstream
     // (refs/remotes/upstream/*), non solo da upstream/main. Usa l'ancestry di
@@ -219,7 +319,15 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     // nella storia del fork via merge ma NON stanno su upstream/main.
     // Escluderli solo via upstream/main li attribuirebbe a noi: falso
     // positivo, il guardiano accusa l'innocente. Escludere TUTTI i ref
-    // remotizzati di upstream li restituisce a chi di diritto.
+    // remotizzati di upstream restituisce a chi di diritto i commit di
+    // release che stanno su un ramo remotizzato (release/0.144, 0.146, …).
+    // Non copre, e non promette di coprire, i commit di release raggiungibili
+    // SOLO da un tag, senza alcun ramo remotizzato che li contenga: quelli
+    // restano classificati "nostro" — falso positivo dichiarato, vedi RESIDUO
+    // sotto. Dire "li restituisce tutti a chi di diritto" prometterebbe piu'
+    // di cio' che il codice mantiene: il gate non restituisce ogni commit di
+    // release a chi di diritto, restituisce quelli sui rami remotizzati e
+    // flagga (non nasconde) gli altri.
     //
     // Questo non puo' mai escludere un commit NOSTRO: non pubblichiamo su
     // upstream (siamo un fork downstream), quindi un nostro commit non e'
@@ -499,6 +607,42 @@ fn i_motivi_mordano_ancora() {
     assert!(
         contains_ci("verdetto approve: ok", am[1].needle.as_str()),
         "approve: (minuscolo) deve mordere"
+    );
+
+    // Autenticazione del remote: il criterio morde su un remote sbagliato e
+    // NON morde su quello giusto (entrambi i protocolli). Un remote che punta
+    // al nostro fork invece che a upstream non deve passare per atteso.
+    let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+    for ok in [
+        "https://github.com/openai/codex.git",
+        "https://github.com/openai/codex",
+        "git@github.com:openai/codex.git",
+        "ssh://git@github.com/openai/codex.git",
+    ] {
+        let c = canonical_remote(ok).expect("URL legittimo non interpretato");
+        assert!(
+            c == expected,
+            "remote legittimo non riconosciuto come atteso: {ok:?} -> {c:?} (atteso {expected:?})"
+        );
+    }
+    // un remote che punta altrove (il nostro fork, un mirror, un repo vicino
+    // ma non quello) NON e' upstream: il criterio lo distingue, non lo accetta
+    // per vicinanza di host o di nome.
+    for wrong in [
+        "https://github.com/DioNanos/codex-vl.git",
+        "https://github.com/openai/codex-cli.git",
+        "git@github.com:forks/codex-mirror.git",
+    ] {
+        let c = canonical_remote(wrong).expect("URL sbagliato interpretato");
+        assert!(
+            c != expected,
+            "un remote sbagliato non deve passare per atteso: {wrong:?} -> {c:?} == {expected:?}"
+        );
+    }
+    // un URL non interpretabile e' None: fail, non degrade silenzioso.
+    assert!(
+        canonical_remote("non-e-un-url").is_none(),
+        "un URL non interpretabile deve dare None, non un canonical fittizio"
     );
 
     // L'identita' PUBBLICA del progetto NON e' un leak: non deve essere
