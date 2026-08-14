@@ -46,6 +46,10 @@ use codex_config::format_config_error_with_source;
 use codex_config::types::ResumeCwdMode;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+#[cfg(test)]
+use codex_history::RolloutItem;
+#[cfg(test)]
+use codex_history::RolloutLine;
 use codex_login::AuthConfig;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
@@ -58,10 +62,6 @@ use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::protocol::AskForApproval;
-#[cfg(test)]
-use codex_protocol::protocol::RolloutItem;
-#[cfg(test)]
-use codex_protocol::protocol::RolloutLine;
 #[cfg(test)]
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::StateDbHandle;
@@ -2099,9 +2099,9 @@ mod tests {
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_config::config_toml::ProjectConfig;
     use codex_features::Feature;
+    use codex_history::RolloutItem;
+    use codex_history::RolloutLine;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::RolloutItem;
-    use codex_protocol::protocol::RolloutLine;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
