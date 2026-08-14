@@ -140,7 +140,6 @@ const UPSTREAM_REPO: &str = "openai/codex";
 /// verifica umana, un falso negativo fa uscire una traccia.
 fn canonical_remote(url: &str) -> Option<String> {
     let u = url.trim();
-    let u = u.strip_suffix(".git").unwrap_or(u);
 
     // scheme://... : SOLO https e ssh. L'autorita' e' la porzione fra "://" e
     // il primo dei caratteri '/', '?' o '#' (RFC 3986 §3.2: l'autorita'
@@ -205,6 +204,20 @@ fn canonical_remote(url: &str) -> Option<String> {
         let path = path.split_once('?').map(|(p, _)| p).unwrap_or(path);
         let path = path.split_once('#').map(|(p, _)| p).unwrap_or(path);
         let tail = path.trim_matches('/');
+        // il suffisso ".git" va tolto dal PATH CANONICO, dopo aver scartato
+        // query e fragment — non dall'URL grezzo intero. Il difetto che
+        // questo chiude: lo strip avveniva su `url` prima ancora di
+        // delimitare l'autorita' (`url.strip_suffix(".git")`), quindi
+        // funzionava SOLO se ".git" era l'ultimo carattere dell'URL intero.
+        // Con una query o un fragment in coda — "...codex.git?foo=bar",
+        // "...codex.git#readme" — l'URL non finisce piu' per ".git": lo
+        // strip non aveva effetto, ".git" restava nel path canonico
+        // ("github.com/openai/codex.git" invece di
+        // "github.com/openai/codex"), il confronto con l'atteso falliva, e
+        // un remote PERFETTAMENTE ONESTO veniva rifiutato con un messaggio
+        // che accusa "punta a un altro repo" — falso, e nel posto sbagliato:
+        // il difetto era nel parser, non nel remote.
+        let tail = tail.strip_suffix(".git").unwrap_or(tail);
         if tail.is_empty() {
             return None;
         }
@@ -226,6 +239,10 @@ fn canonical_remote(url: &str) -> Option<String> {
                 None => before,
             };
             let tail = u[c + 1..].trim_end_matches('/');
+            // stesso strip del ramo scheme:// sopra, per coerenza (qui non
+            // c'e' query/fragment da scartare prima: SSH non ha quella
+            // sintassi, l'intero resto dopo ':' e' path letterale).
+            let tail = tail.strip_suffix(".git").unwrap_or(tail);
             if host.is_empty() || tail.is_empty() {
                 return None;
             }
@@ -1264,10 +1281,26 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
     // gate non deve over-restringere e rifiutare un remote onesto: un falso
     // positivo costa una verifica umana, ma accusare l'innocente erode il
     // guardiano quanto fidarsi del colpevole.
+    //
+    // I quattro casi con ".git" PRIMA di query/fragment sono la forma
+    // completa, non un caso in piu': un falso positivo trovato dall'audit
+    // (riprodotto: vedi il fix dello strip ".git" in canonical_remote) —
+    // "https://github.com/openai/codex.git?foo=bar" veniva RIFIUTATO,
+    // accusato di puntare a un repo diverso ("...codex.git" != "...codex"),
+    // mentre punta esattamente al repository atteso. Lo strip di ".git"
+    // avveniva sull'URL grezzo intero, prima ancora di delimitare
+    // l'autorita': con query o fragment in coda l'URL non finisce piu' per
+    // ".git" e lo strip non aveva effetto. Questi casi erano stati tolti dal
+    // test in una consegna precedente per evitare la combinazione invece di
+    // correggere il parser — il test era stato piegato al difetto. Restano
+    // qui nella forma completa.
     for honest in [
         "https://token@github.com/openai/codex.git",
         "https://github.com/openai/codex?foo=bar",
         "https://github.com/openai/codex#readme",
+        "https://github.com/openai/codex.git?foo=bar",
+        "https://github.com/openai/codex.git#readme",
+        "https://github.com/openai/codex.git?foo=bar#readme",
     ] {
         let got = canonical_remote(honest).expect("URL onesto non interpretato");
         assert_eq!(
@@ -1332,6 +1365,18 @@ fn canonical_remote_concorda_con_git_sullautorita() {
         "https://token@github.com/openai/codex.git",
         "https://github.com/openai/codex?foo=bar",
         "https://github.com/openai/codex#readme",
+        // divergenza REALE trovata dall'audit e riprodotta: lo strip di
+        // ".git" operava sull'URL grezzo intero, non sul path canonico —
+        // con query/fragment in coda ".git" restava nel path e questi URL
+        // (perfettamente onesti: Git contatta ESATTAMENTE
+        // github.com/openai/codex) venivano rifiutati, accusati di puntare
+        // a un repo diverso. Qui e' il primo caso in cui parser e Git
+        // divergevano davvero — non un'ipotesi caduta alla misura come il
+        // caso backslash, un vero falso positivo. Vedi il fix dello strip
+        // ".git" in canonical_remote.
+        "https://github.com/openai/codex.git?foo=bar",
+        "https://github.com/openai/codex.git#readme",
+        "https://github.com/openai/codex.git?foo=bar#readme",
         // divergenza trovata scrivendo questo test (vedi sotto per la misura
         // e il fix): https con PIU' di un '@' nell'autorita'.
         "https://a@b@github.com/openai/codex.git",
