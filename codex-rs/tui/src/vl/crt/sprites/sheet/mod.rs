@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(state_for_mode(CrtMode::Hungry), SheetState::Idle);
     }
 
-    /// codex-vl 2026-05-15 DAG rule: the state marker MUST live inside the
+    /// codex-vl 2026-05-15 product owner rule: the state marker MUST live inside the
     /// face/core — either embedded in the top row between the dot frame
     /// (e.g. `.-?-.` / `\.?./`) or as a body indicator in the mid row
     /// (e.g. `/(-)\` for Juvenile Sleep where the top row degenerates to
@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    /// codex-vl 2026-05-15 DAG rule (iter B Orchestra): same marker-inside-
+    /// codex-vl 2026-05-15 product owner rule (iter B Orchestra): same marker-inside-
     /// face contract applied to Orchestra. Top row terminates with `.`
     /// (Baby/Juvenile) or `/` (Adult); bottom row terminates with `\` (Baby
     /// `/___\`) or `_` (Juvenile `_/ \_` / `_/o\_`, Adult `_/ \_`); the
@@ -286,7 +286,7 @@ mod tests {
         }
     }
 
-    /// codex-vl 2026-05-15 DAG rule (iter C Chronosworn): the time-core
+    /// codex-vl 2026-05-15 product owner rule (iter C Chronosworn): the time-core
     /// face uses a closed top frame per stage:
     /// - Baby `.X.` (closes with `.`)
     /// - Juvenile `.-X-.` (closes with `.`)
@@ -331,7 +331,7 @@ mod tests {
         }
     }
 
-    /// codex-vl 2026-05-15 DAG rule: ZED stays in archive mode (narrator/
+    /// codex-vl 2026-05-15 product owner rule: ZED stays in archive mode (narrator/
     /// presenter), so the ZED sheet must not grow runtime expansions in the
     /// same branch that refreshes Syllo. Concretely: ZED's source file must
     /// stay byte-identical to `develop`. We verify via `include_bytes!` +
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(
             ZED_SHEET_BYTES.len(),
             ZED_SHEET_LEN_AT_ITER_A_START,
-            "zed.rs file changed during crt-face-state sub-iters; ZED must stay archive-only per DAG D5",
+            "zed.rs file changed during crt-face-state sub-iters; ZED must stay archive-only per the product owner's design rule above — this snapshot exists to catch accidental edits, not to be silenced",
         );
     }
 }

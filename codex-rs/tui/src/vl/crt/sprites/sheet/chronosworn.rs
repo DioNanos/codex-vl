@@ -2,7 +2,7 @@ use super::SheetState;
 use crate::vivling::Stage;
 
 // codex-vl 2026-05-15: state marker lives INSIDE the time-core face,
-// never appended on the side (DAG rule, see
+// never appended on the side (product owner rule, see
 // `docs/assets/vivling/crt/vivling_crt_face_state_sprites_2026-05-15.md`).
 // Chronosworn uses a time-core sigil: body/silhouette stays identical
 // across all states of a stage; only the top frame carries the marker.
