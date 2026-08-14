@@ -61,6 +61,16 @@ fn git(root: &Path, args: &[&str]) -> String {
     }
 }
 
+/// Come `git` ma non panic: ritorna Some(stdout) se ok, None se fallisce. Per
+/// comandi opzionali nel fixture (es. `update-ref -d` di un ref che puo' non
+/// esserci): non far cadere il test per un ref assente.
+fn git_try(root: &Path, args: &[&str]) -> Option<String> {
+    match Command::new("git").arg("-C").arg(root).args(args).output() {
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).into_owned()),
+        _ => None,
+    }
+}
+
 /// Concatena frammenti in una String: un needle costruito non e' mai un
 /// letterale nel sorgente del gate.
 fn joined(parts: &[&str]) -> String {
@@ -131,6 +141,199 @@ fn canonical_remote(url: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ---- provenienza dei ref: il gate si fida solo se puo' provarla -----------
+
+/// Primo campo fra apici in `s` (il nome di branch/ref in una riga di
+/// FETCH_HEAD: `branch 'main' of <url>`). I nomi di branch git non contengono
+/// apici, quindi il primo paio delimita il nome.
+fn first_quoted(s: &str) -> Option<&str> {
+    let a = s.find('\'')?;
+    let b = s[a + 1..].find('\'')?;
+    Some(&s[a + 1..a + 1 + b])
+}
+
+/// Provenienza dei ref `refs/remotes/upstream/*` che il gate usa come limite
+/// negativo (`HEAD --not <ref>`) per classificare i commit "nostri".
+///
+/// Autenticare l'URL del remote (la CONFIGURAZIONE) NON basta: `git remote
+/// set-url` cambia la configurazione ma NON ripulisce i ref gia' scaricati,
+/// che restano quelli presi dal remote precedente. L'URL oggi corretto non
+/// prova la provenienza dei ref che quell'URL non ha mai scaricato: un ref
+/// stale puo' rendere raggiungibile un commit vietato da `refs/remotes/upstream/*`
+/// => il commit e' classificato "upstream" => non ispezionato => NASCOSTO.
+/// Misurato: dopo un `set-url`, un ref stale del remote di prima nasconde un
+/// commit vietato — un commit selezionato e zero colpe.
+///
+/// Prova LOCALE, senza rete: l'unico tracciamento che git lascia del remote da
+/// cui un ref e' stato scaricato e' il file FETCH_HEAD, scritto a ogni
+/// `git fetch`. Ogni riga registra `<sha> ... <branch> 'NAME' of <url>`. Se
+/// l'URL registrato e' quello upstream atteso E ogni ref che il gate usa e'
+/// elencato in quel FETCH_HEAD con lo STESSO sha, i ref sono provati come
+/// provenienti dal remote dichiarato. Se manca FETCH_HEAD, se l'URL non
+/// corrisponde, o se un ref non e' coperto (fetch parziale / FETCH_HEAD
+/// sovrascritto da un altro remote) o ha sha diverso (ref riposizionato dopo
+/// l'ultima fetch provata), la provenienza NON e' provata: il gate FALLISCE
+/// dicendolo, non indovina, non degrada.
+///
+/// L'operatore soddisfa la condizione con `git fetch upstream` (fetch piena
+/// dal remote attualmente configurato), che rinfresca ref + FETCH_HEAD dallo
+/// STESSO url. Un gate che facesse lui il fetch dipenderebbe dalla rete e
+/// cadrebbe a caso: il gate PRETENDE la condizione locale e dice come
+/// soddisfarla.
+///
+/// `expected_canonical` e' la forma "host/owner/repo" attesa (la stessa del
+/// controllo di URL di config). Ritorna `Ok(())` se ogni ref e' provato,
+/// `Err(failures)` altrimenti.
+fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(), Vec<String>> {
+    // Ref usati dal gate: refs/remotes/upstream/* -> nome -> sha.
+    let out = git(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/remotes/upstream",
+        ],
+    );
+    let mut refs: BTreeMap<String, String> = BTreeMap::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.splitn(2, ' ');
+        let rname = it.next().unwrap_or("");
+        let sha = it.next().unwrap_or("");
+        if rname.is_empty() || sha.is_empty() {
+            continue;
+        }
+        let name = rname
+            .strip_prefix("refs/remotes/upstream/")
+            .unwrap_or(rname);
+        refs.insert(name.to_string(), sha.to_string());
+    }
+    if refs.is_empty() {
+        // Il gate ha gia' assertito refs non-vuoto prima di chiamare; se qui e'
+        // vuoto la provenienza e' comunque non applicabile: fail, non verde.
+        return Err(vec![
+            "nessun ref refs/remotes/upstream/*: il criterio 'nostro vs upstream' non e' \
+             applicabile"
+                .into(),
+        ]);
+    }
+
+    // FETCH_HEAD: path robusto anche in worktree (common dir).
+    let fh_rel = git(root, &["rev-parse", "--git-path", "FETCH_HEAD"])
+        .trim()
+        .to_string();
+    let fh_path = if Path::new(&fh_rel).is_absolute() {
+        PathBuf::from(&fh_rel)
+    } else {
+        root.join(&fh_rel)
+    };
+    let content = match fs::read(&fh_path) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(_) => {
+            return Err(vec![format!(
+                "FETCH_HEAD non leggibile ({}): nessuna fetch registrata, la provenienza dei \
+                 ref non e' provata. Esegui `git fetch upstream`.",
+                fh_path.display()
+            )]);
+        }
+    };
+
+    // FETCH_HEAD -> nome -> (sha, canonical url). Una riga senza ` of <url>`
+    // (fetch di un oggetto diretto, senza ref) non prova un ref: la si salta.
+    let mut fh: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    for raw in content.lines() {
+        let fields: Vec<&str> = raw.split('\t').collect();
+        if fields.is_empty() {
+            continue;
+        }
+        let sha = fields[0].trim();
+        let last = *fields.last().unwrap_or(&"");
+        let url = match raw.rsplit_once(" of ") {
+            Some((_, u)) => u.trim(),
+            None => continue,
+        };
+        let name = match first_quoted(last) {
+            Some(n) => n,
+            None => continue,
+        };
+        if sha.is_empty() {
+            continue;
+        }
+        fh.entry(name.to_string())
+            .or_insert((sha.to_string(), canonical_remote(url)));
+    }
+
+    // Ogni ref usato deve essere provato: presente in FETCH_HEAD, stesso sha,
+    // dal remote atteso. Il primo ref non provato basta a cadere; si
+    // raccolgono fino a 5 esempi piu' un conteggio per un messaggio leggibile.
+    let mut fail: Vec<String> = Vec::new();
+    let mut nfail: usize = 0;
+    for (name, ref_sha) in &refs {
+        match fh.get(name) {
+            None => {
+                nfail += 1;
+                if fail.len() < 5 {
+                    fail.push(format!(
+                        "ref refs/remotes/upstream/{name} non e' in FETCH_HEAD: provenienza non \
+                         provata (fetch parziale o FETCH_HEAD sovrascritto da un altro remote). \
+                         Esegui `git fetch upstream`."
+                    ));
+                }
+            }
+            Some((fh_sha, canonical)) => {
+                if fh_sha != ref_sha {
+                    nfail += 1;
+                    if fail.len() < 5 {
+                        fail.push(format!(
+                            "ref refs/remotes/upstream/{name}: sha nel ref ({ref_sha}) != sha in \
+                             FETCH_HEAD ({fh_sha}): il ref e' stato riposizionato dopo l'ultima \
+                             fetch provata. Esegui `git fetch upstream`."
+                        ));
+                    }
+                }
+                match canonical {
+                    None => {
+                        nfail += 1;
+                        if fail.len() < 5 {
+                            fail.push(format!(
+                                "ref refs/remotes/upstream/{name}: URL di provenienza in \
+                                 FETCH_HEAD non interpretabile come host/owner/repo."
+                            ));
+                        }
+                    }
+                    Some(c) if c != expected_canonical => {
+                        nfail += 1;
+                        if fail.len() < 5 {
+                            fail.push(format!(
+                                "ref refs/remotes/upstream/{name}: provenienza {c} != upstream \
+                                 atteso {expected_canonical}. `git remote set-url` cambia la \
+                                 configurazione ma non i ref gia' scaricati, che restano del \
+                                 remote precedente — l'URL oggi corretto non prova la provenienza \
+                                 dei ref che quell'URL non ha mai scaricato. Esegui `git fetch \
+                                 upstream` dal remote attualmente configurato."
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if fail.is_empty() {
+        Ok(())
+    } else {
+        if nfail > fail.len() {
+            fail.push(format!(
+                "... ({nfail} ref totali senza provenienza provata)"
+            ));
+        }
+        Err(fail)
+    }
 }
 
 /// Un needle vietato col suo PERCHE' e il regime di case.
@@ -252,6 +455,60 @@ fn scan_text(rel: &str, bytes: &[u8], vietati: &[Vietato], isolated: bool) -> Ve
     out
 }
 
+/// Ispezione della storia "nostra": i commit raggiungibili da HEAD ma non da
+/// alcun ref `refs/remotes/upstream/*` (`HEAD --not <ref>`), con i corpi
+/// scansionati per attribuzione AI. Log in una sola invocazione:
+/// `%H%x00%B%x00` separa hash e corpo con NUL (il corpo e' NUL-free, lo split
+/// e' robusto); `--not` applica ogni ref upstream come limite negativo
+/// (esclusione ancestry): un commit raggiungibile da HEAD e da qualsiasi ref
+/// upstream e' upstream, non nostro. Estratta in funzione perche' il controllo
+/// negativo deve esercitare la STESSA ispezione su un fixture, non una copia.
+fn ispeziona_storia(root: &Path, upstream_refs: &[String]) -> (usize, Vec<String>) {
+    let mut log_args: Vec<&str> = vec!["log", "HEAD", "--not"];
+    for r in upstream_refs {
+        log_args.push(r.as_str());
+    }
+    log_args.push("--format=%H%x00%B%x00");
+    let raw = git(root, &log_args);
+
+    let parts: Vec<&str> = raw.split('\0').collect();
+    let needles = ai_vietati();
+    let mut colpe: Vec<String> = Vec::new();
+    let mut visti = 0usize;
+    let mut i = 0;
+    while i + 1 < parts.len() {
+        let sha = parts[i].trim();
+        let body = parts[i + 1];
+        i += 2;
+        if sha.is_empty() {
+            continue;
+        }
+        visti += 1;
+        // I needle di attribuzione AI sono case-insensitive (ci = true): un
+        // trailer `co-authored-by` in minuscolo morde quanto `Co-Authored-By`.
+        let hit: Vec<&str> = needles
+            .iter()
+            .filter(|n| {
+                if n.ci {
+                    contains_ci(body, n.needle.as_str())
+                } else {
+                    body.contains(n.needle.as_str())
+                }
+            })
+            .map(|v| v.perche)
+            .collect();
+        if !hit.is_empty() {
+            let short = &sha[..12.min(sha.len())];
+            let subj = body.lines().next().unwrap_or("").trim();
+            colpe.push(format!(
+                "commit NOSTRO {short} «{subj}»: {}",
+                hit.join("; ")
+            ));
+        }
+    }
+    (visti, colpe)
+}
+
 // ---- CLASSE 1: attribuzione AI nella STORIA del fork ----------------------
 
 #[test]
@@ -370,52 +627,39 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
          per assenza di ispezione."
     );
 
-    // Un'unica invocazione: %x00 separa l'hash dal corpo; il corpo e' NUL-free,
-    // lo split e' robusto. --not applica ogni ref upstream come limite negativo
-    // (esclusione ancestry): un commit raggiungibile da HEAD e da qualsiasi ref
-    // upstream e' upstream, non nostro.
-    let mut log_args: Vec<&str> = vec!["log", "HEAD", "--not"];
-    for r in &upstream_refs {
-        log_args.push(r.as_str());
+    // PROVENIENZA DEI REF (dati), non solo dell'URL (config). L'autenticazione
+    // dell'URL sopra dimostra solo che la CONFIGURAZIONE punta al remote atteso:
+    // NON dimostra che i ref `refs/remotes/upstream/*` siano stati scaricati DA
+    // quel remote. `git remote set-url` cambia la configurazione ma NON
+    // ripulisce i ref gia' scaricati, che restano del remote precedente: l'URL
+    // oggi corretto non prova la provenienza dei ref che quell'URL non ha mai
+    // scaricato. Un ref stale puo' rendere raggiungibile un commit vietato da
+    // `refs/remotes/upstream/*` => classificato "upstream" => non ispezionato =>
+    // NASCOSTO (misurato: un commit selezionato, zero colpe). Il gate si fida
+    // dei ref solo se puo' provarne la provenienza (FETCH_HEAD: stesso url
+    // atteso + stesso sha per ogni ref); se non puo', CADE dicendolo — non
+    // indovina, non degrada. Prova locale, no rete: l'operatore soddisfa con
+    // `git fetch upstream`.
+    let expected_canonical = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+    if let Err(prov) = provenienza_refs_provata(&root, &expected_canonical) {
+        panic!(
+            "la provenienza dei ref refs/remotes/upstream/* NON e' provata: il gate non si fida \
+             di ref la cui origine non puo' dimostrare. L'URL del remote (config) e' quello atteso \
+             ma i ref non risultano scaricati da esso — `git remote set-url` cambia la \
+             configurazione, non i ref gia' scaricati, che restano del remote precedente. Un ref \
+             stale puo' nascondere un commit vietato (classificato 'upstream' => non ispezionato): \
+             un commit selezionato e zero colpe. Prova locale, no rete: ogni ref deve essere in \
+             FETCH_HEAD, dal remote atteso, con lo stesso sha. L'operatore soddisfa la condizione \
+             con `git fetch upstream` (fetch piena dal remote attualmente configurato).\n  {}",
+            prov.join("\n  ")
+        );
     }
-    log_args.push("--format=%H%x00%B%x00");
-    let raw = git(&root, &log_args);
 
-    let parts: Vec<&str> = raw.split('\0').collect();
-    let needles = ai_vietati();
-    let mut colpe: Vec<String> = Vec::new();
-    let mut visti = 0usize;
-    let mut i = 0;
-    while i + 1 < parts.len() {
-        let sha = parts[i].trim();
-        let body = parts[i + 1];
-        i += 2;
-        if sha.is_empty() {
-            continue;
-        }
-        visti += 1;
-        // I needle di attribuzione AI sono case-insensitive (ci = true): un
-        // trailer `co-authored-by` in minuscolo morde quanto `Co-Authored-By`.
-        let hit: Vec<&str> = needles
-            .iter()
-            .filter(|n| {
-                if n.ci {
-                    contains_ci(body, n.needle.as_str())
-                } else {
-                    body.contains(n.needle.as_str())
-                }
-            })
-            .map(|v| v.perche)
-            .collect();
-        if !hit.is_empty() {
-            let short = &sha[..12.min(sha.len())];
-            let subj = body.lines().next().unwrap_or("").trim();
-            colpe.push(format!(
-                "commit NOSTRO {short} «{subj}»: {}",
-                hit.join("; ")
-            ));
-        }
-    }
+    // Ispezione della storia "nostra" (HEAD --not <refs/remotes/upstream/*>):
+    // log --format NUL-separated, scan dei needle di attribuzione AI. La
+    // logica e' in `ispeziona_storia` per condividerla con il controllo negativo,
+    // che deve esercitare la STESSA ispezione su un fixture.
+    let (visti, colpe) = ispeziona_storia(&root, &upstream_refs);
 
     // DIFETTO 1 — il gate non passa verde perche' l'insieme e' vuoto. Questo e'
     // il punto piu' insidioso: un test che itera su niente passa sempre, e un
@@ -682,5 +926,176 @@ fn un_binario_inatteso_in_testo_fa_fallire_non_essere_saltato() {
     assert!(
         g.iter().any(|s| s.contains("binario")),
         "il NUL prevale: ispezionare, non verde: {g:?}"
+    );
+}
+
+// ---- CONTROLLO NEGATIVO: ref stale + URL corretto => il gate CADE ---------
+
+/// Rimuove directory scratch alla fine del test (anche su panic): il fixture
+/// e' completamente autocontenuto, il repo reale non viene toccato e nessuno
+/// stato resta in giro ("disattiva e ripristina nello stesso comando").
+struct Scratch {
+    dirs: Vec<PathBuf>,
+}
+impl Scratch {
+    fn new(dirs: Vec<PathBuf>) -> Self {
+        Scratch { dirs }
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for d in &self.dirs {
+            let _ = fs::remove_dir_all(d);
+        }
+    }
+}
+
+#[test]
+fn ref_stale_con_url_corretto_cade_invece_di_dare_zero_colpe() {
+    // Caso misurato: ref stale (scaricati da un remote diverso) + URL corretto
+    // (`git remote set-url` a openai/codex SENZA re-fetch). Senza il controllo
+    // di provenienza il gate seleziona 1 commit, trova 0 colpe e VERDE: il
+    // commit vietato resta nascosto (raggiungibile dal ref stale => classificato
+    // "upstream" => non ispezionato). Con il controllo di provenienza il gate
+    // CADE dicendo che i ref non sono provati. Rete: NESSUNA — i remote sono
+    // file:// locali e l'URL corretto non viene mai fetchato; un gate che
+    // facesse lui il fetch dipenderebbe dalla rete e cadrebbe a caso.
+
+    let pid = std::process::id();
+    let tmp = std::env::temp_dir().join(format!("fork-gate-stale-{pid}"));
+    let wdir = std::env::temp_dir().join(format!("fork-gate-stale-w-{pid}"));
+    let _ = fs::remove_dir_all(&tmp);
+    let _ = fs::remove_dir_all(&wdir);
+    let _scratch = Scratch::new(vec![tmp.clone(), wdir.clone()]);
+    fs::create_dir_all(&tmp).expect("creazione dir scratch");
+
+    let tmp_str = tmp.display().to_string();
+    let wdir_str = wdir.display().to_string();
+
+    // Repo fork: base A, commit vietato B (attribuzione AI), commit pulito C.
+    git(&tmp, &["init", "-q", "-b", "main", "."]);
+    git(&tmp, &["config", "user.name", "Gate Test"]);
+    git(&tmp, &["config", "user.email", "gate@test.local"]);
+    git(&tmp, &["config", "commit.gpgsign", "false"]);
+    git(&tmp, &["commit", "--allow-empty", "-q", "-m", "base"]);
+    // Commit vietato: attribuzione AI nel corpo (needle costruito a frammenti,
+    // non letterale: il guardiano non si auto-accusa).
+    let body_vietato = format!("{}: Bot <noreply@bot>", ai_vietati()[0].needle);
+    git(
+        &tmp,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "feat: lavoro vietato",
+            "-m",
+            body_vietato.as_str(),
+        ],
+    );
+    // B e' ora HEAD. Un bare clone qui fissa W.main = B (il commit vietato):
+    // sara' il "remote upstream" SBAGLIATO da cui vengono i ref stale.
+    let upstream_wrong = format!("file://{wdir_str}");
+    git(
+        &std::env::temp_dir(),
+        &["clone", "-q", "--bare", tmp_str.as_str(), wdir_str.as_str()],
+    );
+    let b_sha = git(&tmp, &["rev-parse", "HEAD"]).trim().to_string();
+    // Commit pulito C: HEAD avanza oltre B. Sara' l'unico commit "nostro"
+    // selezionato (B resta raggiungibile dal ref stale => escluso => nascosto).
+    git(
+        &tmp,
+        &["commit", "--allow-empty", "-q", "-m", "chore: pulito"],
+    );
+
+    // Remote upstream -> W (SBAGLIATO), fetch locale (file://, no rete).
+    git(
+        &tmp,
+        &["remote", "add", "upstream", upstream_wrong.as_str()],
+    );
+    git(&tmp, &["fetch", "-q", "upstream"]);
+    // Una plain fetch non crea refs/remotes/upstream/HEAD (non nel refspec
+    // refs/heads/*:refs/remotes/upstream/*); se per varianti di git ci fosse,
+    // lo si toglie per non confondere la provenienza con un ref non coperto da
+    // FETCH_HEAD per ragioni estranee al difetto.
+    let _ = git_try(&tmp, &["update-ref", "-d", "refs/remotes/upstream/HEAD"]);
+    // set-url all'URL CORRETTO, SENZA re-fetch: la configurazione ora dice
+    // openai/codex, ma i ref (e FETCH_HEAD) restano del remote precedente.
+    git(
+        &tmp,
+        &[
+            "remote",
+            "set-url",
+            "upstream",
+            "https://github.com/openai/codex.git",
+        ],
+    );
+
+    // Ref usati dal gate (solo main, in questo fixture).
+    let urefs: Vec<String> = git(
+        &tmp,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/remotes/upstream",
+        ],
+    )
+    .lines()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .collect();
+
+    // (A) Il commit vietato B e' davvero nella storia di HEAD: non e' assente,
+    // e' nascosto. E raggiungibile dal ref stale (W.main = B) => classificato
+    // "upstream" => escluso dall'ispezione.
+    assert!(
+        git_try(
+            &tmp,
+            &["merge-base", "--is-ancestor", b_sha.as_str(), "HEAD"]
+        )
+        .is_some(),
+        "il commit vietato deve essere nella storia di HEAD"
+    );
+    assert!(
+        git_try(
+            &tmp,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                b_sha.as_str(),
+                "refs/remotes/upstream/main"
+            ]
+        )
+        .is_some(),
+        "il commit vietato deve essere raggiungibile dal ref stale (nascosto)"
+    );
+
+    // (B) Senza controllo di provenienza: il gate seleziona 1 commit (C, pulito)
+    // e trova ZERO colpe — il commit vietato e' nascosto. Questo e' il caso
+    // misurato: "un commit selezionato e zero colpe trovate".
+    let (visti, colpe) = ispeziona_storia(&tmp, &urefs);
+    assert_eq!(
+        visti, 1,
+        "il gate buggy seleziona esattamente 1 commit (il pulito)"
+    );
+    assert!(
+        colpe.is_empty(),
+        "il gate buggy trova ZERO colpe: il vietato e' nascosto dal ref stale, ma le colpe sono: {colpe:?}"
+    );
+
+    // (C) Con il controllo di provenienza: URL corretto ma ref stale => la
+    // provenienza NON e' provata (FETCH_HEAD registra il remote precedente, non
+    // openai/codex) => il gate CADE invece di produrre zero colpe.
+    let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+    let prov = provenienza_refs_provata(&tmp, &expected);
+    assert!(
+        prov.is_err(),
+        "con URL corretto ma ref stale la provenienza NON e' provata: il gate deve CADRE, non dare \
+         zero colpe"
+    );
+    let msg = prov.unwrap_err().join(" ");
+    assert!(
+        msg.contains(&expected),
+        "il gate dice quale remote attende e come soddisfare la condizione: {msg}"
     );
 }
