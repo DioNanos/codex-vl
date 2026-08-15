@@ -293,7 +293,7 @@ fn baby_chat_dispatches_via_llm_after_step_12_b_e_unlock() {
     // with `stage_guidance_section` modulating the tone to "tiny
     // voice, observing, simple words". The previous local-ack path
     // (Step 12.B.C) lost the "true value" of an LLM-driven companion
-    // on Baby — DAG feedback during the 0.132.1-alpha.0 smoke test.
+    // on Baby — operator feedback during the 0.132.1-alpha.0 smoke test.
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = hatched_vivling(temp.path());
     // freshly hatched = Baby stage; brain stays off (default).
@@ -1038,8 +1038,8 @@ fn brain_summary_adult_brain_off_still_describes_target_correctly() {
 fn resolve_expression_target_brain_off_returns_session_default() {
     use crate::vivling::runtime::request::BrainTarget;
     use crate::vivling::runtime::request::resolve_expression_target;
-    // Profile pinned but brain off -> SessionDefault (matches DAG
-    // "STESSO MODELLO CHAT" contract).
+    // Profile pinned but brain off -> SessionDefault (matches the
+    // operator's "STESSO MODELLO CHAT" contract).
     assert_eq!(
         resolve_expression_target(false, Some("vivling-spark")),
         BrainTarget::SessionDefault

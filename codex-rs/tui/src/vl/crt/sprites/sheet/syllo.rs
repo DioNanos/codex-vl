@@ -2,7 +2,7 @@ use super::SheetState;
 use crate::vivling::Stage;
 
 // codex-vl 2026-05-15: state marker lives INSIDE the face/core, never
-// appended on the side (DAG rule, see
+// appended on the side (product owner rule, see
 // `docs/assets/vivling_crt_face_state_sprites_2026-05-15.md`).
 // Animated cycles keep 2 frames (Codex iter 7 §1 exact-width invariant);
 // Sleep/Alert/Success/Error are single-frame static states.

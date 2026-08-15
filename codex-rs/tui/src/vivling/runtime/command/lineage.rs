@@ -87,7 +87,7 @@ impl Vivling {
 
         // codex-vl: a successful spawn bumps the primary's lineage
         // rarity pressure for the next offspring's dentro-specie
-        // quality roll (DAG design directive 2026-05-15). Failed spawns
+        // quality roll (product owner design directive 2026-05-15). Failed spawns
         // never reach this point — the early returns above keep the
         // pressure untouched on error paths.
         if let Some(state) = self.state.as_mut() {
