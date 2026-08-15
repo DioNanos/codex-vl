@@ -176,7 +176,7 @@ impl VivlingState {
 /// Increment the parent's lineage rarity pressure on a successful spawn.
 /// Caps at 10. Saturating, idempotent at full.
 ///
-/// **Policy** (DAG design directive 2026-05-15): pressure stays *inside*
+/// **Policy** (product owner design directive 2026-05-15): pressure stays *inside*
 /// species — it never swaps the offspring's species. It biases the
 /// quality roll on `gene_vector` and `brain_potential`. See
 /// [`apply_lineage_quality_roll`].

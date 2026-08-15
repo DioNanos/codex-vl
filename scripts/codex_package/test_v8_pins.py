@@ -60,12 +60,7 @@ class DarwinPostinstallPins(unittest.TestCase):
         )
         archive_digest, binding_digest = digests
 
-        manifest = (
-            REPO_ROOT
-            / "third_party"
-            / "v8"
-            / f"rusty_v8_{version.replace('.', '_')}.sha256"
-        )
+        manifest = REPO_ROOT / "third_party" / "v8" / f"rusty_v8_{version.replace('.', '_')}.sha256"
         self.assertTrue(manifest.is_file(), f"{manifest} is missing")
         pinned = {}
         for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -75,12 +70,8 @@ class DarwinPostinstallPins(unittest.TestCase):
 
         archive_name = f"librusty_v8_{PROFILE}_{TARGET}.a.gz"
         binding_name = f"src_binding_{PROFILE}_{TARGET}.rs"
-        self.assertIn(
-            archive_name, pinned, f"{archive_name} is not pinned in {manifest}"
-        )
-        self.assertIn(
-            binding_name, pinned, f"{binding_name} is not pinned in {manifest}"
-        )
+        self.assertIn(archive_name, pinned, f"{archive_name} is not pinned in {manifest}")
+        self.assertIn(binding_name, pinned, f"{binding_name} is not pinned in {manifest}")
         self.assertEqual(
             archive_digest,
             pinned[archive_name],

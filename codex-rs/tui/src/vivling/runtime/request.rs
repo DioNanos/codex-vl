@@ -41,7 +41,7 @@ pub(crate) fn brain_target_from_profile(profile: Option<&str>) -> BrainTarget {
 /// `/vl` chat + Expression channels.
 ///
 /// Distinct from [`brain_target_from_profile`] because `/vl` chat is
-/// decoupled from `brain_enabled` (DAG: "STESSO MODELLO CHAT — se
+/// decoupled from `brain_enabled` (the operator: "STESSO MODELLO CHAT — se
 /// parto con codex-vl uso il modello /model; A MENO che non ho
 /// settato il brain ALLORA usa il modello BRAIN"). A pinned profile
 /// overrides the session model *only* when the user has explicitly

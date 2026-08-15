@@ -26,20 +26,10 @@ UTILITY_NAME_EXCEPTIONS = {
     "path-utils": "codex-utils-path",
 }
 MANIFEST_FEATURE_EXCEPTIONS = {
-    "codex-rs/tui/Cargo.toml": {"legacy_tui_tests": ()},
+    "codex-rs/code-mode/Cargo.toml": {"sandbox": ("v8/v8_enable_sandbox",)},
     "codex-rs/v8-poc/Cargo.toml": {"sandbox": ("v8/v8_enable_sandbox",)},
-    "codex-rs/vendor/msa-core/Cargo.toml": {
-        "default": (),
-        "embeddings": ("dep:reqwest",),
-    },
 }
-OPTIONAL_DEPENDENCY_EXCEPTIONS = {
-    ("codex-rs/vendor/msa-core/Cargo.toml", "dependencies", "reqwest"),
-}
-INTERNAL_DEFAULT_FEATURE_EXCEPTIONS = {
-    ("codex-rs/Cargo.toml", "workspace.dependencies", "msa-core"),
-    ("codex-rs/tui/Cargo.toml", "dependencies", "msa-core"),
-}
+OPTIONAL_DEPENDENCY_EXCEPTIONS = set()
 INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS = {}
 
 
@@ -47,7 +37,6 @@ def main() -> int:
     internal_package_names = workspace_package_names()
     used_manifest_feature_exceptions: set[str] = set()
     used_optional_dependency_exceptions: set[tuple[str, str, str]] = set()
-    used_internal_default_feature_exceptions: set[tuple[str, str, str]] = set()
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]] = set()
     failures_by_path: dict[str, list[str]] = {}
 
@@ -57,7 +46,6 @@ def main() -> int:
             internal_package_names,
             used_manifest_feature_exceptions,
             used_optional_dependency_exceptions,
-            used_internal_default_feature_exceptions,
             used_internal_dependency_feature_exceptions,
         ):
             failures_by_path[manifest_key(path)] = errors
@@ -66,7 +54,6 @@ def main() -> int:
         failures_by_path,
         used_manifest_feature_exceptions,
         used_optional_dependency_exceptions,
-        used_internal_default_feature_exceptions,
         used_internal_dependency_feature_exceptions,
     )
 
@@ -120,7 +107,6 @@ def manifest_errors(
     internal_package_names: set[str],
     used_manifest_feature_exceptions: set[str],
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
-    used_internal_default_feature_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
 ) -> list[str]:
     manifest = load_manifest(path)
@@ -181,9 +167,7 @@ def manifest_errors(
                         "create crate features"
                     )
 
-            if not is_internal_dependency(
-                path, dependency_name, dependency, internal_package_names
-            ):
+            if not is_internal_dependency(path, dependency_name, dependency, internal_package_names):
                 continue
 
             dependency_features = dependency.get("features")
@@ -213,15 +197,11 @@ def manifest_errors(
                         )
 
             if dependency.get("default-features") is False:
-                exception_key = (path_key, section_name, dependency_name)
-                if exception_key in INTERNAL_DEFAULT_FEATURE_EXCEPTIONS:
-                    used_internal_default_feature_exceptions.add(exception_key)
-                else:
-                    errors.append(
-                        "remove `default-features = false` from workspace dependency "
-                        f"`{dependency_entry_label(section_name, dependency_name)}`; "
-                        "new workspace crate feature toggles are not allowed"
-                    )
+                errors.append(
+                    "remove `default-features = false` from workspace dependency "
+                    f"`{dependency_entry_label(section_name, dependency_name)}`; "
+                    "new workspace crate feature toggles are not allowed"
+                )
 
     return errors
 
@@ -338,7 +318,6 @@ def add_unused_exception_errors(
     failures_by_path: dict[str, list[str]],
     used_manifest_feature_exceptions: set[str],
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
-    used_internal_default_feature_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
 ) -> None:
     for path_key in sorted(
@@ -363,17 +342,6 @@ def add_unused_exception_errors(
         )
 
     for path_key, section_name, dependency_name in sorted(
-        INTERNAL_DEFAULT_FEATURE_EXCEPTIONS - used_internal_default_feature_exceptions
-    ):
-        add_failure(
-            failures_by_path,
-            path_key,
-            "remove the stale default-feature exception for "
-            f"`{dependency_entry_label(section_name, dependency_name)}` from "
-            "`INTERNAL_DEFAULT_FEATURE_EXCEPTIONS`",
-        )
-
-    for path_key, section_name, dependency_name in sorted(
         set(INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS)
         - used_internal_dependency_feature_exceptions
     ):
@@ -386,9 +354,7 @@ def add_unused_exception_errors(
         )
 
 
-def add_failure(
-    failures_by_path: dict[str, list[str]], path_key: str, error: str
-) -> None:
+def add_failure(failures_by_path: dict[str, list[str]], path_key: str, error: str) -> None:
     failures_by_path.setdefault(path_key, []).append(error)
 
 

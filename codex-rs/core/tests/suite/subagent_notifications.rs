@@ -1,8 +1,10 @@
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
+use codex_core::TurnInputRequest;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
@@ -15,10 +17,12 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::assert_parent_turn;
+use core_test_support::responses::assert_root_turn;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -38,6 +42,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -809,23 +814,20 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
     internal_thread
         .thread
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
                 text: INTERNAL_SUBAGENT_PROMPT.to_string(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
                 environments: Some(local_selections(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
                 model: Some(internal_thread.session_configured.model.clone()),
                 ..Default::default()
-            },
-        })
+            }),
+        )
         .await?;
     let turn_id = wait_for_event_match(internal_thread.thread.as_ref(), |event| match event {
         EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
@@ -969,6 +971,8 @@ async fn spawned_child_receives_forked_parent_context(
         .expect("legacy spawn parent turn id");
     assert_parent_turn(&parent_body, /*expected*/ None)?;
     assert_parent_turn(&child_body, Some(original_parent_turn_id))?;
+    assert_root_turn(&parent_body, Some(original_parent_turn_id))?;
+    assert_root_turn(&child_body, Some(original_parent_turn_id))?;
     assert_eq!(
         (
             child_body["model"].clone(),
@@ -1032,6 +1036,8 @@ async fn spawned_child_receives_forked_parent_context(
     assert_eq!(metadata["thread_id"], json!(child_thread_id));
     assert_parent_turn(&followup_parent_body, /*expected*/ None)?;
     assert_parent_turn(&reused_child_body, Some(followup_parent_turn_id))?;
+    assert_root_turn(&followup_parent_body, Some(followup_parent_turn_id))?;
+    assert_root_turn(&reused_child_body, Some(followup_parent_turn_id))?;
     Ok(())
 }
 
@@ -1039,10 +1045,12 @@ async fn spawned_child_receives_forked_parent_context(
 enum FullHistoryV2ModelSelection {
     ConfiguredDefault,
     ExplicitOverride,
+    WorldStateIdentity,
 }
 
 #[test_case(FullHistoryV2ModelSelection::ConfiguredDefault; "configured default with omitted fork_turns")]
 #[test_case(FullHistoryV2ModelSelection::ExplicitOverride; "explicit override with fork_turns all")]
+#[test_case(FullHistoryV2ModelSelection::WorldStateIdentity; "world state appends context window when agent identity changes")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_context(
     selection: FullHistoryV2ModelSelection,
@@ -1061,7 +1069,8 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     )
     .await;
     let (spawn_args, expected_model, expected_reasoning_effort) = match selection {
-        FullHistoryV2ModelSelection::ConfiguredDefault => (
+        FullHistoryV2ModelSelection::ConfiguredDefault
+        | FullHistoryV2ModelSelection::WorldStateIdentity => (
             json!({
                 "message": CHILD_PROMPT,
                 "task_name": "worker",
@@ -1119,7 +1128,7 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
         ]),
     )
     .await;
-    let mut builder = test_codex().with_config(|config| {
+    let mut builder = test_codex().with_config(move |config| {
         config
             .features
             .enable(Feature::Collab)
@@ -1128,12 +1137,29 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
             .features
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
+        if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow feature update");
+            config.model_context_window = Some(128_000);
+        }
         config.model = Some(INHERITED_MODEL.to_string());
         config.model_reasoning_effort = Some(INHERITED_REASONING_EFFORT);
         config.agent_default_subagent_model = Some(V2_DEFAULT_MODEL.to_string());
         config.agent_default_subagent_reasoning_effort = Some(V2_DEFAULT_REASONING_EFFORT);
     });
+    if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
+        builder = builder.with_history_mode(ThreadHistoryMode::Paginated);
+    }
     let test = builder.build(&server).await?;
+    if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
+        test.codex.submit(Op::Compact).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
 
     test.submit_turn(TURN_0_FORK_PROMPT).await?;
     let _ = seed_turn.single_request();
@@ -1143,6 +1169,88 @@ async fn spawned_full_history_v2_child_uses_model_precedence_without_dropping_co
     let child_request = wait_for_request_with_model(&child_request_log, expected_model).await?;
     assert!(child_request.body_contains_text(TURN_0_FORK_PROMPT));
     let child_body = child_request.body_json();
+    if matches!(selection, FullHistoryV2ModelSelection::WorldStateIdentity) {
+        let child_thread_id = ThreadId::from_string(
+            child_body["client_metadata"]["thread_id"]
+                .as_str()
+                .expect("child thread id"),
+        )?;
+        let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+        child_thread.flush_rollout().await?;
+        let child_rollout = codex_rollout::RolloutRecorder::get_rollout_history(
+            &child_thread
+                .rollout_path()
+                .expect("child rollout should exist"),
+        )
+        .await?;
+        let context_window_snapshots = child_rollout
+            .get_rollout_items()
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::WorldState(world_state) => {
+                    world_state.state.get("context_window").cloned()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            context_window_snapshots,
+            vec![json!("/root"), json!("/root/worker")]
+        );
+        let context_windows = child_request
+            .message_input_texts("developer")
+            .into_iter()
+            .filter(|text| text.starts_with("<context_window>\n"))
+            .collect::<Vec<_>>();
+        let identities = context_windows
+            .iter()
+            .map(|text| text.lines().nth(1).expect("agent identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            identities,
+            ["Agent name: /root", "Agent name: /root/worker"]
+        );
+        let window_ids = context_windows
+            .iter()
+            .map(|text| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix("Current context window id: "))
+                    .expect("context window id")
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(window_ids[0], window_ids[1]);
+        let checkpoint = child_rollout
+            .get_rollout_items()
+            .iter()
+            .find_map(|item| match item {
+                RolloutItem::Compacted(checkpoint) => Some(checkpoint),
+                _ => None,
+            })
+            .expect("inherited compaction checkpoint");
+        assert!(
+            checkpoint
+                .replacement_history
+                .as_ref()
+                .is_some_and(|history| !history.is_empty())
+        );
+        assert_eq!(
+            (
+                checkpoint.window_number,
+                checkpoint.first_window_id.as_deref(),
+                checkpoint.previous_window_id.as_deref(),
+                checkpoint.window_id.as_deref(),
+            ),
+            (Some(0), Some(window_ids[1]), None, Some(window_ids[1]))
+        );
+        assert!(
+            child_request.has_message_with_input_texts("developer", |message| {
+                matches!(
+                    message,
+                    [text] if text.starts_with("<context_window>\nAgent name: /root/worker\n")
+                )
+            })
+        );
+    }
     assert_eq!(
         (
             child_body["model"].clone(),

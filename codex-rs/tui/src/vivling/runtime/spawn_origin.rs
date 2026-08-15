@@ -128,7 +128,7 @@ fn pick_zed_alternative_species(
 /// the cultural-parent override applied (`cultural_parent_vivling_id`
 /// is always the active primary, regardless of biological origin).
 ///
-/// ZED-origin specifics (DAG design directive 2026-05-15):
+/// ZED-origin specifics (product owner design directive 2026-05-15):
 /// - `species` and `rarity` come from the picked alternative (not the
 ///   primary's clone);
 /// - `gene_vector` is **freshly generated** from the offspring's own

@@ -1,9 +1,9 @@
-//! codex-vl: Slash-command boundary for `/vivling`, `/vl`, `/loop`, and MCP reload.
+//! codex-vl: Slash-command boundary for `/vivling`, `/vl`, `/vla`, `/loop`, and MCP reload.
 //!
 //! Keeps the Vivling/Loop dispatch body out of the upstream-heavy
 //! `slash_dispatch.rs`. The dispatch entry points stay there as thin
 //! match arms that delegate here; this module owns all body logic for
-//! the three custom commands, plus the shared outcome renderer.
+//! the custom commands, plus the shared outcome renderer.
 
 use super::ChatWidget;
 use crate::bottom_pane::VivlingCardView;
@@ -32,6 +32,7 @@ pub(super) fn dispatch_mcp_reload(cw: &mut ChatWidget) {
 pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
 
 const VIVLING_ALIAS_USAGE: &str = "Usage: /vl <message>";
+const VIVLING_ASSIST_ALIAS_USAGE: &str = "Usage: /vla <task>";
 
 /// `/loop` with no args: show usage hint.
 pub(super) fn dispatch_loop_bare(cw: &mut ChatWidget) {
@@ -82,6 +83,22 @@ pub(super) fn dispatch_vivling_alias(cw: &mut ChatWidget, args: &str) {
     render_vivling_outcome(cw, outcome);
 }
 
+/// `/vla <task>` — exact operational alias for `/vivling assist <task>`.
+pub(super) fn dispatch_vivling_assist_alias(cw: &mut ChatWidget, args: &str) {
+    cw.sync_vivling_live_context();
+    let outcome = parse_vivling_assist_alias(args)
+        .and_then(|action| cw.bottom_pane.run_vivling_command(&cw.config, action));
+    render_vivling_outcome(cw, outcome);
+}
+
+fn parse_vivling_assist_alias(args: &str) -> Result<VivlingAction, String> {
+    let task = args.trim();
+    if task.is_empty() {
+        return Err(VIVLING_ASSIST_ALIAS_USAGE.to_string());
+    }
+    VivlingAction::parse(&format!("assist {task}"))
+}
+
 /// Shared renderer for `VivlingCommandOutcome` produced by `/vivling` and `/vl`.
 /// Preserves the exact behavior of the previous duplicated arms in
 /// `slash_dispatch::{dispatch_vivling_command, dispatch_vivling_direct_alias}`.
@@ -111,6 +128,12 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
             cw.request_redraw();
         }
         Ok(VivlingCommandOutcome::DispatchAssist(request)) => {
+            let Some(thread_id) = cw.thread_id() else {
+                cw.add_error_message(
+                    "Vivling brain requests are unavailable before the session starts.".to_string(),
+                );
+                return;
+            };
             let log_kind = match &request.kind {
                 VivlingBrainRequestKind::Chat => VivlingLogKind::Chat,
                 VivlingBrainRequestKind::Assist => VivlingLogKind::Assist,
@@ -124,7 +147,7 @@ fn render_vivling_outcome(cw: &mut ChatWidget, outcome: Result<VivlingCommandOut
             // says "thinking…" with no extra framing.
             let pending_message = "thinking…".to_string();
             cw.app_event_tx
-                .send_vl(VlEvent::RunVivlingAssist { request });
+                .send_vl(VlEvent::RunVivlingAssist { thread_id, request });
             cw.add_vivling_message(pending_message, log_kind);
         }
         Ok(VivlingCommandOutcome::CrtBrainRefresh) => {
@@ -223,6 +246,18 @@ fn parse_loop_interval_seconds(token: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vla_parser_is_exactly_equivalent_to_vivling_assist() {
+        assert_eq!(
+            parse_vivling_assist_alias(" taskdapreparare "),
+            VivlingAction::parse("assist taskdapreparare")
+        );
+        assert_eq!(
+            parse_vivling_assist_alias(""),
+            Err("Usage: /vla <task>".to_string())
+        );
+    }
 
     #[test]
     fn parse_loop_command_apply_dismiss_5a() {

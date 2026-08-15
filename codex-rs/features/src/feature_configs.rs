@@ -10,6 +10,9 @@ pub struct ToolRegistryConfigToml {
     /// Fail the turn when multiple tools share the same effective name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_on_tool_collisions: Option<bool>,
+    /// Include authoritative tool information in per-turn request metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_metadata_includes_tool_info: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -17,6 +20,9 @@ pub struct ToolRegistryConfigToml {
 pub struct CodeModeConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Default yield timeout for code-mode exec calls, in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_exec_yield_time_ms: Option<u64>,
     /// Exact tool namespaces to omit from the code-mode nested tool surface.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excluded_tool_namespaces: Option<Vec<String>>,
@@ -30,10 +36,6 @@ pub struct CodeModeConfigToml {
 impl FeatureConfig for CodeModeConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
     }
 }
 
@@ -51,10 +53,6 @@ impl FeatureConfig for CodeModeHostConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
     }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -70,10 +68,6 @@ pub struct NonPrefixedMcpToolNamesConfigToml {
 impl FeatureConfig for NonPrefixedMcpToolNamesConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
     }
 }
 
@@ -128,19 +122,6 @@ impl FeatureConfig for MultiAgentV2ConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
     }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
-    }
-}
-
-/// Identity included in the context-window developer message.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenBudgetMode {
-    #[default]
-    Thread,
-    Name,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -148,9 +129,6 @@ pub enum TokenBudgetMode {
 pub struct TokenBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Select whether context-window metadata identifies the thread or agent name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<TokenBudgetMode>,
     /// Number of tokens remaining before auto-compaction when the wrap-up reminder is emitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
@@ -178,10 +156,6 @@ impl FeatureConfig for TokenBudgetConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
     }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
@@ -206,10 +180,6 @@ pub struct RolloutBudgetConfigToml {
 impl FeatureConfig for RolloutBudgetConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
     }
 }
 
@@ -251,10 +221,6 @@ pub struct CurrentTimeReminderConfigToml {
 impl FeatureConfig for CurrentTimeReminderConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
     }
 }
 
@@ -299,10 +265,6 @@ pub struct NetworkProxyConfigToml {
 impl FeatureConfig for NetworkProxyConfigToml {
     fn enabled(&self) -> Option<bool> {
         self.enabled
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = Some(enabled);
     }
 }
 

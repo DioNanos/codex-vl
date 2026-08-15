@@ -4,6 +4,8 @@
 use anyhow::Result;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_history::RolloutItem;
+use codex_history::RolloutLine;
 use codex_login::CodexAuth;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
@@ -18,8 +20,6 @@ use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_models_once;
@@ -75,6 +75,8 @@ fn test_model_info(
         used_fallback_model_metadata: false,
         supports_search_tool: false,
         use_responses_lite: false,
+        node_repl_auto_review_required: false,
+        node_repl_disabled: false,
         auto_review_model_override: None,
         model_specialty: None,
         tool_mode: None,
@@ -439,9 +441,8 @@ async fn multi_agent_v2_cold_resume_refreshes_legacy_usage_hints_once(
         .collect::<std::result::Result<Vec<_>, _>>()?
         .into_iter()
         .map(|mut line| {
-            if let RolloutItem::WorldState(world_state) = &mut line.item
-                && let Some(state) = world_state.state.as_object_mut()
-            {
+            if let RolloutItem::WorldState(world_state) = &mut line.item {
+                let state = &mut world_state.state;
                 removed_recorded_usage_hint |= state.remove("multi_agent_usage_hint").is_some();
                 if let Some(mode) = state
                     .get_mut("multi_agent_mode")

@@ -6,6 +6,7 @@ members = [
     "agent-identity",
     "backend-client",
     "bwrap",
+    "build-info",
     "ansi-escape",
     "async-utils",
     "app-server",
@@ -41,8 +42,9 @@ members = [
     "core",
     "core-api",
     "core-plugins",
-    "core-skills",
+    "diagnostics",
     "hooks",
+    "history",
     "http-client",
     "secrets",
     "exec",
@@ -57,10 +59,12 @@ members = [
     "ext/goal",
     "ext/git-attribution",
     "ext/guardian",
+    "ext/guardian-v2",
     "ext/image-generation",
     "ext/items",
     "ext/memories",
     "ext/mcp",
+    "ext/queue",
     "ext/skills",
     "ext/web-search",
     "external-agent-migration",
@@ -93,6 +97,7 @@ members = [
     "tools",
     "v8-poc",
     "websocket-client",
+    "workload-identity",
     "utils/absolute-path",
     "utils/audio",
     "utils/path-uri",
@@ -132,11 +137,12 @@ members = [
     "codex-experimental-api-macros",
     "plugin",
     "model-provider",
+    "fork-gate",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.147.2"
+version = "0.148.0-alpha.13"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -185,7 +191,7 @@ codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
 codex-core-plugins = { path = "core-plugins" }
-codex-core-skills = { path = "core-skills" }
+codex-diagnostics = { path = "diagnostics" }
 codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
@@ -207,6 +213,7 @@ codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }
 codex-hooks = { path = "hooks" }
+codex-history = { path = "history" }
 codex-keyring-store = { path = "keyring-store" }
 codex-linux-sandbox = { path = "linux-sandbox" }
 codex-lmstudio = { path = "lmstudio" }
@@ -229,6 +236,7 @@ codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-prompts = { path = "prompts" }
+codex-queue-extension = { path = "ext/queue" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
@@ -275,6 +283,7 @@ codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-utils-template = { path = "utils/template" }
 codex-v8-poc = { path = "v8-poc" }
+codex-workload-identity = { path = "workload-identity" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
@@ -358,7 +367,7 @@ libc = "0.2.182"
 # https://www.sqlite.org/wal.html#the_wal_reset_bug
 libsqlite3-sys = { version = "0.37", default-features = false }
 log = "0.4"
-lru = "0.16.3"
+lru = "0.18.2"
 maplit = "1.0.2"
 memchr = "2.7.6"
 mime_guess = "2.0.5"
@@ -396,6 +405,7 @@ regex-lite = "0.1.8"
 reqwest = { version = "0.12", features = ["cookies"] }
 rmcp = { version = "=3.0.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
+rustix = { version = "1.1.4", features = ["net"] }
 rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
     "std",
@@ -483,7 +493,7 @@ uuid = "1"
 v8 = "=150.4.0"
 vt100 = "0.16.2"
 walkdir = "2.5.0"
-webbrowser = "1.0"
+webbrowser = "1.2.2"
 which = "8"
 whoami = "1.6.1"
 wildmatch = "2.6.1"

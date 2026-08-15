@@ -180,7 +180,7 @@ pub(crate) struct VivlingState {
     /// codex-vl lineage rarity pressure: +2 per successful offspring spawn,
     /// cap 10. Applied **inside species** as a quality roll bias on
     /// `gene_vector` and `brain_potential` of the next offspring; never
-    /// swaps species (DAG design directive 2026-05-15).
+    /// swaps species (product owner design directive 2026-05-15).
     #[serde(default)]
     pub(crate) lineage_rarity_pressure_pct: u8,
     /// codex-vl cultural parent: the `vivling_id` of the active primary at
@@ -244,7 +244,7 @@ pub(crate) struct VivlingState {
     pub(crate) crt_brain_mode: codex_vivling_core::model::VivlingExpressionMode,
 
     /// Memory V2 Step 12.B.O — per-Vivling budget cap override.
-    /// `Default` falls back to `stage_llm_budget(stage)`; DAG can
+    /// `Default` falls back to `stage_llm_budget(stage)`; the operator can
     /// switch to `Unlimited` or `Custom(n)` via `/vivling crt-brain
     /// budget`. Additive on V10 with `#[serde(default)]`.
     #[serde(default)]

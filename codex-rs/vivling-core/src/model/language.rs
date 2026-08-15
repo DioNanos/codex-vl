@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn detect_mixed_italian_with_tech_english_keeps_dominant_italian() {
-        // Realistic DAG-style mix: italiano discorsivo + tech terms inglesi.
+        // Realistic mixed-language sample: italiano discorsivo + tech terms inglesi.
         // La maggioranza degli stopword italiani vince.
         let text =
             "ho fatto il refactor che non era pronto, controllo il loop runtime e poi il merge";

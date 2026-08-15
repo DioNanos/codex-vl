@@ -365,8 +365,8 @@ First Codex VL alpha aligned with the upstream `rust-v0.131.0` alpha line.
     of focused submodules behind a stable internal facade.
   - `bottom_pane` VL boundary extraction so the upstream-heavy view module
     no longer carries VL-specific logic blocks.
-    These changes are not directly user-visible. They exist to keep upstream
-    merges practical without changing public behavior.
+  These changes are not directly user-visible. They exist to keep upstream
+  merges practical without changing public behavior.
 
 ## 0.130.0 - Upstream rust-v0.130.0
 

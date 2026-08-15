@@ -44,6 +44,7 @@ pub enum SlashCommand {
     Side,
     Btw,
     Copy,
+    Export,
     Raw,
     Diff,
     Mention,
@@ -81,6 +82,8 @@ pub enum SlashCommand {
     Vivling,
     #[strum(serialize = "vl")]
     VivlingAlias,
+    #[strum(serialize = "vla")]
+    VivlingAssistAlias,
     #[strum(serialize = "remote-control")]
     RemoteControl,
 }
@@ -93,6 +96,9 @@ impl SlashCommand {
             SlashCommand::Vivling => return "hatch and care for a local terminal companion",
             SlashCommand::VivlingAlias => {
                 return "chat with the active Vivling (AI if adult, otherwise local reply)";
+            }
+            SlashCommand::VivlingAssistAlias => {
+                return "ask an Adult Vivling for a brief, then start the main worker";
             }
             SlashCommand::RemoteControl => {
                 return "start, stop, restart, or inspect the remote-control daemon";
@@ -115,6 +121,7 @@ impl SlashCommand {
             SlashCommand::App => "continue this session in the Desktop app",
             SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
             SlashCommand::Copy => "copy last response as markdown",
+            SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
@@ -164,6 +171,7 @@ impl SlashCommand {
             SlashCommand::Loop
             | SlashCommand::Vivling
             | SlashCommand::VivlingAlias
+            | SlashCommand::VivlingAssistAlias
             | SlashCommand::RemoteControl => unreachable!("codex-vl extensions handled above"),
         }
     }
@@ -181,6 +189,7 @@ impl SlashCommand {
             SlashCommand::Loop
                 | SlashCommand::Vivling
                 | SlashCommand::VivlingAlias
+                | SlashCommand::VivlingAssistAlias
                 | SlashCommand::RemoteControl
         ) {
             return true;
@@ -198,6 +207,7 @@ impl SlashCommand {
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
                 | SlashCommand::Mcp
+                | SlashCommand::Export
                 | SlashCommand::Raw
                 | SlashCommand::Usage
                 | SlashCommand::Pets
@@ -213,6 +223,7 @@ impl SlashCommand {
         matches!(
             self,
             SlashCommand::Copy
+                | SlashCommand::Export
                 | SlashCommand::Raw
                 | SlashCommand::Diff
                 | SlashCommand::Mention
@@ -229,6 +240,7 @@ impl SlashCommand {
             SlashCommand::Loop
                 | SlashCommand::Vivling
                 | SlashCommand::VivlingAlias
+                | SlashCommand::VivlingAssistAlias
                 | SlashCommand::RemoteControl
         ) {
             return true;
@@ -241,6 +253,7 @@ impl SlashCommand {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::Export
             | SlashCommand::Keymap
             | SlashCommand::Vim
             | SlashCommand::ElevateSandbox
@@ -290,6 +303,7 @@ impl SlashCommand {
             SlashCommand::Loop
             | SlashCommand::Vivling
             | SlashCommand::VivlingAlias
+            | SlashCommand::VivlingAssistAlias
             | SlashCommand::RemoteControl => true,
             SlashCommand::Theme | SlashCommand::Pets => false,
         }
@@ -367,5 +381,22 @@ mod tests {
         );
         assert!(SlashCommand::RemoteControl.supports_inline_args());
         assert!(SlashCommand::RemoteControl.available_during_task());
+    }
+
+    #[test]
+    fn vla_is_discoverable_inline_assist_alias() {
+        assert_eq!(SlashCommand::VivlingAssistAlias.command(), "vla");
+        assert_eq!(
+            SlashCommand::from_str("vla"),
+            Ok(SlashCommand::VivlingAssistAlias)
+        );
+        assert!(SlashCommand::VivlingAssistAlias.supports_inline_args());
+        assert!(SlashCommand::VivlingAssistAlias.available_during_task());
+        assert!(
+            super::built_in_slash_commands()
+                .into_iter()
+                .any(|(name, command)| name == "vla"
+                    && command == SlashCommand::VivlingAssistAlias)
+        );
     }
 }

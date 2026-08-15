@@ -84,7 +84,6 @@ ignore = [
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; pulled in via i18n-embed-fl/age used by codex-secrets local storage; remove when codex-secrets migrates off age or age drops i18n-embed-fl" },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
-    { id = "RUSTSEC-2024-0384", reason = "instant is unmaintained; pulled in through measure_time/tantivy by the vendored MSA retrieval engine; remove when tantivy drops instant" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
@@ -134,6 +133,8 @@ allow = [
     # Used by: nucleo-matcher
     "MPL-2.0",
     # OpenSSL - https://spdx.org/licenses/OpenSSL.html
+    # Used by: aws-lc-sys
+    "OpenSSL",
     # Unicode-3.0 - https://opensource.org/license/unicode
     # Used by: icu_decimal, icu_locale_core, icu_provider
     "Unicode-3.0",
@@ -229,7 +230,6 @@ deny = [
         "opentelemetry-http",
         "pagable",
         "rmcp",
-        "tantivy-common",
         "tonic",
         "zbus",
     ], reason = "first-party traits must use native async trait methods with explicit Send bounds" },
@@ -238,6 +238,8 @@ deny = [
     { crate = "reqwest", wrappers = [
         # Intended owner.
         "codex-http-client",
+        # Intentional exception: gRPC uses reqwest directly as tonic's HTTP/2 transport.
+        "codex-code-mode",
         # Intentional exception: this standalone, privileged Responses API proxy owns its blocking
         # upstream HTTP transport independently of Codex.
         "codex-responses-api-proxy",
@@ -246,12 +248,12 @@ deny = [
         "codex-otel",
         # Third-party crates that own their reqwest integration. These are not part of the
         # first-party migration count above.
-        "msa-core",
         "oauth2",
         "opentelemetry-http",
         "opentelemetry-otlp",
         "rmcp",
         "sentry",
+        "webrtc-sys-build",
     ], reason = "new direct reqwest dependencies must use codex-http-client; temporary wrappers track migration debt" },
 ]
 
@@ -311,6 +313,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/dzbarsky/rules_rust",
     "https://github.com/helix-editor/nucleo.git",
+    "https://github.com/juberti-oai/rust-sdks.git",
     "https://github.com/openai-oss-forks/crossterm",
     "https://github.com/openai-oss-forks/tokio-tungstenite",
     "https://github.com/openai-oss-forks/tungstenite-rs",

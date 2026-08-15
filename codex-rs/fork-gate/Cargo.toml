@@ -1,0 +1,9 @@
+[package]
+name = "fork-gate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Gate di sanificazione pre-publish per il fork codex-vl (test-only)."
+
+[lib]
+path = "src/lib.rs"

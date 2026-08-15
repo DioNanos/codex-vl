@@ -13,7 +13,7 @@ use crate::render::renderable::Renderable;
 /// Memory V2 Step 12.B.P — default panel height. Bumped 20 → 25 to
 /// give long Vivling replies more breathing room. Override at
 /// runtime via the `CODEX_VL_VIVLING_PANEL_HEIGHT` env var (clamped
-/// 10–50) so users on tall terminals (or DAG on a 50-row console)
+/// 10–50) so users on tall terminals (or the operator on a 50-row console)
 /// can stretch the panel without a code change.
 const DEFAULT_EXPANDED_HEIGHT: u16 = 25;
 const MIN_EXPANDED_HEIGHT: u16 = 10;
@@ -549,7 +549,7 @@ mod tests {
     fn wrap_entry_breaks_long_message_across_multiple_lines() {
         // A message longer than the inner width must produce >1
         // wrapped lines instead of truncating with `…`. Smoke
-        // 2026-05-22 DAG: long chat replies were being cut off in
+        // 2026-05-22 (operator report): long chat replies were being cut off in
         // the Ctrl+J pane.
         use crate::vl::sidebar::log::VivlingLogEntry;
         use std::time::Instant;

@@ -231,6 +231,8 @@ mod thread_goal_actions;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
+mod transcript_export;
+
 // codex-vl: Vivling fork-owned modules.
 mod vivling_background;
 mod vl_handler;
@@ -533,6 +535,9 @@ pub(crate) struct App {
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
+    last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
+    last_thread_usage_status_cell: Option<history_ui::ThreadUsageStatusHistory>,
+    pub(crate) pending_thread_usage_history_refresh: bool,
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
@@ -1025,6 +1030,7 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
+        chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
         chat_widget
@@ -1061,6 +1067,9 @@ See the Codex keymap documentation for supported actions and examples."
             keymap: runtime_keymap,
             key_chord_matcher: KeyChordMatcher::default(),
             transcript_cells: Vec::new(),
+            last_rendered_history_tail: None,
+            last_thread_usage_status_cell: None,
+            pending_thread_usage_history_refresh: false,
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,

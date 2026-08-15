@@ -10,7 +10,7 @@ const OFFSPRING_BOND: u8 = 10;
 const DECAY_GRACE_HOURS: i64 = 24;
 const STREAK_RESET_HOURS: i64 = 48;
 // Memory V2 Step 12.B.F (post-alpha smoke test): bond rates re-tuned
-// after DAG observed Nilo stuck at Strangers 20/100 after 23 active
+// after the operator observed Nilo stuck at Strangers 20/100 after 23 active
 // days. Decay halved (3 → 2) and streak cap raised (2 → 3) so a
 // consistent daily user still climbs toward Acquaintances/Companions
 // in ~2-3 active weeks rather than plateauing.

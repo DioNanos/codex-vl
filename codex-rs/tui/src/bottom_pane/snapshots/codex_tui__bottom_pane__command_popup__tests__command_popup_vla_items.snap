@@ -1,0 +1,6 @@
+---
+source: tui/src/bottom_pane/command_popup.rs
+assertion_line: 449
+expression: commands
+---
+/vla - ask an Adult Vivling for a brief, then start the main worker

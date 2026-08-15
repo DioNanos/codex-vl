@@ -219,7 +219,7 @@ fn zed_next_step_for_topic(topic: ZedTopic) -> &'static str {
 /// Renders the ZED-as-presenter narration that opens after a successful
 /// `/vivling spawn`. Stays scripted (no Brain), generic (no raw parent
 /// distilled summaries leaked), and emphasises the cultural-vs-biological
-/// split DAG codified on 2026-05-15.
+/// split codified by the product owner on 2026-05-15.
 pub(crate) fn zed_summary_for_lineage(
     parent_name: &str,
     child_name: &str,

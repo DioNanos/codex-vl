@@ -291,7 +291,11 @@ fn tick_action_request(
     Ok(Some(request))
 }
 
-pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRequest) {
+pub(super) fn run_assist(
+    app: &mut App,
+    thread_id: ThreadId,
+    request: crate::vivling::VivlingAssistRequest,
+) {
     let app_event_tx = app.app_event_tx.clone();
     let config = crate::app::vivling_background::config_with_session_model(
         &app.config,
@@ -300,7 +304,8 @@ pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRe
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
         let vivling_id = request.vivling_id.clone();
-        let kind = request.kind.clone();
+        let kind = request.kind;
+        let task = request.task.clone();
         let result = crate::app::vivling_background::run_vivling_assist_request(
             config,
             session_telemetry,
@@ -308,8 +313,10 @@ pub(super) fn run_assist(app: &mut App, request: crate::vivling::VivlingAssistRe
         )
         .await;
         app_event_tx.send_vl(VlEvent::VivlingAssistFinished {
+            thread_id,
             vivling_id,
             kind,
+            task,
             result,
         });
     });

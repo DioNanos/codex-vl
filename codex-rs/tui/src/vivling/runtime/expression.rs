@@ -350,7 +350,7 @@ pub(crate) fn try_plan_and_reserve_expression(
         );
         return None;
     }
-    // Memory V2 Step 12.B.I (DAG smoke test 2026-05-22 evidenza
+    // Memory V2 Step 12.B.I (operator smoke test 2026-05-22 evidenza
     // `dedup_skips=2979` in poche ore): when the CRT cache is still
     // fresh, every per-frame idle call would run the planner and
     // then bump `daily_llm_dedup_skips` through `try_reserve`. The
@@ -677,7 +677,7 @@ fn sanitize_phrase(raw: Option<&str>, max_chars: usize) -> Option<String> {
 /// ellipsis. Falls back to a hard char cut when the token does not
 /// contain any whitespace (URLs, identifiers).
 ///
-/// Smoke 2026-05-22 (DAG): `"session green — patterns loa..."` was
+/// Smoke 2026-05-22 (operator report): `"session green — patterns loa..."` was
 /// produced by the previous char-based cut at 28. This helper plus
 /// the bumped 42-char cap give Italian phrases room to land complete.
 pub(crate) fn truncate_phrase_at_word(text: &str, max_chars: usize) -> String {
@@ -1415,10 +1415,10 @@ mod tests {
 
     #[test]
     fn pre_flight_skips_when_cache_fresh_to_prevent_dedup_explosion() {
-        // Memory V2 Step 12.B.I (DAG smoke test 2026-05-22):
+        // Memory V2 Step 12.B.I (operator smoke test 2026-05-22):
         // pre_draw_tick idle hook calls this helper at frame rate.
         // When the cache is still fresh, the inner dedup gate would
-        // bump `daily_llm_dedup_skips` once per frame — DAG observed
+        // bump `daily_llm_dedup_skips` once per frame — the operator observed
         // 2979 in a few hours. The pre-flight check must short-
         // circuit BEFORE serde + planner + try_reserve.
         let mut s = adult_with_voice();

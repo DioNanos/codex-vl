@@ -318,10 +318,10 @@ impl ManagedClientStartup {
             .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let cancel_token_for_fut = cancel_token;
-        let tool_catalog_fetch_ticket = tool_catalog_cache_context
-            .as_ref()
-            .map(McpToolCatalogCacheContext::begin_fetch);
         async move {
+            let tool_catalog_fetch_ticket = tool_catalog_cache_context
+                .as_ref()
+                .map(McpToolCatalogCacheContext::begin_fetch);
             let refresh_start = is_codex_apps_mcp_server.then(Instant::now);
             let outcome = match async {
                 if let Err(error) = validate_mcp_server_name(&server_name) {
@@ -1100,7 +1100,7 @@ async fn make_rmcp_client(
                 // `ExecutorStdioServerLauncher` once the executor-backed path
                 // preserves `LocalStdioServerLauncher` semantics.
                 Arc::new(LocalStdioServerLauncher::new(
-                    runtime_context.local_stdio_fallback_cwd(),
+                    runtime_context.local_process_cwd(),
                 )) as Arc<dyn StdioServerLauncher>
             } else {
                 let Some(environment) = resolved_environment.as_ref() else {
@@ -1131,11 +1131,11 @@ async fn make_rmcp_client(
             http_headers,
             env_http_headers,
             bearer_token_env_var,
+            http_headers_helper: _,
         } => {
-            let http_client = resolved_environment.as_ref().map_or_else(
-                || runtime_context.local_http_client(),
-                |environment| environment.get_http_client(),
-            );
+            let http_client = runtime_context
+                .http_client_for_server(server.config(), resolved_environment.as_ref())
+                .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?;
             let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
             let resolved_bearer_token =
                 match resolve_bearer_token(server_name, bearer_token_env_var.as_deref()) {

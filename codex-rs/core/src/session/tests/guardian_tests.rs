@@ -2,6 +2,7 @@ use super::*;
 use crate::compact::InitialContextInjection;
 use crate::exec_policy::ExecPolicyManager;
 use crate::guardian::GUARDIAN_REVIEWER_NAME;
+use crate::plugins::plugins_manager_for_config;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::step_context::StepContext;
 use crate::test_support::models_manager_with_provider;
@@ -454,6 +455,17 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
     );
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
+    session
+        .start_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            super::NeverEndingTask {
+                kind: crate::state::TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+            crate::tasks::MailboxParentProvenance::Ignore,
+        )
+        .await;
 
     let handler = crate::tools::handlers::ShellCommandHandler::from(
         codex_tools::ShellCommandBackendConfig::Classic,
@@ -738,7 +750,10 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         auth_manager.clone(),
         config.model_provider.clone(),
     );
-    let plugins_manager = Arc::new(PluginsManager::new(config.codex_home.to_path_buf()));
+    let plugins_manager = Arc::new(plugins_manager_for_config(
+        &config,
+        auth_manager.get_api_auth_mode(),
+    ));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
         /*bundled_skills_enabled*/ true,

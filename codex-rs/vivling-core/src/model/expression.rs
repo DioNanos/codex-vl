@@ -88,7 +88,7 @@ pub const fn stage_llm_budget(stage: Stage) -> u32 {
 /// Memory V2 Step 12.B.O — per-Vivling budget cap override.
 ///
 /// `Default` falls back to [`stage_llm_budget`] (Baby 50 / Juvenile
-/// 100 / Adult 200). DAG on an unmetered wrapper (GLM Z.AI, Ollama
+/// 100 / Adult 200). The operator on an unmetered wrapper (GLM Z.AI, Ollama
 /// Cloud, local models) can lift the artificial gradient with
 /// `/vivling crt-brain budget unlimited|<N>`. The enum form
 /// (instead of `Option<u32>` with `Some(0)` = unlimited) was
@@ -109,7 +109,7 @@ pub enum VivlingBudgetCap {
     /// remain active as anti-burn safety nets.
     Unlimited,
     /// Explicit numeric override. Honored verbatim; no clamping
-    /// against the stage gradient so DAG can dial Baby above
+    /// against the stage gradient so the operator can dial Baby above
     /// Adult if a scenario calls for it.
     Custom(u32),
 }

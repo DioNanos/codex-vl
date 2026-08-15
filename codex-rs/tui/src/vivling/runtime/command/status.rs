@@ -15,6 +15,7 @@ impl Vivling {
             "/vivling upgrade - open the ZED upgrade card".to_string(),
             "/vivling zed - open the ZED Companion panel (bond + gene snapshot)".to_string(),
             "/vivling assist <task> - ask the Vivling brain for adult help".to_string(),
+            "/vla <task> - short alias for Adult assist + main-worker kickoff".to_string(),
             "/vivling brain <on|off> - enable or disable the Vivling brain".to_string(),
             "/vivling crt-brain - show CRT brain mode, budget and today's LLM counters"
                 .to_string(),

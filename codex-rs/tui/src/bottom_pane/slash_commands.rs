@@ -218,6 +218,22 @@ mod tests {
     }
 
     #[test]
+    fn vla_assist_alias_is_visible_and_resolves_for_dispatch() {
+        assert_eq!(
+            find_builtin_command("vla", all_enabled_flags()),
+            Some(SlashCommand::VivlingAssistAlias)
+        );
+        assert!(
+            commands_for_input(all_enabled_flags(), &[])
+                .iter()
+                .any(|item| matches!(
+                    item,
+                    SlashCommandItem::Builtin(SlashCommand::VivlingAssistAlias)
+                ))
+        );
+    }
+
+    #[test]
     fn service_tier_commands_are_hidden_when_disabled() {
         let mut flags = all_enabled_flags();
         flags.service_tier_commands_enabled = false;
@@ -307,6 +323,7 @@ mod tests {
             vec![
                 SlashCommand::Ide,
                 SlashCommand::Copy,
+                SlashCommand::Export,
                 SlashCommand::Raw,
                 SlashCommand::Diff,
                 SlashCommand::Mention,

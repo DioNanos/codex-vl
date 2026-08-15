@@ -62,17 +62,24 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.147.0` line is based on upstream Codex `rust-v0.147.0` and preserves the
-complete Codex VL workflow layer, alongside the native Android V8 build. The
-Termux TLS root fix carried here for parity was retired at this version:
-upstream removed the client it wrapped, and MCP OAuth discovery now runs on the
-injected `codex-http-client`.
+The `0.148.0-alpha.13` line is based on upstream Codex
+`rust-v0.148.0-alpha.13` and preserves the complete Codex VL workflow layer,
+alongside the native Android V8 build.
 
-`0.147.0` is published on the `latest` channel with a matching GitHub tag and
-release. The conservative `stable` tag remains on `0.144.5` until a later
-explicitly authorized promotion. Packages cover Linux x64,
-Linux arm64 (musl), Android arm64, and macOS arm64 source builds; each platform
-uses its corresponding candidate channel before production promotion.
+Being an upstream **alpha**, it ships on the `next` channel. `latest` stays on
+the `0.147.0` line, and the conservative `stable` tag remains on `0.144.5`
+until a later explicitly authorized promotion — a prerelease does not move a
+production channel, whatever else changes.
+
+Packages cover Linux x64, Linux arm64 (musl), Android arm64, and macOS arm64
+source builds. The main package is a thin wrapper: the binaries live in the
+per-platform packages, which is why they are published **first** and why the
+main one is useless without them.
+
+The `0.147.0` line remains as described above: the Termux TLS root fix carried
+there for parity was retired at that version, because upstream removed the
+client it wrapped and MCP OAuth discovery now runs on the injected
+`codex-http-client`.
 
 Local stdio MCP servers start with a restricted environment. Forward a
 process variable explicitly by name when the server needs it; repeat the flag
@@ -107,10 +114,10 @@ optional rustup target) and prints actionable hints when something is missing.
 
 Upstream OpenAI Codex removed the experimental TUI realtime voice/audio feature
 in `rust-v0.140.0` (openai/codex#27801). Codex VL no longer ships it on any
-platform. The Android cpal/oboe enablement this fork used to carry - never
-usable from a plain Termux CLI anyway, since the audio backend (cpal -> oboe ->
+platform. The Android cpal/oboe enablement this fork used to carry — never
+usable from a plain Termux CLI anyway, since the audio backend (cpal → oboe →
 `ndk-context`) needs an Android `JavaVM`/`Activity` a command-line process does
-not have - was dropped along with it. A Termux-native audio backend remains a
+not have — was dropped along with it. A Termux-native audio backend remains a
 possible future direction, not a current capability.
 
 Vivling behavior is still experimental. It is intended to become a workflow

@@ -46,10 +46,15 @@ use codex_config::format_config_error_with_source;
 use codex_config::types::ResumeCwdMode;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+#[cfg(test)]
+use codex_history::RolloutItem;
+#[cfg(test)]
+use codex_history::RolloutLine;
 use codex_login::AuthConfig;
 use codex_login::default_client::originator;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::enforce_login_restrictions;
+use codex_login::is_workload_identity_selected;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::AltScreenMode;
@@ -57,10 +62,6 @@ use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::protocol::AskForApproval;
-#[cfg(test)]
-use codex_protocol::protocol::RolloutItem;
-#[cfg(test)]
-use codex_protocol::protocol::RolloutLine;
 #[cfg(test)]
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::StateDbHandle;
@@ -848,8 +849,18 @@ fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
     can_reuse_implicit_local_daemon: bool,
-) -> AppServerTarget {
-    match explicit_remote_endpoint {
+    workload_identity_selected: bool,
+) -> std::io::Result<AppServerTarget> {
+    if workload_identity_selected {
+        if explicit_remote_endpoint.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "workload identity must be configured on the remote app-server host",
+            ));
+        }
+        return Ok(AppServerTarget::Embedded);
+    }
+    Ok(match explicit_remote_endpoint {
         Some(endpoint) => AppServerTarget::Remote { endpoint },
         None if can_reuse_implicit_local_daemon => {
             default_daemon_socket.map_or(AppServerTarget::Embedded, |socket_path| {
@@ -859,7 +870,20 @@ fn app_server_target_for_launch(
             })
         }
         None => AppServerTarget::Embedded,
-    }
+    })
+}
+
+async fn cloud_config_bundle_for_app_server_target(
+    app_server_target: &AppServerTarget,
+    bootstrap_config: &ConfigTomlLoadResult,
+    codex_home: &Path,
+) -> std::io::Result<CloudConfigBundleLoader> {
+    cloud_config_bundle_loader_for_storage(
+        app_server_target
+            .auth_config_for_cloud_loader(bootstrap_auth_config(codex_home, bootstrap_config)?),
+        /*enable_codex_api_key_env*/ false,
+    )
+    .await
 }
 
 fn loader_overrides_are_default(loader_overrides: &LoaderOverrides) -> bool {
@@ -953,12 +977,14 @@ pub async fn run_main(
         launch_loader_overrides.user_config_path = Some(user_config_path);
         launch_loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
-    let reuse_implicit_local_daemon = can_reuse_implicit_local_daemon(
-        &cli_kv_overrides,
-        &launch_loader_overrides,
-        strict_config,
-        cli.bypass_hook_trust || cli.psp,
-    );
+    let workload_identity_selected = is_workload_identity_selected();
+    let reuse_implicit_local_daemon = !workload_identity_selected
+        && can_reuse_implicit_local_daemon(
+            &cli_kv_overrides,
+            &launch_loader_overrides,
+            strict_config,
+            cli.bypass_hook_trust,
+        );
     let default_daemon = if explicit_remote_endpoint.is_none() && reuse_implicit_local_daemon {
         maybe_probe_default_daemon_socket(&codex_home).await
     } else {
@@ -968,7 +994,8 @@ pub async fn run_main(
         explicit_remote_endpoint,
         default_daemon,
         reuse_implicit_local_daemon,
-    );
+        workload_identity_selected,
+    )?;
     let remote_cwd_override = cli
         .cwd
         .clone()
@@ -1009,12 +1036,12 @@ pub async fn run_main(
     )
     .await;
     let bootstrap_config_toml = &bootstrap_config.config_toml;
-    let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-        app_server_target
-            .auth_config_for_cloud_loader(bootstrap_auth_config(&codex_home, &bootstrap_config)?),
-        /*enable_codex_api_key_env*/ false,
+    let cloud_config_bundle = cloud_config_bundle_for_app_server_target(
+        &app_server_target,
+        &bootstrap_config,
+        &codex_home,
     )
-    .await;
+    .await?;
 
     let cwd_override = if app_server_target.uses_remote_workspace() {
         None
@@ -1091,7 +1118,6 @@ pub async fn run_main(
         main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         show_raw_agent_reasoning: cli.oss.then_some(true),
         bypass_hook_trust: cli.bypass_hook_trust.then_some(true),
-        psp: Some(cli.psp),
         additional_writable_roots: additional_dirs,
         ..Default::default()
     };
@@ -1105,11 +1131,15 @@ pub async fn run_main(
     )
     .await;
 
-    let cloud_config_bundle = cloud_config_bundle_loader_for_storage(
-        app_server_target.auth_config_for_cloud_loader(config.auth_config()),
-        /*enable_codex_api_key_env*/ false,
-    )
-    .await;
+    let cloud_config_bundle = if workload_identity_selected {
+        cloud_config_bundle
+    } else {
+        cloud_config_bundle_loader_for_storage(
+            app_server_target.auth_config_for_cloud_loader(config.auth_config()),
+            /*enable_codex_api_key_env*/ false,
+        )
+        .await?
+    };
     let environment_manager = Arc::new(
         prepared_environment_manager
             .build(Some(local_runtime_paths), config.http_client_factory())
@@ -1170,7 +1200,7 @@ pub async fn run_main(
         }
     }
 
-    if !app_server_target.uses_remote_workspace() {
+    if !app_server_target.uses_remote_workspace() && !workload_identity_selected {
         #[allow(clippy::print_stderr)]
         if let Err(err) = enforce_login_restrictions(&config.auth_config()).await {
             eprintln!("{err}");
@@ -1299,6 +1329,7 @@ async fn run_ratatui_app(
     environment_manager: Arc<EnvironmentManager>,
 ) -> color_eyre::Result<AppExitInfo> {
     let uses_remote_workspace = app_server_target.uses_remote_workspace();
+    let workload_identity_selected = is_workload_identity_selected();
     color_eyre::install()?;
 
     tooltips::announcement::prewarm(initial_config.http_client_factory());
@@ -1389,7 +1420,9 @@ async fn run_ratatui_app(
         !uses_remote_workspace && should_show_trust_screen(&initial_config);
     #[cfg(target_os = "windows")]
     let mut trust_decision_was_made = false;
-    let login_status = if initial_config.model_provider.requires_openai_auth {
+    let login_status = if workload_identity_selected {
+        LoginStatus::AuthMode(AuthMode::Chatgpt)
+    } else if initial_config.model_provider.requires_openai_auth {
         let Some(app_server) = app_server.as_mut() else {
             unreachable!("app server should exist when auth is required");
         };
@@ -1440,12 +1473,12 @@ async fn run_ratatui_app(
         // If this onboarding run included the login step, always refresh the cloud config bundle
         // and rebuild config. This avoids missing newly available cloud-managed policy due to login
         // status detection edge cases.
-        if show_login_screen && !uses_remote_workspace {
+        if show_login_screen && !uses_remote_workspace && !workload_identity_selected {
             cloud_config_bundle = cloud_config_bundle_loader_for_storage(
                 initial_config.auth_config(),
                 /*enable_codex_api_key_env*/ false,
             )
-            .await;
+            .await?;
         }
 
         // If the user made an explicit trust decision, or we showed the login flow, reload config
@@ -2066,9 +2099,9 @@ mod tests {
     use codex_app_server_protocol::ThreadStartResponse;
     use codex_config::config_toml::ProjectConfig;
     use codex_features::Feature;
+    use codex_history::RolloutItem;
+    use codex_history::RolloutLine;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::RolloutItem;
-    use codex_protocol::protocol::RolloutLine;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
@@ -2597,7 +2630,8 @@ mod tests {
             /*explicit_remote_endpoint*/ None,
             Some(socket_path.clone()),
             /*can_reuse_implicit_local_daemon*/ true,
-        );
+            /*workload_identity_selected*/ false,
+        )?;
 
         assert_eq!(
             target,
@@ -2619,7 +2653,8 @@ mod tests {
             Some(explicit_endpoint.clone()),
             Some(AbsolutePathBuf::relative_to_current_dir("default.sock")?),
             /*can_reuse_implicit_local_daemon*/ false,
-        );
+            /*workload_identity_selected*/ false,
+        )?;
 
         assert_eq!(
             target,
@@ -2640,9 +2675,40 @@ mod tests {
             /*explicit_remote_endpoint*/ None,
             Some(socket_path),
             /*can_reuse_implicit_local_daemon*/ false,
-        );
+            /*workload_identity_selected*/ false,
+        )?;
 
         assert_eq!(target, AppServerTarget::Embedded);
+        Ok(())
+    }
+
+    #[test]
+    fn workload_identity_requires_an_embedded_app_server() -> color_eyre::Result<()> {
+        let default_socket = AbsolutePathBuf::relative_to_current_dir("default.sock")?;
+        assert_eq!(
+            app_server_target_for_launch(
+                /*explicit_remote_endpoint*/ None,
+                Some(default_socket),
+                /*can_reuse_implicit_local_daemon*/ true,
+                /*workload_identity_selected*/ true,
+            )?,
+            AppServerTarget::Embedded
+        );
+
+        let explicit_endpoint = RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::relative_to_current_dir("explicit.sock")?,
+        };
+        let error = app_server_target_for_launch(
+            Some(explicit_endpoint),
+            /*default_daemon_socket*/ None,
+            /*can_reuse_implicit_local_daemon*/ false,
+            /*workload_identity_selected*/ true,
+        )
+        .expect_err("remote hosts must own workload identity");
+        assert_eq!(
+            error.to_string(),
+            "workload identity must be configured on the remote app-server host"
+        );
         Ok(())
     }
 
@@ -3262,7 +3328,7 @@ mod tests {
                 let preview = crate::resume_picker::load_transcript_preview(
                     &mut app_server,
                     thread_id,
-                    /*codex_home*/ None,
+                    /*config*/ None,
                 )
                 .await?;
                 assert!(!preview.is_empty());
@@ -3271,7 +3337,7 @@ mod tests {
                 &mut app_server,
                 thread_id,
                 crate::thread_transcript::RawReasoningVisibility::Hidden,
-                /*codex_home*/ None,
+                /*config*/ None,
             )
             .await?;
             assert!(cells.len() > 100);

@@ -133,8 +133,8 @@ impl Vivling {
             // Memory V2 Step 12.B.C: `/vl` chat uses the Expression
             // brain target — a pinned profile overrides the session
             // model only when `brain_enabled` is true; otherwise we
-            // always inherit `/model` (matches DAG's "STESSO MODELLO
-            // CHAT" contract).
+            // always inherit `/model` (matches the operator's "STESSO
+            // MODELLO CHAT" contract).
             let brain_target =
                 resolve_expression_target(state.brain_enabled, state.brain_profile.as_deref());
             // codex-vl bond: only credit Chat after pre-dispatch validation

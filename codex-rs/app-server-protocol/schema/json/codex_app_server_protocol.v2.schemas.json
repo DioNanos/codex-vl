@@ -1083,6 +1083,13 @@
         "includeTools": {
           "description": "When true, include display-only public tool summaries in the returned metadata.",
           "type": "boolean"
+        },
+        "threadId": {
+          "description": "Optional loaded thread id used to evaluate effective app configuration.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1243,6 +1250,29 @@
         "agent"
       ],
       "type": "string"
+    },
+    "AutoReviewRequirements": {
+      "properties": {
+        "ignoreRules": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "requiredOnModels": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "BrowserUseRequirements": {
       "properties": {
@@ -3222,7 +3252,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GetAccountTokenUsageParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -4652,6 +4689,32 @@
     "ConfigLayerSource": {
       "oneOf": [
         {
+          "description": "Default configuration supplied with the installed Codex package.",
+          "properties": {
+            "file": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/AbsolutePathBuf"
+                }
+              ],
+              "description": "Path to the packaged default configuration file."
+            },
+            "type": {
+              "enum": [
+                "packagedDefaults"
+              ],
+              "title": "PackagedDefaultsConfigLayerSourceType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "type"
+          ],
+          "title": "PackagedDefaultsConfigLayerSource",
+          "type": "object"
+        },
+        {
           "description": "Managed preferences layer delivered by MDM (macOS only).",
           "properties": {
             "domain": {
@@ -4956,6 +5019,16 @@
             "null"
           ]
         },
+        "autoReview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AutoReviewRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "browserUse": {
           "anyOf": [
             {
@@ -5232,6 +5305,49 @@
             "type"
           ],
           "title": "CommandConfiguredHookHandler",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "input": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "server": {
+              "type": "string"
+            },
+            "statusMessage": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeoutSec": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "mcp_tool"
+              ],
+              "title": "McpToolConfiguredHookHandlerType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "input",
+            "server",
+            "tool",
+            "type"
+          ],
+          "title": "McpToolConfiguredHookHandler",
           "type": "object"
         },
         {
@@ -7537,6 +7653,18 @@
       "title": "GetAccountResponse",
       "type": "object"
     },
+    "GetAccountTokenUsageParams": {
+      "properties": {
+        "threadId": {
+          "description": "When present, read estimated usage for this thread instead of account-wide token activity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "GetAccountTokenUsageResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -7551,6 +7679,18 @@
         },
         "summary": {
           "$ref": "#/definitions/AccountTokenUsageSummary"
+        },
+        "threadUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Estimated usage when a thread was requested and its billing route is available."
         }
       },
       "required": [
@@ -7994,6 +8134,14 @@
         "eventName": {
           "$ref": "#/definitions/HookEventName"
         },
+        "executionMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/HookExecutionMode"
+            }
+          ],
+          "default": "sync"
+        },
         "handlerType": {
           "$ref": "#/definitions/HookHandlerType"
         },
@@ -8317,6 +8465,37 @@
         "original"
       ],
       "type": "string"
+    },
+    "ImageGenerationFailure": {
+      "oneOf": [
+        {
+          "properties": {
+            "limitId": {
+              "type": "string"
+            },
+            "resetsAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "usageLimitExceeded"
+              ],
+              "title": "UsageLimitExceededImageGenerationFailureType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "limitId",
+            "type"
+          ],
+          "title": "UsageLimitExceededImageGenerationFailure",
+          "type": "object"
+        }
+      ]
     },
     "InitializeCapabilities": {
       "description": "Client-declared capabilities negotiated during initialize.",
@@ -9349,6 +9528,14 @@
       ],
       "type": "object"
     },
+    "McpServerOauthClientRegistration": {
+      "enum": [
+        "auto",
+        "cimd",
+        "dcr"
+      ],
+      "type": "string"
+    },
     "McpServerOauthLoginCompletedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -9381,6 +9568,17 @@
     "McpServerOauthLoginParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "clientRegistration": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpServerOauthClientRegistration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Registration strategy for this login only; omission selects automatic discovery."
+        },
         "name": {
           "type": "string"
         },
@@ -9453,6 +9651,12 @@
         },
         "name": {
           "type": "string"
+        },
+        "pluginId": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "resourceTemplates": {
           "items": {
@@ -9884,6 +10088,17 @@
             "null"
           ]
         },
+        "multiAgentVersion": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MultiAgentVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Multi-agent runtime declared by this model, when available."
+        },
         "serviceTiers": {
           "default": [],
           "items": {
@@ -10218,6 +10433,15 @@
         }
       ]
     },
+    "MultiAgentVersion": {
+      "description": "Multi-agent runtime supported by a model.",
+      "enum": [
+        "disabled",
+        "v1",
+        "v2"
+      ],
+      "type": "string"
+    },
     "NetworkAccess": {
       "enum": [
         "restricted",
@@ -10389,6 +10613,18 @@
         "compact"
       ],
       "type": "string"
+    },
+    "NullableGetAccountTokenUsageParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GetAccountTokenUsageParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nullable_GetAccountTokenUsageParams"
     },
     "OverriddenMetadata": {
       "properties": {
@@ -10740,6 +10976,13 @@
     "PluginInstallParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "installAttemptId": {
+          "description": "Client-generated identifier used to correlate one installation attempt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "marketplacePath": {
           "anyOf": [
             {
@@ -14013,6 +14256,52 @@
       "title": "SendAddCreditsNudgeEmailResponse",
       "type": "object"
     },
+    "ServerDiagnosticsGauge": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ServerDiagnosticsProcess": {
+      "properties": {
+        "id": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "physicalFootprintBytes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "residentMemoryBytes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ServerNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Notification sent from the server to the client.",
@@ -14156,6 +14445,26 @@
             "params"
           ],
           "title": "Thread/closedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/reverted"
+              ],
+              "title": "Thread/revertedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadRevertedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/revertedNotification",
           "type": "object"
         },
         {
@@ -17513,6 +17822,17 @@
         },
         {
           "properties": {
+            "failure": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ImageGenerationFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "id": {
               "type": "string"
             },
@@ -18420,6 +18740,19 @@
       "title": "ThreadResumeResponse",
       "type": "object"
     },
+    "ThreadRevertedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadRevertedNotification",
+      "type": "object"
+    },
     "ThreadRollbackParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "DEPRECATED: `thread/rollback` will be removed soon.",
@@ -18485,6 +18818,18 @@
     "ThreadSection": {
       "description": "An independently persisted, user-visible thread section.",
       "properties": {
+        "appearance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSectionAppearance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional appearance synchronized across clients."
+        },
         "id": {
           "description": "Opaque UUIDv7 identity that remains stable when the section is renamed.",
           "type": "string"
@@ -18500,10 +18845,39 @@
       ],
       "type": "object"
     },
+    "ThreadSectionAppearance": {
+      "description": "Extensible visual presentation for a custom thread section.",
+      "properties": {
+        "color": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ThreadSectionCreateParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Parameters for creating an independently persisted thread section.",
       "properties": {
+        "appearance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSectionAppearance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "name": {
           "description": "The user-visible name of the section.",
           "type": "string"
@@ -18637,6 +19011,17 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Parameters for updating an independently persisted thread section.",
       "properties": {
+        "appearance": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadSectionAppearance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Omit to preserve appearance, use `null` to clear it, or provide a replacement."
+        },
         "name": {
           "description": "The updated user-visible name of the section.",
           "type": "string"
@@ -19259,6 +19644,101 @@
         "unsubscribed"
       ],
       "type": "string"
+    },
+    "ThreadUsage": {
+      "properties": {
+        "estimatedUsageCreditsMicros": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "estimatedUsageUsdMicros": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/definitions/ThreadUsageBreakdownGroup"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "estimatedUsageCreditsMicros",
+        "groups",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadUsageBreakdownGroup": {
+      "properties": {
+        "cachedInputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "estimatedUsageCreditsMicros": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "inputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "netNewInputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoningEffort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "speed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "estimatedUsageCreditsMicros"
+      ],
+      "type": "object"
     },
     "TokenUsageBreakdown": {
       "properties": {

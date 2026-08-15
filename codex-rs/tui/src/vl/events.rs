@@ -82,11 +82,20 @@ pub(crate) enum VlEvent {
     /// Persist or assign the brain profile for the active Vivling.
     PersistVivlingBrainProfile { request: VivlingBrainProfileRequest },
     /// Start a background one-shot assist request for the active Vivling brain.
-    RunVivlingAssist { request: VivlingAssistRequest },
+    RunVivlingAssist {
+        thread_id: ThreadId,
+        request: VivlingAssistRequest,
+    },
     /// Result of a Vivling brain request.
     VivlingAssistFinished {
+        /// Thread that originated the request. A delayed reply is rejected if
+        /// a different thread is displayed when it arrives.
+        thread_id: ThreadId,
         vivling_id: String,
         kind: VivlingBrainRequestKind,
+        /// Original user payload. The app uses it only for a successful
+        /// Adult `Assist` reply; `Chat` replies never enter the worker pipeline.
+        task: String,
         result: Result<String, String>,
     },
     /// Start a background one-shot loop tick request for the current Vivling loop owner.
