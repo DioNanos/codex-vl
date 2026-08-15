@@ -524,6 +524,31 @@ fn first_quoted(s: &str) -> Option<&str> {
 /// cadrebbe a caso: il gate PRETENDE la condizione locale e dice come
 /// soddisfarla.
 ///
+/// FETCH_HEAD assente, detto PER INTERO. La causa sottile che merita il nome:
+/// FETCH_HEAD e' PER-WORKTREE, i ref `refs/remotes/upstream/*` sono CONDIVISI
+/// da tutti i checkout del repo. Un gate girato in un worktree dove nessuna
+/// fetch e' mai stata fatta vede i ref (scaricati da un altro checkout) ma non
+/// puo' provarne la provenienza — e un gate che non puo' provarla non passa
+/// verde per assenza di ispezione. Il rimedio ha un POSTO preciso: la fetch va
+/// fatta NEL checkout dove gira il gate, perche' quella fatta nel checkout
+/// principale scrive il FETCH_HEAD del principale e questo resta senza prova
+/// (misurato: gate rosso nel worktree nuovo, verde nel principale, stesso
+/// repo). Non e' un difetto di sanificazione ne' nei ref: e' una condizione
+/// locale mancante, e ora e' detta.
+fn msg_fetch_head_assente(fh_path: &Path) -> String {
+    format!(
+        "FETCH_HEAD assente ({}): nessuna fetch e' mai stata registrata in QUESTO \
+         checkout. FETCH_HEAD e' per-worktree mentre i ref refs/remotes/upstream/* sono \
+         condivisi fra tutti i checkout del repo: i ref si vedono anche senza una fetch \
+         locale, la loro PROVENIENZA no — e un gate che non puo' provarla non passa \
+         verde per assenza di ispezione. Rimedio: `git fetch upstream` NEL checkout \
+         dove gira il gate (farla nel checkout principale scrive il FETCH_HEAD del \
+         principale e lascia questo senza prova). Non e' un difetto di sanificazione \
+         ne' nei ref: e' una condizione locale mancante, detta invece di nascosta.",
+        fh_path.display()
+    )
+}
+
 /// `expected_canonical` e' la forma "host/owner/repo" attesa (la stessa del
 /// controllo di URL di config). Ritorna `Ok(())` se ogni ref e' provato,
 /// `Err(failures)` altrimenti.
@@ -575,10 +600,14 @@ fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(),
     };
     let content = match fs::read(&fh_path) {
         Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(vec![msg_fetch_head_assente(&fh_path)]);
+        }
+        Err(e) => {
             return Err(vec![format!(
-                "FETCH_HEAD non leggibile ({}): nessuna fetch registrata, la provenienza dei \
-                 ref non e' provata. Esegui `git fetch upstream`.",
+                "FETCH_HEAD presente ma non leggibile ({}): {e}. La provenienza dei ref \
+                 non e' provata: il gate non prende la parola di un file che non riesce ad \
+                 aprire. Verifica i permessi, o ricrea la fetch con `git fetch upstream`.",
                 fh_path.display()
             )]);
         }
@@ -1844,4 +1873,140 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
             "il messaggio deve dire {perche}: {msg}"
         );
     }
+}
+
+// ---- CONTROLLO NEGATIVO: FETCH_HEAD assente in un worktree, detto per intero --
+//
+// Il caso misurato (2026-08-15): FETCH_HEAD e' PER-WORKTREE, i ref
+// refs/remotes/upstream/* sono CONDIVISI da tutti i checkout del repo. Un gate
+// girato in un worktree dove nessuna fetch e' mai stata fatta vede i ref ma
+// non puo' provarne la provenienza — e il rosso ambientale si legge come
+// difetto di sanificazione se non lo si spiega. Il fixture ricostruisce il
+// caso ESATTO con un worktree git vero (remote file://, nessuna rete):
+// ref condivisi scaricati dal principale, FETCH_HEAD solo nel principale.
+// Il rimedio indicato dal messaggio viene poi ESEGUITO nel worktree del
+// fixture, per dimostrare che e' quello giusto: dopo la fetch fatta NEL
+// worktree il SUO FETCH_HEAD esiste e la causa si sposta (nel fixture resta
+// Err per l'URL file:// — non canonicalizzabile per scelta, un parser
+// permissivo fabbrica prove false — ma non e' piu' «assente»: in produzione,
+// col remote github reale, e' il punto in cui diventa verde).
+#[test]
+fn fetch_head_assente_in_un_worktree_e_un_fallimento_che_parla() {
+    let pid = std::process::id();
+    let base = std::env::temp_dir().join(format!("fork-gate-fh-{pid}"));
+    let _ = fs::remove_dir_all(&base);
+    let _scratch = Scratch::new(vec![base.clone()]);
+    let up = base.join("up.git");
+    let repo = base.join("repo");
+    let wt = base.join("wt");
+    fs::create_dir_all(&repo).expect("creazione dir scratch");
+
+    // Repo con un commit; un bare clone fara' da upstream (file://, no rete).
+    git(&repo, &["init", "-q", "-b", "main", "."]);
+    git(&repo, &["config", "user.name", "Gate Test"]);
+    git(&repo, &["config", "user.email", "gate@test.local"]);
+    git(&repo, &["config", "commit.gpgsign", "false"]);
+    git(&repo, &["commit", "--allow-empty", "-q", "-m", "base"]);
+    git(
+        &base,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            repo.display().to_string().as_str(),
+            up.display().to_string().as_str(),
+        ],
+    );
+
+    // La fetch avviene NEL REPO PRINCIPALE: FETCH_HEAD nasce li', i ref
+    // upstream diventano condivisi.
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            format!("file://{}", up.display()).as_str(),
+        ],
+    );
+    git(&repo, &["fetch", "-q", "upstream"]);
+    let _ = git_try(&repo, &["update-ref", "-d", "refs/remotes/upstream/HEAD"]);
+
+    // Worktree dal principale: vede i ref condivisi, non ha FETCH_HEAD.
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            wt.display().to_string().as_str(),
+            "HEAD",
+        ],
+    );
+    let urefs: Vec<String> = git(
+        &wt,
+        &["for-each-ref", "--format=%(refname)", "refs/remotes/upstream"],
+    )
+    .lines()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .collect();
+    assert!(
+        !urefs.is_empty(),
+        "i ref upstream sono condivisi: il worktree li vede senza fetch propria"
+    );
+    let fh_rel = git(&wt, &["rev-parse", "--git-path", "FETCH_HEAD"])
+        .trim()
+        .to_string();
+    let fh_path = if Path::new(&fh_rel).is_absolute() {
+        PathBuf::from(&fh_rel)
+    } else {
+        wt.join(&fh_rel)
+    };
+    assert!(
+        !fh_path.exists(),
+        "il FETCH_HEAD del worktree non esiste: nessuna fetch e' mai stata fatta qui"
+    );
+
+    // Il gate in questo worktree: Err PARLANTE, non un generico «non leggibile».
+    let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
+    let prov = provenienza_refs_provata(&wt, &expected);
+    let msg = prov
+        .expect_err("FETCH_HEAD assente: la provenienza non e' provabile, Err non Ok")
+        .join(" ");
+    let fh_str = fh_path.display().to_string();
+    for (perche, pezzo) in [
+        (
+            "QUALE file manca (il path del FETCH_HEAD di QUESTO checkout)",
+            fh_str.as_str(),
+        ),
+        ("la causa (FETCH_HEAD per-worktree vs ref condivisi)", "per-worktree"),
+        ("il rimedio (fetch NEL checkout del gate)", "git fetch upstream"),
+        ("cosa NON e' (non sanificazione, non i ref)", "Non e' un difetto di sanificazione"),
+    ] {
+        assert!(
+            msg.contains(pezzo),
+            "il messaggio deve dire {perche}: {msg}"
+        );
+    }
+
+    // Il rimedio e' quello giusto: fetch NEL WORKTREE (file://, no rete) e il
+    // SUO FETCH_HEAD compare.
+    git(&wt, &["fetch", "-q", "upstream"]);
+    assert!(
+        fh_path.exists(),
+        "la fetch fatta NEL worktree crea il FETCH_HEAD del worktree"
+    );
+    // E la causa si sposta: non e' piu' «assente» (nel fixture resta Err per
+    // l'URL file://, non canonicalizzabile per scelta: e' la dimostrazione
+    // che il problema era quello, non un altro).
+    let prov2 = provenienza_refs_provata(&wt, &expected);
+    let msg2 = prov2
+        .expect_err("col remote file:// del fixture l'URL resta non canonicalizzabile")
+        .join(" ");
+    assert!(
+        !msg2.contains("FETCH_HEAD assente"),
+        "dopo la fetch nel worktree il problema non e' piu' l'assenza: {msg2}"
+    );
 }
