@@ -31,20 +31,77 @@ use std::process::Command;
 
 // ---- infra ----------------------------------------------------------------
 
-/// Radice del repo: da CARGO_MANIFEST_DIR risale finche' trova `.git`.
+/// Radice del repo: cercata a RUNTIME, non cotta nel binario alla compilazione.
+///
+/// Il difetto che chiude: la radice era calcolata da `env!("CARGO_MANIFEST_DIR")`
+/// — macro di COMPILAZIONE, il cui valore resta dentro il binario di test. Un
+/// binario riusato dalla cache dopo che il worktree di build era stato rimosso
+/// cercava la radice in un path morto: il gate era verde o rosso a seconda di
+/// DOVE era stato compilato, non di cosa conteneva l'albero (misurato: tre test
+/// panicavano col path di un worktree cancellato, e solo `cargo clean -p
+/// fork-gate` restituiva la verita').
+///
+/// Le fonti, in ordine, sono tutte RUNTIME:
+/// 1. la variabile d'ambiente CARGO_MANIFEST_DIR LETTA A RUNTIME: sotto
+///    `cargo test` cargo la imposta per il processo di test a OGNI esecuzione,
+///    col path del workspace vivo;
+/// 2. la cwd: per l'esecuzione manuale del binario, da qualunque punto del
+///    repo si parta.
+/// Si risale finche' esiste un `.git` — file nei worktree, directory nel
+/// checkout pieno: `.exists()` copre entrambi. Se nessuna fonte porta a una
+/// radice il gate NON indovina: fallisce dicendo cosa ha provato, perche' puo'
+/// succedere e come rimediare (`msg_radice_non_trovata`).
 fn repo_root() -> PathBuf {
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    loop {
-        if dir.join(".git").exists() {
-            return dir;
-        }
-        if !dir.pop() {
-            panic!(
-                "radice del repo non trovata (nessun .git) a partire da {}",
-                env!("CARGO_MANIFEST_DIR")
-            );
+    let mut fonti: Vec<PathBuf> = Vec::new();
+    if let Ok(m) = std::env::var("CARGO_MANIFEST_DIR") {
+        if !m.is_empty() {
+            fonti.push(PathBuf::from(m));
         }
     }
+    if let Ok(cwd) = std::env::current_dir() {
+        fonti.push(cwd);
+    }
+    for f in &fonti {
+        if let Some(root) = radice_da(f) {
+            return root;
+        }
+    }
+    panic!("{}", msg_radice_non_trovata(&fonti));
+}
+
+/// Risale da `start` finche' esiste `.git`. Pura: nessuna ipotesi, o la radice
+/// con un `.git` VERO o None.
+fn radice_da(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Il fallimento PARLANTE: se il gate non sa dove guardare, lo DICE — fonti
+/// provate, causa piu' probabile, rimedio. Un panic ambiguo in questa posizione
+/// si legge come un difetto di sanificazione e innesca la caccia al leak
+/// sbagliata; uno che spiega se stesso si risolve in un minuto.
+fn msg_radice_non_trovata(fonti: &[PathBuf]) -> String {
+    let elenco = fonti
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "radice del repo non trovata (nessun .git risalendo da: {elenco}). \
+         Il gate guarda l'albero da cui viene ESEGUITO, non quello in cui e' stato \
+         compilato: eseguilo da dentro il repo (o con CARGO_MANIFEST_DIR che punti al \
+         workspace vivo). Se il binario proviene dalla cache di build di un worktree \
+         rimosso, `cargo clean -p fork-gate` forza la ricompilazione dal repo corrente. \
+         Non e' un difetto di sanificazione: il gate non sa dove guardare e lo dichiara, \
+         invece di morire in un punto ambiguo."
+    )
 }
 
 /// `git -C <root> <args>`: panic se fallisce, restituisce stdout (lossy).
@@ -1724,4 +1781,67 @@ fn ref_stale_con_url_corretto_cade_invece_di_dare_zero_colpe() {
         msg.contains(&expected),
         "il gate dice quale remote attende e come soddisfare la condizione: {msg}"
     );
+}
+
+// ---- CONTROLLO NEGATIVO: la radice e' RUNTIME, non il path di compilazione --
+//
+// Il difetto misurato (2026-08-15): repo_root() calcolava la radice da
+// `env!("CARGO_MANIFEST_DIR")` — macro di COMPILAZIONE. Il binario di test
+// riusato dalla cache di un worktree POI rimosso panicava col path morto, e il
+// gate era verde o rosso a seconda di DOVE era stato compilato, non di cosa
+// conteneva l'albero. Le proprieta' da innestare, senza ricreare il worktree
+// morto:
+// 1. la radice si trova risalendo da QUALUNQUE punto del repo (cwd runtime);
+// 2. ogni radice restituita ha un `.git` VERO — mai un'ipotesi;
+// 3. quando la radice non c'e', il fallimento PARLA: fonti provate, causa
+//    probabile, rimedio. Un panic senza rimedio in questa posizione si legge
+//    come difetto di sanificazione — la caccia sbagliata.
+#[test]
+fn la_radice_e_runtime_e_il_fallimento_parla() {
+    let pid = std::process::id();
+    let tmp = std::env::temp_dir().join(format!("fork-gate-root-{pid}"));
+    let _ = fs::remove_dir_all(&tmp);
+    let _scratch = Scratch::new(vec![tmp.clone()]);
+    // Mini repo con una sottodirectory: il gate parte tipicamente da
+    // <root>/codex-rs/fork-gate, non dalla radice.
+    fs::create_dir_all(tmp.join("codex-rs").join("fork-gate")).expect("creazione dir scratch");
+    git(&tmp, &["init", "-q", "-b", "main", "."]);
+
+    // (1) runtime: da una sottodirectory QUALSIASI si risale alla radice.
+    let da_dentro = radice_da(&tmp.join("codex-rs").join("fork-gate"))
+        .expect("la radice si trova risalendo da qualunque punto del repo");
+    assert_eq!(da_dentro, tmp, "la radice trovata e' la directory del .git");
+
+    // (2) mai un'ipotesi: se la ricerca restituisce qualcosa, ha un .git
+    // VERO sopra. Da una dir senza .git (fino in cima, su una macchina
+    // normale) e' None; l'asserzione vale comunque su macchine insolite —
+    // la proprieta' e' la post-condizione, non il caso particolare.
+    let fuori = std::env::temp_dir().join(format!("fork-gate-nogit-{pid}"));
+    let _ = fs::remove_dir_all(&fuori);
+    let _scratch2 = Scratch::new(vec![fuori.clone()]);
+    fs::create_dir_all(&fuori).expect("creazione dir scratch");
+    if let Some(r) = radice_da(&fuori) {
+        assert!(
+            r.join(".git").exists(),
+            "mai una radice senza .git: {r:?}"
+        );
+    }
+
+    // (3) il fallimento PARLA. Il messaggio e' puro: si esercita su input
+    // sintetici senza dipendere dall'ambiente.
+    let msg = msg_radice_non_trovata(&[fuori.clone()]);
+    assert!(
+        msg.contains(&fuori.display().to_string()),
+        "il messaggio mostra la fonte provata: {msg}"
+    );
+    for (perche, pezzo) in [
+        ("la causa probabile (binario di un worktree rimosso)", "worktree"),
+        ("il rimedio (ricompilare)", "cargo clean -p fork-gate"),
+        ("cosa NON e' (non sanificazione)", "Non e' un difetto di sanificazione"),
+    ] {
+        assert!(
+            msg.contains(pezzo),
+            "il messaggio deve dire {perche}: {msg}"
+        );
+    }
 }
