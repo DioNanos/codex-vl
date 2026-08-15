@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "codex-zsh-v*.*.*"
+  # `rust-release` invoca questo workflow come riusabile
+  # (`uses: ./.github/workflows/rust-release-zsh.yml`), e senza questo trigger
+  # l'INTERA release muore in startup_failure a zero secondi — non un job
+  # fallito che si legge nei log, ma un run che non parte: dal di fuori sembra
+  # un problema del tag o del codice. Misurato il 2026-08-15 su
+  # rust-v0.148.0-alpha.13.
+  # Nessun input né secret da dichiarare: il chiamato usa solo il GITHUB_TOKEN
+  # che GitHub fornisce da sé.
+  workflow_call:
 
 env:
   ZSH_COMMIT: 77045ef899e53b9598bebc5a41db93a548a40ca6
