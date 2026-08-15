@@ -16,6 +16,14 @@ jobs:
 
   v8-canary:
     name: v8-canary
+    # v8-canary.yml looks up earlier runs of itself, so its build job asks for
+    # `actions: read`. A nested workflow can never hold more than its caller,
+    # and this repository defaults GITHUB_TOKEN to read-only, so without this
+    # block every push to main died as startup_failure with no jobs and no
+    # logs. Keep it in sync with the permissions that workflow requests.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/v8-canary.yml
     secrets: inherit
 
