@@ -37,11 +37,16 @@ so verify the build prerequisites and use this complete install command:
 ```bash
 xcode-select -p
 cargo --version
-npm install -g @mmmbuto/codex-vl@latest \
+npm install -g @mmmbuto/codex-vl@next \
   --allow-scripts=@mmmbuto/codex-vl \
   --foreground-scripts
 codex-vl --version
 ```
+
+The command above names `@next`, the channel this version ships on. Use
+`@latest` instead when you want the stable line rather than the alpha — the
+channel in the command has to match the one you actually want, and the two
+resolve to different versions.
 
 The first macOS build can take 10-30 minutes. If a previous install left the
 platform package or binary incomplete, uninstall `@mmmbuto/codex-vl` first,
