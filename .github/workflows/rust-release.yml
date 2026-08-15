@@ -1487,6 +1487,16 @@ jobs:
   build-windows:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode == 'build_unsigned' }}
     needs: tag-check
+    # A nested workflow can never be granted more than the calling job holds,
+    # and this repository defaults GITHUB_TOKEN to read-only. Without this
+    # block the caller holds `id-token: none`, the signing job inside
+    # rust-release-windows.yml asks for `id-token: write`, and the whole
+    # release run dies as startup_failure before a single job is created:
+    # no logs, only "This run likely failed because of a workflow file issue".
+    # Keep this in sync with the permissions requested by that workflow.
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/rust-release-windows.yml
     secrets: inherit
 
@@ -1502,6 +1512,12 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode == 'build_unsigned' }}
     name: zsh release assets
     needs: tag-check
+    # Same nested-permission budget as build-windows: rust-release-zsh.yml
+    # uploads its artifacts to the release, so it asks for `contents: write`
+    # and `actions: read`. The caller has to hold both or the run never starts.
+    permissions:
+      contents: write
+      actions: read
     uses: ./.github/workflows/rust-release-zsh.yml
 
   release:
