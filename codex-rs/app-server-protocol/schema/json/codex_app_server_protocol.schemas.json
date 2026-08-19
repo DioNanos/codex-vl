@@ -4581,6 +4581,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/queue/changed"
+              ],
+              "title": "Thread/queue/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadQueueChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/queue/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/environment/connected"
               ],
               "title": "Thread/environment/connectedNotificationMethod",
@@ -7553,6 +7573,7 @@
               "usageLimitExceeded",
               "serverOverloaded",
               "cyberPolicy",
+              "misalignmentPolicyViolation",
               "internalServerError",
               "unauthorized",
               "badRequest",
@@ -11850,12 +11871,89 @@
       "HookHandlerType": {
         "enum": [
           "command",
+          "mcpTool",
           "prompt",
           "agent"
         ],
         "type": "string"
       },
       "HookMetadata": {
+        "oneOf": [
+          {
+            "properties": {
+              "async": {
+                "default": false,
+                "type": "boolean"
+              },
+              "command": {
+                "type": "string"
+              },
+              "handlerType": {
+                "enum": [
+                  "command"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "handlerType"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "mcpTool"
+                ],
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType",
+              "server",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "prompt"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType"
+            ],
+            "title": "PromptHookMetadata",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "agent"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType"
+            ],
+            "title": "AgentHookMetadata",
+            "type": "object"
+          }
+        ],
         "properties": {
           "additionalContextLimit": {
             "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
@@ -11863,12 +11961,6 @@
             "minimum": 0.0,
             "type": [
               "integer",
-              "null"
-            ]
-          },
-          "command": {
-            "type": [
-              "string",
               "null"
             ]
           },
@@ -11884,17 +11976,6 @@
           },
           "eventName": {
             "$ref": "#/definitions/v2/HookEventName"
-          },
-          "executionMode": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/v2/HookExecutionMode"
-              }
-            ],
-            "default": "sync"
-          },
-          "handlerType": {
-            "$ref": "#/definitions/v2/HookHandlerType"
           },
           "isManaged": {
             "type": "boolean"
@@ -11940,7 +12021,6 @@
           "displayOrder",
           "enabled",
           "eventName",
-          "handlerType",
           "isManaged",
           "key",
           "source",
@@ -14041,6 +14121,14 @@
               "null"
             ]
           },
+          "retirementAt": {
+            "description": "Informational Unix timestamp for this upgrade's scheduled retirement, if known.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "upgradeCopy": {
             "type": [
               "string",
@@ -15919,6 +16007,28 @@
         "required": [
           "cols",
           "rows"
+        ],
+        "type": "object"
+      },
+      "QueuedSubmission": {
+        "properties": {
+          "clientUserMessageId": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/definitions/v2/UserInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "clientUserMessageId",
+          "id",
+          "input"
         ],
         "type": "object"
       },
@@ -20494,6 +20604,19 @@
           "threadId"
         ],
         "title": "ThreadNameUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadQueueChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadQueueChangedNotification",
         "type": "object"
       },
       "ThreadReadParams": {

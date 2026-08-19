@@ -5,7 +5,6 @@ use crate::agents_md_manager::AgentsMdManager;
 use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::session::turn_context::TurnEnvironmentConfig;
 use crate::shell_snapshot::ShellSnapshot;
 use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
@@ -20,6 +19,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSpecialPath;
+use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::HookCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -136,14 +136,14 @@ impl SessionConfiguration {
         &self.permission_profile_state
     }
 
-    pub(super) fn turn_environment_config(&self) -> TurnEnvironmentConfig {
-        TurnEnvironmentConfig {
+    pub(super) fn turn_environment_config(&self) -> EnvironmentConfig {
+        EnvironmentConfig {
             allow_login_shell: self
                 .original_config_do_not_use
                 .permissions
                 .allow_login_shell,
             permission_profile: self.permission_profile_state.snapshot(),
-            selected_capability_roots: None,
+            selected_capability_roots: Vec::new(),
         }
     }
 
@@ -243,7 +243,22 @@ impl SessionConfiguration {
         }
     }
 
-    pub(super) fn validate_auto_review_requirement(
+    pub(super) fn validate(
+        &self,
+        environments: &[TurnEnvironmentSelection],
+    ) -> ConstraintResult<()> {
+        self.validate_auto_review_requirement(environments)?;
+        super::environment::validate_environment_selections(environments).map_err(|error| {
+            ConstraintError::InvalidValue {
+                field_name: "environments",
+                candidate: "environment configuration".to_string(),
+                allowed: format!("valid selected capability roots ({error})"),
+                requirement_source: codex_config::RequirementSource::Unknown,
+            }
+        })
+    }
+
+    fn validate_auto_review_requirement(
         &self,
         environments: &[TurnEnvironmentSelection],
     ) -> ConstraintResult<()> {
@@ -463,7 +478,7 @@ impl SessionConfiguration {
             .map_or(current_environments, |environments| {
                 environments.environments.as_slice()
             });
-        next_configuration.validate_auto_review_requirement(next_environments)?;
+        next_configuration.validate(next_environments)?;
         Ok(next_configuration)
     }
 
@@ -1055,7 +1070,6 @@ impl Session {
             let turn_environments = Arc::new(ThreadEnvironments::new(
                 environment_manager,
                 default_shell.clone(),
-                // Temporary: preserve thread-level behavior until environments supply config.
                 session_configuration.turn_environment_config(),
                 shell_snapshot,
                 inherited_environments.unwrap_or_default(),

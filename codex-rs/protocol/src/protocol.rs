@@ -58,8 +58,6 @@ use crate::request_user_input::RequestUserInputResponse;
 use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
-#[cfg(test)]
-use crate::user_input::UserInput;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -93,6 +91,7 @@ pub use crate::approvals::NetworkApprovalProtocol;
 pub use crate::approvals::NetworkPolicyAmendment;
 pub use crate::approvals::NetworkPolicyRuleAction;
 pub use crate::environment::EnvironmentConfig;
+pub use crate::environment::EnvironmentConfigState;
 pub use crate::legacy_events::HasLegacyEvent;
 pub use crate::permissions::FileSystemAccessMode;
 pub use crate::permissions::FileSystemPath;
@@ -148,6 +147,7 @@ pub struct TurnEnvironmentSelection {
     pub environment_id: String,
     pub cwd: PathUri,
     pub workspace_roots: Vec<PathUri>,
+    pub config: EnvironmentConfigState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1544,6 +1544,7 @@ pub enum HookEventName {
 #[serde(rename_all = "snake_case")]
 pub enum HookHandlerType {
     Command,
+    McpTool,
     Prompt,
     Agent,
 }
@@ -1800,6 +1801,7 @@ pub enum CodexErrorInfo {
     UsageLimitExceeded,
     ServerOverloaded,
     CyberPolicy,
+    MisalignmentPolicyViolation,
     HttpConnectionFailed {
         http_status_code: Option<u16>,
     },
@@ -1838,6 +1840,7 @@ impl CodexErrorInfo {
             | Self::UsageLimitExceeded
             | Self::ServerOverloaded
             | Self::CyberPolicy
+            | Self::MisalignmentPolicyViolation
             | Self::HttpConnectionFailed { .. }
             | Self::ResponseStreamConnectionFailed { .. }
             | Self::InternalServerError
@@ -3904,7 +3907,7 @@ pub struct ThreadGoalUpdatedEvent {
     pub goal: ThreadGoal,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "protocol/")]
 pub struct ThreadGoalClearedEvent {
@@ -5647,7 +5650,7 @@ mod tests {
 
     #[test]
     fn user_input_text_serializes_empty_text_elements() -> Result<()> {
-        let input = UserInput::Text {
+        let input = crate::user_input::UserInput::Text {
             text: "hello".to_string(),
             text_elements: Vec::new(),
         };

@@ -2,6 +2,10 @@
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/background_exit_tests.rs"]
+mod background_exit_tests;
+#[path = "tests/connector_policy.rs"]
+mod connector_policy;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
 #[path = "tests/mcp_startup.rs"]
@@ -150,6 +154,29 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+#[tokio::test]
+async fn pasted_text_normalizes_mixed_line_endings_at_app_boundary() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Paste("line1\r\nline2\rline3\nline4".to_string()),
+    )
+    .await?;
+
+    assert_snapshot!(app.chat_widget.composer_text_with_pending(), @r"
+    line1
+    line2
+    line3
+    line4
+    ");
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -5025,6 +5052,8 @@ async fn make_test_app() -> App {
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
+        startup_protected_input_boundary: false,
+        startup_pending_protected_request: false,
         rate_limit_hard_stop_generation: 0,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
@@ -5099,6 +5128,8 @@ async fn make_test_app_with_channels() -> (
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
+            startup_protected_input_boundary: false,
+            startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
@@ -6004,6 +6035,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
         thread_id,
+        history_mode: None,
     };
     let expected = format!(
         "session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
@@ -6307,6 +6339,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6349,6 +6382,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6386,6 +6420,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6448,6 +6483,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id: ThreadId::from_string(&thread_id)?,
+                history_mode: None,
             },
         )
         .await?;
@@ -6566,6 +6602,7 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
                     thread_id,
+                    history_mode: None,
                 },
             )
             .await?;
@@ -6678,6 +6715,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
             thread_id: ThreadId::from_string(&thread_id)?,
+            history_mode: None,
         });
     }
     let state_db =

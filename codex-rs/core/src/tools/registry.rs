@@ -566,8 +566,6 @@ impl ToolRegistry {
             return Err(err);
         }
 
-        notify_tool_start(&invocation).await;
-
         if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
             match run_pre_tool_use_hooks(
                 &invocation.session,
@@ -613,6 +611,8 @@ impl ToolRegistry {
                 } => {}
             }
         }
+
+        notify_tool_start(&invocation).await;
 
         if let Some(command) = shell_script_for_invocation(&invocation) {
             let parsed = parse_shell_script(&command);

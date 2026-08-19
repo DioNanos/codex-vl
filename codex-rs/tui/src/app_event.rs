@@ -47,6 +47,7 @@ use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
+use crate::chatwidget::ConnectorScopeGeneration;
 use crate::chatwidget::ThreadUsageOutcome;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
@@ -345,6 +346,12 @@ pub(crate) enum AppEvent {
     /// background tasks, rollout flush, or child process cleanup).
     Exit(ExitMode),
 
+    /// Apply a choice from the running-task exit menu to its originating thread.
+    RunningTaskExit {
+        action: RunningTaskExitAction,
+        thread_id: ThreadId,
+    },
+
     /// Request app-server account logout, then exit after it succeeds.
     Logout,
 
@@ -492,6 +499,9 @@ pub(crate) enum AppEvent {
 
     /// Result of prefetching connectors.
     ConnectorsLoaded {
+        thread_id: Option<ThreadId>,
+        cwd: PathBuf,
+        generation: ConnectorScopeGeneration,
         result: Result<ConnectorsSnapshot, String>,
         is_final: bool,
     },
@@ -560,9 +570,10 @@ pub(crate) enum AppEvent {
         force_refetch: bool,
     },
 
-    /// Fetch app connector state from the app server after the widget accepts a refresh request.
+    /// Fetch apps only while the originating account, workspace, and thread remain current.
     FetchConnectorsList {
         force_refetch: bool,
+        generation: ConnectorScopeGeneration,
     },
 
     /// Fetch plugin marketplace state for the provided working directory.
@@ -1217,6 +1228,14 @@ pub(crate) enum ExitMode {
     /// This skips `Op::Shutdown`, so any in-flight work may be dropped and
     /// cleanup that normally runs before `ShutdownComplete` can be missed.
     Immediate,
+}
+
+/// Choice made when leaving a daemon-backed task that is still running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunningTaskExitAction {
+    CancelTask,
+    RunInBackground,
+    Exit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

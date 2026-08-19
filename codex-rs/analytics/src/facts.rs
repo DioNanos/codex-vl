@@ -32,12 +32,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct AcceptedLineFingerprint {
-    pub path_hash: String,
-    pub line_hash: String,
-}
-
 #[derive(Clone)]
 pub struct TrackEventsContext {
     pub model_slug: String,

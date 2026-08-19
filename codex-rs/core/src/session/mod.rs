@@ -22,6 +22,7 @@ use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
+use crate::context::MultiAgentRoleInstructions;
 use crate::context::NetworkRuleSaved;
 use crate::context::RecommendedPluginsInstructions;
 use crate::context::world_state::WorldState;
@@ -263,7 +264,6 @@ pub(crate) struct PreviousTurnSettings {
 }
 
 use crate::exec_policy::ExecPolicyUpdateError;
-use crate::guardian::GuardianReviewOptions;
 use crate::guardian::GuardianReviewSessionManager;
 use crate::mcp::McpManager;
 use crate::mcp::McpThreadIdentity;
@@ -281,11 +281,13 @@ use crate::stream_events_utils::HandleOutputCtx;
 #[cfg(test)]
 use crate::stream_events_utils::handle_output_item_done;
 use crate::tasks::ReviewTask;
+use crate::tools::ApprovalContext;
 use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
 #[cfg(test)]
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::sandboxing::ApprovalAction;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::turn_timing::TurnTimingState;
 use crate::turn_timing::record_turn_ttfm_metric;
@@ -347,6 +349,7 @@ use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::HostSkillsService;
+use codex_tools::ToolName;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
@@ -710,7 +713,7 @@ impl Session {
             user_shell_override,
         };
         session_configuration
-            .validate_auto_review_requirement(&environment_selections)
+            .validate(&environment_selections)
             .map_err(|err| CodexErr::InvalidRequest(err.to_string()))?;
 
         // Generate a unique ID for the lifetime of this session.
@@ -1169,6 +1172,14 @@ impl Session {
         self.services.elicitations.subscribe()
     }
 
+    pub(crate) fn mark_interrupted(&self) {
+        self.agent_status.send_replace(AgentStatus::Interrupted);
+    }
+
+    pub(crate) fn is_interrupted(&self) -> bool {
+        matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
+    }
+
     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
         self.tx_event.clone()
     }
@@ -1580,6 +1591,9 @@ impl Session {
                 previous_permission_profile != updated_permission_profile;
             let mcp_inputs_changed =
                 self.mcp_inputs_differ(&state.session_configuration, &updated, &updates);
+            if mcp_inputs_changed {
+                self.mark_mcp_runtime_dirty();
+            }
             let environment_config = updated.turn_environment_config();
             if let Some(environments) = &updates.environments {
                 self.services
@@ -1588,14 +1602,11 @@ impl Session {
             } else if state.session_configuration.turn_environment_config() != environment_config {
                 self.services
                     .turn_environments
-                    .update_environment_configs(&environment_config);
+                    .update_thread_config(&environment_config);
             }
             state.session_configuration = updated;
             let new_config = notify_config_contributors
                 .then(|| self.build_effective_session_config(&state.session_configuration));
-            if mcp_inputs_changed {
-                self.mark_mcp_runtime_dirty();
-            }
             (
                 previous_config,
                 new_config,
@@ -1723,6 +1734,10 @@ impl Session {
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.schedule_mcp_prewarm();
+        self.refresh_hooks(config).await;
+    }
+
+    pub(crate) async fn refresh_hooks(&self, config: Arc<Config>) {
         let environments = self.services.turn_environments.snapshot().await;
         let hooks_config = build_hooks_config(
             config.as_ref(),
@@ -2510,33 +2525,29 @@ impl Session {
                 let active = self.active_turn.lock().await;
                 active.as_ref().map(|active| Arc::clone(&active.turn_state))
             };
-            let review_id = crate::guardian::new_guardian_review_id();
-            let session = Arc::clone(self);
-            let request = crate::guardian::GuardianApprovalRequest::RequestPermissions {
-                id: call_id,
+            let action = ApprovalAction::RequestPermissions {
+                id: call_id.clone(),
                 turn_id: turn_context.sub_id.clone(),
                 reason: args.reason,
                 permissions: requested_permissions.clone(),
             };
-            let review_rx = crate::guardian::spawn_approval_request_review(
-                session,
-                review_context.clone(),
-                review_id,
-                request,
-                /*retry_reason*/ None,
-                GuardianReviewOptions {
-                    plugin_attribution_override: None,
-                    approval_request_source:
-                        codex_analytics::GuardianApprovalRequestSource::MainTurn,
-                    external_cancel: Some(cancellation_token.clone()),
-                },
-            );
+            let approval_context = ApprovalContext {
+                review_context: review_context.clone(),
+                call_id,
+                tool_name: ToolName::plain("request_permissions"),
+                strict_auto_review: false,
+                approval_reason: None,
+                retry_reason: None,
+                network_approval_context: None,
+            };
             let decision = tokio::select! {
                 biased;
                 _ = cancellation_token.cancelled() => return None,
-                decision = review_rx => decision.unwrap_or_else(|_| {
-                    ReviewDecision::denied("automatic approval review could not complete")
-                }),
+                decision = self.request_guardian_approval(
+                    action,
+                    &approval_context,
+                    Some(cancellation_token.clone()),
+                ) => decision,
             };
             let response = match decision {
                 ReviewDecision::Approved | ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
@@ -3153,7 +3164,7 @@ impl Session {
                 .turn_environments()
                 .map(|environment| {
                     (
-                        environment.environment_id.clone(),
+                        environment.selection.environment_id.clone(),
                         turn_context.file_system_sandbox_context(
                             /*additional_permissions*/ None,
                             environment,
@@ -3186,6 +3197,13 @@ impl Session {
         .or_cancel(cancellation_token)
         .await??;
         Ok(Arc::new(StepContext {
+            model_info: Arc::clone(&turn_context.model_info),
+            reasoning_effort: turn_context.reasoning_effort.clone(),
+            reasoning_summary: turn_context.reasoning_summary,
+            service_tier: turn_context.config.service_tier.clone(),
+            approval_policy: turn_context.approval_policy(),
+            approvals_reviewer: turn_context.config.approvals_reviewer,
+            session_telemetry: turn_context.session_telemetry.clone(),
             turn: turn_context,
             environments,
             selected_capability_roots,
@@ -3597,6 +3615,11 @@ impl Session {
                     initial_multi_agent_mode = Some(fragment);
                 }
                 "developer"
+                    if fragment.markers().0 == MultiAgentRoleInstructions::type_markers().0 =>
+                {
+                    separate_developer_sections.push(fragment.render());
+                }
+                "developer"
                     if fragment.requires_separate_message() && fragment.markers().0.is_empty() =>
                 {
                     separate_developer_sections.push(fragment.render());
@@ -3696,6 +3719,23 @@ impl Session {
         world_state: Arc<WorldState>,
     ) -> u64 {
         let turn_context = step_context.turn.as_ref();
+        let retained_client_developer_messages =
+            if self.enabled(Feature::RetainClientDeveloperMessages) {
+                let history = self.clone_history().await;
+                crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
+                    history
+                        .annotated_items()
+                        .iter()
+                        .filter(|item| {
+                            crate::compact_remote_v2::is_client_authored_developer_message(item)
+                        })
+                        .cloned()
+                        .collect(),
+                    crate::compact_remote_v2::RETAINED_MESSAGE_TOKEN_BUDGET,
+                )
+            } else {
+                Vec::new()
+            };
         let window = {
             let mut state = self.state.lock().await;
             state.start_new_context_window()
@@ -3706,6 +3746,7 @@ impl Session {
             .await
             .into_iter()
             .map(ResponseItemEnvelope::new)
+            .chain(retained_client_developer_messages)
             .collect();
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
@@ -4139,6 +4180,7 @@ async fn build_hooks_config(
         plugin_hook_load_warnings,
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
+        mcp_executor: None,
     }
 }
 
