@@ -37,11 +37,16 @@ so verify the build prerequisites and use this complete install command:
 ```bash
 xcode-select -p
 cargo --version
-npm install -g @mmmbuto/codex-vl@latest \
+npm install -g @mmmbuto/codex-vl@next \
   --allow-scripts=@mmmbuto/codex-vl \
   --foreground-scripts
 codex-vl --version
 ```
+
+The command above names `@next`, the channel this version ships on. Use
+`@latest` instead when you want the stable line rather than the alpha — the
+channel in the command has to match the one you actually want, and the two
+resolve to different versions.
 
 The first macOS build can take 10-30 minutes. If a previous install left the
 platform package or binary incomplete, uninstall `@mmmbuto/codex-vl` first,
@@ -62,14 +67,13 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.148.0-alpha.13` line is based on upstream Codex
-`rust-v0.148.0-alpha.13` and preserves the complete Codex VL workflow layer,
+The `0.148.0` line is based on upstream Codex `rust-v0.148.0` and preserves
+the complete Codex VL workflow layer,
 alongside the native Android V8 build.
 
-Being an upstream **alpha**, it ships on the `next` channel. `latest` stays on
-the `0.147.0` line, and the conservative `stable` tag remains on `0.144.5`
-until a later explicitly authorized promotion — a prerelease does not move a
-production channel, whatever else changes.
+It ships on the `next` channel for this validation cycle. `latest` stays on
+`0.147.2`, and the conservative `stable` tag remains on `0.144.5` until a
+later explicitly authorized promotion.
 
 Packages cover Linux x64, Linux arm64 (musl), Android arm64, and macOS arm64
 source builds. The main package is a thin wrapper: the binaries live in the

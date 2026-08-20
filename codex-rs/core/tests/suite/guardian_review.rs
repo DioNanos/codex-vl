@@ -9,9 +9,14 @@ use codex_core::SleepFuture;
 use codex_core::TimeFuture;
 use codex_core::TimeProvider;
 use codex_core::TurnInputRequest;
+use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_core::sandboxing::SandboxPermissions;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ToolLifecycleContributor;
+use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolStartInput;
 use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_history::RolloutItem;
@@ -20,6 +25,7 @@ use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::permissions::FileSystemAccessMode;
@@ -28,6 +34,8 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EnvironmentConfig;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
@@ -64,11 +72,32 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::TempDir;
 use test_case::test_case;
+use wiremock::Mock;
+use wiremock::ResponseTemplate;
+use wiremock::http::Method;
+use wiremock::matchers::method;
+use wiremock::matchers::path_regex;
 
 const CURRENT_TIME_AT: i64 = 1_781_717_655;
 
 struct RecordingTimeProvider {
     thread_ids: Mutex<Vec<ThreadId>>,
+}
+
+#[derive(Default)]
+struct RecordingToolLifecycleContributor {
+    call_ids: Mutex<Vec<String>>,
+}
+
+impl ToolLifecycleContributor for RecordingToolLifecycleContributor {
+    fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move {
+            self.call_ids
+                .lock()
+                .expect("recorded tool call ids lock should not be poisoned")
+                .push(input.call_id.to_string());
+        })
+    }
 }
 
 impl TimeProvider for RecordingTimeProvider {
@@ -86,6 +115,78 @@ impl TimeProvider for RecordingTimeProvider {
     fn sleep(&self, _thread_id: ThreadId, _duration: Duration) -> SleepFuture<'_> {
         Box::pin(async { Ok(()) })
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_session_inherits_parent_http_fallback() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Guardian approval actions require host-native paths"
+    );
+
+    let server = start_mock_server().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(426))
+        .mount(&server)
+        .await;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call(
+                    "call",
+                    "exec_command",
+                    r#"{"cmd":"true","sandbox_permissions":"require_escalated","justification":"test"}"#,
+                ),
+                ev_completed("parent-tool"),
+            ]),
+            sse(vec![
+                ev_assistant_message("guardian", r#"{"outcome":"deny"}"#),
+                ev_completed("guardian-review"),
+            ]),
+            sse(vec![ev_completed("parent-complete")]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.supports_websockets = true;
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        config.approvals_reviewer = ApprovalsReviewer::User;
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "run a command".into(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                ..Default::default()
+            }),
+        )
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let websocket_attempts = requests
+        .iter()
+        .filter(|request| request.method == Method::GET)
+        .count();
+    assert_eq!(websocket_attempts, 1);
+    assert!(responses.requests().iter().any(|request| {
+        request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+    }));
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -361,7 +462,11 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     const SECRET: &str = "guardian-parent-policy-test-secret";
     let server = start_mock_server().await;
     let approval_policy = AskForApproval::OnRequest;
+    let lifecycle_recorder = Arc::new(RecordingToolLifecycleContributor::default());
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.tool_lifecycle_contributor(lifecycle_recorder.clone());
     let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             let secret_file = config.cwd.join("guardian-secret.txt");
             config.permissions.approval_policy = Constrained::allow_any(approval_policy);
@@ -486,6 +591,19 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
         ],
     )
     .await;
+    let mut parent_environments = local_selections(test.config.cwd.clone());
+    let parent_environment_config = EnvironmentConfig {
+        allow_login_shell: test.config.permissions.allow_login_shell,
+        permission_profile: PermissionProfileSnapshot::legacy(
+            test.config.permissions.permission_profile().clone(),
+        ),
+        selected_capability_roots: Vec::new(),
+    };
+    parent_environments
+        .environments
+        .first_mut()
+        .expect("local environment selection")
+        .config = EnvironmentConfigState::Ready(parent_environment_config);
 
     test.codex
         .start_or_steer_turn(
@@ -494,7 +612,7 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(parent_environments),
                 approval_policy: Some(approval_policy),
                 approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
                 ..Default::default()
@@ -534,6 +652,16 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     );
     assert_eq!(fs::read_to_string(first_output_file)?, "first");
     assert_eq!(fs::read_to_string(second_output_file)?, "second");
+    assert_eq!(
+        *lifecycle_recorder
+            .call_ids
+            .lock()
+            .expect("recorded tool call ids lock should not be poisoned"),
+        vec![
+            "exec-call-first".to_string(),
+            "exec-call-second".to_string()
+        ]
+    );
 
     Ok(())
 }

@@ -4,6 +4,19 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.148.1 - Termux npm launcher patch
+
+Fork-only patch on the upstream OpenAI Codex `rust-v0.148.0` base. The native
+payload and the macOS source-build postinstall are unchanged.
+
+### Fixed
+
+- Android/Termux npm launchers no longer depend on `/usr/bin/env`, which is not
+  present in the Termux userland. The Android-only postinstall rewrites the
+  installed launcher shebangs to the active Node interpreter.
+- Both npm entrypoints and the staging file list are covered by focused source
+  checks; Linux and macOS retain their existing launcher behavior.
+
 ## 0.147.0 - Upstream rust-v0.147.0
 
 Update onto the upstream OpenAI Codex `rust-v0.147.0` stable release, published

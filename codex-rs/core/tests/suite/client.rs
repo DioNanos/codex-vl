@@ -2500,7 +2500,6 @@ async fn responses_lite_sets_all_turns_context_and_disables_parallel_tool_calls(
     let TestCodex { codex, .. } = test_codex()
         .with_model_info_override("gpt-5.4", |model_info| {
             model_info.use_responses_lite = true;
-            model_info.supports_parallel_tool_calls = true;
         })
         .build(&server)
         .await?;

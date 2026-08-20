@@ -392,7 +392,7 @@ impl Session {
                     sandbox.windows_sandbox_private_desktop =
                         config.permissions.windows_sandbox_private_desktop;
                     sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
-                    (environment.environment_id.clone(), sandbox)
+                    (environment.selection.environment_id.clone(), sandbox)
                 })
                 .collect::<HashMap<_, _>>()
         } else {
@@ -445,13 +445,11 @@ impl Session {
             .selected_capability_roots
             .iter()
             .cloned()
-            .chain(environments.turn_environments().flat_map(|environment| {
-                environment
-                    .config
-                    .selected_capability_roots
-                    .clone()
-                    .unwrap_or_else(|| environment.environment.selected_capability_roots())
-            }))
+            .chain(
+                environments
+                    .turn_environments()
+                    .flat_map(|environment| environment.config().selected_capability_roots.clone()),
+            )
             .enumerate()
         {
             if let Some(kept_location) = root_locations_by_id.get(&root.id) {
