@@ -7,11 +7,16 @@
     "codex-vl-exec": "bin/codex-exec.js"
   },
   "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/postinstall_termux_launcher.js"
+  },
   "engines": {
     "node": ">=16"
   },
   "files": [
-    "bin/codex.js"
+    "bin/codex.js",
+    "bin/codex-exec.js",
+    "scripts/postinstall_termux_launcher.js"
   ],
   "repository": {
     "type": "git",
