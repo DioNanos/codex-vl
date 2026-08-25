@@ -15,6 +15,7 @@ use codex_file_watcher::FileWatcher;
 use codex_file_watcher::FileWatcherSubscriber;
 use codex_file_watcher::WatchPath;
 use codex_file_watcher::WatchRegistration;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
@@ -123,11 +124,17 @@ impl FsWatchManager {
                         None => break,
                     },
                 };
-                let mut changed_paths = event
-                    .paths
-                    .into_iter()
-                    .map(|path| to_client_path(&watch_root.join(path)))
-                    .collect::<Vec<_>>();
+                let mut changed_paths = event.paths.into_iter().filter_map(|path| {
+                    let client_path = to_client_path(&watch_root.join(path));
+                    match AbsolutePathBuf::try_from(client_path.as_path()) {
+                        Ok(path) => Some(path),
+                        Err(error) => {
+                            // Do not terminate the watcher task for one malformed event.
+                            warn!(path = ?client_path, %error, "discarding non-absolute filesystem watch path");
+                            None
+                        }
+                    }
+                }).collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
                 if !changed_paths.is_empty() {
                     outgoing
