@@ -46,6 +46,34 @@ async fn initialized_mcp(codex_home: &TempDir) -> Result<TestAppServer> {
     Ok(mcp)
 }
 
+async fn initialized_termux_mcp(codex_home: &TempDir) -> Result<TestAppServer> {
+    let temp_dir = codex_home.path().join("termux-tmp");
+    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = temp_dir.to_string_lossy();
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[
+            ("TERMUX_VERSION", Some("1")),
+            ("TMPDIR", Some(temp_dir.as_ref())),
+        ])
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    Ok(mcp)
+}
+
+fn termux_attachment_root(codex_home: &TempDir) -> PathBuf {
+    codex_home
+        .path()
+        .join("termux-tmp")
+        .join("codex-remote-attachments")
+}
+
+fn client_attachment_root() -> PathBuf {
+    PathBuf::from("/tmp/codex-remote-attachments")
+}
+
 async fn expect_error_message(
     mcp: &mut TestAppServer,
     request_id: i64,
@@ -322,6 +350,140 @@ async fn fs_methods_cover_current_fs_utils_surface() -> Result<()> {
         !copied_dir.exists(),
         "fs/remove should default to recursive+force for directory trees"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fs_termux_maps_every_path_bearing_method_to_the_attachment_directory() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let host_root = termux_attachment_root(&codex_home);
+    let client_root = client_attachment_root();
+    let host_source = host_root.join("source");
+    let host_nested = host_source.join("nested");
+    let host_file = host_nested.join("note.txt");
+    let host_copy = host_root.join("copy.txt");
+    let host_copy_dir = host_root.join("copied");
+    let client_source = client_root.join("source");
+    let client_nested = client_source.join("nested");
+    let client_file = client_nested.join("note.txt");
+    let client_copy = client_root.join("copy.txt");
+    let client_copy_dir = client_root.join("copied");
+
+    let mut mcp = initialized_termux_mcp(&codex_home).await?;
+
+    let request_id = mcp
+        .send_fs_create_directory_request(codex_app_server_protocol::FsCreateDirectoryParams {
+            path: absolute_path(client_nested.clone()),
+            recursive: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert!(host_nested.is_dir());
+
+    let request_id = mcp
+        .send_fs_write_file_request(FsWriteFileParams {
+            path: absolute_path(client_file.clone()),
+            data_base64: STANDARD.encode("termux attachment"),
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(std::fs::read_to_string(&host_file)?, "termux attachment");
+
+    let request_id = mcp
+        .send_fs_read_file_request(codex_app_server_protocol::FsReadFileParams {
+            path: absolute_path(client_file.clone()),
+        })
+        .await?;
+    let response: FsReadFileResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??,
+    )?;
+    assert_eq!(response.data_base64, STANDARD.encode("termux attachment"));
+
+    let request_id = mcp
+        .send_fs_get_metadata_request(codex_app_server_protocol::FsGetMetadataParams {
+            path: absolute_path(client_file.clone()),
+        })
+        .await?;
+    let metadata: FsGetMetadataResponse = to_response(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??,
+    )?;
+    assert!(metadata.is_file);
+
+    let request_id = mcp
+        .send_fs_read_directory_request(codex_app_server_protocol::FsReadDirectoryParams {
+            path: absolute_path(client_source.clone()),
+        })
+        .await?;
+    let response = to_response::<codex_app_server_protocol::FsReadDirectoryResponse>(
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??,
+    )?;
+    assert_eq!(response.entries[0].file_name, "nested");
+
+    let request_id = mcp
+        .send_fs_copy_request(FsCopyParams {
+            source_path: absolute_path(client_file.clone()),
+            destination_path: absolute_path(client_copy.clone()),
+            recursive: false,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(std::fs::read_to_string(&host_copy)?, "termux attachment");
+
+    let request_id = mcp
+        .send_fs_copy_request(FsCopyParams {
+            source_path: absolute_path(client_source),
+            destination_path: absolute_path(client_copy_dir.clone()),
+            recursive: true,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(
+        std::fs::read_to_string(host_copy_dir.join("nested/note.txt"))?,
+        "termux attachment"
+    );
+
+    let request_id = mcp
+        .send_fs_remove_request(codex_app_server_protocol::FsRemoveParams {
+            path: absolute_path(client_copy_dir),
+            recursive: None,
+            force: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert!(!host_copy_dir.exists());
 
     Ok(())
 }
@@ -684,17 +846,21 @@ async fn fs_copy_rejects_standalone_fifo_source() -> Result<()> {
 async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifications()
 -> Result<()> {
     let codex_home = TempDir::new()?;
-    let git_dir = codex_home.path().join("repo").join(".git");
-    let fetch_head = git_dir.join("FETCH_HEAD");
-    std::fs::create_dir_all(&git_dir)?;
-    std::fs::write(&fetch_head, "old\n")?;
+    let host_git_dir = termux_attachment_root(&codex_home)
+        .join("repo")
+        .join(".git");
+    let host_fetch_head = host_git_dir.join("FETCH_HEAD");
+    let client_git_dir = client_attachment_root().join("repo").join(".git");
+    let client_fetch_head = client_git_dir.join("FETCH_HEAD");
+    std::fs::create_dir_all(&host_git_dir)?;
+    std::fs::write(&host_fetch_head, "old\n")?;
 
-    let mut mcp = initialized_mcp(&codex_home).await?;
+    let mut mcp = initialized_termux_mcp(&codex_home).await?;
     let watch_id = "watch-git-dir".to_string();
     let watch_request_id = mcp
         .send_fs_watch_request(codex_app_server_protocol::FsWatchParams {
             watch_id: watch_id.clone(),
-            path: absolute_path(git_dir.clone()),
+            path: absolute_path(client_git_dir.clone()),
         })
         .await?;
     let watch_response: FsWatchResponse = to_response(
@@ -704,9 +870,9 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
         )
         .await??,
     )?;
-    assert_eq!(watch_response.path, absolute_path(git_dir.clone()));
+    assert_eq!(watch_response.path, absolute_path(client_git_dir.clone()));
 
-    std::fs::write(&fetch_head, "updated\n")?;
+    std::fs::write(&host_fetch_head, "updated\n")?;
 
     // Kernel file watching is not reliable in every sandboxed test environment.
     // Keep validating notification shape when the backend does emit, but do not
@@ -715,7 +881,7 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
         assert_eq!(changed.watch_id, watch_id.clone());
         assert_eq!(
             changed.changed_paths,
-            vec![absolute_path(fetch_head.clone())]
+            vec![absolute_path(client_fetch_head.clone())]
         );
     }
     while timeout(
@@ -735,7 +901,7 @@ async fn fs_watch_directory_reports_changed_child_paths_and_unwatch_stops_notifi
     )
     .await??;
 
-    std::fs::write(git_dir.join("packed-refs"), "refs\n")?;
+    std::fs::write(host_git_dir.join("packed-refs"), "refs\n")?;
     let maybe_notification = timeout(
         Duration::from_millis(1500),
         mcp.read_stream_until_notification_message("fs/changed"),

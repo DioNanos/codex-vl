@@ -13,6 +13,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_skills::system_cache_root_dir;
 
+use crate::attachment_path_mapper::to_host_path;
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
@@ -41,6 +42,23 @@ fn validate_user_input_image_urls(input: &[V2UserInput]) -> Result<(), JSONRPCEr
         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
     }
     Ok(())
+}
+
+fn map_local_image_attachment_path(input: V2UserInput) -> V2UserInput {
+    map_local_image_attachment_path_with(input, to_host_path)
+}
+
+fn map_local_image_attachment_path_with(
+    input: V2UserInput,
+    map_path: impl FnOnce(&std::path::Path) -> std::path::PathBuf,
+) -> V2UserInput {
+    match input {
+        V2UserInput::LocalImage { path, detail } => V2UserInput::LocalImage {
+            path: map_path(&path),
+            detail,
+        },
+        input => input,
+    }
 }
 
 fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONRPCErrorError> {
@@ -513,6 +531,7 @@ impl TurnRequestProcessor {
         let mapped_items: Vec<CoreInputItem> = params
             .input
             .into_iter()
+            .map(map_local_image_attachment_path)
             .map(V2UserInput::into_core)
             .collect();
         let client_user_message_id = params.client_user_message_id;
@@ -949,6 +968,7 @@ impl TurnRequestProcessor {
         let mapped_items: Vec<CoreInputItem> = params
             .input
             .into_iter()
+            .map(map_local_image_attachment_path)
             .map(V2UserInput::into_core)
             .collect();
         let additional_context = map_additional_context(params.additional_context);
@@ -1542,4 +1562,50 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attachment_path_mapper::to_host_path_for_termux;
+    use codex_app_server_protocol::ImageDetail;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    fn local_image() -> V2UserInput {
+        V2UserInput::LocalImage {
+            path: PathBuf::from("/tmp/codex-remote-attachments/image.png"),
+            detail: Some(ImageDetail::Original),
+        }
+    }
+
+    fn map_for_termux(input: V2UserInput) -> V2UserInput {
+        map_local_image_attachment_path_with(input, |path| {
+            to_host_path_for_termux(path, Path::new("/data/data/com.termux/files/usr/tmp"))
+        })
+    }
+
+    #[test]
+    fn turn_start_maps_local_image_to_the_termux_attachment_directory() {
+        assert_eq!(
+            map_for_termux(local_image()),
+            V2UserInput::LocalImage {
+                path: PathBuf::from("/data/data/com.termux/files/usr/tmp")
+                    .join("codex-remote-attachments/image.png"),
+                detail: Some(ImageDetail::Original),
+            }
+        );
+    }
+
+    #[test]
+    fn turn_steer_maps_local_image_to_the_termux_attachment_directory() {
+        assert_eq!(
+            map_for_termux(local_image()),
+            V2UserInput::LocalImage {
+                path: PathBuf::from("/data/data/com.termux/files/usr/tmp")
+                    .join("codex-remote-attachments/image.png"),
+                detail: Some(ImageDetail::Original),
+            }
+        );
+    }
 }

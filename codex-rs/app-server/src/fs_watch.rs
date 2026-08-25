@@ -1,3 +1,5 @@
+use crate::attachment_path_mapper::to_client_path;
+use crate::attachment_path_mapper::to_host_path;
 use crate::error_code::invalid_request;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -85,9 +87,10 @@ impl FsWatchManager {
         };
         let outgoing = self.outgoing.clone();
         let (subscriber, rx) = self.file_watcher.add_subscriber();
-        let watch_root = params.path.clone();
+        let client_watch_root = params.path.clone();
+        let watch_root = to_host_path(&client_watch_root);
         let registration = subscriber.register_paths(vec![WatchPath {
-            path: params.path.to_path_buf(),
+            path: watch_root.clone(),
             recursive: false,
         }]);
         let (terminate_tx, terminate_rx) = oneshot::channel();
@@ -123,7 +126,7 @@ impl FsWatchManager {
                 let mut changed_paths = event
                     .paths
                     .into_iter()
-                    .map(|path| watch_root.join(path))
+                    .map(|path| to_client_path(&watch_root.join(path)))
                     .collect::<Vec<_>>();
                 changed_paths.sort_by(|left, right| left.as_path().cmp(right.as_path()));
                 if !changed_paths.is_empty() {
@@ -140,7 +143,9 @@ impl FsWatchManager {
             }
         });
 
-        Ok(FsWatchResponse { path: params.path })
+        Ok(FsWatchResponse {
+            path: client_watch_root,
+        })
     }
 
     pub(crate) async fn unwatch(

@@ -13,6 +13,8 @@ use app_test_support::create_shell_command_sse_response;
 use app_test_support::format_with_current_shell_display;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use app_test_support::write_models_cache;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
@@ -29,6 +31,7 @@ use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangePatchUpdatedNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::FsWriteFileParams;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -88,6 +91,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -167,6 +171,87 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
     .await??;
 
     received_response_input_images(&server).await
+}
+
+#[tokio::test]
+async fn turn_start_maps_created_and_written_termux_local_image() -> Result<()> {
+    let responses = vec![
+        create_final_assistant_message_sse_response("Done")?,
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let codex_home = TempDir::new()?;
+    let termux_tmp = codex_home.path().join("termux-tmp");
+    std::fs::create_dir_all(&termux_tmp)?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[
+            ("TERMUX_VERSION", Some("1")),
+            ("TMPDIR", Some(termux_tmp.as_ref())),
+        ])
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let client_root = PathBuf::from("/tmp/codex-remote-attachments");
+    let client_image = client_root.join("turn-start.png");
+    let create_id = mcp
+        .send_fs_create_directory_request(codex_app_server_protocol::FsCreateDirectoryParams {
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&client_root)?,
+            recursive: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(create_id)),
+    )
+    .await??;
+    let write_id = mcp
+        .send_fs_write_file_request(FsWriteFileParams {
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&client_image)?,
+            data_base64: STANDARD.encode(TINY_PNG_BYTES),
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(write_id)),
+    )
+    .await??;
+
+    let TurnStartResponse { turn } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::LocalImage {
+                    path: client_image,
+                    detail: Some(ImageDetail::Original),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert!(!turn.id.is_empty());
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let input_images = received_response_input_images(&server).await?;
+    assert_eq!(input_images.len(), 1);
+    assert_eq!(
+        input_images[0].get("detail").and_then(Value::as_str),
+        Some("original")
+    );
+    Ok(())
 }
 
 async fn received_response_input_images(server: &wiremock::MockServer) -> Result<Vec<Value>> {

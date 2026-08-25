@@ -7,11 +7,14 @@ use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::FsWriteFileParams;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCNotification;
@@ -28,6 +31,7 @@ use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use core_test_support::skip_if_remote;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
@@ -35,6 +39,11 @@ use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_analytics_event;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TINY_PNG_BYTES: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0,
+    0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0, 1, 122,
+    94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
 
 #[tokio::test]
 async fn turn_steer_requires_active_turn() -> Result<()> {
@@ -235,6 +244,8 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
     std::fs::create_dir(&codex_home)?;
     let working_directory = tmp.path().join("workdir");
     std::fs::create_dir(&working_directory)?;
+    let termux_tmp = tmp.path().join("termux-tmp");
+    std::fs::create_dir(&termux_tmp)?;
 
     let server = create_mock_responses_server_sequence_unchecked(vec![
         create_shell_command_sse_response(
@@ -256,6 +267,10 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
     let mut mcp = TestAppServer::builder()
         .with_codex_home(&codex_home)
         .without_managed_config()
+        .with_env_overrides(&[
+            ("TERMUX_VERSION", Some("1")),
+            ("TMPDIR", Some(termux_tmp.as_ref())),
+        ])
         .build_initialized()
         .await?;
 
@@ -288,16 +303,51 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
     )
     .await??;
 
+    let client_root = PathBuf::from("/tmp/codex-remote-attachments");
+    let client_image = client_root.join("steer.png");
+    let host_image = termux_tmp
+        .join("codex-remote-attachments")
+        .join("steer.png");
+    let create_id = mcp
+        .send_fs_create_directory_request(codex_app_server_protocol::FsCreateDirectoryParams {
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&client_root)?,
+            recursive: None,
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(create_id)),
+    )
+    .await??;
+    let write_id = mcp
+        .send_fs_write_file_request(FsWriteFileParams {
+            path: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(&client_image)?,
+            data_base64: STANDARD.encode(TINY_PNG_BYTES),
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(write_id)),
+    )
+    .await??;
+    assert!(host_image.exists());
+
     let steer: TurnSteerResponse = mcp
         .request(|request_id| ClientRequest::TurnSteer {
             request_id,
             params: TurnSteerParams {
                 thread_id: thread.id.clone(),
                 client_user_message_id: Some("client-steer-message-1".to_string()),
-                input: vec![V2UserInput::Text {
-                    text: "steer".to_string(),
-                    text_elements: Vec::new(),
-                }],
+                input: vec![
+                    V2UserInput::Text {
+                        text: "steer".to_string(),
+                        text_elements: Vec::new(),
+                    },
+                    V2UserInput::LocalImage {
+                        path: client_image,
+                        detail: Some(codex_app_server_protocol::ImageDetail::Original),
+                    },
+                ],
                 responsesapi_client_metadata: None,
                 additional_context: None,
                 expected_turn_id: turn.id.clone(),
@@ -321,13 +371,14 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
                 continue;
             };
             if client_id == Some("client-steer-message-1".to_string()) {
-                assert_eq!(
-                    content,
-                    vec![V2UserInput::Text {
-                        text: "steer".to_string(),
-                        text_elements: Vec::new(),
-                    }]
-                );
+                assert!(matches!(
+                    content.first(),
+                    Some(V2UserInput::Text { text, .. }) if text == "steer"
+                ));
+                assert!(content.iter().any(|item| matches!(
+                    item,
+                    V2UserInput::LocalImage { path, .. } if path == &host_image
+                )));
                 return Ok::<(), anyhow::Error>(());
             }
         }
@@ -339,7 +390,7 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
     assert_eq!(event["event_params"]["thread_id"], thread.id);
     assert_eq!(event["event_params"]["session_id"], thread.session_id);
     assert_eq!(event["event_params"]["result"], "accepted");
-    assert_eq!(event["event_params"]["num_input_images"], 0);
+    assert_eq!(event["event_params"]["num_input_images"], 1);
     assert_eq!(event["event_params"]["expected_turn_id"], turn.id);
     assert_eq!(event["event_params"]["accepted_turn_id"], turn.id);
     assert_eq!(
