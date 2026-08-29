@@ -457,6 +457,9 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
 /// fork-owned builtins (flat + `codex_app` namespaced), so app-server dynamic
 /// tool resolution always routes manage_loops back to the TUI loop controller.
 /// Preserve other tools already supplied under the `codex_app` namespace.
+///
+/// Only invoked for the TUI client (see the `thread/start` call site): generic
+/// app-server clients keep their declared dynamic tools untouched.
 fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
     tools.retain(|tool| {
         !matches!(
@@ -1467,7 +1470,17 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd, &config.workspace_roots)
         });
-        let dynamic_tools = with_builtin_dynamic_tools(dynamic_tools.unwrap_or_default());
+        // codex-vl: the fork-owned manage_loops builtins are scoped to the TUI
+        // client, the only one with the loop controller that serves the
+        // DynamicToolCall. Generic app-server clients keep their declared
+        // dynamic tools untouched (same identity-based scoping as
+        // `thread_rollback` above).
+        let dynamic_tools = dynamic_tools.unwrap_or_default();
+        let dynamic_tools = if app_server_client_name.as_deref() == Some(CODEX_TUI_CLIENT_NAME) {
+            with_builtin_dynamic_tools(dynamic_tools)
+        } else {
+            dynamic_tools
+        };
         if !dynamic_tools.is_empty() {
             validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
         }
