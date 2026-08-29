@@ -270,7 +270,7 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
         .without_managed_config()
         .with_env_overrides(&[
             ("TERMUX_VERSION", Some("1")),
-            ("TMPDIR", Some(termux_tmp.as_ref())),
+            ("TMPDIR", Some(termux_tmp.to_str().expect("termux tmp path is utf-8"))),
         ])
         .build_initialized()
         .await?;

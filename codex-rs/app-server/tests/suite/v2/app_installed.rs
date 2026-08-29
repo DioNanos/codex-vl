@@ -289,6 +289,7 @@ struct InstalledAppsServerState {
     list_tools_calls: AtomicUsize,
     directory_calls: AtomicUsize,
     fail_next: AtomicBool,
+    fail_next_list_tools_attempts: AtomicUsize,
 }
 
 struct InstalledAppsFixture {
@@ -323,6 +324,7 @@ impl InstalledAppsFixture {
             list_tools_calls: AtomicUsize::new(0),
             directory_calls: AtomicUsize::new(0),
             fail_next: AtomicBool::new(false),
+            fail_next_list_tools_attempts: AtomicUsize::new(0),
         });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -378,6 +380,12 @@ impl InstalledAppsFixture {
 
     fn fail_next_list_tools(&self) {
         self.state.fail_next.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_next_list_tools_attempts(&self, attempts: usize) {
+        self.state
+            .fail_next_list_tools_attempts
+            .store(attempts, Ordering::SeqCst);
     }
 }
 
