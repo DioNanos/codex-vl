@@ -4,6 +4,25 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.150.1 - Upstream rust-v0.150.1
+
+Update onto the upstream OpenAI Codex `rust-v0.150.1` stable release, published
+on the `latest` channel. The complete Codex VL workflow layer remains present
+across goal state, loop jobs, Vivling, the VL interface, remote control,
+app-server integration, and the fork-owned package and update channels.
+
+### Fixed
+
+- The `manage_loops` built-in dynamic tools are now injected only for the TUI
+  client. Every `thread/start` used to receive them, including app-server
+  clients with no loop controller on their side of the connection.
+- Update banners render the fork's own channels again. The history cell
+  snapshots had pinned the upstream package name and installer, so the redirect
+  the updater already performed was never reflected in the copy.
+- Two fork test sites imported `ImageDetail` from its pre-0.150 module path,
+  and the fork retry harness in the installed-apps suite lost its attempt
+  counter to an upstream-shaped merge; both compile and run again.
+
 ## 0.147.0 - Upstream rust-v0.147.0
 
 Update onto the upstream OpenAI Codex `rust-v0.147.0` stable release, published
