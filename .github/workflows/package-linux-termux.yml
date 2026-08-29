@@ -8,6 +8,10 @@ on:
         required: false
         type: string
 
+env:
+  # upstream 0.150 packaging scripts resolve the repo root from this variable
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+
 jobs:
   build-linux-x64:
     runs-on: ubuntu-24.04
