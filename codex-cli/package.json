@@ -1,27 +1,22 @@
 {
   "name": "@mmmbuto/codex-vl",
-  "version": "0.148.1",
+  "version": "0.150.1",
   "license": "Apache-2.0",
   "bin": {
     "codex-vl": "bin/codex.js",
     "codex-vl-exec": "bin/codex-exec.js"
   },
   "type": "module",
-  "scripts": {
-    "postinstall": "node scripts/postinstall_termux_launcher.js"
-  },
   "engines": {
     "node": ">=16"
   },
   "files": [
-    "bin/codex.js",
-    "bin/codex-exec.js",
-    "scripts/postinstall_termux_launcher.js"
+    "bin/codex.js"
   ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DioNanos/codex-vl.git"
   },
   "description": "Optimized version of OpenAI Codex for side-by-side installs, loop-driven workflows, and Vivling companions",
-  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
+  "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e"
 }

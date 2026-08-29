@@ -59,6 +59,7 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         });
         model_messages.instructions_template = Some(base_instructions.clone());
         model_messages.instructions_variables = None;
@@ -94,28 +95,9 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
             }
             model_messages.instructions_variables = None;
         }
-        // Restore the built-in instructions after personality handling when the
-        // catalog omits usable base_instructions/template, so the session
-        // never starts instructionless.
-        ensure_catalog_instructions(&mut model);
     }
 
     model
-}
-
-fn ensure_catalog_instructions(model: &mut ModelInfo) {
-    let has_instruction_template = model
-        .model_messages
-        .as_ref()
-        .and_then(|messages| messages.instructions_template.as_deref())
-        .is_some_and(|template| !template.trim().is_empty());
-    if model.base_instructions.trim().is_empty() && !has_instruction_template {
-        warn!(
-            model = %model.slug,
-            "model catalog omitted usable instructions; using built-in fallback"
-        );
-        model.base_instructions = BASE_INSTRUCTIONS.to_string();
-    }
 }
 
 fn strip_personality_section(mut instructions: String) -> String {
@@ -161,13 +143,9 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
         description: None,
-        // Fork field: an unknown slug carries no catalog instructions. Leaving it
-        // empty is deliberate and not fatal — `ensure_catalog_instructions` fills
-        // in the built-in fallback unless a template already supplies them.
-        base_instructions: String::new(),
         default_reasoning_level: None,
         supported_reasoning_levels: Vec::new(),
-        shell_type: ConfigShellToolType::Default,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::None,
         supported_in_api: true,
         priority: 99,
@@ -224,6 +202,7 @@ fn local_model_messages_for_slug(slug: &str) -> ModelMessages {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         },
         _ => ModelMessages {
             instructions_template: Some(BASE_INSTRUCTIONS.to_string()),
@@ -234,6 +213,7 @@ fn local_model_messages_for_slug(slug: &str) -> ModelMessages {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         },
     }
 }

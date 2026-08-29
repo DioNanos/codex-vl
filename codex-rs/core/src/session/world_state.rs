@@ -12,6 +12,7 @@ use crate::context::world_state::CompactPermissionsState;
 use crate::context::world_state::ContextWindowGuidanceState;
 use crate::context::world_state::EnvironmentsInstructionsState;
 use crate::context::world_state::EnvironmentsState;
+use crate::context::world_state::ManagedDeveloperInstructionsState;
 use crate::context::world_state::ModelInstructionsState;
 use crate::context::world_state::MultiAgentModeState;
 use crate::context::world_state::MultiAgentUsageHintState;
@@ -115,7 +116,7 @@ impl Session {
                 window_ids.first_window_id,
                 window_ids.previous_window_id,
                 window_ids.window_id,
-                /*mcp_result*/ None,
+                /*thread_hint*/ None,
             ));
             if let Some(guidance) = turn_context
                 .config
@@ -148,19 +149,9 @@ impl Session {
             .current_for_prefix_rules(turn_context.allow_prefix_rules());
         if turn_context.config.include_permissions_instructions {
             let environment = step_context.environments.primary();
-            let permission_profile = environment
-                .map(|environment| {
-                    let workspace_roots = environment
-                        .workspace_roots()
-                        .iter()
-                        .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
-                        .collect::<Vec<_>>();
-                    environment
-                        .permission_profile()
-                        .clone()
-                        .materialize_project_roots_with_workspace_roots(&workspace_roots)
-                })
-                .unwrap_or_else(|| turn_context.permission_profile());
+            let permission_profile = step_context
+                .environments
+                .permission_profile_or_else(|| turn_context.permission_profile());
             #[allow(deprecated)]
             let cwd = environment
                 .and_then(|environment| environment.cwd().to_abs_path().ok())
@@ -294,6 +285,16 @@ impl Session {
             world_state.add_section(usage_hint);
         }
         world_state.add_section(multi_agent_mode);
+        if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+            world_state.add_section(ManagedDeveloperInstructionsState::new(
+                turn_context
+                    .config
+                    .config_layer_stack
+                    .requirements()
+                    .additional_developer_instructions
+                    .as_ref(),
+            ));
+        }
         Ok(world_state)
     }
 }

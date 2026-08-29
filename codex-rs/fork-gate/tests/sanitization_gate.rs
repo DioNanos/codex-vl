@@ -1219,7 +1219,7 @@ fn i_motivi_mordano_ancora() {
     // maiuscolo/minuscolo).
     assert!(
         contains_ci("merge-FEATURE-register:verdetto", am[0].needle.as_str()),
-        "audit marker in casing misto deve mordere"
+        "merge-feature-register in casing misto deve mordere"
     );
     assert!(
         contains_ci("verdetto approve: ok", am[1].needle.as_str()),

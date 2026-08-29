@@ -1,11 +1,13 @@
 use anyhow::Context;
 use anyhow::Result;
+use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use app_test_support::write_models_cache_with_models;
+use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::DynamicToolCallResponse;
@@ -571,6 +573,157 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     assert_eq!(payload, expected_payload);
 
     Ok(())
+}
+
+/// codex-vl: the fork-owned manage_loops builtins must be scoped to the TUI
+/// client, the only one that owns the loop controller serving DynamicToolCall.
+/// Mutation-sensitive: for a generic app-server client this asserts the
+/// explicit ABSENCE of the builtin (flat and inside the declared codex_app
+/// namespace), for the TUI client its PRESENCE, so removing the scoping guard
+/// at the thread/start call site fails here.
+#[tokio::test]
+async fn manage_loops_builtins_are_scoped_to_the_tui_client() -> Result<()> {
+    // Generic client: the declared namespace stays exactly as declared; no
+    // fork-owned builtin appears flat or inside the codex_app namespace.
+    let generic_tools = first_request_model_tools_with_client(DEFAULT_CLIENT_NAME, true).await?;
+    assert!(
+        !flat_manage_loops_present(&generic_tools),
+        "generic client received the flat manage_loops builtin: the TUI scoping guard was removed"
+    );
+    assert!(
+        !namespace_manage_loops_present(&generic_tools, "codex_app"),
+        "generic client received manage_loops inside the codex_app namespace: the TUI scoping guard was removed"
+    );
+
+    // TUI client: thread/start without dynamic tools still carries both
+    // fork-owned manage_loops builtins (routing back to the TUI loop
+    // controller).
+    let tui_tools = first_request_model_tools_with_client("codex-tui", false).await?;
+    assert!(
+        flat_manage_loops_present(&tui_tools),
+        "TUI client did not receive the flat manage_loops builtin"
+    );
+    assert!(
+        namespace_manage_loops_present(&tui_tools, "codex_app"),
+        "TUI client did not receive the codex_app namespaced manage_loops builtin"
+    );
+    Ok(())
+}
+
+/// Runs one thread/start + turn/start as the given app-server client and
+/// returns the `tools` array of the first request model sent to the mock
+/// provider.
+async fn first_request_model_tools_with_client(
+    client_name: &str,
+    declare_codex_app_namespace: bool,
+) -> Result<Value> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.initialize_with_client_info(ClientInfo {
+            name: client_name.to_string(),
+            title: None,
+            version: "0.1.0".to_string(),
+        }),
+    )
+    .await??;
+
+    let dynamic_tools = declare_codex_app_namespace.then(|| {
+        vec![DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+            name: "codex_app".to_string(),
+            description: "Client-declared namespace".to_string(),
+            tools: vec![DynamicToolNamespaceTool::Function(
+                DynamicToolFunctionSpec {
+                    name: "demo_tool".to_string(),
+                    description: "Demo dynamic tool".to_string(),
+                    input_schema: json!({ "type": "object", "properties": {} }),
+                    defer_loading: false,
+                },
+            )],
+        })]
+    });
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            dynamic_tools,
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    let thread_id = thread.id.clone();
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread_id.clone(),
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Hi".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let bodies = responses_bodies(&server).await?;
+    bodies[0]
+        .get("tools")
+        .cloned()
+        .context("expected tools array in the first request model")
+}
+
+fn function_named(tool: &Value, name: &str) -> bool {
+    tool.get("type").and_then(Value::as_str) == Some("function")
+        && tool.get("name").and_then(Value::as_str) == Some(name)
+}
+
+fn flat_manage_loops_present(tools: &Value) -> bool {
+    tools.as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| function_named(tool, "manage_loops"))
+    })
+}
+
+fn namespace_manage_loops_present(tools: &Value, namespace: &str) -> bool {
+    tools.as_array().is_some_and(|tools| {
+        tools.iter().any(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("namespace")
+                && tool.get("name").and_then(Value::as_str) == Some(namespace)
+                && tool
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|nested| {
+                        nested
+                            .iter()
+                            .any(|tool| function_named(tool, "manage_loops"))
+                    })
+        })
+    })
 }
 
 struct PendingDynamicToolCall {

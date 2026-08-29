@@ -11,6 +11,8 @@ mod required;
 mod resources;
 #[path = "connection_manager/startup.rs"]
 mod startup;
+#[path = "connection_manager/status.rs"]
+mod status;
 #[path = "connection_manager/tool_catalog.rs"]
 mod tool_catalog;
 
@@ -27,7 +29,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crate::McpServerSource;
 use crate::binding::call_tool_result_from_rmcp;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationRequestRouter;
@@ -53,6 +54,7 @@ use crate::tools::filter_tools;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::bail;
 use codex_config::McpServerTransportConfig;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
@@ -178,6 +180,7 @@ impl McpServerView {
 /// A published view over a set of running MCP server connections.
 pub(crate) struct McpConnectionSet {
     servers: HashMap<String, McpServerView>,
+    disabled_servers: Vec<String>,
     protocol_mode: crate::McpProtocolMode,
     required_servers: Vec<String>,
     optional_startup_deadline: OnceLock<tokio::time::Instant>,
@@ -230,6 +233,11 @@ impl McpConnectionSet {
         let tool_plugin_provenance = crate::mcp::tool_plugin_provenance(&config);
         let auth = auth.as_ref();
         let mut servers = HashMap::new();
+        let disabled_servers = mcp_servers
+            .iter()
+            .filter(|(_, server)| !server.enabled())
+            .map(|(name, _)| name.clone())
+            .collect();
         let mut required_servers = mcp_servers
             .iter()
             .filter(|(_, server)| server.enabled() && server.required())
@@ -275,16 +283,14 @@ impl McpConnectionSet {
             .into_iter()
             .filter(|(_, server)| server.enabled())
         {
-            let is_host_owned_codex_apps = server_name == CODEX_APPS_MCP_SERVER_NAME
-                && config.mcp_server_catalog.server(&server_name).is_some_and(
-                    |server| match server.source() {
-                        McpServerSource::Compatibility { .. } => true,
-                        McpServerSource::Extension { id } => id == "hosted_plugin_runtime",
-                        McpServerSource::Plugin(_)
-                        | McpServerSource::SelectedPlugin(_)
-                        | McpServerSource::Config => false,
-                    },
-                );
+            let is_host_owned_codex_apps = config
+                .mcp_server_catalog
+                .server(&server_name)
+                .is_some_and(|server| {
+                    server
+                        .source()
+                        .is_host_owned_apps(&server_name, server.config())
+                });
             let catalog_item_limit = if is_host_owned_codex_apps {
                 MAX_CODEX_APPS_TOOL_CATALOG_ITEMS
             } else {
@@ -663,6 +669,7 @@ impl McpConnectionSet {
         }
         let manager = Self {
             servers,
+            disabled_servers,
             protocol_mode,
             required_servers,
             optional_startup_deadline: OnceLock::new(),
@@ -722,6 +729,7 @@ impl McpConnectionSet {
     pub fn empty(prefix_mcp_tool_names: bool) -> Self {
         Self {
             servers: HashMap::new(),
+            disabled_servers: Vec::new(),
             protocol_mode: crate::McpProtocolMode::Legacy,
             required_servers: Vec::new(),
             optional_startup_deadline: OnceLock::new(),
@@ -856,30 +864,60 @@ impl McpConnectionSet {
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.
+    #[allow(clippy::too_many_arguments)]
     pub async fn call_tool(
         &self,
         server: &str,
         tool: &str,
+        environment_id: Option<&str>,
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
+        requested_timeout: Option<Duration>,
+        wait_for_server: bool,
     ) -> Result<CallToolResult> {
         let view = self
             .servers
             .get(server)
             .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?;
+        if let Some(environment_id) = environment_id
+            && view.metadata.environment_id != environment_id
+        {
+            bail!(
+                "MCP server `{server}` is running in environment `{}`, expected `{environment_id}`",
+                view.metadata.environment_id
+            );
+        }
         if !view.tool_filter.allows(tool) {
             return Err(anyhow!(
                 "tool '{tool}' is disabled for MCP server '{server}'"
             ));
         }
-        let client = view
-            .connection
-            .client()
-            .await
-            .context("failed to get client")?;
+        let client = if wait_for_server {
+            view.connection
+                .client()
+                .await
+                .context("failed to get client")?
+        } else {
+            let client = view
+                .connection
+                .client
+                .ready_client()
+                .ok_or_else(|| anyhow!("MCP server '{server}' is not connected"))?;
+            if client.client.is_closed().await {
+                bail!("MCP server '{server}' is not connected");
+            }
+            client
+        };
+
+        let effective_timeout = match (view.tool_timeout, requested_timeout) {
+            (Some(server_timeout), Some(requested_timeout)) => {
+                Some(server_timeout.min(requested_timeout))
+            }
+            (server_timeout, requested_timeout) => server_timeout.or(requested_timeout),
+        };
         let result: rmcp::model::CallToolResult = client
             .client
-            .call_tool(tool.to_string(), arguments, meta, view.tool_timeout)
+            .call_tool(tool.to_string(), arguments, meta, effective_timeout)
             .await
             .with_context(|| format!("tool call failed for `{server}/{tool}`"))?;
 

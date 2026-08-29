@@ -4,6 +4,7 @@
 //! configuration and app-server initialization remain responsive to safe local editing.
 
 use super::*;
+use std::io::IsTerminal;
 
 pub(super) async fn run_main_inner(
     mut cli: Cli,
@@ -13,10 +14,9 @@ pub(super) async fn run_main_inner(
 ) -> std::io::Result<AppExitInfo> {
     let strict_config = cli.strict_config;
     let (sandbox_mode, approval_policy) = if cli.dangerously_bypass_approvals_and_sandbox {
-        // The imported protocol enum has no `to_core()`.
         (
             Some(SandboxMode::DangerFullAccess),
-            Some(AskForApproval::Never),
+            Some(codex_app_server_protocol::AskForApproval::Never.to_core()),
         )
     } else {
         (
@@ -137,19 +137,20 @@ pub(super) async fn run_main_inner(
     }
 
     let reuse_implicit_local_daemon = !workload_identity_selected
-        && can_reuse_implicit_local_daemon(
-            &cli_kv_overrides,
-            &launch_loader_overrides,
-            strict_config,
-            cli.bypass_hook_trust,
-        );
+        && (cli.agents_overview
+            || can_reuse_implicit_local_daemon(
+                &cli_kv_overrides,
+                &launch_loader_overrides,
+                strict_config,
+                cli.bypass_hook_trust,
+            ));
     let search_only_config_override = !workload_identity_selected
         && cli.web_search
         && startup_preflight::has_only_search_config_override(&cli_kv_overrides)
         && loader_overrides_are_default(&launch_loader_overrides)
         && !strict_config
         && !cli.bypass_hook_trust;
-    let initial_screen = if cli.resume_picker || cli.fork_picker {
+    let initial_screen = if cli.resume_picker || cli.fork_picker || cli.agents_overview {
         startup_draft::StartupDraftInitialScreen::SessionPicker
     } else if !cli.oss
         && explicit_remote_endpoint.is_none()

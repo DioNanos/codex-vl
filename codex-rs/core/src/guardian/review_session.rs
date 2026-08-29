@@ -17,6 +17,7 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
@@ -52,6 +53,7 @@ use crate::config::NetworkProxySpec;
 use crate::config::Permissions;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianFollowupReviewReminder;
+use crate::context::GuardianNodeReplPolicy;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::image_preparation::ImagePreparationMode;
 use crate::image_preparation::ImageResizeNoticeMode;
@@ -189,6 +191,7 @@ struct GuardianReviewSessionReuseKey {
     // Only include settings that affect spawned-session behavior and parent
     // history rewrites that invalidate existing reviewer context.
     parent_history_version: u64,
+    node_repl_auto_review_required: bool,
     model: Option<String>,
     model_provider_id: String,
     model_provider: ModelProviderInfo,
@@ -208,7 +211,6 @@ struct GuardianReviewSessionReuseKey {
     main_execve_wrapper_exe: Option<PathBuf>,
     zsh_path: Option<PathBuf>,
     features: ManagedFeatures,
-    use_experimental_unified_exec_tool: bool,
     environment_ids: Vec<String>,
 }
 
@@ -227,6 +229,7 @@ impl GuardianReviewSessionReuseKey {
             } else {
                 0
             },
+            node_repl_auto_review_required: false,
             model: spawn_config.model.clone(),
             model_provider_id: spawn_config.model_provider_id.clone(),
             model_provider: spawn_config.model_provider.clone(),
@@ -246,7 +249,6 @@ impl GuardianReviewSessionReuseKey {
             main_execve_wrapper_exe: spawn_config.main_execve_wrapper_exe.clone(),
             zsh_path: spawn_config.zsh_path.clone(),
             features: spawn_config.features.clone(),
-            use_experimental_unified_exec_tool: spawn_config.use_experimental_unified_exec_tool,
             environment_ids: Vec::new(),
         }
     }
@@ -257,6 +259,11 @@ impl GuardianReviewSessionReuseKey {
             .into_keys()
             .collect::<Vec<_>>();
         self.environment_ids.sort_unstable();
+        self
+    }
+
+    fn with_node_repl_policy_eligibility(mut self, required: bool) -> Self {
+        self.node_repl_auto_review_required = required;
         self
     }
 }
@@ -427,7 +434,13 @@ impl GuardianReviewSessionManager {
                 parent_session.user_instructions().await,
                 parent_history.history_version(),
             )
-            .with_environments(parent_context.environments());
+            .with_environments(parent_context.environments())
+            .with_node_repl_policy_eligibility(
+                parent_context
+                    .turn()
+                    .model_info
+                    .node_repl_auto_review_required,
+            );
             let spawn_cancel_token = self.cancellation_token.child_token();
             let spawn_cancel_guard = spawn_cancel_token.clone().drop_guard();
             let review_session = spawn_guardian_review_session(
@@ -510,7 +523,14 @@ impl GuardianReviewSessionManager {
             params.parent_session.user_instructions().await,
             parent_history.history_version(),
         )
-        .with_environments(params.parent_context.environments());
+        .with_environments(params.parent_context.environments())
+        .with_node_repl_policy_eligibility(
+            params
+                .parent_context
+                .turn()
+                .model_info
+                .node_repl_auto_review_required,
+        );
         let mut spawned_trunk = false;
         let trunk_candidate = match run_before_review_deadline(
             deadline,
@@ -931,6 +951,58 @@ async fn run_review_on_session(
                 .network_approval
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
+
+            if params.parent_context.turn().model_info.node_repl_auto_review_required
+                && matches!(
+                    &params.request,
+                    GuardianApprovalRequest::McpToolCall { server, tool_name, .. }
+                        if is_node_repl_backed_server(server) && tool_name == "js"
+                )
+            {
+                let policy = GuardianNodeReplPolicy;
+                let policy_body = policy.body();
+                let already_injected = review_session
+                    .session
+                    .clone_history()
+                    .await
+                    .raw_items()
+                    .any(|item| {
+                        matches!(item, ResponseItem::Message { role, content, .. }
+                            if role == "developer"
+                                && content.iter().any(|content| {
+                                    matches!(content, ContentItem::InputText { text } if text == &policy_body)
+                                }))
+                    });
+                if !already_injected {
+                    let turn_context = review_session.session.new_default_turn().await;
+                    if review_session.session.reference_context_item().await.is_none() {
+                        let initialize_context: BoxFuture<'_, anyhow::Result<()>> =
+                            Box::pin(async {
+                                let step_context = review_session
+                                    .session
+                                    .capture_step_context(
+                                        Arc::clone(&turn_context),
+                                        &review_session.cancel_token,
+                                    )
+                                    .await?;
+                                review_session
+                                    .session
+                                    .record_context_updates_and_set_reference_context_item(
+                                        step_context.as_ref(),
+                                    )
+                                    .await?;
+                                Ok(())
+                            });
+                        initialize_context.await?;
+                    }
+
+                    let item: ResponseItem = ContextualUserFragment::into(policy);
+                    review_session
+                        .session
+                        .inject_client_response_items(vec![item], turn_context.as_ref())
+                        .await;
+                }
+            }
 
             let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
@@ -1553,13 +1625,14 @@ mod tests {
             parent_session: Arc::new(session),
             parent_context: GuardianReviewContext::from(Arc::new(turn)),
             spawn_config,
-            request: GuardianApprovalRequest::Shell {
+            request: GuardianApprovalRequest::ExecCommand {
                 id: "shell-1".to_string(),
                 command: vec!["git".to_string(), "status".to_string()],
                 cwd,
                 sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
                 additional_permissions: None,
                 justification: Some("Inspect repo state.".to_string()),
+                tty: false,
             },
             reasons: ApprovalRequestReasons::default(),
             schema: super::super::prompt::guardian_output_schema(),
@@ -1659,6 +1732,13 @@ mod tests {
                 /*user_instructions*/ None,
                 /*parent_history_version*/ 1,
             )
+        );
+        assert_ne!(
+            cached_reuse_key
+                .clone()
+                .with_node_repl_policy_eligibility(/*required*/ false),
+            cached_reuse_key.with_node_repl_policy_eligibility(/*required*/ true),
+            "switching parent-model Node REPL eligibility must invalidate reviewer history"
         );
 
         let mut compaction_enabled_config = cached_spawn_config;
@@ -1832,10 +1912,13 @@ mod tests {
             auto_review: Some(AutoReviewMessages {
                 policy: Some("Use the catalog Guardian policy.".to_string()),
                 policy_template: Some(catalog_template.to_string()),
+                rejection_instructions: None,
+                timeout_instructions: None,
             }),
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(
@@ -1867,10 +1950,13 @@ mod tests {
             auto_review: Some(AutoReviewMessages {
                 policy: Some(String::new()),
                 policy_template: None,
+                rejection_instructions: None,
+                timeout_instructions: None,
             }),
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(
@@ -1910,10 +1996,13 @@ mod tests {
             auto_review: Some(AutoReviewMessages {
                 policy: Some(catalog_policy.to_string()),
                 policy_template: Some(String::new()),
+                rejection_instructions: None,
+                timeout_instructions: None,
             }),
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
 
         let guardian_config = build_guardian_review_session_config(

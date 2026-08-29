@@ -80,13 +80,12 @@ fn test_model_info(
     service_tiers: Vec<ModelServiceTier>,
 ) -> ModelInfo {
     ModelInfo {
-        base_instructions: String::new(),
         slug: slug.to_string(),
         display_name: display_name.to_string(),
         description: Some(description.to_string()),
         default_reasoning_level: Some(default_reasoning_level),
         supported_reasoning_levels,
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility,
         supported_in_api: true,
         input_modalities: default_input_modalities(),

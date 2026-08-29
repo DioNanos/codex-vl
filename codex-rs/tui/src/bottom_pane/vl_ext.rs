@@ -620,11 +620,14 @@ mod tests {
 
     #[test]
     fn new_body_invokes_codex_vl_make_vivling() {
-        let body = extract_fn_body(MOD_SOURCE, "new")
-            .expect("BottomPane::new must exist in bottom_pane/mod.rs");
+        // Upstream split the constructor: `new` now delegates to
+        // `new_with_composer_config`, which is where the Vivling companion is
+        // built. The assertion follows the construction, not the name.
+        let body = extract_fn_body(MOD_SOURCE, "new_with_composer_config")
+            .expect("BottomPane::new_with_composer_config must exist in bottom_pane/mod.rs");
         assert!(
             body.contains("Self::codex_vl_make_vivling("),
-            "BottomPane::new must build the Vivling companion via \
+            "BottomPane::new_with_composer_config must build the Vivling companion via \
              Self::codex_vl_make_vivling(&frame_requester, animations_enabled). \
              Body was:\n{body}",
         );

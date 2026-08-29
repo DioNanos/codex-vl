@@ -9,6 +9,8 @@ use rmcp::transport::auth::OAuthHttpClient;
 use rmcp::transport::auth::OAuthState;
 use url::Url;
 
+use crate::oauth::validate_authorization_server_endpoints;
+
 /// OAuth client-registration strategy for one interactive HTTP MCP login.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum McpOAuthClientRegistration {
@@ -21,6 +23,12 @@ pub enum McpOAuthClientRegistration {
     Dcr,
 }
 
+/// OAuth state prepared from one authorization-server metadata resolution.
+pub(crate) struct PreparedOAuthLogin {
+    pub(crate) oauth_state: OAuthState,
+    pub(crate) authorization_server_issuer: Option<String>,
+}
+
 pub(crate) async fn start_authorization(
     server_url: &str,
     http_client: Arc<dyn OAuthHttpClient>,
@@ -28,11 +36,13 @@ pub(crate) async fn start_authorization(
     redirect_uri: &str,
     callback_id: &str,
     client_registration: McpOAuthClientRegistration,
-) -> Result<OAuthState> {
+) -> Result<PreparedOAuthLogin> {
     let mut auth_manager =
         AuthorizationManager::new_with_oauth_http_client(server_url, http_client).await?;
     auth_manager.set_allow_missing_issuer(true);
     let metadata = auth_manager.resolve_metadata().await?.metadata;
+    validate_authorization_server_endpoints(&metadata)?;
+    let authorization_server_issuer = metadata.issuer.clone();
 
     let cimd_advertised = metadata
         .additional_fields
@@ -96,7 +106,10 @@ pub(crate) async fn start_authorization(
         .await
         .map_err(|(_auth_manager, error)| error)?;
 
-    Ok(OAuthState::Session(session))
+    Ok(PreparedOAuthLogin {
+        oauth_state: OAuthState::Session(session),
+        authorization_server_issuer,
+    })
 }
 
 #[cfg(test)]

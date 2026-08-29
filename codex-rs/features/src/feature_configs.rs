@@ -88,6 +88,9 @@ pub enum GuardianV2TranscriptSource {
 pub struct GuardianV2TranscriptConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<GuardianV2TranscriptSource>>,
+    /// Include recent screenshots from messages and configured tool outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_images: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 100, max = 100000))]
     pub max_message_entry_tokens: Option<usize>,
@@ -105,6 +108,18 @@ pub struct GuardianV2TranscriptConfigToml {
     pub max_recent_non_user_entries: Option<usize>,
 }
 
+/// Optional tool-call categories available to the Guardian v2 classifier.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GuardianV2ReviewScopeConfigToml {
+    /// Restrict asynchronous classification and fast approvals to browser and computer-use tools.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computer_use_only: Option<bool>,
+    /// Include sandboxed shell command calls in Guardian v2 classification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandboxed_exec_commands: Option<bool>,
+}
+
 /// User-configurable prompt, approval, and context settings for Guardian v2.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +132,8 @@ pub struct GuardianV2ConfigToml {
     #[schemars(range(min = 0.0, max = 1.0))]
     pub review_threshold: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tool_call_lag: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 100, max = 100000))]
@@ -124,6 +141,13 @@ pub struct GuardianV2ConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 100, max = 100000))]
     pub max_classifier_instruction_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reuse_parent_compaction: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 100, max = 100000))]
+    pub max_parent_compaction_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_scope: Option<GuardianV2ReviewScopeConfigToml>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<GuardianV2TranscriptConfigToml>,
 }
@@ -166,6 +190,10 @@ where
         (
             "max_classifier_instruction_tokens",
             config.max_classifier_instruction_tokens,
+        ),
+        (
+            "max_parent_compaction_tokens",
+            config.max_parent_compaction_tokens,
         ),
         ("transcript max_message_entry_tokens", message_entry),
         ("transcript max_tool_entry_tokens", tool_entry),
@@ -264,6 +292,9 @@ impl FeatureConfig for MultiAgentV2ConfigToml {
 pub struct TokenBudgetConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Whether to expose the built-in history and notes extension.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_history_notes_extension: Option<bool>,
     /// Number of tokens remaining before auto-compaction when the wrap-up reminder is emitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
@@ -395,6 +426,8 @@ pub struct NetworkProxyConfigToml {
     pub unix_sockets: Option<BTreeMap<String, NetworkProxyUnixSocketPermissionToml>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_local_binding: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_broker: Option<bool>,
 }
 
 impl FeatureConfig for NetworkProxyConfigToml {

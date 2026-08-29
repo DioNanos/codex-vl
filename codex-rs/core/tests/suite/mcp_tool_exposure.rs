@@ -3,6 +3,7 @@ use codex_config::Constrained;
 use codex_core::EnvironmentConfig;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
+use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::McpServerContribution;
@@ -17,6 +18,7 @@ use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpResourceClient;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::protocol::AskForApproval;
@@ -49,6 +51,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
+use rmcp::model::ReadResourceRequestParams;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
@@ -153,12 +156,19 @@ impl McpServerContributor<Config> for AppsMcpServerContributor {
             {
                 root_resolved.add_permits(1);
             }
-            let config = serde_json::from_value(json!({ "url": self.url }))
-                .expect("test Apps MCP server config should be valid");
-            vec![McpServerContribution::Set {
-                name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
-                config: Box::new(config),
-            }]
+            let config = Box::new(
+                serde_json::from_value(json!({ "url": self.url }))
+                    .expect("test Apps MCP server config should be valid"),
+            );
+            let contribution = if self.id == "hosted_plugin_runtime" {
+                McpServerContribution::HostedApps { config }
+            } else {
+                McpServerContribution::Set {
+                    name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                    config,
+                }
+            };
+            vec![contribution]
         })
     }
 }
@@ -482,6 +492,16 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
                 permission_profile: PermissionProfileSnapshot::legacy(
                     test.config.permissions.permission_profile().clone(),
                 ),
+                shell_environment_policy: Default::default(),
+                windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                windows_sandbox_private_desktop: test
+                    .config
+                    .permissions
+                    .windows_sandbox_private_desktop,
+                use_legacy_landlock: test.config.features.use_legacy_landlock(),
+                exec_policy: None,
+                mcp_policy: None,
+                network_policy: None,
                 selected_capability_roots: vec![SelectedCapabilityRoot {
                     id: "calendar-root".to_string(),
                     location: CapabilityRootLocation::Environment {
@@ -594,7 +614,10 @@ startup_timeout_sec = 0.1
 
     let _ = test
         .codex
-        .read_mcp_resource("refreshed", "test://resource")
+        .read_mcp_resource(
+            "refreshed",
+            ReadResourceRequestParams::new("test://resource"),
+        )
         .await;
     assert!(resource_client.has_server("refreshed").await);
     Ok(())

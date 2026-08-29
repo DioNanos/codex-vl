@@ -59,7 +59,6 @@ async fn models_client_hits_models_endpoint() {
             // Fork field: this fixture builds ModelInfo exhaustively, so every
             // upstream merge that touches it breaks this test target while
             // `cargo check` without --all-targets stays green.
-            base_instructions: String::new(),
             default_reasoning_level: Some(ReasoningEffort::Medium),
             supported_reasoning_levels: vec![
                 ReasoningEffortPreset {
@@ -75,7 +74,7 @@ async fn models_client_hits_models_endpoint() {
                     description: ReasoningEffort::High.to_string(),
                 },
             ],
-            shell_type: ConfigShellToolType::ShellCommand,
+            shell_type: ConfigShellToolType::UnifiedExec,
             visibility: ModelVisibility::List,
             supported_in_api: true,
             priority: 1,

@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 use serde::de::Error;
 use strum_macros::Display;
 use strum_macros::EnumIter;
-use tracing::trace;
+use tracing::warn;
 use ts_rs::TS;
 
 use crate::config_types::Personality;
@@ -32,6 +32,12 @@ use crate::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 use crate::protocol::MultiAgentVersion;
+
+#[path = "openai_models/guardian_v2.rs"]
+mod guardian_v2;
+
+pub use guardian_v2::GuardianV2ModelConfig;
+pub use guardian_v2::GuardianV2TranscriptModelConfig;
 
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 /// Backend model-catalog specialty identifying cybersecurity-focused models.
@@ -291,11 +297,9 @@ pub enum ModelVisibility {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ConfigShellToolType {
-    Default,
-    Local,
+    #[serde(alias = "default", alias = "local", alias = "shell_command")]
     UnifiedExec,
     Disabled,
-    ShellCommand,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS, JsonSchema)]
@@ -401,18 +405,6 @@ pub struct ModelInfo {
     pub default_service_tier: Option<String>,
     pub availability_nux: Option<ModelAvailabilityNux>,
     pub upgrade: Option<ModelInfoUpgrade>,
-    /// Fork fallback instructions for a catalog entry that ships no
-    /// `model_messages.instructions_template`.
-    ///
-    /// Deliberately outside serde. Upstream 0.147.0 added
-    /// `ModelInfoWithLegacyBaseInstructions*`, which flattens `ModelInfo` and adds
-    /// its own top-level `base_instructions` key; if this field were serialized too
-    /// the catalog JSON would carry the key twice and fail to parse with
-    /// `duplicate field`. The wire value is produced by `get_model_instructions()`
-    /// on the way out and promoted into `instructions_template` on the way in, so
-    /// nothing is lost by keeping this one runtime-only.
-    #[serde(skip)]
-    pub base_instructions: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_messages: Option<ModelMessages>,
     #[serde(default)]
@@ -522,21 +514,11 @@ impl ModelInfo {
                 .unwrap_or_default();
             template.replace(PERSONALITY_PLACEHOLDER, personality_message.as_str())
         } else {
-            // Fork: upstream returns an empty string here. A catalog entry without
-            // a template is not fatal for this fork — it falls back to
-            // `base_instructions`, which `ensure_catalog_instructions` fills with
-            // the built-in prompt when the catalog supplies nothing usable.
-            match personality {
-                Some(personality @ (Personality::Friendly | Personality::Pragmatic)) => {
-                    trace!(
-                        model = %self.slug,
-                        %personality,
-                        "Model personality requested but model_messages is missing, falling back to base instructions."
-                    );
-                }
-                Some(Personality::None) | None => {}
-            }
-            self.base_instructions.clone()
+            warn!(
+                model = %self.slug,
+                "Model has no instruction template; returning empty instructions."
+            );
+            String::new()
         }
     }
 }
@@ -556,6 +538,8 @@ pub struct ModelMessages {
     pub multi_agent: Option<MultiAgentMessages>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<ModelTokenBudgetConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian_v2: Option<GuardianV2ModelConfig>,
 }
 
 /// Model-owned defaults for the context-window token-budget feature.
@@ -586,6 +570,8 @@ pub struct CollaborationModeMessages {
 pub struct AutoReviewMessages {
     pub policy: Option<String>,
     pub policy_template: Option<String>,
+    pub rejection_instructions: Option<String>,
+    pub timeout_instructions: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
@@ -780,6 +766,7 @@ where
                     permissions: None,
                     multi_agent: None,
                     token_budget: None,
+                    guardian_v2: None,
                 });
                 messages.instructions_template = Some(base_instructions);
             }
@@ -897,15 +884,29 @@ mod tests {
     use serde_json::from_str;
     use serde_json::to_string;
 
+    #[test]
+    fn legacy_shell_model_metadata_deserializes_as_unified_exec() {
+        for legacy_shell_type in ["default", "local", "shell_command"] {
+            assert_eq!(
+                from_str::<ConfigShellToolType>(&format!("\"{legacy_shell_type}\""))
+                    .expect("legacy shell type"),
+                ConfigShellToolType::UnifiedExec
+            );
+        }
+        assert_eq!(
+            to_string(&ConfigShellToolType::UnifiedExec).expect("serialize unified shell type"),
+            "\"unified_exec\""
+        );
+    }
+
     fn test_model(spec: Option<ModelMessages>) -> ModelInfo {
         ModelInfo {
-            base_instructions: String::new(),
             slug: "test-model".to_string(),
             display_name: "Test Model".to_string(),
             description: None,
             default_reasoning_level: None,
             supported_reasoning_levels: vec![],
-            shell_type: ConfigShellToolType::ShellCommand,
+            shell_type: ConfigShellToolType::UnifiedExec,
             visibility: ModelVisibility::List,
             supported_in_api: true,
             priority: 1,
@@ -970,6 +971,7 @@ mod tests {
                 permissions: None,
                 multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }
         );
     }
@@ -1000,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_review_messages_preserve_missing_and_empty_template_values() {
+    fn auto_review_messages_preserve_missing_and_empty_values() {
         let missing_template: ModelMessages = from_str(
             r#"{
                 "instructions_template": null,
@@ -1017,7 +1019,9 @@ mod tests {
                 "instructions_variables": null,
                 "auto_review": {
                     "policy": "policy",
-                    "policy_template": ""
+                    "policy_template": "",
+                    "rejection_instructions": "",
+                    "timeout_instructions": ""
                 }
             }"#,
         )
@@ -1028,6 +1032,8 @@ mod tests {
             Some(AutoReviewMessages {
                 policy: Some("policy".to_string()),
                 policy_template: None,
+                rejection_instructions: None,
+                timeout_instructions: None,
             })
         );
         assert_eq!(
@@ -1035,6 +1041,8 @@ mod tests {
             Some(AutoReviewMessages {
                 policy: Some("policy".to_string()),
                 policy_template: Some(String::new()),
+                rejection_instructions: Some(String::new()),
+                timeout_instructions: Some(String::new()),
             })
         );
     }
@@ -1111,6 +1119,7 @@ mod tests {
                 permissions: None,
                 multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }
         );
     }
@@ -1192,6 +1201,7 @@ mod tests {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -1214,6 +1224,7 @@ mod tests {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
         assert_eq!(
             model.get_model_instructions(Some(Personality::Pragmatic)),
@@ -1237,6 +1248,7 @@ mod tests {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
         assert_eq!(
             model_no_personality.get_model_instructions(Some(Personality::Friendly)),
@@ -1271,6 +1283,7 @@ mod tests {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }));
 
         let instructions = model.get_model_instructions(Some(Personality::Friendly));
@@ -1285,30 +1298,6 @@ mod tests {
         assert_eq!(
             model.get_model_instructions(Some(Personality::Friendly)),
             ""
-        );
-    }
-
-    #[test]
-    fn get_model_instructions_falls_back_to_base_instructions_when_template_missing() {
-        // Fork guarantee (Patch #26). Upstream's version of this branch returns an
-        // empty string, and the rust-v0.147.0 merge silently took it: the code
-        // compiled, no conflict was raised, and every catalog entry without a
-        // template would have shipped with no instructions at all.
-        //
-        // The sibling test above cannot catch that — its fixture leaves
-        // `base_instructions` empty, so it passes whichever branch is in place.
-        // This one gives the field a value, which is what makes it a check on
-        // behaviour rather than on the shape of the source.
-        let mut model = test_model(/*spec*/ None);
-        model.base_instructions = "fork fallback instructions".to_string();
-
-        assert_eq!(
-            model.get_model_instructions(/*personality*/ None),
-            "fork fallback instructions"
-        );
-        assert_eq!(
-            model.get_model_instructions(Some(Personality::Friendly)),
-            "fork fallback instructions"
         );
     }
 
@@ -1335,6 +1324,7 @@ mod tests {
                 permissions: None,
                 multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             })
         );
         assert_eq!(
@@ -1386,6 +1376,7 @@ mod tests {
                 permissions: None,
                 multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }))],
         };
 
@@ -1415,6 +1406,8 @@ mod tests {
             auto_review: Some(AutoReviewMessages {
                 policy: Some("policy".to_string()),
                 policy_template: None,
+                rejection_instructions: Some("rejection instructions".to_string()),
+                timeout_instructions: Some("timeout instructions".to_string()),
             }),
             permissions: Some(PermissionMessages {
                 danger_full_access: None,
@@ -1423,6 +1416,17 @@ mod tests {
             }),
             multi_agent: None,
             token_budget: None,
+            guardian_v2: Some(GuardianV2ModelConfig {
+                classifier_instructions: Some("Guardian classification".to_string()),
+                review_threshold_basis_points: Some(7_500),
+                reasoning_effort: Some(ReasoningEffort::Minimal),
+                transcript: Some(GuardianV2TranscriptModelConfig {
+                    sources: Some(vec!["reasoning".to_string()]),
+                    max_tool_entry_tokens: Some(500),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(Some(messages.clone()))],
@@ -1445,6 +1449,7 @@ mod tests {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         };
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(Some(canonical_messages.clone()))],
@@ -1538,7 +1543,7 @@ mod tests {
             "display_name": "Test Model",
             "description": null,
             "supported_reasoning_levels": [],
-            "shell_type": "shell_command",
+            "shell_type": "unified_exec",
             "visibility": "list",
             "supported_in_api": true,
             "priority": 1,
@@ -1578,20 +1583,6 @@ mod tests {
         assert_eq!(model.comp_hash, None);
         assert_eq!(model.auto_review_model_override, None);
         assert_eq!(model.tool_mode, None);
-    }
-
-    #[test]
-    fn model_info_defaults_base_instructions_to_empty_when_omitted() {
-        let mut value =
-            serde_json::to_value(test_model(/*spec*/ None)).expect("serialize test model");
-        value
-            .as_object_mut()
-            .expect("model info should be an object")
-            .remove("base_instructions");
-
-        let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
-
-        assert!(model.base_instructions.is_empty());
     }
 
     #[test]

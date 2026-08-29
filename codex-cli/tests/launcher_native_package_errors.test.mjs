@@ -25,26 +25,6 @@ const postinstallSource = readFileSync(
   path.join(sourceRoot, "scripts", "postinstall_darwin_build.js"),
   "utf8",
 );
-const termuxPostinstallSource = readFileSync(
-  path.join(sourceRoot, "scripts", "postinstall_termux_launcher.js"),
-  "utf8",
-);
-
-test("Termux postinstall rewrites both npm launcher shebangs", () => {
-  assert.match(termuxPostinstallSource, /Termux has no \/usr\/bin\/env/);
-  assert.match(termuxPostinstallSource, /process\.platform !== "android"/);
-  assert.match(termuxPostinstallSource, /bin\/codex\.js/);
-  assert.match(termuxPostinstallSource, /bin\/codex-exec\.js/);
-  assert.deepEqual(
-    JSON.parse(readFileSync(path.join(sourceRoot, "package.json"), "utf8"))
-      .files,
-    [
-      "bin/codex.js",
-      "bin/codex-exec.js",
-      "scripts/postinstall_termux_launcher.js",
-    ],
-  );
-});
 
 function createFixture(t, { platformPackageInstalled = false, binaryMode }) {
   const root = mkdtempSync(path.join(tmpdir(), "codex-vl-launcher-test-"));

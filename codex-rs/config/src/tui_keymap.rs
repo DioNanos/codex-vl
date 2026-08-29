@@ -92,6 +92,8 @@ impl KeybindingsSpec {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiGlobalKeymap {
+    /// Open the shared agent-session overview.
+    pub open_agents: Option<KeybindingsSpec>,
     /// Open the transcript overlay.
     pub open_transcript: Option<KeybindingsSpec>,
     /// Open the external editor for the current draft.
@@ -121,12 +123,18 @@ pub struct TuiGlobalKeymap {
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiChatKeymap {
+    /// Toggle the microphone in an active voice conversation.
+    pub toggle_voice_mute: Option<KeybindingsSpec>,
     /// Interrupt the active turn.
     pub interrupt_turn: Option<KeybindingsSpec>,
     /// Decrease the active reasoning effort.
     pub decrease_reasoning_effort: Option<KeybindingsSpec>,
     /// Increase the active reasoning effort.
     pub increase_reasoning_effort: Option<KeybindingsSpec>,
+    /// Switch to the previous available permission mode.
+    pub previous_permission_mode: Option<KeybindingsSpec>,
+    /// Switch to the next available permission mode.
+    pub next_permission_mode: Option<KeybindingsSpec>,
     /// Edit the most recently queued message.
     pub edit_queued_message: Option<KeybindingsSpec>,
 }
@@ -229,6 +237,10 @@ pub struct TuiVimNormalKeymap {
     pub move_line_end: Option<KeybindingsSpec>,
     /// Delete character under cursor (`x`).
     pub delete_char: Option<KeybindingsSpec>,
+    /// Replace the character under the cursor (`r`).
+    pub replace_char: Option<KeybindingsSpec>,
+    /// Repeat the last complete edit (`.`).
+    pub repeat_last_change: Option<KeybindingsSpec>,
     /// Delete character under cursor and enter insert mode (`s`).
     pub substitute_char: Option<KeybindingsSpec>,
     /// Delete from cursor to end of line (`D`).
@@ -367,6 +379,23 @@ pub struct TuiListKeymap {
     pub cancel: Option<KeybindingsSpec>,
 }
 
+/// Shortcuts specific to the shared agents overview.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct TuiAgentsKeymap {
+    /// Search the available agent tasks.
+    pub search: Option<KeybindingsSpec>,
+    /// Start composing a new agent task.
+    pub new_task: Option<KeybindingsSpec>,
+    /// Rename the selected task.
+    pub rename: Option<KeybindingsSpec>,
+    /// Stop the selected running task.
+    pub stop: Option<KeybindingsSpec>,
+    /// Toggle grouping tasks by status or project.
+    pub toggle_grouping: Option<KeybindingsSpec>,
+}
+
 /// Approval overlay keybindings.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -422,6 +451,8 @@ pub struct TuiKeymap {
     pub pager: TuiPagerKeymap,
     #[serde(default)]
     pub list: TuiListKeymap,
+    #[serde(default)]
+    pub agents: TuiAgentsKeymap,
     #[serde(default)]
     pub approval: TuiApprovalKeymap,
 }

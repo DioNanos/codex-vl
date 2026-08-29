@@ -80,7 +80,8 @@ pub(crate) async fn run_codex_thread_interactive(
         warnings: Vec::new(),
     };
     let session_source = SessionSource::SubAgent(subagent_source.clone());
-    let extensions = if crate::guardian::is_guardian_reviewer_source(&session_source) {
+    let is_guardian_reviewer = crate::guardian::is_basic_session_source(&session_source);
+    let extensions = if is_guardian_reviewer {
         codex_extension_api::empty_extension_registry()
     } else {
         Arc::clone(&parent_session.services.extensions)
@@ -107,7 +108,11 @@ pub(crate) async fn run_codex_thread_interactive(
         session_source,
         forked_from_thread_id,
         parent_thread_id: Some(parent_session.thread_id),
-        thread_source: Some(ThreadSource::Subagent),
+        thread_source: Some(if is_guardian_reviewer {
+            ThreadSource::GuardianReview
+        } else {
+            ThreadSource::Subagent
+        }),
         originator: parent_ctx.originator.clone(),
         agent_control: parent_session.services.agent_control.clone(),
         dynamic_tools: Vec::new(),
@@ -120,6 +125,7 @@ pub(crate) async fn run_codex_thread_interactive(
         environment_selections: parent_environments.to_selections(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
         client_mcp_extensions: parent_session.services.client_mcp_extensions.clone(),
+        reserved_thread_id: None,
         analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
         thread_store: Arc::clone(&parent_session.services.thread_store),
         attestation_provider: parent_session.services.attestation_provider.clone(),

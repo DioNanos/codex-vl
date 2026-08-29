@@ -4,6 +4,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ApprovalMessages;
 use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
+use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::openai_models::MultiAgentMessages;
 use codex_protocol::openai_models::MultiAgentModeMessages;
@@ -17,82 +18,6 @@ fn config_with_personality(personality: Option<Personality>) -> ModelsManagerCon
         personality,
         ..Default::default()
     }
-}
-
-#[test]
-fn missing_catalog_instructions_use_builtin_fallback() {
-    let mut model = model_info_from_slug("catalog-model");
-    model.base_instructions.clear();
-    model.model_messages = None;
-
-    let config = ModelsManagerConfig {
-        personality_enabled: true,
-        ..Default::default()
-    };
-    let updated = with_config_overrides(model, &config);
-
-    assert_eq!(updated.base_instructions, BASE_INSTRUCTIONS);
-}
-
-#[test]
-fn catalog_template_allows_missing_base_instructions() {
-    let mut model = model_info_from_slug("catalog-model");
-    model.base_instructions.clear();
-    model.model_messages = Some(ModelMessages {
-        instructions_template: Some("catalog template".to_string()),
-        instructions_variables: None,
-        approvals: None,
-        collaboration_modes: None,
-        auto_review: None,
-        permissions: None,
-        token_budget: None,
-    });
-
-    let config = ModelsManagerConfig {
-        personality_enabled: true,
-        ..Default::default()
-    };
-    let updated = with_config_overrides(model, &config);
-
-    assert!(updated.base_instructions.is_empty());
-    assert_eq!(updated.get_model_instructions(None), "catalog template");
-}
-
-#[test]
-fn disabling_personality_restores_fallback_after_template_removal() {
-    let mut model = model_info_from_slug("catalog-model");
-    model.base_instructions.clear();
-    model.model_messages = Some(ModelMessages {
-        instructions_template: Some("catalog template".to_string()),
-        instructions_variables: None,
-        approvals: None,
-        collaboration_modes: None,
-        auto_review: None,
-        permissions: None,
-        token_budget: None,
-    });
-    let config = ModelsManagerConfig {
-        personality_enabled: false,
-        ..Default::default()
-    };
-
-    let updated = with_config_overrides(model, &config);
-
-    assert_eq!(updated.base_instructions, BASE_INSTRUCTIONS);
-    assert!(updated.model_messages.is_none());
-}
-
-#[test]
-fn explicit_empty_base_instruction_override_is_preserved() {
-    let model = model_info_from_slug("catalog-model");
-    let config = ModelsManagerConfig {
-        base_instructions: Some(String::new()),
-        ..Default::default()
-    };
-
-    let updated = with_config_overrides(model, &config);
-
-    assert!(updated.base_instructions.is_empty());
 }
 
 #[test]
@@ -112,6 +37,8 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
     let auto_review = AutoReviewMessages {
         policy: Some("review policy".to_string()),
         policy_template: Some("review policy template".to_string()),
+        rejection_instructions: Some("rejection instructions".to_string()),
+        timeout_instructions: Some(String::new()),
     };
     let permissions = PermissionMessages {
         danger_full_access: Some("danger".to_string()),
@@ -135,6 +62,10 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         auto_compact_fallback_prompt: "compact prompt".to_string(),
         auto_compact_fallback_buffer_tokens: 64,
     };
+    let guardian_v2 = GuardianV2ModelConfig {
+        classifier_instructions: Some("Guardian experiment".to_string()),
+        ..Default::default()
+    };
     model.model_messages = Some(ModelMessages {
         instructions_template: Some("template".to_string()),
         instructions_variables: Some(ModelInstructionsVariables {
@@ -148,6 +79,7 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         permissions: Some(permissions.clone()),
         multi_agent: Some(multi_agent.clone()),
         token_budget: Some(token_budget.clone()),
+        guardian_v2: Some(guardian_v2.clone()),
     });
     let config = ModelsManagerConfig {
         base_instructions: Some(override_instructions.to_string()),
@@ -167,6 +99,7 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
             permissions: Some(permissions),
             multi_agent: Some(multi_agent),
             token_budget: Some(token_budget),
+            guardian_v2: Some(guardian_v2),
         })
     );
     assert_eq!(
@@ -197,6 +130,7 @@ fn disabled_personality_bakes_default_and_preserves_catalog_approval_messages() 
         permissions: None,
         multi_agent: None,
         token_budget: None,
+        guardian_v2: None,
     });
     let config = ModelsManagerConfig {
         personality_enabled: false,
@@ -216,6 +150,7 @@ fn disabled_personality_bakes_default_and_preserves_catalog_approval_messages() 
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         })
     );
 }
@@ -242,6 +177,7 @@ fn disabled_personality_uses_plain_base_instructions_for_local_personality_model
                 permissions: None,
                 multi_agent: None,
                 token_budget: None,
+                guardian_v2: None,
             }),
             "unexpected model messages for {slug}"
         );
@@ -282,6 +218,7 @@ fn personality_none_strips_catalog_instruction_sources_through_the_next_h1() {
             permissions: None,
             multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         });
 
         let updated = with_config_overrides(model, &config);

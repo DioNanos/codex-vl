@@ -44,7 +44,7 @@ fn app_server_workspace_write_profile(extra_root: AbsolutePathBuf) -> Permission
                     missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
-                    path: FileSystemPath::Path { path: extra_root },
+                    path: extra_root.into(),
                     access: FileSystemAccessMode::Write,
                     missing_path_behavior: None,
                 },
@@ -67,7 +67,9 @@ fn windows_sandbox_requirements_stack(
     requirements_stack(requirements_toml)
 }
 
-fn requirements_stack(requirements_toml: codex_config::ConfigRequirementsToml) -> ConfigLayerStack {
+pub(super) fn requirements_stack(
+    requirements_toml: codex_config::ConfigRequirementsToml,
+) -> ConfigLayerStack {
     let mut requirements_with_sources = codex_config::ConfigRequirementsWithSources::default();
     requirements_with_sources
         .merge_unset_fields(RequirementSource::Unknown, requirements_toml.clone());
@@ -368,7 +370,7 @@ async fn preset_matching_does_not_treat_non_cwd_writable_profile_as_read_only() 
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
-                        path: test_path_buf("/tmp/writable").abs(),
+                        path: test_path_buf("/tmp/writable").abs().into(),
                     },
                     access: FileSystemAccessMode::Write,
                     missing_path_behavior: None,
@@ -758,17 +760,21 @@ async fn permissions_selection_emits_history_cell_when_selection_changes() {
         chat.set_windows_sandbox_mode(Some(WindowsSandboxModeToml::Unelevated));
     }
     chat.set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
-    chat.open_permissions_popup();
+    chat.on_task_started();
+    chat.dispatch_command(SlashCommand::Permissions);
+    let command = begin_exec(&mut chat, "call-permissions", "printf before");
+    end_exec(&mut chat, command, "before\n", "", /*exit_code*/ 0);
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(
         cells.len(),
-        1,
-        "expected one permissions selection history cell"
+        2,
+        "expected command and permissions selection history cells"
     );
-    let rendered = lines_to_single_string(&cells[0]);
+    assert!(lines_to_single_string(&cells[0]).contains("Ran printf before"));
+    let rendered = lines_to_single_string(&cells[1]);
     assert!(
         rendered.contains("Permissions updated to"),
         "expected permissions selection history message, got: {rendered}"

@@ -33,15 +33,6 @@ jobs:
       INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Check npm launcher sources
-        run: |
-          set -euo pipefail
-          node --check codex-cli/bin/codex.js
-          node --check codex-cli/bin/codex-exec.js
-          node --check codex-cli/scripts/postinstall_termux_launcher.js
-          node --check codex-cli/tests/launcher_native_package_errors.test.mjs
-          node --test codex-cli/tests/launcher_native_package_errors.test.mjs
-          node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync("codex-cli/package.json", "utf8")); if (p.scripts?.postinstall !== "node scripts/postinstall_termux_launcher.js" || !p.files?.includes("bin/codex-exec.js") || !p.files?.includes("scripts/postinstall_termux_launcher.js")) process.exit(1);'
       - name: Resolve release version
         run: |
           set -euo pipefail

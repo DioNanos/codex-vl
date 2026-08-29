@@ -54,7 +54,6 @@ pub(crate) struct PluginRequestProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     analytics_events_client: AnalyticsEventsClient,
     config_manager: ConfigManager,
-    workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
     on_effective_plugins_changed:
         Arc<dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync>,
 }
@@ -400,7 +399,6 @@ impl PluginRequestProcessor {
         outgoing: Arc<OutgoingMessageSender>,
         analytics_events_client: AnalyticsEventsClient,
         config_manager: ConfigManager,
-        workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
         on_effective_plugins_changed: Arc<
             dyn Fn(codex_core_plugins::EffectivePluginsChange) + Send + Sync,
         >,
@@ -411,7 +409,6 @@ impl PluginRequestProcessor {
             outgoing,
             analytics_events_client,
             config_manager,
-            workspace_settings_cache,
             on_effective_plugins_changed,
         }
     }
@@ -542,28 +539,6 @@ impl PluginRequestProcessor {
             .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }
 
-    async fn workspace_codex_plugins_enabled(
-        &self,
-        config: &Config,
-        auth: Option<&CodexAuth>,
-    ) -> bool {
-        match workspace_settings::codex_plugins_enabled_for_workspace(
-            config,
-            auth,
-            Some(&self.workspace_settings_cache),
-        )
-        .await
-        {
-            Ok(enabled) => enabled,
-            Err(err) => {
-                warn!(
-                    "failed to fetch workspace Codex plugins setting; allowing Codex plugins: {err:#}"
-                );
-                true
-            }
-        }
-    }
-
     async fn plugin_list_response(
         &self,
         params: PluginListParams,
@@ -591,14 +566,7 @@ impl PluginRequestProcessor {
             return Ok(empty_response());
         }
         let auth = self.auth_manager.auth().await;
-        if !self
-            .workspace_codex_plugins_enabled(&config, auth.as_ref())
-            .await
-        {
-            return Ok(empty_response());
-        }
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
-        plugins_manager.set_auth_mode(auth_mode);
         let plugins_input = config.plugins_config_input();
         if include_local
             && force_refetch
@@ -851,14 +819,7 @@ impl PluginRequestProcessor {
             return Ok(empty_response());
         }
         let auth = self.auth_manager.auth().await;
-        if !self
-            .workspace_codex_plugins_enabled(&config, auth.as_ref())
-            .await
-        {
-            return Ok(empty_response());
-        }
         let auth_mode = auth.as_ref().map(CodexAuth::api_auth_mode);
-        plugins_manager.set_auth_mode(auth_mode);
 
         let plugins_input = config.plugins_config_input();
         let use_remote_global_catalog = config.features.enabled(Feature::RemotePlugin)
@@ -1048,7 +1009,6 @@ impl PluginRequestProcessor {
         let config = self.load_latest_config(config_cwd).await?;
         let plugins_input = config.plugins_config_input();
         let auth = self.auth_manager.auth().await;
-        plugins_manager.set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode));
 
         let plugin = match read_source {
             Ok(marketplace_path) => {
@@ -1506,15 +1466,6 @@ impl PluginRequestProcessor {
         let config = self.load_latest_config(config_cwd.clone()).await?;
         let auth = self.auth_manager.auth().await;
 
-        if !self
-            .workspace_codex_plugins_enabled(&config, auth.as_ref())
-            .await
-        {
-            return Err(invalid_request(
-                "Codex plugins are disabled for this workspace",
-            ));
-        }
-
         let plugins_manager = self.thread_manager.plugins_manager();
         let marketplace_display = marketplace_path.display().to_string();
         let plugin_name_for_log = plugin_name.clone();
@@ -1657,14 +1608,6 @@ impl PluginRequestProcessor {
             );
             return Err(invalid_request(error_message));
         }
-        // Direct install writes the same cache tree that installed-plugin sync
-        // prunes before the backend installed snapshot can include this plugin.
-        let _remote_plugin_cache_mutation =
-            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
-                config.codex_home.as_path(),
-                &actual_remote_marketplace_name,
-                &remote_plugin_name,
-            );
         let validated_bundle = codex_core_plugins::remote_bundle::validate_remote_plugin_bundle(
             &remote_plugin_id,
             &actual_remote_marketplace_name,
@@ -1687,6 +1630,24 @@ impl PluginRequestProcessor {
             remote_plugin_bundle_install_error_to_jsonrpc(err)
         })?;
 
+        // Direct install writes the same cache tree that installed-plugin sync prunes. Hold the
+        // shared cache-root gate through the backend mutation so a full sync cannot commit a
+        // snapshot fetched before this plugin became installed.
+        let plugins_manager = self.thread_manager.plugins_manager();
+        let remote_plugin_sync_guard = plugins_manager
+            .acquire_remote_installed_plugin_sync_guard()
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to coordinate remote plugin install: {err}"))
+            })?;
+        // Keep this marker through downstream setup after releasing the shared gate. A new sync
+        // may start then, but it must not prune the bundle that this install just materialized.
+        let _remote_plugin_cache_mutation =
+            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
+                config.codex_home.as_path(),
+                &actual_remote_marketplace_name,
+                &remote_plugin_name,
+            );
         let result = codex_core_plugins::remote_bundle::download_and_install_remote_plugin_bundle(
             &remote_plugin_service_config,
             config.codex_home.to_path_buf(),
@@ -1742,13 +1703,12 @@ impl PluginRequestProcessor {
             remote_plugin_catalog_error_to_jsonrpc(err, "install remote plugin")
         })?;
 
-        self.thread_manager
-            .plugins_manager()
-            .maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
-                &config.plugins_config_input(),
-                auth.clone(),
-                Some(self.effective_plugins_changed_callback()),
-            );
+        plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
+            &config.plugins_config_input(),
+            auth.clone(),
+            Some(self.effective_plugins_changed_callback()),
+        );
+        drop(remote_plugin_sync_guard);
 
         let plugin_metadata = self
             .thread_manager
@@ -2177,6 +2137,20 @@ impl PluginRequestProcessor {
             plugin_telemetry.capability_summary =
                 Some(uninstall_target.fallback_capability_summary.clone());
         }
+        let remote_plugin_sync_guard = plugins_manager
+            .acquire_remote_installed_plugin_sync_guard()
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to coordinate remote plugin uninstall: {err}"
+                ))
+            })?;
+        let remote_plugin_cache_mutation =
+            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
+                config.codex_home.as_path(),
+                &uninstall_target.plugin_id.marketplace_name,
+                &uninstall_target.plugin_id.plugin_name,
+            );
         let uninstall_result = codex_core_plugins::remote::uninstall_remote_plugin(
             &remote_plugin_service_config,
             auth.as_ref(),
@@ -2185,20 +2159,24 @@ impl PluginRequestProcessor {
         )
         .await;
 
+        let mut refresh_effective_plugins = false;
         if matches!(
             &uninstall_result,
             Ok(()) | Err(RemotePluginCatalogError::CacheRemove(_))
         ) {
             self.analytics_events_client
                 .track_plugin_uninstalled(plugin_telemetry);
-            if plugins_manager.clear_remote_installed_plugins_cache() {
-                self.on_effective_plugins_changed().await;
-            }
+            refresh_effective_plugins = plugins_manager.clear_remote_installed_plugins_cache();
             plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
                 &config.plugins_config_input(),
                 auth.clone(),
                 Some(self.effective_plugins_changed_callback()),
             );
+        }
+        drop(remote_plugin_cache_mutation);
+        drop(remote_plugin_sync_guard);
+        if refresh_effective_plugins {
+            self.on_effective_plugins_changed().await;
         }
 
         uninstall_result.map_err(|err| {
