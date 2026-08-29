@@ -560,6 +560,29 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
                     "strict": false,
                     "parameters": status_schema,
                 },
+                // codex-vl: with_builtin_dynamic_tools injects the fork-owned
+                // manage_loops builtin into the codex_app namespace
+                // (thread_processor.rs), routing loop requests back to the TUI.
+                {
+                    "type": "function",
+                    "name": "manage_loops",
+                    "description": "Manage local per-thread loop jobs that supervise recurring work while the TUI session stays attached. Use this for polling, retries, recurring status checks, long-running build monitoring, and other monitor-until-done workflows.",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "description": "One of: add, update, list, show, enable, disable, remove, trigger."},
+                            "label": {"type": "string", "description": "Loop label. Required for add, update, show, enable, disable, remove, trigger."},
+                            "interval": {"type": "string", "description": "Interval like 30s, 5m, or 1h. Required for add, optional for update."},
+                            "prompt": {"type": "string", "description": "Prompt text to auto-submit on each loop tick. Required for add, optional for update."},
+                            "goal": {"type": ["string", "null"], "description": "Optional short statement of what the loop is trying to monitor or complete. Use null in update to clear it."},
+                            "enabled": {"type": "boolean", "description": "Optional enabled state for update."},
+                            "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."}
+                        },
+                        "required": ["action"],
+                        "additionalProperties": false
+                    },
+                },
             ],
         })
     );

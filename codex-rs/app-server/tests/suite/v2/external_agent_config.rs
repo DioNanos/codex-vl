@@ -456,10 +456,14 @@ async fn external_agent_config_import_source_remains_attribution_only() -> Resul
 #[tokio::test]
 async fn external_agent_config_secondary_source_imports_session_and_plugin_end_to_end() -> Result<()>
 {
-    // Cursor's encoded-project decoder enumerates path ancestors. Keep this
-    // fixture below the readable checkout rather than a potentially
-    // execute-only TMPDIR parent.
-    let codex_home = tempfile::tempdir_in(std::env::current_dir()?)?;
+    // Cursor's encoded-project decoder splits the encoded directory name on
+    // the separators it recognizes (dash included) and disambiguates by
+    // probing which candidate path exists. A fixture under a directory whose
+    // own name contains dashes (any checkout subdir like `codex-rs` /
+    // `app-server`) makes that probe ambiguous and the decode returns None,
+    // dropping the session's fallback cwd and with it the whole Sessions
+    // item. Park the fixture in a dash-free, world-writable location.
+    let codex_home = tempfile::tempdir_in("/var/tmp")?;
     let source_home = secondary_external_agent_home(codex_home.path());
     let project_root = codex_home.path().join("my-project");
     std::fs::create_dir_all(&project_root)?;
