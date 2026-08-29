@@ -629,6 +629,17 @@ impl ServerHandler for TestToolServer {
                     Ok(CallToolResult::success(vec![
                         rmcp::model::ContentBlock::text(" "),
                     ]))
+                } else if args.code == "await nodeRepl.emitImage(await tab.screenshot())" {
+                    let mut meta = MetaObject::new();
+                    meta.insert("codex/imageDetail".to_string(), json!("low"));
+                    Ok(CallToolResult::success(vec![
+                        rmcp::model::ContentBlock::text("guardian-visible-before-image"),
+                        rmcp::model::ContentBlock::Image(
+                            rmcp::model::ImageContent::new(SMALL_PNG_BASE64, "IMAGE/PNG")
+                                .with_meta(meta),
+                        ),
+                        rmcp::model::ContentBlock::text("guardian-visible-after-image"),
+                    ]))
                 } else if let Some(text) = args.code.strip_prefix("nodeRepl.write(")
                     && let Some(text) = text.strip_suffix(')')
                 {
@@ -817,10 +828,19 @@ impl TestToolServer {
                 content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::InvalidImageBytesThenImage => {
+                let oversized = std::env::var("MCP_TEST_OVERSIZED_INVALID_IMAGE") == Ok("1".into());
                 content.push(rmcp::model::ContentBlock::image(
-                    "bm90IGFuIGltYWdl".to_string(),
+                    if oversized {
+                        "A".repeat(8 * 1024 * 1024 - 24)
+                    } else {
+                        "bm90IGFuIGltYWdl".to_string()
+                    },
                     "image/png".to_string(),
                 ));
+                let (mime_type, valid_data_b64) = std::env::var("MCP_TEST_IMAGE_DATA_URL")
+                    .ok()
+                    .and_then(|data_url| parse_data_url(&data_url))
+                    .unwrap_or((mime_type, valid_data_b64));
                 content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::MultipleValidImages => {
@@ -1000,8 +1020,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = TestToolServer::new();
     let running = service.serve(stdio()).await?;
 
-    // Wait for the client to finish interacting with the server.
-    running.waiting().await?;
+    // A test can close an initialized transport without killing an arbitrary PID.
+    let exit_file = std::env::var_os("MCP_TEST_EXIT_FILE");
+    tokio::select! {
+        result = running.waiting() => { result?; }
+        _ = async {
+            let Some(exit_file) = exit_file else {
+                return std::future::pending::<()>().await;
+            };
+            while !std::path::Path::new(&exit_file).exists() {
+                sleep(Duration::from_millis(/*millis*/ 20)).await;
+            }
+        } => std::process::exit(0),
+    }
     // Drain background tasks to ensure clean shutdown.
     task::yield_now().await;
     Ok(())

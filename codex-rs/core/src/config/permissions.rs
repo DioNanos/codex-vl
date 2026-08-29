@@ -189,6 +189,9 @@ pub(crate) fn apply_network_proxy_feature_config(
         mitm: None,
     }
     .apply_to_network_proxy_config(config);
+    if let Some(credential_broker) = feature_config.credential_broker {
+        config.set_credential_broker_enabled(credential_broker);
+    }
 }
 
 pub(crate) fn resolve_permission_profile(
@@ -243,7 +246,7 @@ fn insert_filesystem_permission_toml(
     match entry.path {
         FileSystemPath::Path { path } => {
             entries.insert(
-                path.into_path_buf().to_string_lossy().into_owned(),
+                path.inferred_native_path_string(),
                 FilesystemPermissionToml::Access(entry.access),
             );
         }
@@ -599,7 +602,7 @@ fn compile_filesystem_path(
     }
 
     let path = parse_absolute_path(path)?;
-    Ok(FileSystemPath::Path { path })
+    Ok(path.into())
 }
 
 fn compile_scoped_filesystem_path(
@@ -636,7 +639,7 @@ fn compile_scoped_filesystem_path(
     let subpath = parse_relative_subpath(subpath)?;
     let base = parse_absolute_path(path)?;
     let path = AbsolutePathBuf::resolve_path_against_base(&subpath, base.as_path());
-    Ok(FileSystemPath::Path { path })
+    Ok(path.into())
 }
 
 fn compile_scoped_filesystem_pattern(
@@ -779,7 +782,10 @@ fn parse_special_path(path: &str) -> Option<FileSystemSpecialPath> {
     match path {
         ":root" => Some(FileSystemSpecialPath::Root),
         ":minimal" => Some(FileSystemSpecialPath::Minimal),
-        ":workspace_roots" => Some(FileSystemSpecialPath::project_roots(/*subpath*/ None)),
+        // `:project_roots` shipped before the canonical rename; keep it as an alias.
+        ":project_roots" | ":workspace_roots" => {
+            Some(FileSystemSpecialPath::project_roots(/*subpath*/ None))
+        }
         ":tmpdir" => Some(FileSystemSpecialPath::Tmpdir),
         ":slash_tmp" => Some(FileSystemSpecialPath::SlashTmp),
         _ if path.starts_with(':') => {

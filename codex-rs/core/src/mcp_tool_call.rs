@@ -82,6 +82,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use toml_edit::value;
 use tracing::Instrument;
 use tracing::Span;
@@ -108,9 +109,11 @@ const MCP_TOOL_CALL_EVENT_RESULT_MAX_BYTES: usize = DEFAULT_OUTPUT_BYTES_CAP;
 
 /// Handles the specified tool call and dispatches the appropriate MCP tool-call
 /// item lifecycle events to the `Session`.
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn handle_mcp_tool_call(
     sess: Arc<Session>,
     step_context: &Arc<StepContext>,
+    cancellation_token: &CancellationToken,
     call_id: String,
     tool_info: &ToolInfo,
     hook_tool_name: HookToolName,
@@ -233,6 +236,7 @@ pub(crate) async fn handle_mcp_tool_call(
     if let Some(decision) = maybe_request_mcp_tool_approval(
         &sess,
         step_context,
+        cancellation_token,
         &call_id,
         &invocation,
         &invocation_tool_name,
@@ -283,7 +287,7 @@ pub(crate) async fn handle_mcp_tool_call(
                     &call_id,
                     invocation,
                     item_metadata.clone(),
-                    crate::guardian::guardian_timeout_message(),
+                    crate::guardian::guardian_timeout_message(&turn_context.model_info),
                     /*already_started*/ true,
                 )
                 .await
@@ -409,7 +413,7 @@ async fn handle_approved_mcp_tool_call(
     let result = async {
         let result = async {
             let result = prepared_call
-                .call_with_preparation(|| async {
+                .call_with_preparation(/*requested_timeout*/ None, || async {
                     if let McpToolApprovalApplication::Apply { decision, policy } =
                         &approval_application
                     {
@@ -769,6 +773,8 @@ async fn augment_mcp_tool_request_meta_with_sandbox_state(
     else {
         return Ok(meta);
     };
+    // TODO(anp): Build this metadata from the server's captured
+    // TurnEnvironment::sandbox_context instead of the runtime-wide Landlock value.
     let permission_profile = prepared_call.config().permission_profile.clone();
     let sandbox_state = serde_json::to_value(SandboxState {
         permission_profile,
@@ -802,7 +808,7 @@ fn sandbox_cwd_for_mcp_server(step_context: &StepContext, environment_id: &str) 
     if let Some(environment) = step_context
         .environments
         .turn_environments()
-        .find(|environment| environment.environment_id == environment_id)
+        .find(|environment| environment.selection.environment_id == environment_id)
     {
         return Some(environment.cwd().clone());
     }
@@ -1288,6 +1294,7 @@ fn mcp_tool_approval_prompt_options(
 async fn maybe_request_mcp_tool_approval(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
+    cancellation_token: &CancellationToken,
     call_id: &str,
     invocation: &McpInvocation,
     invocation_tool_name: &ToolName,
@@ -1297,6 +1304,16 @@ async fn maybe_request_mcp_tool_approval(
     policy: McpToolApprovalPolicy,
 ) -> Option<ReviewDecision> {
     let turn_context = &step_context.turn;
+    let turn_state = sess
+        .active_turn
+        .lock()
+        .await
+        .as_ref()
+        .map(|active| Arc::clone(&active.turn_state));
+    let strict_auto_review = match turn_state {
+        Some(turn_state) => turn_state.lock().await.strict_auto_review_enabled(),
+        None => false,
+    };
     let approvals_reviewer = connectors::mcp_approvals_reviewer_from_layers(
         &config.config_layer_stack,
         config.approvals_reviewer,
@@ -1304,18 +1321,20 @@ async fn maybe_request_mcp_tool_approval(
         &invocation.server,
         metadata.connector_id.as_deref(),
     );
-    if mcp_permission_prompt_is_auto_approved(
-        config.approval_policy.value(),
-        &config.permission_profile,
-        McpPermissionPromptAutoApproveContext {
-            tool_approval_mode: Some(policy.mode),
-        },
-    ) {
+    if !strict_auto_review
+        && mcp_permission_prompt_is_auto_approved(
+            config.approval_policy.value(),
+            &config.permission_profile,
+            McpPermissionPromptAutoApproveContext {
+                tool_approval_mode: Some(policy.mode),
+            },
+        )
+    {
         return None;
     }
 
     let annotations = metadata.annotations.as_ref();
-    if !requires_mcp_tool_approval_for_mode(annotations, policy.mode) {
+    if !strict_auto_review && !requires_mcp_tool_approval_for_mode(annotations, policy.mode) {
         return None;
     }
 
@@ -1326,7 +1345,8 @@ async fn maybe_request_mcp_tool_approval(
     } else {
         None
     };
-    if let Some(key) = session_approval_key.as_ref()
+    if !strict_auto_review
+        && let Some(key) = session_approval_key.as_ref()
         && mcp_tool_approval_is_remembered(sess, key).await
     {
         return Some(ReviewDecision::Approved);
@@ -1362,9 +1382,10 @@ async fn maybe_request_mcp_tool_approval(
     };
     let approval_context = ApprovalContext {
         review_context: GuardianReviewContext::from(step_context),
+        cancellation_token: Some(cancellation_token.clone()),
         call_id: call_id.to_string(),
         tool_name: invocation_tool_name.clone(),
-        strict_auto_review: false,
+        strict_auto_review,
         approval_reason: None,
         retry_reason: None,
         network_approval_context: None,

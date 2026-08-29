@@ -16,13 +16,12 @@ use std::path::Path;
 /// Convert a ModelPreset to ModelInfo for cache storage.
 fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
     ModelInfo {
-        base_instructions: String::new(),
         slug: preset.id.clone(),
         display_name: preset.display_name.clone(),
         description: Some(preset.description.clone()),
         default_reasoning_level: Some(preset.default_reasoning_effort.clone()),
         supported_reasoning_levels: preset.supported_reasoning_efforts.clone(),
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: if preset.show_in_picker {
             ModelVisibility::List
         } else {
@@ -41,7 +40,9 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,
@@ -54,7 +55,6 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
         max_context_window: None,

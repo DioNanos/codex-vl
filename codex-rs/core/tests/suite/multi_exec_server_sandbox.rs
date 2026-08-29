@@ -5,10 +5,10 @@ use std::time::Duration;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -107,13 +107,7 @@ async fn two_exec_servers_isolate_workspace_write_roots() -> Result<()> {
     let second_workspace = TempDir::new()?;
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_config(|config| {
-        config.use_experimental_unified_exec_tool = true;
-        config
-            .features
-            .enable(Feature::UnifiedExec)
-            .expect("test config should allow unified exec");
-    });
+    let mut builder = test_codex();
     let test = builder.build(&server).await?;
     let environment_manager = test.thread_manager.environment_manager();
     environment_manager.upsert_environment(
@@ -190,11 +184,13 @@ async fn two_exec_servers_isolate_workspace_write_roots() -> Result<()> {
             environment_id: FIRST_ENVIRONMENT_ID.to_string(),
             cwd: first_workspace_uri.clone(),
             workspace_roots: vec![first_workspace_uri],
+            config: EnvironmentConfigState::FromThread,
         },
         TurnEnvironmentSelection {
             environment_id: SECOND_ENVIRONMENT_ID.to_string(),
             cwd: second_workspace_uri.clone(),
             workspace_roots: vec![second_workspace_uri],
+            config: EnvironmentConfigState::FromThread,
         },
     ];
     let permission_profile = PermissionProfile::workspace_write_with(

@@ -8,10 +8,11 @@ use crate::compact::CompactedHistoryMetadata;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
 use crate::compact::InitialContextInjection;
+use crate::compact::build_compaction_initial_context;
 use crate::compact::compaction_status_from_result;
+use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
-use crate::compact_remote::process_annotated_compacted_history;
 use crate::compact_remote::should_keep_compacted_history_item;
 use crate::compact_remote_history::HistoryItemGroup;
 use crate::compact_remote_history::history_item_groups;
@@ -32,6 +33,9 @@ use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
+use codex_context_fragments::set_annotated_content;
+use codex_context_fragments::to_annotated_content;
+use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
@@ -58,9 +62,18 @@ mod attempt;
 use attempt::RemoteCompactV2Attempt;
 use attempt::run_remote_compact_v2_attempt;
 
+#[path = "compact_remote_v2_images.rs"]
+mod images;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetainedImageBudget {
+    Disabled,
+    Enabled,
+}
+
 // Mirror the current /responses/compact retained-message default while the
 // server-side path remains the reference implementation.
-const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
 // Compact attempts can run much longer than normal turns, so keep the per-transport
 // retry budget smaller than the general Responses stream retry budget.
@@ -292,16 +305,23 @@ async fn run_remote_compact_task_inner_impl(
         analytics_details.cached_input_tokens = Some(token_usage.cached_input_tokens);
         analytics_details.cache_write_input_tokens = Some(token_usage.cache_write_input_tokens);
     }
-    let (compacted_history, retained_images) =
-        build_v2_compacted_history(prompt_input, prompt_input_metadata, compaction_output);
+    let (compacted_history, retained_images) = build_v2_compacted_history(
+        prompt_input,
+        prompt_input_metadata,
+        compaction_output,
+        sess.enabled(Feature::RetainClientDeveloperMessages),
+        if sess.enabled(Feature::CompactionImageBudget) {
+            RetainedImageBudget::Enabled
+        } else {
+            RetainedImageBudget::Disabled
+        },
+    );
     analytics_details.retained_image_count = Some(retained_images);
     let (new_window_number, new_window_ids) = sess.advance_auto_compact_window().await;
-    let (new_history, world_state_baseline) = process_annotated_compacted_history(
-        sess.as_ref(),
-        compacted_history,
-        &initial_context_injection,
-    )
-    .await;
+    let (initial_context, world_state_baseline) =
+        build_compaction_initial_context(sess.as_ref(), &initial_context_injection).await;
+    let new_history =
+        insert_initial_context_before_last_real_user_or_summary(compacted_history, initial_context);
 
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
@@ -456,6 +476,8 @@ fn build_v2_compacted_history(
     prompt_input: Vec<ResponseItem>,
     prompt_input_metadata: Vec<Option<CodexHarnessMetadata>>,
     compaction_output: ResponseItem,
+    retain_client_developer_messages: bool,
+    image_budget: RetainedImageBudget,
 ) -> (Vec<ResponseItemEnvelope>, usize) {
     debug_assert_eq!(prompt_input.len(), prompt_input_metadata.len());
     let prompt_input = prompt_input
@@ -463,13 +485,17 @@ fn build_v2_compacted_history(
         .zip(prompt_input_metadata)
         .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
         .collect::<Vec<_>>();
-    let retained = history_item_groups(prompt_input)
+    let retained = v2_history_item_groups(prompt_input)
         .filter(|group| is_retained_for_remote_compaction_v2(&group.source.item))
-        .filter(|group| should_keep_compacted_history_item(&group.source.item))
+        .filter(|group| {
+            should_keep_compacted_history_item(&group.source.item)
+                || (retain_client_developer_messages
+                    && is_client_authored_developer_message(&group.source))
+        })
         .flat_map(HistoryItemGroup::into_items)
         .collect::<Vec<_>>();
     let mut retained =
-        truncate_retained_messages_for_remote_compaction(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
+        truncate_retained_messages(retained, RETAINED_MESSAGE_TOKEN_BUDGET, image_budget);
     let retained_image_count = retained
         .iter()
         .map(|envelope| retained_input_image_count(&envelope.item))
@@ -478,14 +504,51 @@ fn build_v2_compacted_history(
     (retained, retained_image_count)
 }
 
+pub(crate) fn is_client_authored_developer_message(item: &ResponseItemEnvelope) -> bool {
+    item.metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.client_authored)
+        && matches!(&item.item, ResponseItem::Message { role, .. } if role == "developer")
+}
+
+fn v2_history_item_groups(
+    items: Vec<ResponseItemEnvelope>,
+) -> impl Iterator<Item = HistoryItemGroup<ResponseItemEnvelope>> {
+    history_item_groups(items).flat_map(|mut group| {
+        let client_message = group
+            .attached_notice
+            .take_if(|item| is_client_authored_developer_message(item))
+            .map(|source| HistoryItemGroup {
+                source,
+                attached_notice: None,
+            });
+        std::iter::once(group).chain(client_message)
+    })
+}
+
 fn is_retained_for_remote_compaction_v2(item: &ResponseItem) -> bool {
-    if let ResponseItem::AgentMessage { content, .. } = item {
+    if let ResponseItem::AgentMessage {
+        author,
+        recipient,
+        content,
+        ..
+    } = item
+    {
+        let is_descendant_progress = author
+            .strip_prefix(recipient)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+            && matches!(
+                content.first(),
+                Some(AgentMessageInputContent::InputText { text })
+                    if text.starts_with("Message Type: MESSAGE\n")
+            );
         let is_completion = matches!(
             content.first(),
             Some(AgentMessageInputContent::InputText { text })
                 if text.starts_with("Message Type: FINAL_ANSWER\n")
         );
-        return !is_completion
+        return !is_descendant_progress
+            && !is_completion
             && estimate_item_token_count(item) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS;
     }
 
@@ -507,13 +570,21 @@ fn retained_input_image_count(item: &ResponseItem) -> usize {
         .count()
 }
 
-fn truncate_retained_messages_for_remote_compaction(
+pub(crate) fn truncate_retained_messages_for_remote_compaction(
     items: Vec<ResponseItemEnvelope>,
     max_tokens: usize,
 ) -> Vec<ResponseItemEnvelope> {
+    truncate_retained_messages(items, max_tokens, RetainedImageBudget::Disabled)
+}
+
+fn truncate_retained_messages(
+    items: Vec<ResponseItemEnvelope>,
+    max_tokens: usize,
+    image_budget: RetainedImageBudget,
+) -> Vec<ResponseItemEnvelope> {
     let mut remaining = max_tokens;
     let mut truncated_reversed = Vec::with_capacity(items.len());
-    for group in history_item_groups(items)
+    for group in v2_history_item_groups(items)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -522,34 +593,92 @@ fn truncate_retained_messages_for_remote_compaction(
             continue;
         }
 
+        let client_developer = is_client_authored_developer_message(&group.source);
+        let charge_images = image_budget == RetainedImageBudget::Enabled && !client_developer;
         let notice_tokens = group
             .attached_notice
             .as_ref()
             .map_or(0, |notice| message_text_token_count(&notice.item).max(1));
-        let token_count = message_text_token_count(&group.source.item)
-            .max(1)
-            .saturating_add(notice_tokens);
+        // Client-authored developer messages already charge non-text content via
+        // the serialized estimate. Preserve their text-only boundary correction.
+        let content_tokens = if charge_images {
+            message_content_token_count(&group.source.item)
+        } else {
+            message_text_token_count(&group.source.item)
+        };
+        let source_tokens = if client_developer {
+            usize::try_from(estimate_item_token_count(&group.source.item)).unwrap_or(usize::MAX)
+        } else {
+            content_tokens.max(1)
+        };
+        let token_count = source_tokens.saturating_add(notice_tokens);
         if token_count <= remaining {
             if let Some(notice) = group.attached_notice {
                 truncated_reversed.push(notice);
             }
             truncated_reversed.push(group.source);
             remaining = remaining.saturating_sub(token_count);
-        } else if remaining > notice_tokens
-            && let Some(truncated_item) = truncate_message_text_to_token_budget(
-                group.source,
-                /*max_tokens*/ remaining - notice_tokens,
-            )
-        {
+        } else if remaining > notice_tokens {
+            let available_tokens = remaining - notice_tokens;
+            let content_budget = if client_developer {
+                available_tokens.saturating_sub(source_tokens.saturating_sub(content_tokens))
+            } else {
+                available_tokens
+            };
+            let image_count = retained_input_image_count(&group.source.item);
+            if charge_images && image_count > 0 {
+                // An oversized image can leave no boundary content. Do not backfill
+                // the remaining budget with older messages in that case.
+                remaining = 0;
+            }
+            let truncated_item = if charge_images && image_count > 0 {
+                images::truncate_message_to_token_budget(group.source, content_budget)
+            } else {
+                truncate_message_text_to_token_budget(group.source, content_budget)
+            };
+            let Some(mut truncated_item) = truncated_item else {
+                continue;
+            };
+            if client_developer {
+                let item_tokens = usize::try_from(estimate_item_token_count(&truncated_item.item))
+                    .unwrap_or(usize::MAX);
+                if item_tokens > available_tokens {
+                    let adjusted_budget = content_budget
+                        .saturating_sub(item_tokens - available_tokens)
+                        .saturating_sub(1);
+                    let Some(adjusted) =
+                        truncate_message_text_to_token_budget(truncated_item, adjusted_budget)
+                    else {
+                        continue;
+                    };
+                    if usize::try_from(estimate_item_token_count(&adjusted.item))
+                        .unwrap_or(usize::MAX)
+                        > available_tokens
+                    {
+                        continue;
+                    }
+                    truncated_item = adjusted;
+                }
+            }
             if let Some(notice) = group.attached_notice {
                 truncated_reversed.push(notice);
             }
             truncated_reversed.push(truncated_item);
             remaining = 0;
+        } else if charge_images && retained_input_image_count(&group.source.item) > 0 {
+            remaining = 0;
         }
     }
     truncated_reversed.reverse();
     truncated_reversed
+}
+
+fn message_content_token_count(item: &ResponseItem) -> usize {
+    let ResponseItem::Message { content, .. } = item else {
+        return usize::try_from(estimate_item_token_count(item)).unwrap_or(usize::MAX);
+    };
+
+    content.iter().map(images::content_item_token_count).sum()
 }
 
 fn message_text_token_count(item: &ResponseItem) -> usize {
@@ -569,28 +698,15 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
 }
 
 fn truncate_message_text_to_token_budget(
-    envelope: ResponseItemEnvelope,
+    mut envelope: ResponseItemEnvelope,
     max_tokens: usize,
 ) -> Option<ResponseItemEnvelope> {
-    let ResponseItemEnvelope {
-        item,
-        metadata: harness_metadata,
-    } = envelope;
-    let ResponseItem::Message {
-        id,
-        role,
-        content,
-        phase,
-        internal_chat_message_metadata_passthrough: passthrough_metadata,
-    } = item
-    else {
-        return None;
-    };
+    let content = to_annotated_content(&mut envelope.item)?;
 
     let mut remaining = max_tokens;
     let mut truncated_content = Vec::with_capacity(content.len());
     for mut content_item in content {
-        match &mut content_item {
+        match content_item.content_mut() {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => {
                 if remaining == 0 {
                     continue;
@@ -617,22 +733,16 @@ fn truncate_message_text_to_token_budget(
         return None;
     }
 
-    Some(ResponseItemEnvelope {
-        item: ResponseItem::Message {
-            id,
-            role,
-            content: truncated_content,
-            phase,
-            internal_chat_message_metadata_passthrough: passthrough_metadata,
-        },
-        metadata: harness_metadata,
-    })
+    set_annotated_content(&mut envelope.item, truncated_content)?;
+    Some(envelope)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use codex_protocol::models::ContentItem;
+    use codex_protocol::models::ContentItemKind;
+    use codex_protocol::models::InternalChatMessageMetadataPassthrough;
     use codex_protocol::models::MessagePhase;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
@@ -655,7 +765,13 @@ mod tests {
         output: ResponseItem,
     ) -> (Vec<ResponseItemEnvelope>, usize) {
         let metadata = vec![None; input.len()];
-        build_v2_compacted_history(input, metadata, output)
+        build_v2_compacted_history(
+            input,
+            metadata,
+            output,
+            /*retain_client_developer_messages*/ false,
+            RetainedImageBudget::Disabled,
+        )
     }
 
     fn annotated(items: Vec<ResponseItem>) -> Vec<ResponseItemEnvelope> {
@@ -730,28 +846,64 @@ mod tests {
     #[test]
     fn build_v2_compacted_history_preserves_retained_metadata_sidecar() {
         let retained = message("user", "keep", /*phase*/ None);
-        let filtered = message("developer", "drop", /*phase*/ None);
+        let generated_notice = message(
+            "developer",
+            "<image_resize_notice>generated</image_resize_notice>",
+            /*phase*/ None,
+        );
+        let harness = message("developer", "drop", /*phase*/ None);
+        let client = message(
+            "developer",
+            "<image_resize_notice>client</image_resize_notice>",
+            /*phase*/ None,
+        );
         let output = ResponseItem::Compaction {
             id: None,
             encrypted_content: "new".to_string(),
             internal_chat_message_metadata_passthrough: None,
         };
-        let (history, _) = build_v2_compacted_history(
-            vec![filtered, retained.clone()],
-            vec![None, Some(CodexHarnessMetadata::default())],
-            output.clone(),
-        );
 
-        assert_eq!(
-            history,
-            vec![
+        for enabled in [false, true] {
+            let (history, _) = build_v2_compacted_history(
+                vec![
+                    harness.clone(),
+                    client.clone(),
+                    retained.clone(),
+                    generated_notice.clone(),
+                ],
+                vec![
+                    None,
+                    Some(CodexHarnessMetadata {
+                        client_authored: true,
+                    }),
+                    Some(CodexHarnessMetadata::default()),
+                    None,
+                ],
+                output.clone(),
+                enabled,
+                RetainedImageBudget::Disabled,
+            );
+            let mut expected = vec![
                 ResponseItemEnvelope {
-                    item: retained,
+                    item: retained.clone(),
                     metadata: Some(CodexHarnessMetadata::default()),
                 },
-                ResponseItemEnvelope::new(output),
-            ]
-        );
+                ResponseItemEnvelope::new(generated_notice.clone()),
+                ResponseItemEnvelope::new(output.clone()),
+            ];
+            if enabled {
+                expected.insert(
+                    0,
+                    ResponseItemEnvelope {
+                        item: client.clone(),
+                        metadata: Some(CodexHarnessMetadata {
+                            client_authored: true,
+                        }),
+                    },
+                );
+            }
+            assert_eq!(history, expected);
+        }
     }
 
     #[test]
@@ -841,7 +993,20 @@ mod tests {
         assert_eq!(
             truncated,
             vec![
-                message("user", "midd…1 tokens truncated…1234", /*phase*/ None),
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "midd…1 tokens truncated…1234".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: Some(
+                        InternalChatMessageMetadataPassthrough {
+                            content_item_kinds: Some(vec![ContentItemKind("unknown".to_string())]),
+                            ..Default::default()
+                        },
+                    ),
+                },
                 new,
             ]
         );
@@ -863,9 +1028,28 @@ mod tests {
                 ContentItem::OutputText {
                     text: "uvwxyz".to_string(),
                 },
+                ContentItem::InputText {
+                    text: "discarded after the text budget is exhausted".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "data:image/png;base64,def".to_string(),
+                    detail: None,
+                },
             ],
             phase: None,
-            internal_chat_message_metadata_passthrough: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    turn_id: Some("turn-1".to_string()),
+                    content_item_kinds: Some(vec![
+                        ContentItemKind("user.text".to_string()),
+                        ContentItemKind("user.image".to_string()),
+                        ContentItemKind("user.text".to_string()),
+                        ContentItemKind("user.text".to_string()),
+                        ContentItemKind("user.image".to_string()),
+                    ]),
+                    ..Default::default()
+                },
+            ),
         };
 
         let truncated = truncate_without_metadata(vec![item], /*max_tokens*/ 3);
@@ -886,9 +1070,24 @@ mod tests {
                     ContentItem::OutputText {
                         text: "uv…1 tokens truncated…yz".to_string(),
                     },
+                    ContentItem::InputImage {
+                        image_url: "data:image/png;base64,def".to_string(),
+                        detail: None,
+                    },
                 ],
                 phase: None,
-                internal_chat_message_metadata_passthrough: None,
+                internal_chat_message_metadata_passthrough: Some(
+                    InternalChatMessageMetadataPassthrough {
+                        turn_id: Some("turn-1".to_string()),
+                        content_item_kinds: Some(vec![
+                            ContentItemKind("user.text".to_string()),
+                            ContentItemKind("user.image".to_string()),
+                            ContentItemKind("user.text".to_string()),
+                            ContentItemKind("user.image".to_string()),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
             }]
         );
     }
@@ -986,3 +1185,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "compact_remote_v2_image_budget_tests.rs"]
+mod image_budget_tests;

@@ -616,7 +616,6 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
     let default_personality_message = "Default from remote template";
     let friendly_personality_message = "Friendly variant";
     let remote_model = ModelInfo {
-        base_instructions: String::new(),
         slug: remote_slug.to_string(),
         display_name: "Remote default personality test".to_string(),
         description: Some("Remote model with default personality template".to_string()),
@@ -644,7 +643,9 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,
@@ -657,7 +658,6 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(128_000),
         max_context_window: None,
@@ -742,7 +742,6 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
     let remote_friendly_message = "Friendly from remote template";
     let remote_pragmatic_message = "Pragmatic from remote template";
     let remote_model = ModelInfo {
-        base_instructions: String::new(),
         slug: remote_slug.to_string(),
         display_name: "Remote personality test".to_string(),
         description: Some("Remote model with personality template".to_string()),
@@ -770,7 +769,9 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         }),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,
@@ -783,7 +784,6 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(128_000),
         max_context_window: None,

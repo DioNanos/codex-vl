@@ -2,27 +2,15 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use codex_tools::ToolCallSource;
 use codex_tools::ToolName;
+use codex_tools::ToolPayload;
 
 use crate::ConversationHistorySnapshot;
 use crate::ExtensionData;
 
 /// Future returned by one tool-lifecycle callback.
 pub type ToolLifecycleFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
-
-/// Host-visible source for a model tool call.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ToolCallSource {
-    /// The model invoked the tool directly.
-    Direct,
-    /// Code mode invoked the tool while executing a runtime cell.
-    CodeMode {
-        /// Runtime cell that issued the nested tool request.
-        cell_id: String,
-        /// Code-mode's per-cell tool invocation id.
-        runtime_tool_call_id: String,
-    },
-}
 
 /// Extension-facing outcome for a finished tool call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +47,11 @@ pub struct ToolStartInput<'a> {
     pub call_id: &'a str,
     /// Tool name as routed by the host.
     pub tool_name: &'a ToolName,
-    /// Shared read-only snapshot of the conversation when the tool started.
+    /// Finalized tool arguments, including any pre-tool-use hook rewrites.
+    ///
+    /// Payloads can contain sensitive plaintext and must not be logged.
+    pub payload: &'a ToolPayload,
+    /// Shared read-only snapshot taken after pre-tool hooks have completed.
     pub conversation_history: Arc<dyn ConversationHistorySnapshot>,
     /// Source that issued the tool call.
     pub source: ToolCallSource,

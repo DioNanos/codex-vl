@@ -3,15 +3,31 @@
 use super::transcript::ActiveCellLayoutCache;
 use super::transcript::ActiveCellLayoutCacheKey;
 use super::*;
+use crate::terminal_hyperlinks::HyperlinkParagraph;
 use std::cell::Cell;
 
 impl ChatWidget {
     pub(crate) fn as_renderable(&self) -> RenderableItem<'_> {
+        if self
+            .bottom_pane
+            .selected_index_for_active_view(crate::app::AGENTS_OVERVIEW_VIEW_ID)
+            .is_some()
+        {
+            return self
+                .bottom_pane
+                .as_renderable_with_composer_right_reserve(/*composer_right_reserve*/ 0);
+        }
+
         let active_cell_right_reserve = self.ambient_pet_wrap_reserved_cols();
         let active_cell_renderable = match &self.transcript.active_cell {
             Some(cell) => RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
                 child: cell.as_ref(),
-                top: 1,
+                // The initial header becomes the first history cell, which has no leading separator.
+                top: if cell.as_any().is::<history_cell::SessionHeaderHistoryCell>() {
+                    0
+                } else {
+                    1
+                },
                 right: active_cell_right_reserve,
                 // Externally backed transcript cells can also change viewport height without an
                 // active-cell revision. Spinner cells remain safe because their indicator width
@@ -97,8 +113,8 @@ struct PersistentActiveCellLayout<'a> {
 impl Renderable for TranscriptAreaRenderable<'_> {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let area = self.child_area(area);
-        let lines = self.child.display_lines(area.width);
-        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        let lines = self.child.display_hyperlink_lines(area.width);
+        let paragraph = HyperlinkParagraph::new(&lines, Style::default());
         let y = if area.height == 0 {
             0
         } else {
@@ -118,7 +134,7 @@ impl Renderable for TranscriptAreaRenderable<'_> {
             u16::try_from(overflow).unwrap_or(u16::MAX)
         };
         Clear.render(area, buf);
-        paragraph.scroll((y, 0)).render(area, buf);
+        paragraph.scroll(y).render(area, buf);
     }
 
     fn desired_height(&self, width: u16) -> u16 {

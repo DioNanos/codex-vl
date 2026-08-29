@@ -36,7 +36,6 @@ impl ChatWidget {
                 || self.review.is_review_mode
                 || self.mcp_startup_status.is_some(),
         );
-        self.refresh_plan_mode_nudge();
         self.refresh_status_surfaces();
     }
 
@@ -155,6 +154,7 @@ impl ChatWidget {
             self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
         self.flush_unified_exec_wait_streak();
+        self.flush_completed_command_activity();
         if !from_replay {
             self.collect_runtime_metrics_delta();
             let runtime_metrics =
@@ -318,7 +318,7 @@ impl ChatWidget {
         None
     }
 
-    pub(super) fn has_queued_follow_up_messages(&self) -> bool {
+    pub(crate) fn has_queued_follow_up_messages(&self) -> bool {
         self.input_queue.has_queued_follow_up_messages()
     }
 
@@ -409,7 +409,12 @@ impl ChatWidget {
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
-        self.add_to_history(history_cell::new_cyber_policy_error_event());
+        let plan_type = if self.has_chatgpt_account {
+            self.plan_type
+        } else {
+            None
+        };
+        self.add_to_history(history_cell::new_cyber_policy_error_event(plan_type));
         self.request_redraw();
 
         // After an error ends the turn, try sending the next queued input.
@@ -466,7 +471,9 @@ impl ChatWidget {
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
     ) {
-        if codex_error_info
+        if codex_error_info == Some(AppServerCodexErrorInfo::MisalignmentPolicyViolation) {
+            self.on_misalignment_policy_violation();
+        } else if codex_error_info
             .as_ref()
             .is_some_and(|info| self.handle_app_server_steer_rejected_error(info))
         {

@@ -26,6 +26,7 @@ use tracing::warn;
 use crate::codex_thread::BackgroundTerminalInfo;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
+use crate::hook_runtime::run_turn_interrupt_hooks;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
@@ -35,6 +36,7 @@ use crate::state::RunningTask;
 use crate::state::TaskKind;
 use codex_analytics::TurnProfileFact;
 use codex_analytics::TurnTokenUsageFact;
+use codex_context_fragments::RenderedFragment;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_E2E_DURATION_METRIC;
 use codex_otel::TURN_MEMORY_METRIC;
@@ -55,7 +57,6 @@ use codex_thread_store::PersistContext;
 use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::models::ContentItem;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
@@ -63,7 +64,7 @@ pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
 
-const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
+pub(crate) const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 const TASK_COMPACT_METRIC: &str = "codex.task.compact";
 static ACTIVE_TURNS: Gauge = Gauge::new("core.turns.active");
 
@@ -111,15 +112,8 @@ pub(crate) fn interrupted_turn_history_marker(
             let marker = crate::context::TurnAborted::new(
                 crate::context::TurnAborted::INTERRUPTED_DEVELOPER_GUIDANCE,
             );
-            Some(ResponseItem::Message {
-                id: None,
-                role: "developer".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: marker.render(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            })
+            let (_, content) = marker.render_fragment().into_parts();
+            Some(RenderedFragment::new("developer", content).into())
         }
     }
 }
@@ -321,6 +315,18 @@ impl Session {
             self.input_queue.get_pending_input(&self.active_turn).await;
         if let MailboxParentProvenance::Attribute = mailbox_parent_provenance {
             if let Some(id) = parent_turn_id {
+                if let Some(initiating_agent_path) = pending_items.iter().find_map(|item| {
+                    let TurnInput::InterAgentCommunication(communication) = item else {
+                        return None;
+                    };
+                    communication
+                        .trigger_turn
+                        .then(|| communication.author.clone())
+                }) {
+                    turn_context
+                        .turn_metadata_state
+                        .set_initiating_agent_path(initiating_agent_path);
+                }
                 turn_context.turn_metadata_state.set_parent_turn_id(id);
             }
             if let Some(id) = root_turn_id {
@@ -495,7 +501,7 @@ impl Session {
         let mut aborted_turn = false;
         let mut active_turn_to_clear = None;
         let mut turn_context = None;
-        if let Some(mut active_turn) = self.take_active_turn().await {
+        if let Some(mut active_turn) = self.take_active_turn(&reason).await {
             let task = active_turn.task.take();
             aborted_turn = task.is_some();
             turn_context = task.as_ref().map(|task| Arc::clone(&task.turn_context));
@@ -533,6 +539,12 @@ impl Session {
                 .and_then(|active_turn| active_turn.task.as_ref())
                 .is_some_and(|task| task.turn_context.sub_id == turn_id)
             {
+                if matches!(
+                    reason,
+                    TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
+                ) {
+                    self.mark_interrupted();
+                }
                 active.take()
             } else {
                 None
@@ -769,7 +781,10 @@ impl Session {
                 turn_id: turn_context.sub_id.clone(),
                 profile,
             });
-        let idle_cause = if matches!(abort_reason.as_ref(), Some(TurnAbortReason::Interrupted)) {
+        let idle_cause = if matches!(
+            abort_reason.as_ref(),
+            Some(TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited)
+        ) {
             ThreadIdleCause::Interrupted
         } else if abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some() {
             ThreadIdleCause::Failed
@@ -777,6 +792,9 @@ impl Session {
             ThreadIdleCause::Completed
         };
         let event = if let Some(reason) = abort_reason {
+            if reason == TurnAbortReason::Interrupted {
+                run_turn_interrupt_hooks(self, &turn_context).await;
+            }
             self.emit_turn_abort_lifecycle(reason.clone(), turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnAborted(TurnAbortedEvent {
@@ -836,8 +854,17 @@ impl Session {
         }
     }
 
-    async fn take_active_turn(&self) -> Option<ActiveTurn> {
+    async fn take_active_turn(&self, reason: &TurnAbortReason) -> Option<ActiveTurn> {
         let mut active = self.active_turn.lock().await;
+        if matches!(
+            reason,
+            TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
+        ) && active
+            .as_ref()
+            .is_some_and(|active_turn| active_turn.task.is_some())
+        {
+            self.mark_interrupted();
+        }
         active.take()
     }
 
@@ -916,6 +943,10 @@ impl Session {
             if let Err(err) = self.flush_rollout().await {
                 warn!("failed to flush interrupted-turn marker before emitting TurnAborted: {err}");
             }
+        }
+
+        if reason == TurnAbortReason::Interrupted {
+            run_turn_interrupt_hooks(self, &task.turn_context).await;
         }
 
         let started_at = task

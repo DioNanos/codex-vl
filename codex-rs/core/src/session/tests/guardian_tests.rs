@@ -23,6 +23,7 @@ use codex_model_provider::create_model_provider;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::AdditionalPermissionProfile as PermissionProfile;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -39,6 +40,7 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_response_once;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
@@ -69,12 +71,13 @@ where
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     let server = start_mock_server().await;
-    let guardian_request_log = mount_sse_once(
+    let guardian_request_log = mount_sse_sequence(
         &server,
-        sse(vec![
+        vec![
+            sse(vec![
             ev_response_created("resp-guardian"),
             ev_assistant_message(
                 "msg-guardian",
@@ -87,11 +90,14 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
                 .to_string(),
             ),
             ev_completed("resp-guardian"),
-        ]),
+        ]);
+            2
+        ],
     )
     .await;
 
     let (mut session, mut turn_context_raw) = make_session_and_context().await;
+    Arc::make_mut(&mut turn_context_raw.model_info).node_repl_auto_review_required = true;
     *session.active_turn.lock().await = Some(ActiveTurn::default());
     Arc::make_mut(&mut turn_context_raw.config)
         .permissions
@@ -117,6 +123,16 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
         config.model_provider.clone(),
         turn_context_raw.auth_manager.clone(),
     );
+    let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let evidence = session
+        .services
+        .thread_extension_data
+        .get_or_init(crate::context::NodeReplReviewEvidence::default);
+    let image = UserInput::Image {
+        image_url: image_url.to_string(),
+        detail: None,
+    };
+    evidence.record("js", "cell", "image", vec![image]);
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
 
@@ -141,7 +157,7 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
                 reason: Some("need network".to_string()),
                 permissions: requested_permissions.clone(),
             },
-            environment,
+            environment.clone(),
             CancellationToken::new(),
         ),
     )
@@ -156,6 +172,20 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
             strict_auto_review: false,
         })
     );
+    let second_response = session
+        .request_permissions_for_environment(
+            &turn_context,
+            "perm-call-2".to_string(),
+            RequestPermissionsArgs {
+                environment_id: None,
+                reason: Some("need network".to_string()),
+                permissions: requested_permissions.clone(),
+            },
+            environment,
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(second_response, response);
     assert_eq!(
         session
             .granted_turn_permissions(codex_exec_server::LOCAL_ENVIRONMENT_ID)
@@ -163,8 +193,13 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
         Some(requested_permissions.into())
     );
 
-    let guardian_request = guardian_request_log.single_request();
+    let guardian_requests = guardian_request_log.requests();
+    assert_eq!(guardian_requests.len(), 2);
+    let guardian_request = &guardian_requests[0];
     assert_eq!(guardian_request.path(), "/v1/responses");
+    for request in &guardian_requests {
+        assert_eq!(request.message_input_image_urls("user"), [image_url]);
+    }
     assert!(guardian_request.body_contains_text("request_permissions"));
     assert!(guardian_request.body_contains_text("need network"));
 }
@@ -274,7 +309,7 @@ async fn request_permissions_guardian_review_stops_when_cancelled() {
 }
 
 #[tokio::test]
-async fn guardian_allows_shell_command_additional_permissions_requests_past_policy_validation() {
+async fn guardian_allows_exec_command_additional_permissions_requests_past_policy_validation() {
     let server = start_mock_server().await;
     let _request_log = mount_sse_once(
         &server,
@@ -315,7 +350,7 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
     else {
         panic!("primary environment should be ready");
     };
-    environment.config.permission_profile =
+    environment.config_mut().permission_profile =
         config.permissions.permission_profile_state().snapshot();
     config.codex_linux_sandbox_exe = codex_linux_sandbox_exe_or_skip!();
     config
@@ -337,11 +372,9 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
     );
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
-    let expiration_ms: u64 = if cfg!(windows) { 2_500 } else { 1_000 };
+    let yield_time_ms: u64 = 10_000;
 
-    let handler = crate::tools::handlers::ShellCommandHandler::from(
-        codex_tools::ShellCommandBackendConfig::Classic,
-    );
+    let handler = crate::tools::handlers::ExecCommandHandler::default();
     #[allow(deprecated)]
     let workdir = Some(turn_context.cwd.to_string_lossy().to_string());
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
@@ -353,14 +386,14 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
             cancellation_token: CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "test-call".to_string(),
-            tool_name: codex_tools::ToolName::plain("shell_command"),
+            tool_name: codex_tools::ToolName::plain("exec_command"),
             source: crate::tools::context::ToolCallSource::Direct,
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
-                    "command": "echo hi",
+                    "cmd": "echo hi",
                     "login": false,
                     "workdir": workdir,
-                    "timeout_ms": expiration_ms,
+                    "yield_time_ms": yield_time_ms,
                     "sandbox_permissions": SandboxPermissions::WithAdditionalPermissions,
                     "additional_permissions": PermissionProfile {
                         network: Some(NetworkPermissions {
@@ -380,7 +413,7 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
 }
 
 #[tokio::test]
-async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_skip() {
+async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_skip() {
     let server = start_mock_server().await;
     let guardian_request_log = mount_sse_once(
         &server,
@@ -437,7 +470,7 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
     else {
         panic!("primary environment should be ready");
     };
-    environment.config.permission_profile =
+    environment.config_mut().permission_profile =
         config.permissions.permission_profile_state().snapshot();
     config.approvals_reviewer = ApprovalsReviewer::User;
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
@@ -467,9 +500,7 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
         )
         .await;
 
-    let handler = crate::tools::handlers::ShellCommandHandler::from(
-        codex_tools::ShellCommandBackendConfig::Classic,
-    );
+    let handler = crate::tools::handlers::ExecCommandHandler::default();
     #[allow(deprecated)]
     let workdir = Some(turn_context.cwd.to_string_lossy().to_string());
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
@@ -481,14 +512,14 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_
             cancellation_token: CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "strict-shell-command-call".to_string(),
-            tool_name: codex_tools::ToolName::plain("shell_command"),
+            tool_name: codex_tools::ToolName::plain("exec_command"),
             source: ToolCallSource::Direct,
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
-                    "command": "echo hi",
+                    "cmd": "echo hi",
                     "login": false,
                     "workdir": workdir,
-                    "timeout_ms": 1_000_u64,
+                    "yield_time_ms": 10_000_u64,
                 })
                 .to_string(),
             },
@@ -610,7 +641,13 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
         .iter()
         .filter_map(|item| match item {
             ResponseItem::Message { role, content, .. } if role == "developer" => {
-                crate::content_items_to_text(content)
+                crate::content_items_to_text(content).map(|text| {
+                    (
+                        text,
+                        item.executed_tool_call_metadata()
+                            .and_then(|metadata| metadata.content_item_kinds.clone()),
+                    )
+                })
             }
             _ => None,
         })
@@ -619,10 +656,16 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
     assert!(
         !developer_messages
             .iter()
-            .any(|message| message.contains("stale developer message"))
+            .any(|(message, _)| message.contains("stale developer message"))
     );
     assert!(developer_messages.len() >= 2);
-    assert_eq!(developer_messages.last(), Some(&guardian_policy));
+    assert_eq!(
+        developer_messages.last(),
+        Some(&(
+            guardian_policy,
+            Some(vec![ContentItemKind("guardian.policy".to_string())]),
+        ))
+    );
 }
 
 #[tokio::test]
@@ -631,7 +674,7 @@ async fn process_compacted_history_preserves_separate_guardian_developer_message
     clippy::await_holding_invalid_type,
     reason = "test mutates active turn state directly to seed granted permissions"
 )]
-async fn shell_command_allows_sticky_turn_permissions_without_inline_request_permissions_feature() {
+async fn exec_command_allows_sticky_turn_permissions_without_inline_request_permissions_feature() {
     let (mut session, turn_context_raw) = make_session_and_context().await;
     session
         .features
@@ -656,9 +699,7 @@ async fn shell_command_allows_sticky_turn_permissions_without_inline_request_per
     let session = Arc::new(session);
     let turn_context = Arc::new(turn_context_raw);
 
-    let handler = crate::tools::handlers::ShellCommandHandler::from(
-        codex_tools::ShellCommandBackendConfig::Classic,
-    );
+    let handler = crate::tools::handlers::ExecCommandHandler::default();
     #[allow(deprecated)]
     let workdir = Some(turn_context.cwd.to_string_lossy().to_string());
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
@@ -670,13 +711,13 @@ async fn shell_command_allows_sticky_turn_permissions_without_inline_request_per
             cancellation_token: CancellationToken::new(),
             tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
             call_id: "sticky-turn-grant".to_string(),
-            tool_name: codex_tools::ToolName::plain("shell_command"),
+            tool_name: codex_tools::ToolName::plain("exec_command"),
             source: crate::tools::context::ToolCallSource::Direct,
             payload: ToolPayload::Function {
                 arguments: serde_json::json!({
-                    "command": "echo hi",
+                    "cmd": "echo hi",
                     "login": false,
-                    "timeout_ms": 1_000_u64,
+                    "yield_time_ms": 10_000_u64,
                     "workdir": workdir,
                 })
                 .to_string(),
@@ -752,7 +793,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
     );
     let plugins_manager = Arc::new(plugins_manager_for_config(
         &config,
-        auth_manager.get_api_auth_mode(),
+        Arc::clone(&auth_manager),
     ));
     let skills_service = Arc::new(HostSkillsService::new(
         config.codex_home.clone(),
@@ -798,6 +839,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
         environment_selections: Vec::new(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
         client_mcp_extensions: ClientMcpExtensions::default(),
+        reserved_thread_id: None,
         analytics_events_client: None,
         thread_store,
         attestation_provider: None,

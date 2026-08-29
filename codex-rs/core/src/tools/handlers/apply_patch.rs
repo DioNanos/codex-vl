@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::apply_patch;
 use crate::apply_patch::convert_apply_patch_to_protocol;
@@ -239,6 +240,11 @@ fn write_permissions_for_paths(
 ) -> Option<AdditionalPermissionProfile> {
     let write_paths = file_paths
         .iter()
+        // Skip already-writable targets before deriving parent permissions.
+        // Otherwise, a writable directory could grant access to its parent.
+        .filter(|path| {
+            !file_system_sandbox_policy.can_write_path_with_cwd(path.as_path(), cwd.as_path())
+        })
         .map(|path| {
             path.parent()
                 .unwrap_or_else(|| path.clone())
@@ -282,7 +288,7 @@ async fn effective_patch_permissions(
     crate::tools::handlers::EffectiveAdditionalPermissions,
     codex_protocol::permissions::FileSystemSandboxPolicy,
 )> {
-    let environment_id = environment.environment_id.as_str();
+    let environment_id = environment.selection.environment_id.as_str();
     let file_paths = file_paths_for_action(action);
     let native_cwd = cwd.to_abs_path()?;
     let granted_permissions = merge_permission_profiles(
@@ -365,6 +371,7 @@ impl ApplyPatchHandler {
             session,
             turn,
             step_context,
+            cancellation_token,
             tracker,
             call_id,
             tool_name,
@@ -399,8 +406,7 @@ impl ApplyPatchHandler {
             ));
         };
         let fs = turn_environment.environment.get_filesystem();
-        let sandbox = turn
-            .file_system_sandbox_context(/*additional_permissions*/ None, turn_environment);
+        let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
         match codex_apply_patch::verify_apply_patch_args_with_mode(
             args,
             turn_environment.cwd(),
@@ -414,6 +420,7 @@ impl ApplyPatchHandler {
                 let tool_ctx = ToolCtx {
                     session,
                     step_context: Arc::clone(&step_context),
+                    cancellation_token,
                     call_id,
                     tool_name,
                 };
@@ -504,13 +511,13 @@ pub(crate) async fn intercept_apply_patch(
     turn_environment: TurnEnvironment,
     session: Arc<Session>,
     step_context: Arc<StepContext>,
+    cancellation_token: CancellationToken,
     tracker: Option<&SharedTurnDiffTracker>,
     call_id: &str,
     tool_name: &str,
 ) -> Result<Option<FunctionToolOutput>, FunctionCallError> {
     let turn = &step_context.turn;
-    let sandbox =
-        turn.file_system_sandbox_context(/*additional_permissions*/ None, &turn_environment);
+    let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
     match codex_apply_patch::maybe_parse_apply_patch_verified_with_mode(
         command,
         cwd,
@@ -524,6 +531,7 @@ pub(crate) async fn intercept_apply_patch(
             let tool_ctx = ToolCtx {
                 session,
                 step_context,
+                cancellation_token,
                 call_id: call_id.to_string(),
                 tool_name: ToolName::plain(tool_name),
             };
@@ -565,7 +573,7 @@ async fn execute_verified_patch(
     let emitter = ToolEmitter::apply_patch_for_environment(
         changes.clone(),
         apply.auto_approved,
-        turn_environment.environment_id.clone(),
+        turn_environment.selection.environment_id.clone(),
     );
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),

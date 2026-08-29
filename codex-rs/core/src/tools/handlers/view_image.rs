@@ -1,3 +1,5 @@
+use codex_exec_server::GetMetadataOptions;
+use codex_exec_server::ReadFileOptions;
 use codex_protocol::items::ImageViewItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -149,12 +151,11 @@ impl ViewImageHandler {
             ))
         })?;
         let model_visible_path = path_uri.inferred_native_path_string();
-        let sandbox = turn
-            .file_system_sandbox_context(/*additional_permissions*/ None, turn_environment);
+        let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
         let fs = turn_environment.environment.get_filesystem();
 
         let metadata = fs
-            .get_metadata(&path_uri, Some(&sandbox))
+            .get_metadata(&path_uri, GetMetadataOptions::default(), Some(&sandbox))
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(
@@ -168,7 +169,7 @@ impl ViewImageHandler {
             )));
         }
         let file_bytes = fs
-            .read_file(&path_uri, Some(&sandbox))
+            .read_file(&path_uri, ReadFileOptions::default(), Some(&sandbox))
             .await
             .map_err(|error| {
                 FunctionCallError::RespondToModel(format!(
@@ -208,7 +209,11 @@ impl ViewImageHandler {
     }
 }
 
-impl CoreToolRuntime for ViewImageHandler {}
+impl CoreToolRuntime for ViewImageHandler {
+    fn is_builtin_control_tool(&self) -> bool {
+        true
+    }
+}
 
 pub struct ViewImageOutput {
     image_url: String,
@@ -217,7 +222,7 @@ pub struct ViewImageOutput {
 }
 
 impl ToolOutput for ViewImageOutput {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         format!("<image data URL omitted: {} bytes>", self.image_url.len())
     }
 
@@ -285,13 +290,14 @@ mod tests {
             .next()
             .cloned()
             .expect("default local turn environment");
+        let mut selection = current.selection;
+        selection.cwd = PathUri::from_abs_path(&cwd);
+        selection.workspace_roots.clear();
         turn.environments.environments[0] = TurnEnvironmentState::Ready(TurnEnvironment::new(
-            current.environment_id,
+            selection,
+            current.config_origin,
             current.environment,
-            PathUri::from_abs_path(&cwd),
-            Vec::new(),
             current.shell,
-            current.config,
         ));
     }
 
@@ -316,7 +322,7 @@ mod tests {
             unified_image_budget: false,
         };
 
-        assert_eq!(output.log_preview(), "<image data URL omitted: 25 bytes>");
+        assert_eq!(output.log_output(), "<image data URL omitted: 25 bytes>");
     }
 
     #[test]
@@ -357,7 +363,7 @@ mod tests {
         else {
             panic!("primary environment should be ready");
         };
-        environment.config.permission_profile =
+        environment.config_mut().permission_profile =
             PermissionProfileSnapshot::legacy(PermissionProfile::read_only());
         let turn = Arc::new(turn);
 
@@ -429,7 +435,7 @@ mod tests {
         else {
             panic!("primary environment should be ready");
         };
-        environment.config.permission_profile =
+        environment.config_mut().permission_profile =
             PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
         let turn = Arc::new(turn);
 
@@ -466,7 +472,7 @@ mod tests {
         else {
             panic!("primary environment should be ready");
         };
-        environment.config.permission_profile =
+        environment.config_mut().permission_profile =
             PermissionProfileSnapshot::legacy(PermissionProfile::Disabled);
         let turn = Arc::new(turn);
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use codex_core::ModelClient;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
+use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider_info::ModelProviderInfo;
@@ -129,6 +130,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         session_source.clone(),
         "test_originator".to_string(),
         config.model_verbosity,
+        config.features.enabled(Feature::ContentItemKinds),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -266,6 +268,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         session_source.clone(),
         "test_originator".to_string(),
         config.model_verbosity,
+        config.features.enabled(Feature::ContentItemKinds),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -388,6 +391,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         session_source.clone(),
         "test_originator".to_string(),
         config.model_verbosity,
+        config.features.enabled(Feature::ContentItemKinds),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -565,7 +569,7 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
     let first_response = responses::sse(vec![
         responses::ev_response_created("resp-2"),
         responses::ev_reasoning_item("rsn-1", &["thinking"], &[]),
-        responses::ev_shell_command_call("call-1", "echo turn-metadata"),
+        responses::ev_exec_command_call("call-1", "echo turn-metadata"),
         responses::ev_completed("resp-2"),
     ]);
     let follow_up_response = responses::sse(vec![

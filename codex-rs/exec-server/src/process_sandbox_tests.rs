@@ -56,6 +56,7 @@ async fn sandbox_request_wraps_native_argv_on_executor() {
             "pwd".to_string(),
         ],
         cwd: cwd_uri,
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -72,6 +73,7 @@ async fn sandbox_request_wraps_native_argv_on_executor() {
         HashMap::new(),
         Some(&runtime_paths),
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .expect("prepare sandboxed request");
@@ -124,6 +126,7 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
         process_id: ProcessId::from("process-custom-arg0"),
         argv: vec!["/bin/sh".to_string(), "-c".to_string(), "true".to_string()],
         cwd: cwd_uri,
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -140,6 +143,7 @@ async fn sandbox_request_routes_custom_arg0_to_inner_helper() {
         HashMap::new(),
         Some(&runtime_paths),
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .expect("prepare sandboxed request");
@@ -184,6 +188,7 @@ async fn sandbox_request_allows_prepared_managed_proxy_port() {
         process_id: ProcessId::from("process-managed-network"),
         argv: vec!["/usr/bin/true".to_string()],
         cwd: cwd_uri,
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -203,6 +208,7 @@ async fn sandbox_request_allows_prepared_managed_proxy_port() {
         HashMap::new(),
         Some(&runtime_paths),
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .expect("prepare managed-network sandbox request");
@@ -227,6 +233,7 @@ async fn native_request_preserves_native_launch_fields() {
         process_id: ProcessId::from("process-1"),
         argv: vec!["echo".to_string(), "hello".to_string()],
         cwd: cwd_uri,
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -243,6 +250,7 @@ async fn native_request_preserves_native_launch_fields() {
         env.clone(),
         /*runtime_paths*/ None,
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .expect("prepare native request");
@@ -270,6 +278,7 @@ async fn native_request_handles_remote_proxy_config_for_platform() {
         process_id: ProcessId::from("process-remote-proxy"),
         argv: vec!["echo".to_string(), "hello".to_string()],
         cwd: PathUri::from_abs_path(&cwd),
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -295,6 +304,7 @@ async fn native_request_handles_remote_proxy_config_for_platform() {
 
     let prepared = prepare_exec_request(
         &params, env, /*runtime_paths*/ None, /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .expect("prepare request with executor-local proxy");
@@ -351,6 +361,7 @@ async fn disabled_remote_proxy_config_is_rejected_before_exporting_ports() {
         process_id: ProcessId::from("process-disabled-remote-proxy"),
         argv: vec!["echo".to_string(), "hello".to_string()],
         cwd: PathUri::from_abs_path(&cwd),
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -367,6 +378,7 @@ async fn disabled_remote_proxy_config_is_rejected_before_exporting_ports() {
         HashMap::new(),
         /*runtime_paths*/ None,
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await
     .err()
@@ -410,6 +422,7 @@ async fn managed_network_honors_windows_sandbox_level(windows_sandbox_level: Win
         process_id: ProcessId::from("process-managed-network"),
         argv: vec!["cmd.exe".to_string(), "/c".to_string(), "exit".to_string()],
         cwd: cwd_uri,
+        shell_snapshot: None,
         env_policy: None,
         env: HashMap::new(),
         tty: false,
@@ -426,6 +439,7 @@ async fn managed_network_honors_windows_sandbox_level(windows_sandbox_level: Win
         HashMap::new(),
         Some(&runtime_paths),
         /*network_policy_decider*/ None,
+        /*network_policy_audit_observer*/ None,
     )
     .await;
 

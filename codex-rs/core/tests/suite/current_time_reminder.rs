@@ -41,10 +41,14 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-const FIRST_REMINDER: &str = "It is 2026-06-17 17:34:15 UTC.";
-const EARLIER_REMINDER: &str = "It is 2026-06-17 17:33:15 UTC.";
-const SECOND_REMINDER: &str = "It is 2026-06-17 17:35:15 UTC.";
-const THIRD_REMINDER: &str = "It is 2026-06-17 17:36:15 UTC.";
+const FIRST_REMINDER: &str =
+    "<current_time_reminder>It is 2026-06-17 17:34:15 UTC.</current_time_reminder>";
+const EARLIER_REMINDER: &str =
+    "<current_time_reminder>It is 2026-06-17 17:33:15 UTC.</current_time_reminder>";
+const SECOND_REMINDER: &str =
+    "<current_time_reminder>It is 2026-06-17 17:35:15 UTC.</current_time_reminder>";
+const THIRD_REMINDER: &str =
+    "<current_time_reminder>It is 2026-06-17 17:36:15 UTC.</current_time_reminder>";
 const FIRST_TIME_UNIX_SECONDS: i64 = 1_781_717_655;
 
 struct TestTimeProvider {
@@ -93,7 +97,7 @@ fn current_time_reminders(request: &ResponsesRequest) -> Vec<String> {
     request
         .message_input_texts("developer")
         .into_iter()
-        .filter(|text| text.starts_with("It is "))
+        .filter(|text| text.starts_with("<current_time_reminder>"))
         .collect()
 }
 
@@ -149,6 +153,7 @@ async fn environment_context_uses_external_current_time_on_each_turn() -> Result
         .iter()
         .zip([FIRST_TIME_UNIX_SECONDS, FIRST_TIME_UNIX_SECONDS + 86_400])
     {
+        assert!(request.has_content_kinds(&["environments.environment_context"]));
         let current_date = DateTime::<Utc>::from_timestamp(timestamp, 0)
             .expect("test timestamp should be valid")
             .with_timezone(&Local)
@@ -170,8 +175,8 @@ async fn current_time_reminders_follow_time_interval_and_persist_in_history() ->
 
     let server = start_mock_server().await;
     let tool_args = json!({
-        "command": "echo current time",
-        "timeout_ms": 1_000,
+        "cmd": "echo current time",
+        "yield_time_ms": 1_000,
     });
     let responses = mount_sse_sequence(
         &server,
@@ -180,7 +185,7 @@ async fn current_time_reminders_follow_time_interval_and_persist_in_history() ->
                 ev_response_created("resp-1"),
                 ev_function_call(
                     "current-time-tool-call",
-                    "shell_command",
+                    "exec_command",
                     &serde_json::to_string(&tool_args)?,
                 ),
                 ev_completed("resp-1"),
@@ -261,8 +266,8 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
 
     let server = start_mock_server().await;
     let tool_args = json!({
-        "command": "echo current time",
-        "timeout_ms": 1_000,
+        "cmd": "echo current time",
+        "yield_time_ms": 1_000,
     });
     let mut continue_response = ev_completed("resp-2");
     // Ask for another inference without recording a new user message or tool output.
@@ -274,7 +279,7 @@ async fn current_time_reminders_can_follow_only_user_or_tool_outputs() -> Result
                 ev_response_created("resp-1"),
                 ev_function_call(
                     "current-time-tool-call",
-                    "shell_command",
+                    "exec_command",
                     &serde_json::to_string(&tool_args)?,
                 ),
                 ev_completed("resp-1"),
@@ -337,10 +342,12 @@ async fn system_time_source_adds_current_time_reminder() -> Result<()> {
 
     test.submit_turn("what time is it?").await?;
 
-    let reminders = current_time_reminders(&responses.single_request());
+    let request = responses.single_request();
+    assert!(request.has_content_kinds(&["current_time.reminder"]));
+    let reminders = current_time_reminders(&request);
     assert_eq!(reminders.len(), 1);
     assert_regex_match(
-        r"^It is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.$",
+        r"^<current_time_reminder>It is \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\.</current_time_reminder>$",
         &reminders[0],
     );
 
@@ -495,7 +502,7 @@ async fn current_time_tool_returns_the_latest_time() -> Result<()> {
     );
     assert_eq!(
         requests[1].function_call_output_text(CALL_ID),
-        Some(SECOND_REMINDER.to_string())
+        Some("It is 2026-06-17 17:35:15 UTC.".to_string())
     );
 
     Ok(())

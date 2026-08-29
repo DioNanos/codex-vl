@@ -147,6 +147,8 @@ pub struct McpConfig {
     /// Optional path to `codex-linux-sandbox` for sandboxed MCP tool execution.
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     /// Whether to use legacy Landlock behavior in the MCP sandbox state.
+    // TODO(anp): Reconcile this runtime-wide copy with TurnEnvironment::sandbox_context
+    // for the environment that owns each MCP server.
     pub use_legacy_landlock: bool,
     /// Whether the app MCP integration is enabled by config.
     ///
@@ -349,7 +351,7 @@ pub async fn read_mcp_resource(
     codex_apps_tools_cache: ConnectorRuntimeManager<ToolInfo>,
     tool_catalog_cache: crate::McpToolCatalogCache,
     server: &str,
-    uri: &str,
+    params: ReadResourceRequestParams,
 ) -> anyhow::Result<ReadResourceResult> {
     let mut mcp_servers = effective_mcp_servers(config, auth);
     mcp_servers.retain(|name, _| name == server);
@@ -382,9 +384,7 @@ pub async fn read_mcp_resource(
     )
     .await;
 
-    let result = manager
-        .read_resource(server, ReadResourceRequestParams::new(uri))
-        .await;
+    let result = manager.read_resource(server, params).await;
     cancel_token.cancel();
     result
 }

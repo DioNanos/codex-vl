@@ -7,6 +7,7 @@ use crate::mitm::MitmState;
 use crate::mitm_hook::HookEvaluation;
 use crate::mitm_hook::MitmHooksByHost;
 use crate::mitm_hook::evaluate_mitm_hooks;
+use crate::network_policy::NetworkPolicyAuditObserver;
 use crate::policy::Host;
 use crate::policy::is_loopback_host;
 use crate::policy::is_non_public_ip;
@@ -232,6 +233,7 @@ pub struct NetworkProxyState {
     state: Arc<RwLock<ConfigState>>,
     reloader: Arc<dyn ConfigReloader>,
     blocked_request_observer: Arc<RwLock<Option<Arc<dyn BlockedRequestObserver>>>>,
+    pub(crate) policy_audit_observer: Option<NetworkPolicyAuditObserver>,
     credential_broker: CredentialBroker,
     audit_metadata: NetworkProxyAuditMetadata,
     execution_attributions: Arc<Mutex<HashMap<String, ExecutionAttribution>>>,
@@ -266,6 +268,7 @@ impl Clone for NetworkProxyState {
             state: self.state.clone(),
             reloader: self.reloader.clone(),
             blocked_request_observer: self.blocked_request_observer.clone(),
+            policy_audit_observer: self.policy_audit_observer.clone(),
             credential_broker: self.credential_broker.clone(),
             audit_metadata: self.audit_metadata.clone(),
             execution_attributions: self.execution_attributions.clone(),
@@ -351,6 +354,7 @@ impl NetworkProxyState {
             state: Arc::new(RwLock::new(state)),
             reloader,
             blocked_request_observer: Arc::new(RwLock::new(blocked_request_observer)),
+            policy_audit_observer: None,
             audit_metadata,
             execution_attributions: Arc::new(Mutex::new(HashMap::new())),
             environment_id: None,
@@ -413,11 +417,21 @@ impl NetworkProxyState {
         *observer = blocked_request_observer;
     }
 
+    /// Installs a best-effort observer for every final domain and non-domain policy decision.
+    pub fn set_policy_audit_observer(&mut self, observer: NetworkPolicyAuditObserver) {
+        self.policy_audit_observer = Some(observer);
+    }
+
     pub fn audit_metadata(&self) -> &NetworkProxyAuditMetadata {
         &self.audit_metadata
     }
 
     pub fn virtualize_child_credentials(&self, env: &mut HashMap<String, String>) {
+        let parent_env = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect();
+        self.credential_broker
+            .discover_parent_credentials(&parent_env, env);
         self.credential_broker.virtualize_child_env(env);
     }
 
@@ -427,6 +441,14 @@ impl NetworkProxyState {
         command: &mut [String],
     ) {
         self.credential_broker.restore_child_env(env, command);
+    }
+
+    pub(crate) fn virtualize_brokered_text(
+        &self,
+        text: &mut String,
+        env: &HashMap<String, String>,
+    ) -> bool {
+        self.credential_broker.virtualize_text(text, env)
     }
 
     pub fn inject_request_credentials(&self, host: &str, headers: &mut rama_http::HeaderMap) {

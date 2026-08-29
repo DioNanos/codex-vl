@@ -216,6 +216,7 @@ impl ChatWidget {
     ) {
         // Account-update notifications are the identity boundary. The visible account fields can
         // be identical across two accounts, so always invalidate account-scoped requests and data.
+        self.invalidate_connector_scope();
         self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_requests();
         self.codex_rate_limit_reached_type = None;
@@ -243,6 +244,7 @@ impl ChatWidget {
         self.has_codex_backend_auth = has_codex_backend_auth;
         self.bottom_pane
             .set_connectors_enabled(self.connectors_enabled());
+        self.refresh_connector_mentions(/*force_refresh*/ false);
         self.bottom_pane
             .set_token_activity_command_enabled(has_codex_backend_auth);
         self.refresh_status_surfaces();
@@ -382,48 +384,6 @@ impl ChatWidget {
         true
     }
 
-    /// Returns the dismissal scope that applies to the currently visible draft.
-    fn plan_mode_nudge_scope(&self) -> PlanModeNudgeScope {
-        self.thread_id
-            .map_or(PlanModeNudgeScope::NewThread, PlanModeNudgeScope::Thread)
-    }
-
-    /// Returns whether the current draft should replace the normal footer with the Plan-mode nudge.
-    ///
-    /// `ChatWidget` owns this policy because it can combine lexical draft matching with mode
-    /// availability, interaction state, and thread-scoped dismissal. `ChatComposer` only renders
-    /// the resulting visibility bit. Keeping slash and shell drafts out here avoids advertising a
-    /// mode switch while the user is intentionally composing another local command.
-    pub(super) fn should_show_plan_mode_nudge(&self) -> bool {
-        let text = self.bottom_pane.composer_text();
-        let trimmed = text.trim_start();
-        self.collaboration_modes_enabled()
-            && collaboration_modes::plan_mask(self.model_catalog.as_ref()).is_some()
-            && self.active_mode_kind() != ModeKind::Plan
-            && self.bottom_pane.composer_input_enabled()
-            && !self.bottom_pane.is_task_running()
-            && self.bottom_pane.no_modal_or_popup_active()
-            && !trimmed.starts_with('/')
-            && !trimmed.starts_with('!')
-            && contains_plan_keyword(&text)
-            && !self
-                .dismissed_plan_mode_nudge_scopes
-                .contains(&self.plan_mode_nudge_scope())
-    }
-
-    /// Synchronizes the footer presentation with the current Plan-mode nudge policy.
-    pub(super) fn refresh_plan_mode_nudge(&mut self) {
-        self.bottom_pane
-            .set_plan_mode_nudge_visible(self.should_show_plan_mode_nudge());
-    }
-
-    /// Hides the nudge for the current thread scope until the user changes conversation context.
-    pub(super) fn dismiss_plan_mode_nudge(&mut self) {
-        self.dismissed_plan_mode_nudge_scopes
-            .insert(self.plan_mode_nudge_scope());
-        self.refresh_plan_mode_nudge();
-    }
-
     pub(super) fn initial_collaboration_mask(
         _config: &Config,
         model_catalog: &ModelCatalog,
@@ -532,7 +492,9 @@ impl ChatWidget {
         self.sync_service_tier_commands();
         self.sync_personality_command_enabled();
         if cwd_changed {
+            self.invalidate_connector_scope();
             self.refresh_skills_for_current_cwd(/*force_reload*/ true);
+            self.refresh_connector_mentions(/*force_refresh*/ false);
         }
         self.refresh_plugin_mentions();
         self.request_redraw();
@@ -576,7 +538,6 @@ impl ChatWidget {
             developer_instructions: Some(settings.developer_instructions),
         });
         self.update_collaboration_mode_indicator();
-        self.refresh_plan_mode_nudge();
         self.refresh_model_dependent_surfaces();
     }
 
@@ -698,13 +659,8 @@ impl ChatWidget {
         {
             mask.reasoning_effort = Some(Some(effort));
         }
-        if mask.mode == Some(ModeKind::Plan) {
-            self.dismissed_plan_mode_nudge_scopes
-                .insert(self.plan_mode_nudge_scope());
-        }
         self.active_collaboration_mask = Some(mask);
         self.update_collaboration_mode_indicator();
-        self.refresh_plan_mode_nudge();
         self.refresh_model_dependent_surfaces();
         let next_mode = self.active_mode_kind();
         let next_model = self.current_model();

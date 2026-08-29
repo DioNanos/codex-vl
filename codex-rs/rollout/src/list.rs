@@ -59,6 +59,8 @@ pub struct ThreadItem {
     pub preview: Option<String>,
     /// The user-selected section in SQLite-owned metadata.
     pub section: Option<codex_state::ThreadSection>,
+    /// Canonical project assignment in SQLite-owned metadata.
+    pub project_id: Option<String>,
     /// Working directory from session metadata.
     pub cwd: Option<PathBuf>,
     /// Git branch from session metadata.
@@ -835,6 +837,7 @@ async fn build_thread_item(
             first_user_message,
             preview,
             section: None,
+            project_id: None,
             cwd,
             git_branch,
             git_sha,
@@ -1173,6 +1176,9 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
             RolloutItem::WorldState(_) | RolloutItem::SecurityRiskScore(_) => {
                 // Not included in `head`; skip.
             }
+            RolloutItem::RealtimeItem(_) => {
+                // Realtime presentation does not affect model-visible thread summaries.
+            }
             RolloutItem::Compacted(_) => {
                 // Not included in `head`; skip.
             }
@@ -1243,6 +1249,7 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
                 | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
                 | RolloutItem::WorldState(_)
+                | RolloutItem::RealtimeItem(_)
                 | RolloutItem::SecurityRiskScore(_)
                 | RolloutItem::EventMsg(_) => {}
             }
@@ -1296,6 +1303,7 @@ pub async fn read_session_meta_line(path: &Path) -> io::Result<SessionMetaLine> 
             | RolloutItem::Compacted(_)
             | RolloutItem::TurnContext(_)
             | RolloutItem::WorldState(_)
+            | RolloutItem::RealtimeItem(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::EventMsg(_) => {}
         }
