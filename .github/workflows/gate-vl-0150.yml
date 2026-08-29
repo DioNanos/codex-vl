@@ -28,7 +28,7 @@ jobs:
       matrix:
         include:
           - label: candidate
-            ref: 22c30373bff4a7645ce0bf50102f49770b8a8e29
+            ref: 073177b96f2e4b95ec8be1463aabc29d16658709
           - label: develop-baseline
             ref: 16c71464de60318b41b4d62f6d9abec84ae00bd6
     steps:
