@@ -1624,7 +1624,7 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
 mod tests {
     use super::*;
     use crate::attachment_path_mapper::to_host_path_for_termux;
-    use codex_app_server_protocol::ImageDetail;
+    use codex_protocol::models::ImageDetail;
     use std::path::Path;
     use std::path::PathBuf;
 

@@ -346,7 +346,7 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
                     },
                     V2UserInput::LocalImage {
                         path: client_image,
-                        detail: Some(codex_app_server_protocol::ImageDetail::Original),
+                        detail: Some(codex_protocol::models::ImageDetail::Original),
                     },
                 ],
                 responsesapi_client_metadata: None,
