@@ -62,7 +62,6 @@ use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::SandboxMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::protocol::AskForApproval;
 #[cfg(test)]
 use codex_protocol::protocol::TurnContextItem;
 use codex_rollout::StateDbHandle;

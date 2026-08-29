@@ -116,7 +116,12 @@ impl ChatWidget {
             .filter(|message| !message.is_empty())
             && !self.transcript.saw_copy_source_this_turn
         {
-            self.record_agent_markdown(message);
+            // Raw original: the copy menu extracts targets from the source text
+            // (interaction.rs falls back to the visible markdown when absent),
+            // mirroring the streaming path which records the unparsed message.
+            let raw_source = last_agent_message.clone().unwrap_or_default();
+            self.transcript
+                .record_agent_markdown(message.clone(), raw_source);
         }
         // Memory V2 Step 3 / P0.1: compute the summary once, BEFORE the
         // `saw_copy_source_this_turn` reset below, and reuse it for both

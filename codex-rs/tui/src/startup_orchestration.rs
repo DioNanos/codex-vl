@@ -4,6 +4,7 @@
 //! configuration and app-server initialization remain responsive to safe local editing.
 
 use super::*;
+use std::io::IsTerminal;
 
 pub(super) async fn run_main_inner(
     mut cli: Cli,
@@ -15,7 +16,7 @@ pub(super) async fn run_main_inner(
     let (sandbox_mode, approval_policy) = if cli.dangerously_bypass_approvals_and_sandbox {
         (
             Some(SandboxMode::DangerFullAccess),
-            Some(AskForApproval::Never.to_core()),
+            Some(codex_app_server_protocol::AskForApproval::Never.to_core()),
         )
     } else {
         (
