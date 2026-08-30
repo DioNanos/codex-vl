@@ -573,7 +573,7 @@ impl Vivling {
     /// pre-flight cache-fresh skip is preserved so a still-fresh
     /// phrase from the previous session keeps being shown.
     ///
-    /// Idempotency contract: the `startup_dispatched: Cell<bool>` flag
+    /// Idempotency contract: the `startup_dispatched` shadow flag
     /// is set UNCONDITIONALLY before the dispatch attempt, so a
     /// failure (planner refused, dedup, budget exhausted, save_state
     /// error) does not cause a retry storm on the next frame. The
@@ -587,7 +587,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_bootstrap_expression(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        if self.startup_dispatched.get() {
+        if self.shadow.borrow().startup_dispatched {
             return None;
         }
         if self.state.is_none() {
@@ -595,7 +595,6 @@ impl Vivling {
         }
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
-        self.startup_dispatched.set(true);
         self.shadow.borrow_mut().startup_dispatched = true;
         let live_snapshot = self.live_context.borrow().clone();
         let state = self.state.as_mut()?;

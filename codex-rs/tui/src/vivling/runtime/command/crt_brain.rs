@@ -46,7 +46,6 @@ impl Vivling {
             let stage_label = state.budget_override.label(state.stage());
             format!("CRT brain budget: {stage_label}.")
         })?;
-        self.startup_dispatched.set(false);
         self.shadow.borrow_mut().startup_dispatched = false;
         Ok(message)
     }
@@ -71,7 +70,6 @@ impl Vivling {
             // throttle is wall-clock and unrelated to the budget.
             "CRT brain daily counters reset. Bootstrap will retry on next frame.".to_string()
         })?;
-        self.startup_dispatched.set(false);
         self.shadow.borrow_mut().startup_dispatched = false;
         Ok(message)
     }

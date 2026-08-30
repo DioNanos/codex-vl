@@ -177,7 +177,6 @@ pub(crate) struct Vivling {
     /// calls within the same session (e.g. `codex_home` toggles). Reset
     /// implicitly on process restart because the wrapper is rebuilt
     /// (see `unavailable()` and `Clone`).
-    pub(crate) startup_dispatched: Cell<bool>,
     /// codex-vl Step 14 Bug 1 fix — runtime gate that hides
     /// state-persistent CRT fallbacks (`proactive_next_phrase_at`,
     /// `recent_memory_phrase`, `last_work_summary_phrase`) until the
@@ -225,7 +224,6 @@ impl Clone for Vivling {
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             crt_frame_target: self.crt_frame_target.clone(),
-            startup_dispatched: self.startup_dispatched.clone(),
             shadow: self.shadow.clone(),
         }
     }

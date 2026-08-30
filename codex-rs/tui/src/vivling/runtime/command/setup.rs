@@ -28,7 +28,6 @@ impl Vivling {
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
             crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
-            startup_dispatched: Cell::new(false),
             crt_first_dispatch_completed: Cell::new(false),
             shadow: RefCell::new(ShadowState::with_lifecycle(
                 VivlingLifecyclePhase::Unavailable,
@@ -75,7 +74,6 @@ impl Vivling {
             // needed to spawn the background LLM task. Keeping the
             // flag here lets `Vivling` (sync, no tokio context) signal
             // "needs bootstrap" without owning the dispatch itself.
-            self.startup_dispatched.set(false);
             self.shadow.borrow_mut().startup_dispatched = false;
         }
         // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
