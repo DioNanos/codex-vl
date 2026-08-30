@@ -8,6 +8,8 @@ mod background_exit_tests;
 mod connector_policy;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
+#[path = "tests/loop_tool_routing.rs"]
+mod loop_tool_routing;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 mod model_catalog;
