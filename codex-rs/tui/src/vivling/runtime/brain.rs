@@ -329,15 +329,11 @@ impl Vivling {
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
-        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
+        let mut new_capsules: Vec<VivlingWorkMemoryEntry> = Vec::new();
         self.update_existing(|state| {
-            new_capsules
-                .borrow_mut()
-                .extend(state.record_loop_event(&event));
+            new_capsules.extend(state.record_loop_event(&event));
             if let Some(summary) = live_summary.as_deref() {
-                new_capsules
-                    .borrow_mut()
-                    .extend(state.record_live_context_summary(summary));
+                new_capsules.extend(state.record_live_context_summary(summary));
             }
             let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
             if let Some(msg) = proactive.message {
@@ -350,7 +346,7 @@ impl Vivling {
         })
         .map(|_| {
             if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
-                for capsule in new_capsules.borrow().iter() {
+                for capsule in new_capsules.iter() {
                     msa.index_capsule(id, capsule);
                 }
             }
@@ -373,15 +369,11 @@ impl Vivling {
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
-        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
+        let mut new_capsules: Vec<VivlingWorkMemoryEntry> = Vec::new();
         self.update_existing(|state| {
-            new_capsules
-                .borrow_mut()
-                .extend(state.record_turn_completed(summary));
+            new_capsules.extend(state.record_turn_completed(summary));
             if let Some(summary) = live_summary.as_deref() {
-                new_capsules
-                    .borrow_mut()
-                    .extend(state.record_live_context_summary(summary));
+                new_capsules.extend(state.record_live_context_summary(summary));
             }
             let proactive = proactive::evaluate_after_turn(state, Utc::now());
             if let Some(msg) = proactive.message {
@@ -394,7 +386,7 @@ impl Vivling {
         })
         .map(|_| {
             if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
-                for capsule in new_capsules.borrow().iter() {
+                for capsule in new_capsules.iter() {
                     // "Capsule ricche": the full pre-truncate turn summary is
                     // only alive here — the adapter gates (turn-kind, low-signal)
                     // and sanitizes. Index artifact only: capsule/state keep the
