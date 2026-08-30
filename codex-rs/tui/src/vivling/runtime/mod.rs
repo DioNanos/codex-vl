@@ -170,7 +170,6 @@ pub(crate) struct Vivling {
     /// Per-render transition snapshot generator. Mutated inside `render()`.
     pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
     /// Frame pacing target detected from the runtime environment.
-    pub(crate) crt_frame_target: Cell<crate::vl::crt::FrameTarget>,
     /// Memory V2 Step 12.B.L — runtime-only flag set the first time a
     /// boot/load completes for this Vivling instance. Prevents `ensure_
     /// startup_dispatched()` from re-firing on subsequent `configure()`
@@ -223,7 +222,6 @@ impl Clone for Vivling {
             msa: self.msa.clone(),
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
-            crt_frame_target: self.crt_frame_target.clone(),
             shadow: self.shadow.clone(),
         }
     }

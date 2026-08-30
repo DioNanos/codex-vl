@@ -136,7 +136,7 @@ impl Renderable for Vivling {
         let mut transitions = self.crt_animation_ledger.phases(now);
         if !self.animations_enabled
             || !self.crt_config.transitions
-            || !self.crt_frame_target.get().schedules_frames()
+            || !self.shadow.borrow().crt_frame_target.schedules_frames()
         {
             transitions.mode_fade = 1.0;
             transitions.message_reveal_chars = usize::MAX;
@@ -203,7 +203,7 @@ impl Vivling {
         if !self.animations_enabled || !self.crt_config.any_animation_active() {
             return;
         }
-        let target = self.crt_frame_target.get();
+        let target = self.shadow.borrow().crt_frame_target;
         if !target.schedules_frames() {
             return;
         }

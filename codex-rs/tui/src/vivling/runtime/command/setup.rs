@@ -27,7 +27,6 @@ impl Vivling {
             msa: None,
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
-            crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
             crt_first_dispatch_completed: Cell::new(false),
             shadow: RefCell::new(ShadowState::with_lifecycle(
                 VivlingLifecyclePhase::Unavailable,
@@ -44,9 +43,8 @@ impl Vivling {
         self.animations_enabled = animations_enabled;
         // Re-detect frame pacing once we know the runtime is wired; the
         // probe is cheap enough to redo here.
-        self.crt_frame_target
-            .set(FrameTarget::detect(PacingProbe::from_std_env()));
-        self.shadow.borrow_mut().crt_frame_target = self.crt_frame_target.get();
+        self.shadow.borrow_mut().crt_frame_target =
+            FrameTarget::detect(PacingProbe::from_std_env());
     }
 
     pub(crate) fn configure(&mut self, codex_home: &Path, auth_mode: AuthCredentialsStoreMode) {
