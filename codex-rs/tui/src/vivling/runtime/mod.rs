@@ -198,8 +198,6 @@ pub(crate) struct Vivling {
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
     /// turns when the user has never opened the dedicated panel.
-    /// Reset implicitly on process restart.
-    pub(crate) session_chat_turns: Cell<u32>,
     /// codex-vl T0 12.C-lite — shadow state (privato: v. `ShadowState`);
     /// `RefCell` transitoria della fase A, appiattita a fine migrazione.
     shadow: RefCell<ShadowState>,
@@ -232,7 +230,6 @@ impl Clone for Vivling {
             crt_frame_target: self.crt_frame_target.clone(),
             startup_dispatched: self.startup_dispatched.clone(),
             crt_first_dispatch_completed: self.crt_first_dispatch_completed.clone(),
-            session_chat_turns: self.session_chat_turns.clone(),
             shadow: self.shadow.clone(),
         }
     }

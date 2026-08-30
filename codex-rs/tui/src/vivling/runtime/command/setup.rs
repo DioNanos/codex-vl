@@ -30,7 +30,6 @@ impl Vivling {
             crt_frame_target: Cell::new(FrameTarget::detect(PacingProbe::from_std_env())),
             startup_dispatched: Cell::new(false),
             crt_first_dispatch_completed: Cell::new(false),
-            session_chat_turns: Cell::new(0),
             shadow: RefCell::new(ShadowState::with_lifecycle(
                 VivlingLifecyclePhase::Unavailable,
             )),
@@ -165,8 +164,11 @@ impl Vivling {
     /// again for this Vivling.
     pub(crate) fn chat_panel_hint(&mut self, sidebar_opened: bool) -> Option<String> {
         const HINT_THRESHOLD: u32 = 3;
-        let turns = self.session_chat_turns.get().saturating_add(1);
-        self.session_chat_turns.set(turns);
+        let turns = self
+            .shadow
+            .borrow_mut()
+            .session_chat_turns
+            .saturating_add(1);
         self.shadow.borrow_mut().session_chat_turns = turns;
         if sidebar_opened {
             return None;
