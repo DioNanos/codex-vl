@@ -8,10 +8,11 @@ Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-speci
 
 ### Fixed
 
-- Restored the pre-merge routing for the `manage_loops` dynamic tools in the
-  embedded TUI app server. The tools now require an active external task before
-  they are served, keeping them out of app-server sessions without a loop
-  controller.
+- Restored the pre-merge routing for the `manage_loops` dynamic tool in the
+  embedded TUI app server: `manage_loops` calls reach the loop controller again
+  instead of being rejected with "TUI dynamic tools require an active external
+  task". The upstream gate still applies to every other dynamic tool in
+  embedded sessions.
 - Added two regression tests guarding the embedded TUI routing boundary.
 
 ## 0.150.1 - Upstream rust-v0.150.1
