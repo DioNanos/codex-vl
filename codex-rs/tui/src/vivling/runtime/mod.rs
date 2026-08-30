@@ -155,9 +155,6 @@ pub(crate) struct Vivling {
     /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
     /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
     pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
-    pub(crate) active_until: Cell<Option<Instant>>,
-    pub(crate) active_started_at: Cell<Option<Instant>>,
-    pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
     pub(crate) animation_text: RefCell<Option<String>>,
     pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
@@ -212,9 +209,6 @@ impl Clone for Vivling {
             animations_enabled: self.animations_enabled,
             lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
             expression_in_flight: self.expression_in_flight.clone(),
-            active_until: self.active_until.clone(),
-            active_started_at: self.active_started_at.clone(),
-            next_scheduled_frame_at: self.next_scheduled_frame_at.clone(),
             animation_text: self.animation_text.clone(),
             animation_text_expires_at: self.animation_text_expires_at.clone(),
             activity: self.activity.clone(),

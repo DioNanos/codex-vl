@@ -6,16 +6,19 @@ const VIVLING_STRIP_MIN_WIDTH: u16 = 12;
 impl Vivling {
     pub(crate) fn mark_recent_activity(&self, tail: Duration) {
         let now = Instant::now();
-        if !self.is_active_at(now) {
-            self.active_started_at.set(Some(now));
-            self.shadow.borrow_mut().active_started_at = Some(now);
+        let was_active = self.is_active_at(now);
+        let mut shadow = self.shadow.borrow_mut();
+        if !was_active {
+            shadow.active_started_at = Some(now);
         }
         let deadline = now + tail;
-        let current = self.active_until.get();
-        if current.is_none_or(|existing| existing < deadline) {
-            self.active_until.set(Some(deadline));
-            self.shadow.borrow_mut().active_until = Some(deadline);
+        if shadow
+            .active_until
+            .is_none_or(|existing| existing < deadline)
+        {
+            shadow.active_until = Some(deadline);
         }
+        drop(shadow);
         self.request_frame();
     }
 
@@ -28,8 +31,9 @@ impl Vivling {
     pub(crate) fn is_active_at(&self, now: Instant) -> bool {
         self.is_task_running()
             || self
+                .shadow
+                .borrow()
                 .active_until
-                .get()
                 .is_some_and(|deadline| deadline > now)
     }
 
@@ -37,7 +41,6 @@ impl Vivling {
         let species = species_for_id(&state.species);
         if !self.animations_enabled {
             self.shadow.borrow_mut().next_scheduled_frame_at = None;
-            *self.next_scheduled_frame_at.borrow_mut() = None;
             return match state.stage() {
                 Stage::Baby => species.ascii_baby.clone(),
                 Stage::Juvenile => species.ascii_juvenile.clone(),
@@ -46,9 +49,9 @@ impl Vivling {
         }
 
         let frames = active_footer_sprites_for_species(species, state.stage());
-        let started = self.active_started_at.get().unwrap_or_else(|| {
-            self.active_started_at.set(Some(now));
-            self.shadow.borrow_mut().active_started_at = Some(now);
+        let mut shadow = self.shadow.borrow_mut();
+        let started = shadow.active_started_at.unwrap_or_else(|| {
+            shadow.active_started_at = Some(now);
             now
         });
         let elapsed = now.saturating_duration_since(started);
@@ -56,17 +59,16 @@ impl Vivling {
             (((elapsed.as_millis() / ACTIVE_FOOTER_FRAME_INTERVAL.as_millis()) as usize) + 1)
                 % frames.len();
         let next_deadline = now + ACTIVE_FOOTER_FRAME_INTERVAL;
-        let should_schedule = self
+        let should_schedule = shadow
             .next_scheduled_frame_at
-            .borrow()
             .is_none_or(|deadline| deadline <= now);
         if should_schedule {
             if let Some(frame_requester) = &self.frame_requester {
                 frame_requester.schedule_frame_in(ACTIVE_FOOTER_FRAME_INTERVAL);
             }
-            self.shadow.borrow_mut().next_scheduled_frame_at = Some(next_deadline);
-            *self.next_scheduled_frame_at.borrow_mut() = Some(next_deadline);
+            shadow.next_scheduled_frame_at = Some(next_deadline);
         }
+        drop(shadow);
         frames[frame_idx].clone()
     }
 
