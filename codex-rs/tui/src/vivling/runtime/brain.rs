@@ -501,6 +501,7 @@ impl Vivling {
         // hides state-persistent CRT fallbacks; from now on the chain
         // falls back through `last_work_summary` etc. like before.
         self.crt_first_dispatch_completed.set(true);
+        self.shadow.borrow_mut().crt_first_dispatch_completed = true;
         if self.active_vivling_id.as_deref() == Some(vivling_id)
             && let Some(state) = self.state.as_mut()
         {
@@ -596,6 +597,7 @@ impl Vivling {
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
         self.startup_dispatched.set(true);
+        self.shadow.borrow_mut().startup_dispatched = true;
         let live_snapshot = self.live_context.borrow().clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
@@ -644,6 +646,7 @@ impl Vivling {
         // freeze the CRT into safety-template-only mode forever, so
         // unlock the persistent fallbacks once any attempt completes.
         self.crt_first_dispatch_completed.set(true);
+        self.shadow.borrow_mut().crt_first_dispatch_completed = true;
         let mut state = self
             .load_state_for_id(vivling_id)
             .map_err(|err| err.to_string())?

@@ -99,6 +99,50 @@ pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
 pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
+/// codex-vl T0 12.C-lite — shadow state del wrapper. Step A: scritto a
+/// fianco dei campi legacy `Cell`/`RefCell` (che restano la fonte letta);
+/// la migrazione campo-per-campo lo rende l'unica fonte e appiattisce la
+/// `RefCell` (transitoria di questa fase). PRIVATO del modulo: il
+/// compilatore è il gate d'accesso, nessun commento a farlo rispettare.
+#[derive(Debug, Clone)]
+struct ShadowState {
+    lifecycle: VivlingLifecyclePhase,
+    expression_in_flight: Option<ExpressionKind>,
+    active_until: Option<Instant>,
+    active_started_at: Option<Instant>,
+    next_scheduled_frame_at: Option<Instant>,
+    animation_text: Option<String>,
+    animation_text_expires_at: Option<Instant>,
+    activity: Option<crate::vl::VivlingActivity>,
+    live_context: Option<VivlingLiveContext>,
+    crt_frame_target: crate::vl::crt::FrameTarget,
+    startup_dispatched: bool,
+    crt_first_dispatch_completed: bool,
+    session_chat_turns: u32,
+}
+
+impl ShadowState {
+    fn with_lifecycle(lifecycle: VivlingLifecyclePhase) -> Self {
+        Self {
+            lifecycle,
+            expression_in_flight: None,
+            active_until: None,
+            active_started_at: None,
+            next_scheduled_frame_at: None,
+            animation_text: None,
+            animation_text_expires_at: None,
+            activity: None,
+            live_context: None,
+            crt_frame_target: crate::vl::crt::FrameTarget::detect(
+                crate::vl::crt::PacingProbe::from_std_env(),
+            ),
+            startup_dispatched: false,
+            crt_first_dispatch_completed: false,
+            session_chat_turns: 0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Vivling {
     pub(crate) codex_home: Option<PathBuf>,
@@ -156,6 +200,9 @@ pub(crate) struct Vivling {
     /// turns when the user has never opened the dedicated panel.
     /// Reset implicitly on process restart.
     pub(crate) session_chat_turns: Cell<u32>,
+    /// codex-vl T0 12.C-lite — shadow state (privato: v. `ShadowState`);
+    /// `RefCell` transitoria della fase A, appiattita a fine migrazione.
+    shadow: RefCell<ShadowState>,
 }
 
 impl Clone for Vivling {
@@ -186,6 +233,7 @@ impl Clone for Vivling {
             startup_dispatched: self.startup_dispatched.clone(),
             crt_first_dispatch_completed: self.crt_first_dispatch_completed.clone(),
             session_chat_turns: self.session_chat_turns.clone(),
+            shadow: self.shadow.clone(),
         }
     }
 }

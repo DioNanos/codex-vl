@@ -1,3 +1,4 @@
+use super::super::ShadowState;
 use super::super::*;
 
 use crate::vl::crt::CrtAnimationLedger;
@@ -30,6 +31,9 @@ impl Vivling {
             startup_dispatched: Cell::new(false),
             crt_first_dispatch_completed: Cell::new(false),
             session_chat_turns: Cell::new(0),
+            shadow: RefCell::new(ShadowState::with_lifecycle(
+                VivlingLifecyclePhase::Unavailable,
+            )),
         }
     }
 
@@ -44,6 +48,7 @@ impl Vivling {
         // probe is cheap enough to redo here.
         self.crt_frame_target
             .set(FrameTarget::detect(PacingProbe::from_std_env()));
+        self.shadow.borrow_mut().crt_frame_target = self.crt_frame_target.get();
     }
 
     pub(crate) fn configure(&mut self, codex_home: &Path, auth_mode: AuthCredentialsStoreMode) {
@@ -72,9 +77,11 @@ impl Vivling {
             // flag here lets `Vivling` (sync, no tokio context) signal
             // "needs bootstrap" without owning the dispatch itself.
             self.startup_dispatched.set(false);
+            self.shadow.borrow_mut().startup_dispatched = false;
         }
         // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
         self.lifecycle.borrow_mut().set_available();
+        self.shadow.borrow_mut().lifecycle = self.lifecycle.borrow().clone();
     }
 
     fn maybe_backfill_msa_index(&self) {
@@ -110,6 +117,7 @@ impl Vivling {
                 phase.end_task();
             }
         }
+        self.shadow.borrow_mut().lifecycle = self.lifecycle.borrow().clone();
         if running {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         } else {
@@ -128,6 +136,7 @@ impl Vivling {
             false
         } else {
             self.expression_in_flight.set(Some(kind));
+            self.shadow.borrow_mut().expression_in_flight = Some(kind);
             true
         }
     }
@@ -136,6 +145,7 @@ impl Vivling {
     /// ENTRAMBI i completion handler (success + failure).
     pub(crate) fn finish_expression(&self) {
         self.expression_in_flight.set(None);
+        self.shadow.borrow_mut().expression_in_flight = None;
     }
 
     /// Step 12.D / test helper: stato del gate di espressione.
@@ -157,6 +167,7 @@ impl Vivling {
         const HINT_THRESHOLD: u32 = 3;
         let turns = self.session_chat_turns.get().saturating_add(1);
         self.session_chat_turns.set(turns);
+        self.shadow.borrow_mut().session_chat_turns = turns;
         if sidebar_opened {
             return None;
         }
@@ -196,6 +207,7 @@ impl Vivling {
         if *self.live_context.borrow() == context {
             return;
         }
+        self.shadow.borrow_mut().live_context = context.clone();
         *self.live_context.borrow_mut() = context;
         self.request_frame();
     }
@@ -210,6 +222,8 @@ impl Vivling {
             self.clear_animation_text();
             return;
         }
+        self.shadow.borrow_mut().animation_text = Some(text.clone());
+        self.shadow.borrow_mut().animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
         *self.animation_text.borrow_mut() = Some(text);
         self.animation_text_expires_at
             .set(Some(now + ANIMATION_TEXT_TTL));
@@ -229,6 +243,8 @@ impl Vivling {
     }
 
     fn clear_animation_text(&self) {
+        self.shadow.borrow_mut().animation_text = None;
+        self.shadow.borrow_mut().animation_text_expires_at = None;
         *self.animation_text.borrow_mut() = None;
         self.animation_text_expires_at.set(None);
         self.request_frame();
