@@ -4,6 +4,16 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.150.2 - Restore embedded TUI loop routing
+
+### Fixed
+
+- Restored the pre-merge routing for the `manage_loops` dynamic tools in the
+  embedded TUI app server. The tools now require an active external task before
+  they are served, keeping them out of app-server sessions without a loop
+  controller.
+- Added two regression tests guarding the embedded TUI routing boundary.
+
 ## 0.150.1 - Upstream rust-v0.150.1
 
 Update onto the upstream OpenAI Codex `rust-v0.150.1` stable release, published
