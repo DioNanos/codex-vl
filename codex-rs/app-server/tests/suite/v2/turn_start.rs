@@ -196,7 +196,10 @@ async fn turn_start_maps_created_and_written_termux_local_image() -> Result<()> 
         .with_codex_home(codex_home.path())
         .with_env_overrides(&[
             ("TERMUX_VERSION", Some("1")),
-            ("TMPDIR", Some(termux_tmp.to_str().expect("termux tmp path is utf-8"))),
+            (
+                "TMPDIR",
+                Some(termux_tmp.to_str().expect("termux tmp path is utf-8")),
+            ),
         ])
         .build_initialized()
         .await?;

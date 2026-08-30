@@ -987,7 +987,11 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     // criterio non e' applicabile e non si passa verde per assenza di ispezione.
     let upstream_refs: Vec<String> = git(
         &root,
-        &["for-each-ref", "--format=%(refname)", "refs/remotes/upstream"],
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/remotes/upstream",
+        ],
     )
     .lines()
     .map(|s| s.trim().to_string())
@@ -1108,7 +1112,9 @@ fn classe2_handle_operatore_assente_dal_rust_tracciato() {
     }
     let mut colpe: Vec<String> = binari;
     for (rel, n) in &per_file {
-        colpe.push(format!("{rel}: {n}x handle dell'operatore come parola isolata"));
+        colpe.push(format!(
+            "{rel}: {n}x handle dell'operatore come parola isolata"
+        ));
     }
     assert!(
         colpe.is_empty(),
@@ -1210,7 +1216,10 @@ fn i_motivi_mordano_ancora() {
 
     // marker di audit: tutti i needle mordono in una riga di release.
     let am = audit_vietati();
-    let bad_release = format!("release: {} {}verdict:codex-vl-x\n", am[0].needle, am[1].needle);
+    let bad_release = format!(
+        "release: {} {}verdict:codex-vl-x\n",
+        am[0].needle, am[1].needle
+    );
     assert!(
         am.iter().all(|v| bad_release.contains(v.needle.as_str())),
         "ogni needle di audit deve mordere"
@@ -1590,7 +1599,10 @@ fn canonical_remote_concorda_con_git_sullautorita() {
     // contatterebbe per un fetch reale" — quindi lo scheme resta
     // case-sensitive, ed e' canonical_remote che e' stato corretto per
     // allinearsi (era lui il permissivo di troppo, non l'oracolo).
-    for mismatched_case in ["HTTPS://github.com/openai/codex.git", "SSH://git@github.com/openai/codex.git"] {
+    for mismatched_case in [
+        "HTTPS://github.com/openai/codex.git",
+        "SSH://git@github.com/openai/codex.git",
+    ] {
         assert!(
             canonical_remote(mismatched_case).is_none(),
             "uno scheme con case diverso da \"https\"/\"ssh\" non produce mai un \
@@ -1629,7 +1641,8 @@ fn un_binario_inatteso_in_testo_fa_fallire_non_essere_saltato() {
         "un binario (NUL) in un file di testo atteso deve essere colpevole, non saltato"
     );
     assert!(
-        f.iter().any(|s| s.contains("binario") && s.contains("ispezionare")),
+        f.iter()
+            .any(|s| s.contains("binario") && s.contains("ispezionare")),
         "segnalato come binario da ispezionare: {f:?}"
     );
     // Anche se contiene il needle: il gate NON lo nasconde nel verde —
@@ -1850,10 +1863,7 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
     let _scratch2 = Scratch::new(vec![fuori.clone()]);
     fs::create_dir_all(&fuori).expect("creazione dir scratch");
     if let Some(r) = radice_da(&fuori) {
-        assert!(
-            r.join(".git").exists(),
-            "mai una radice senza .git: {r:?}"
-        );
+        assert!(r.join(".git").exists(), "mai una radice senza .git: {r:?}");
     }
 
     // (3) il fallimento PARLA. Il messaggio e' puro: si esercita su input
@@ -1864,9 +1874,15 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
         "il messaggio mostra la fonte provata: {msg}"
     );
     for (perche, pezzo) in [
-        ("la causa probabile (binario di un worktree rimosso)", "worktree"),
+        (
+            "la causa probabile (binario di un worktree rimosso)",
+            "worktree",
+        ),
         ("il rimedio (ricompilare)", "cargo clean -p fork-gate"),
-        ("cosa NON e' (non sanificazione)", "Non e' un difetto di sanificazione"),
+        (
+            "cosa NON e' (non sanificazione)",
+            "Non e' un difetto di sanificazione",
+        ),
     ] {
         assert!(
             msg.contains(pezzo),
@@ -1946,7 +1962,11 @@ fn fetch_head_assente_in_un_worktree_e_un_fallimento_che_parla() {
     );
     let urefs: Vec<String> = git(
         &wt,
-        &["for-each-ref", "--format=%(refname)", "refs/remotes/upstream"],
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/remotes/upstream",
+        ],
     )
     .lines()
     .map(|s| s.trim().to_string())
@@ -1981,9 +2001,18 @@ fn fetch_head_assente_in_un_worktree_e_un_fallimento_che_parla() {
             "QUALE file manca (il path del FETCH_HEAD di QUESTO checkout)",
             fh_str.as_str(),
         ),
-        ("la causa (FETCH_HEAD per-worktree vs ref condivisi)", "per-worktree"),
-        ("il rimedio (fetch NEL checkout del gate)", "git fetch upstream"),
-        ("cosa NON e' (non sanificazione, non i ref)", "Non e' un difetto di sanificazione"),
+        (
+            "la causa (FETCH_HEAD per-worktree vs ref condivisi)",
+            "per-worktree",
+        ),
+        (
+            "il rimedio (fetch NEL checkout del gate)",
+            "git fetch upstream",
+        ),
+        (
+            "cosa NON e' (non sanificazione, non i ref)",
+            "Non e' un difetto di sanificazione",
+        ),
     ] {
         assert!(
             msg.contains(pezzo),
