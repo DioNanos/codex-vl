@@ -46,7 +46,7 @@ pub(super) async fn make_test_app() -> App {
         enhanced_keys_supported: false,
         keymap: crate::keymap::RuntimeKeymap::defaults(),
         key_chord_matcher: crate::keymap::KeyChordMatcher::default(),
-        commit_anim_running: Arc::new(AtomicBool::new(false)),
+        commit_animation: None,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         skill_load_warnings: SkillLoadWarningState::default(),
@@ -82,6 +82,7 @@ pub(super) async fn make_test_app() -> App {
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
         vivling_context_bus: crate::vl::context_bus::VivlingContextBus::default(),
+        recap: recap::RecapState::default(),
     }
 }
 
