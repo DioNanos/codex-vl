@@ -151,10 +151,8 @@ pub(crate) struct Vivling {
     pub(crate) animations_enabled: bool,
     /// Step 12.C — fase di dispatch. Sorgente di verità per il task-running
     /// (il flag legacy `task_running` è stato rimosso in questo step).
-    pub(crate) lifecycle: RefCell<VivlingLifecyclePhase>,
     /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
     /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
-    pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
     pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
     /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
@@ -203,8 +201,6 @@ impl Clone for Vivling {
             active_vivling_id: self.active_vivling_id.clone(),
             frame_requester: self.frame_requester.clone(),
             animations_enabled: self.animations_enabled,
-            lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
-            expression_in_flight: self.expression_in_flight.clone(),
             msa: self.msa.clone(),
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),

@@ -15,8 +15,6 @@ impl Vivling {
             active_vivling_id: None,
             frame_requester: None,
             animations_enabled: false,
-            lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
-            expression_in_flight: Cell::new(None),
             msa: None,
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
@@ -68,8 +66,7 @@ impl Vivling {
             self.shadow.borrow_mut().startup_dispatched = false;
         }
         // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
-        self.lifecycle.borrow_mut().set_available();
-        self.shadow.borrow_mut().lifecycle = self.lifecycle.borrow().clone();
+        self.shadow.borrow_mut().lifecycle.set_available();
     }
 
     fn maybe_backfill_msa_index(&self) {
@@ -97,7 +94,7 @@ impl Vivling {
     pub(crate) fn set_task_running(&self, running: bool) {
         // Step 12.C — la FSM di fase è ora sorgente di verità (flag legacy rimosso).
         {
-            let mut phase = self.lifecycle.borrow_mut();
+            let mut phase = self.shadow.borrow_mut().lifecycle;
             phase.set_available(); // configure() precede sempre un task
             if running {
                 phase.begin_task(std::time::Instant::now());
@@ -105,7 +102,6 @@ impl Vivling {
                 phase.end_task();
             }
         }
-        self.shadow.borrow_mut().lifecycle = self.lifecycle.borrow().clone();
         if running {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         } else {
@@ -115,15 +111,14 @@ impl Vivling {
 
     /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
     pub(crate) fn is_task_running(&self) -> bool {
-        self.lifecycle.borrow().is_task_running()
+        self.shadow.borrow().lifecycle.is_task_running()
     }
 
     /// Apre un dispatch di espressione se nessuno è in volo. false (skip) altrimenti.
     pub(crate) fn try_begin_expression(&self, kind: ExpressionKind) -> bool {
-        if self.expression_in_flight.get().is_some() {
+        if self.shadow.borrow().expression_in_flight.is_some() {
             false
         } else {
-            self.expression_in_flight.set(Some(kind));
             self.shadow.borrow_mut().expression_in_flight = Some(kind);
             true
         }
@@ -132,14 +127,13 @@ impl Vivling {
     /// Chiude il dispatch in volo (no-op se nessuno). Fail-safe: invocato da
     /// ENTRAMBI i completion handler (success + failure).
     pub(crate) fn finish_expression(&self) {
-        self.expression_in_flight.set(None);
         self.shadow.borrow_mut().expression_in_flight = None;
     }
 
     /// Step 12.D / test helper: stato del gate di espressione.
     #[allow(dead_code)]
     pub(crate) fn expression_in_flight(&self) -> bool {
-        self.expression_in_flight.get().is_some()
+        self.shadow.borrow().expression_in_flight.is_some()
     }
 
     /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
