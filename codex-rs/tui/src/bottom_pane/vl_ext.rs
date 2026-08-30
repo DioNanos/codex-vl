@@ -454,7 +454,7 @@ impl BottomPane {
     }
 
     pub(crate) fn set_vivling_activity(&self, activity: crate::vl::VivlingActivity) {
-        *self.vivling.activity.borrow_mut() = Some(activity);
+        self.vivling.set_activity(Some(activity));
     }
 
     pub(crate) fn set_vivling_live_context(

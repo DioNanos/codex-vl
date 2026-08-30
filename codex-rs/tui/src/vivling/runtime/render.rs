@@ -97,7 +97,7 @@ impl Renderable for Vivling {
         }
         let now = Instant::now();
         let sprite = self.current_sprite(state, now);
-        let live_context = self.live_context.borrow();
+        let live_context = self.shadow.borrow().live_context;
         // codex-vl Step 14 Bug 1 fix — pending = no Expression dispatch
         // has resolved yet in this TUI session. Hides state-persistent
         // CRT fallbacks (proactive/recent/last_work_summary) so the new
@@ -116,7 +116,7 @@ impl Renderable for Vivling {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
-        let activity = *self.activity.borrow();
+        let activity = self.activity();
         let tui_task_running = self.is_task_running();
         // codex-vl Step 14 Bug 2 fix — short label rendered in the CRT
         // speech panel when the director selects Alert for a non-busy

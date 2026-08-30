@@ -156,10 +156,6 @@ pub(crate) struct Vivling {
     /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
     pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
-    pub(crate) animation_text: RefCell<Option<String>>,
-    pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
-    pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
-    pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
     pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
     /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
     /// when `configure()` is called with a new home.
@@ -209,10 +205,6 @@ impl Clone for Vivling {
             animations_enabled: self.animations_enabled,
             lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
             expression_in_flight: self.expression_in_flight.clone(),
-            animation_text: self.animation_text.clone(),
-            animation_text_expires_at: self.animation_text_expires_at.clone(),
-            activity: self.activity.clone(),
-            live_context: self.live_context.clone(),
             msa: self.msa.clone(),
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),

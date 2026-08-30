@@ -46,7 +46,7 @@ impl Vivling {
         task: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         // Memory V2 Step 9.A: load the planner-written skills sidecar
         // (Step 8.B output) BEFORE composing the prompt. Best-effort —
         // missing/malformed sidecar yields an empty list.
@@ -107,7 +107,7 @@ impl Vivling {
         text: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         // Memory V2 Step 9.A: same best-effort sidecar load as assist.
         let roster_dir = self.roster_dir();
         let skills = match (roster_dir.as_ref(), self.state.as_ref()) {
@@ -204,7 +204,7 @@ impl Vivling {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&job.prompt_text)
             .to_string();
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         // Memory V2 Step 9.A: load owner's skills sidecar (best-effort).
         let skills = self
             .roster_dir()
@@ -322,8 +322,9 @@ impl Vivling {
 
     pub(crate) fn record_loop_event(&mut self, event: VivlingLoopEvent) -> Result<(), String> {
         let live_summary = self
-            .live_context
+            .shadow
             .borrow()
+            .live_context
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
@@ -365,8 +366,9 @@ impl Vivling {
 
     pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) -> Result<(), String> {
         let live_summary = self
-            .live_context
+            .shadow
             .borrow()
+            .live_context
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
@@ -536,7 +538,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -554,7 +556,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh_forced(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -596,7 +598,7 @@ impl Vivling {
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
         self.shadow.borrow_mut().startup_dispatched = true;
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -616,7 +618,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_loop_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.borrow().live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());

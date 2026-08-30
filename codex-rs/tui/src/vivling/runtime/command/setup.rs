@@ -17,10 +17,6 @@ impl Vivling {
             animations_enabled: false,
             lifecycle: RefCell::new(VivlingLifecyclePhase::Unavailable),
             expression_in_flight: Cell::new(None),
-            animation_text: RefCell::new(None),
-            animation_text_expires_at: Cell::new(None),
-            activity: RefCell::new(None),
-            live_context: RefCell::new(None),
             msa: None,
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
@@ -199,12 +195,21 @@ impl Vivling {
     }
 
     pub(crate) fn set_live_context(&self, context: Option<VivlingLiveContext>) {
-        if *self.live_context.borrow() == context {
+        if self.shadow.borrow().live_context == context {
             return;
         }
-        self.shadow.borrow_mut().live_context = context.clone();
-        *self.live_context.borrow_mut() = context;
+        self.shadow.borrow_mut().live_context = context;
         self.request_frame();
+    }
+
+    /// codex-vl T0 12.C-lite — CRT scene activity (ex direct field write
+    /// in `BottomPane::set_vivling_activity`).
+    pub(crate) fn set_activity(&self, activity: Option<crate::vl::VivlingActivity>) {
+        self.shadow.borrow_mut().activity = activity;
+    }
+
+    pub(crate) fn activity(&self) -> Option<crate::vl::VivlingActivity> {
+        *self.shadow.borrow().activity
     }
 
     pub(crate) fn set_animation_text(&self, text: String) {
@@ -217,31 +222,33 @@ impl Vivling {
             self.clear_animation_text();
             return;
         }
-        self.shadow.borrow_mut().animation_text = Some(text.clone());
-        self.shadow.borrow_mut().animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
-        *self.animation_text.borrow_mut() = Some(text);
-        self.animation_text_expires_at
-            .set(Some(now + ANIMATION_TEXT_TTL));
+        {
+            let mut shadow = self.shadow.borrow_mut();
+            shadow.animation_text = Some(text.clone());
+            shadow.animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
+        }
         self.request_frame();
     }
 
     pub(crate) fn current_animation_text_at(&self, now: Instant) -> Option<String> {
-        let expired = self
+        let shadow = self.shadow.borrow();
+        let expired = shadow
             .animation_text_expires_at
-            .get()
             .is_some_and(|deadline| deadline <= now);
         if expired {
+            drop(shadow);
             self.clear_animation_text();
             return None;
         }
-        self.animation_text.borrow().clone()
+        shadow.animation_text.clone()
     }
 
     fn clear_animation_text(&self) {
-        self.shadow.borrow_mut().animation_text = None;
-        self.shadow.borrow_mut().animation_text_expires_at = None;
-        *self.animation_text.borrow_mut() = None;
-        self.animation_text_expires_at.set(None);
+        {
+            let mut shadow = self.shadow.borrow_mut();
+            shadow.animation_text = None;
+            shadow.animation_text_expires_at = None;
+        }
         self.request_frame();
     }
 }
