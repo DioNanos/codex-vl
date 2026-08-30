@@ -13,7 +13,7 @@ use super::formatting::LOOP_STATUS_PROGRESS;
 pub(super) const MANAGE_LOOPS_TOOL_NAMESPACE: &str = "codex_app";
 pub(super) const MANAGE_LOOPS_TOOL_NAME: &str = "manage_loops";
 
-pub(super) fn is_manage_loops_dynamic_tool(namespace: Option<&str>, tool: &str) -> bool {
+pub(in crate::app) fn is_manage_loops_dynamic_tool(namespace: Option<&str>, tool: &str) -> bool {
     matches!(
         namespace,
         None | Some(MANAGE_LOOPS_TOOL_NAMESPACE) | Some("functions")

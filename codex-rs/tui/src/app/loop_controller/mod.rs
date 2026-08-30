@@ -62,6 +62,11 @@ use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
 use self::types::LoopCommandSource;
 
+// codex-vl: re-exported for the app-server event router, which must route
+// `manage_loops` dynamic tool calls to this module before the upstream
+// DynamicToolCall handling.
+pub(super) use self::parsing::is_manage_loops_dynamic_tool;
+
 impl App {
     fn record_vivling_loop_job(
         &mut self,

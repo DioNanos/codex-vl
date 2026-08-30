@@ -320,11 +320,35 @@ impl App {
             .handle_server_notification(notification, /*replay_kind*/ None);
     }
 
-    async fn handle_server_request_event(
+    pub(super) async fn handle_server_request_event(
         &mut self,
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        // codex-vl: `manage_loops` dynamic tool calls are served by the loop
+        // controller, also on the embedded app server. This branch must stay
+        // before the upstream DynamicToolCall handling below, which returns on
+        // every path and rejects every call in embedded mode with
+        // "TUI dynamic tools require an active external task".
+        if matches!(
+            &request,
+            ServerRequest::DynamicToolCall { params, .. }
+                if super::loop_controller::is_manage_loops_dynamic_tool(
+                    params.namespace.as_deref(),
+                    &params.tool,
+                )
+        ) {
+            if let ServerRequest::DynamicToolCall { request_id, params } = request {
+                if let Err(err) = self
+                    .resolve_manage_loops_app_server_request(app_server_client, request_id, params)
+                    .await
+                {
+                    tracing::warn!("failed to resolve dynamic tool request in TUI: {err}");
+                }
+            }
+            return;
+        }
+
         if let ServerRequest::DynamicToolCall { request_id, params } = &request {
             if self.dynamic_tool_tasks.contains_key(request_id)
                 || (params.namespace.as_deref() != Some(crate::dynamic_tools::NAMESPACE)
@@ -508,19 +532,6 @@ impl App {
                 }
                 return;
             }
-        }
-
-        // Fork: manage_loops arrives as a dynamic tool call. This has to come after the
-        // abandoned-thread check above, which only borrows the request, because matching
-        // the variant moves it.
-        if let ServerRequest::DynamicToolCall { request_id, params } = request {
-            if let Err(err) = self
-                .resolve_manage_loops_app_server_request(app_server_client, request_id, params)
-                .await
-            {
-                tracing::warn!("failed to resolve dynamic tool request in TUI: {err}");
-            }
-            return;
         }
 
         if let Some(unsupported) = self
