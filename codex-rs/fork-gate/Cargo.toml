@@ -6,4 +6,6 @@ publish = false
 description = "Gate di sanificazione pre-publish per il fork codex-vl (test-only)."
 
 [lib]
+test = false
+doctest = false
 path = "src/lib.rs"

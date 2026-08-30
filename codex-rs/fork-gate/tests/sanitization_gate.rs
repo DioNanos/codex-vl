@@ -26,7 +26,8 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 // ---- infra ----------------------------------------------------------------
