@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "MSA-flavor retrieval engine library: chunking, tantivy BM25, and optional dense rerank"
 
+[lib]
+doctest = false
+
 [features]
 default = []
 embeddings = ["dep:reqwest"]
