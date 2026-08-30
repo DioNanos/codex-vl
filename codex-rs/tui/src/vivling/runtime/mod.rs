@@ -117,7 +117,6 @@ struct ShadowState {
     live_context: Option<VivlingLiveContext>,
     crt_frame_target: crate::vl::crt::FrameTarget,
     startup_dispatched: bool,
-    crt_first_dispatch_completed: bool,
     session_chat_turns: u32,
 }
 
@@ -137,7 +136,6 @@ impl ShadowState {
                 crate::vl::crt::PacingProbe::from_std_env(),
             ),
             startup_dispatched: false,
-            crt_first_dispatch_completed: false,
             session_chat_turns: 0,
         }
     }
@@ -193,7 +191,6 @@ pub(crate) struct Vivling {
     /// does not freeze the CRT into safety-template-only mode forever).
     /// Reset implicitly on process restart because the wrapper is
     /// rebuilt (see `unavailable()` and `Clone`).
-    pub(crate) crt_first_dispatch_completed: Cell<bool>,
     /// Memory V2 Step 12.B.P — runtime-only counter of `/vl` chat
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
@@ -229,7 +226,6 @@ impl Clone for Vivling {
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             crt_frame_target: self.crt_frame_target.clone(),
             startup_dispatched: self.startup_dispatched.clone(),
-            crt_first_dispatch_completed: self.crt_first_dispatch_completed.clone(),
             shadow: self.shadow.clone(),
         }
     }

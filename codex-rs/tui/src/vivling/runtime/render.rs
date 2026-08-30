@@ -101,7 +101,7 @@ impl Renderable for Vivling {
         // CRT fallbacks (proactive/recent/last_work_summary) so the new
         // session never starts by surfacing the previous session's last
         // assistant turn.
-        let bootstrap_pending = !self.crt_first_dispatch_completed.get();
+        let bootstrap_pending = !self.shadow.borrow().crt_first_dispatch_completed;
         let insight =
             super::crt_insight::compute_insight(state, live_context.as_ref(), bootstrap_pending);
         let animation_text = self.current_animation_text_at(now);
