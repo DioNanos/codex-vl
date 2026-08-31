@@ -25,6 +25,7 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSource;
 use codex_thread_store::PersistContext;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
@@ -510,6 +511,30 @@ fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToo
         }));
     }
     tools
+}
+
+/// Adds the TUI-only fork builtins except for upstream's bounded system
+/// request. The latter is an ephemeral `Feature("system")` thread used by
+/// temporary structured requests such as recap generation, which explicitly
+/// requires a zero-tool schema.
+fn dynamic_tools_for_thread_start(
+    app_server_client_name: Option<&str>,
+    ephemeral: bool,
+    thread_source: Option<&ThreadSource>,
+    dynamic_tools: Vec<DynamicToolSpec>,
+) -> Vec<DynamicToolSpec> {
+    let is_temporary_structured_system_request = ephemeral
+        && matches!(
+            thread_source,
+            Some(ThreadSource::Feature(feature)) if feature == "system"
+        );
+    if app_server_client_name == Some(CODEX_TUI_CLIENT_NAME)
+        && !is_temporary_structured_system_request
+    {
+        with_builtin_dynamic_tools(dynamic_tools)
+    } else {
+        dynamic_tools
+    }
 }
 
 #[derive(Clone)]
@@ -1495,12 +1520,12 @@ impl ThreadRequestProcessor {
         // DynamicToolCall. Generic app-server clients keep their declared
         // dynamic tools untouched (same identity-based scoping as
         // `thread_rollback` above).
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let dynamic_tools = if app_server_client_name.as_deref() == Some(CODEX_TUI_CLIENT_NAME) {
-            with_builtin_dynamic_tools(dynamic_tools)
-        } else {
-            dynamic_tools
-        };
+        let dynamic_tools = dynamic_tools_for_thread_start(
+            app_server_client_name.as_deref(),
+            config.ephemeral,
+            thread_source.as_ref(),
+            dynamic_tools.unwrap_or_default(),
+        );
         if !dynamic_tools.is_empty() {
             validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
         }

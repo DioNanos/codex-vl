@@ -222,6 +222,50 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn normal_tui_thread_without_declared_tools_receives_builtins() {
+        let tools = dynamic_tools_for_thread_start(
+            Some(CODEX_TUI_CLIENT_NAME),
+            /*ephemeral*/ false,
+            Some(&codex_protocol::protocol::ThreadSource::User),
+            vec![],
+        );
+
+        assert!(tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolSpec::Function(function)
+                    if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+            )
+        }));
+        assert!(tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolSpec::Namespace(namespace)
+                    if namespace.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE
+                        && namespace.tools.iter().any(|tool| matches!(
+                            tool,
+                            DynamicToolNamespaceTool::Function(function)
+                                if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+                        ))
+            )
+        }));
+    }
+
+    #[test]
+    fn temporary_system_tui_thread_without_declared_tools_remains_tool_free() {
+        let tools = dynamic_tools_for_thread_start(
+            Some(CODEX_TUI_CLIENT_NAME),
+            /*ephemeral*/ true,
+            Some(&codex_protocol::protocol::ThreadSource::Feature(
+                "system".to_string(),
+            )),
+            vec![],
+        );
+
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
