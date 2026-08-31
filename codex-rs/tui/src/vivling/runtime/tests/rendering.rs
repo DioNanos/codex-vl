@@ -65,7 +65,7 @@ fn render_keeps_vivling_line_shape() {
 #[test]
 fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
     let temp = TempDir::new().expect("tempdir");
-    let vivling = hatched_vivling(temp.path());
+    let mut vivling = hatched_vivling(temp.path());
     let original = vivling
         .state
         .as_ref()
@@ -86,7 +86,7 @@ fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
 #[test]
 fn animation_text_expires_without_touching_saved_last_message() {
     let temp = TempDir::new().expect("tempdir");
-    let vivling = hatched_vivling(temp.path());
+    let mut vivling = hatched_vivling(temp.path());
     let original = vivling
         .state
         .as_ref()

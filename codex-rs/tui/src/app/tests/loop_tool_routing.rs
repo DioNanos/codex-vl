@@ -70,7 +70,7 @@ fn failure_text(response: &DynamicToolCallResponse) -> String {
 async fn manage_loops_dynamic_tool_is_served_by_the_loop_controller_in_embedded_mode() -> Result<()>
 {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-    let mut app_server =
+    let app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     // Loop persistence needs the process state database handle.
@@ -119,7 +119,7 @@ async fn manage_loops_dynamic_tool_is_served_by_the_loop_controller_in_embedded_
 async fn upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_mode() -> Result<()>
 {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
-    let mut app_server =
+    let app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     // Upstream delegation tool (fork_thread): the upstream gate must stay

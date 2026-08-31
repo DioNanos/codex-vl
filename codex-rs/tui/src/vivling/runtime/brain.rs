@@ -179,7 +179,17 @@ impl Vivling {
         &self,
         state: &VivlingState,
     ) -> Result<(), VivlingReadinessReason> {
-        if matches!(self.shadow.lifecycle, VivlingLifecyclePhase::Unavailable) {
+        Self::vivling_runnable_from(&self.shadow.lifecycle, state)
+    }
+
+    /// Variante statica per i call-site che tengono `&mut self.state` e non
+    /// possono rideclinare `&self` (owner identity): la fase si clona prima
+    /// del mut-borrow.
+    pub(crate) fn vivling_runnable_from(
+        lifecycle: &VivlingLifecyclePhase,
+        state: &VivlingState,
+    ) -> Result<(), VivlingReadinessReason> {
+        if matches!(lifecycle, VivlingLifecyclePhase::Unavailable) {
             return Err(VivlingReadinessReason::WrapperUnavailable);
         }
         if state.stage() != Stage::Adult {
@@ -193,9 +203,10 @@ impl Vivling {
 
     pub(crate) fn active_loop_owner_identity(&mut self) -> Result<(String, String), String> {
         self.ensure_hatched()?;
+        let phase = self.shadow.lifecycle.clone();
         let state = self.state.as_mut().expect("state checked");
         state.apply_decay(Utc::now());
-        if let Err(reason) = self.vivling_runnable(state) {
+        if let Err(reason) = Self::vivling_runnable_from(&phase, state) {
             return Err(match reason {
                 VivlingReadinessReason::WrapperUnavailable => {
                     "Vivling runtime is not available.".to_string()
