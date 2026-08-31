@@ -40,6 +40,14 @@ fn load_vivling_skills(roster_dir: &Path, vivling_id: &str) -> Vec<VivlingSkill>
     }
 }
 
+/// codex-vl T0 — prima causa di non-runnability (log per-tick R3 / gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VivlingReadinessReason {
+    WrapperUnavailable,
+    NotAdult,
+    BrainDisabled,
+}
+
 impl Vivling {
     pub(crate) fn prepare_assist_request(
         &mut self,
@@ -161,15 +169,44 @@ impl Vivling {
         })
     }
 
+    /// codex-vl T0 — readiness eseguibile del Vivling, definizione unica
+    /// condivisa (resolver T1, gate Manage T5, fondazione T0): fase wrapper
+    /// disponibile (non Unavailable) + stato Adult + brain abilitato.
+    /// `Ok(())` = runnable; `Err(reason)` porta la prima causa, per il log
+    /// per-tick e per i messaggi dei gate (i call-site mantengono i loro
+    /// testi originali).
+    pub(crate) fn vivling_runnable(
+        &self,
+        state: &VivlingState,
+    ) -> Result<(), VivlingReadinessReason> {
+        if matches!(self.shadow.lifecycle, VivlingLifecyclePhase::Unavailable) {
+            return Err(VivlingReadinessReason::WrapperUnavailable);
+        }
+        if state.stage() != Stage::Adult {
+            return Err(VivlingReadinessReason::NotAdult);
+        }
+        if !state.brain_enabled {
+            return Err(VivlingReadinessReason::BrainDisabled);
+        }
+        Ok(())
+    }
+
     pub(crate) fn active_loop_owner_identity(&mut self) -> Result<(String, String), String> {
         self.ensure_hatched()?;
         let state = self.state.as_mut().expect("state checked");
         state.apply_decay(Utc::now());
-        if state.stage() != Stage::Adult {
-            return Err("Vivling loop ownership unlocks only at level 60.".to_string());
-        }
-        if !state.brain_enabled {
-            return Err("Enable the Vivling brain first with `/vivling brain on`.".to_string());
+        if let Err(reason) = self.vivling_runnable(state) {
+            return Err(match reason {
+                VivlingReadinessReason::WrapperUnavailable => {
+                    "Vivling runtime is not available.".to_string()
+                }
+                VivlingReadinessReason::NotAdult => {
+                    "Vivling loop ownership unlocks only at level 60.".to_string()
+                }
+                VivlingReadinessReason::BrainDisabled => {
+                    "Enable the Vivling brain first with `/vivling brain on`.".to_string()
+                }
+            });
         }
         // Memory V2 §8.1 (P0.2): a missing `brain_profile` no longer
         // blocks loop ownership. The dispatcher will fall back to
@@ -186,14 +223,18 @@ impl Vivling {
             .load_state_for_id(owner_vivling_id)
             .map_err(|err| err.to_string())?
             .ok_or_else(|| format!("Vivling owner `{owner_vivling_id}` is missing on disk."))?;
-        if state.stage() != Stage::Adult {
-            return Err(format!("Vivling owner `{}` is not adult yet.", state.name));
-        }
-        if !state.brain_enabled {
-            return Err(format!(
-                "Vivling owner `{}` has brain disabled.",
-                state.name
-            ));
+        if let Err(reason) = self.vivling_runnable(&state) {
+            return Err(match reason {
+                VivlingReadinessReason::WrapperUnavailable => {
+                    "Vivling runtime is not available.".to_string()
+                }
+                VivlingReadinessReason::NotAdult => {
+                    format!("Vivling owner `{}` is not adult yet.", state.name)
+                }
+                VivlingReadinessReason::BrainDisabled => {
+                    format!("Vivling owner `{}` has brain disabled.", state.name)
+                }
+            });
         }
         // Memory V2 §8.1 (P0.2): inheritance rule. SessionDefault when
         // no profile is pinned; the dispatcher resolves to `config.model`.
