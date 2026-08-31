@@ -115,6 +115,7 @@ struct ShadowState {
     live_context: Option<VivlingLiveContext>,
     crt_frame_target: crate::vl::crt::FrameTarget,
     startup_dispatched: bool,
+    crt_first_dispatch_completed: bool,
     session_chat_turns: u32,
 }
 
@@ -134,6 +135,7 @@ impl ShadowState {
                 crate::vl::crt::PacingProbe::from_std_env(),
             ),
             startup_dispatched: false,
+            crt_first_dispatch_completed: false,
             session_chat_turns: 0,
         }
     }

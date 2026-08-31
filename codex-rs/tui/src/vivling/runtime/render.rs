@@ -91,7 +91,7 @@ impl Vivling {
     }
 
     fn crt_elapsed_ms(&self, now: Instant) -> u64 {
-        let started = self.active_started_at.get().unwrap_or(now);
+        let started = self.shadow.active_started_at.unwrap_or(now);
         now.saturating_duration_since(started).as_millis() as u64
     }
 }

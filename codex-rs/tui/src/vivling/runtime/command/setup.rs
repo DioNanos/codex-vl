@@ -18,7 +18,6 @@ impl Vivling {
             msa: None,
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
-            crt_first_dispatch_completed: Cell::new(false),
             shadow: ShadowState::with_lifecycle(VivlingLifecyclePhase::Unavailable),
         }
     }
