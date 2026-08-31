@@ -46,7 +46,7 @@ impl Vivling {
         task: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: load the planner-written skills sidecar
         // (Step 8.B output) BEFORE composing the prompt. Best-effort —
         // missing/malformed sidecar yields an empty list.
@@ -107,7 +107,7 @@ impl Vivling {
         text: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: same best-effort sidecar load as assist.
         let roster_dir = self.roster_dir();
         let skills = match (roster_dir.as_ref(), self.state.as_ref()) {
@@ -204,7 +204,7 @@ impl Vivling {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&job.prompt_text)
             .to_string();
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: load owner's skills sidecar (best-effort).
         let skills = self
             .roster_dir()
@@ -323,7 +323,6 @@ impl Vivling {
     pub(crate) fn record_loop_event(&mut self, event: VivlingLoopEvent) -> Result<(), String> {
         let live_summary = self
             .shadow
-            .borrow()
             .live_context
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
@@ -363,7 +362,6 @@ impl Vivling {
     pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) -> Result<(), String> {
         let live_summary = self
             .shadow
-            .borrow()
             .live_context
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
@@ -494,7 +492,7 @@ impl Vivling {
         // this TUI session has resolved (success). Flip the gate that
         // hides state-persistent CRT fallbacks; from now on the chain
         // falls back through `last_work_summary` etc. like before.
-        self.shadow.borrow_mut().crt_first_dispatch_completed = true;
+        self.shadow.crt_first_dispatch_completed = true;
         if self.active_vivling_id.as_deref() == Some(vivling_id)
             && let Some(state) = self.state.as_mut()
         {
@@ -530,7 +528,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -548,7 +546,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh_forced(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -581,7 +579,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_bootstrap_expression(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        if self.shadow.borrow().startup_dispatched {
+        if self.shadow.startup_dispatched {
             return None;
         }
         if self.state.is_none() {
@@ -589,8 +587,8 @@ impl Vivling {
         }
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
-        self.shadow.borrow_mut().startup_dispatched = true;
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        self.shadow.startup_dispatched = true;
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -610,7 +608,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_loop_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.shadow.borrow().live_context.clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -637,7 +635,7 @@ impl Vivling {
         // the success path: a stalled / failed dispatch must not
         // freeze the CRT into safety-template-only mode forever, so
         // unlock the persistent fallbacks once any attempt completes.
-        self.shadow.borrow_mut().crt_first_dispatch_completed = true;
+        self.shadow.crt_first_dispatch_completed = true;
         let mut state = self
             .load_state_for_id(vivling_id)
             .map_err(|err| err.to_string())?

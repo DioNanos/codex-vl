@@ -95,7 +95,7 @@ impl ChatWidget {
     /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
     /// in volo. Inoltra al `BottomPane`/wrapper; `false` se uno è già in corso.
     pub(crate) fn try_begin_vivling_expression(
-        &self,
+        &mut self,
         kind: crate::vivling::ExpressionKind,
     ) -> bool {
         self.bottom_pane.try_begin_vivling_expression(kind)

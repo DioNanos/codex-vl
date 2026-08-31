@@ -19,9 +19,7 @@ impl Vivling {
             crt_config: VivlingCrtConfig::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
             crt_first_dispatch_completed: Cell::new(false),
-            shadow: RefCell::new(ShadowState::with_lifecycle(
-                VivlingLifecyclePhase::Unavailable,
-            )),
+            shadow: ShadowState::with_lifecycle(VivlingLifecyclePhase::Unavailable),
         }
     }
 
@@ -34,8 +32,7 @@ impl Vivling {
         self.animations_enabled = animations_enabled;
         // Re-detect frame pacing once we know the runtime is wired; the
         // probe is cheap enough to redo here.
-        self.shadow.borrow_mut().crt_frame_target =
-            FrameTarget::detect(PacingProbe::from_std_env());
+        self.shadow.crt_frame_target = FrameTarget::detect(PacingProbe::from_std_env());
     }
 
     pub(crate) fn configure(&mut self, codex_home: &Path, auth_mode: AuthCredentialsStoreMode) {
@@ -63,10 +60,10 @@ impl Vivling {
             // needed to spawn the background LLM task. Keeping the
             // flag here lets `Vivling` (sync, no tokio context) signal
             // "needs bootstrap" without owning the dispatch itself.
-            self.shadow.borrow_mut().startup_dispatched = false;
+            self.shadow.startup_dispatched = false;
         }
         // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
-        self.shadow.borrow_mut().lifecycle.set_available();
+        self.shadow.lifecycle.set_available();
     }
 
     fn maybe_backfill_msa_index(&self) {
@@ -91,10 +88,10 @@ impl Vivling {
         self.visible_state().is_some()
     }
 
-    pub(crate) fn set_task_running(&self, running: bool) {
+    pub(crate) fn set_task_running(&mut self, running: bool) {
         // Step 12.C — la FSM di fase è ora sorgente di verità (flag legacy rimosso).
         {
-            let mut phase = self.shadow.borrow_mut().lifecycle;
+            let phase = &mut self.shadow.lifecycle;
             phase.set_available(); // configure() precede sempre un task
             if running {
                 phase.begin_task(std::time::Instant::now());
@@ -111,29 +108,29 @@ impl Vivling {
 
     /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
     pub(crate) fn is_task_running(&self) -> bool {
-        self.shadow.borrow().lifecycle.is_task_running()
+        self.shadow.lifecycle.is_task_running()
     }
 
     /// Apre un dispatch di espressione se nessuno è in volo. false (skip) altrimenti.
-    pub(crate) fn try_begin_expression(&self, kind: ExpressionKind) -> bool {
-        if self.shadow.borrow().expression_in_flight.is_some() {
+    pub(crate) fn try_begin_expression(&mut self, kind: ExpressionKind) -> bool {
+        if self.shadow.expression_in_flight.is_some() {
             false
         } else {
-            self.shadow.borrow_mut().expression_in_flight = Some(kind);
+            self.shadow.expression_in_flight = Some(kind);
             true
         }
     }
 
     /// Chiude il dispatch in volo (no-op se nessuno). Fail-safe: invocato da
     /// ENTRAMBI i completion handler (success + failure).
-    pub(crate) fn finish_expression(&self) {
-        self.shadow.borrow_mut().expression_in_flight = None;
+    pub(crate) fn finish_expression(&mut self) {
+        self.shadow.expression_in_flight = None;
     }
 
     /// Step 12.D / test helper: stato del gate di espressione.
     #[allow(dead_code)]
     pub(crate) fn expression_in_flight(&self) -> bool {
-        self.shadow.borrow().expression_in_flight.is_some()
+        self.shadow.expression_in_flight.is_some()
     }
 
     /// Memory V2 Step 12.B.P — Ctrl+J discoverability check. Called
@@ -147,12 +144,8 @@ impl Vivling {
     /// again for this Vivling.
     pub(crate) fn chat_panel_hint(&mut self, sidebar_opened: bool) -> Option<String> {
         const HINT_THRESHOLD: u32 = 3;
-        let turns = self
-            .shadow
-            .borrow_mut()
-            .session_chat_turns
-            .saturating_add(1);
-        self.shadow.borrow_mut().session_chat_turns = turns;
+        let turns = self.shadow.session_chat_turns.saturating_add(1);
+        self.shadow.session_chat_turns = turns;
         if sidebar_opened {
             return None;
         }
@@ -188,61 +181,55 @@ impl Vivling {
         Some(hint)
     }
 
-    pub(crate) fn set_live_context(&self, context: Option<VivlingLiveContext>) {
-        if self.shadow.borrow().live_context == context {
+    pub(crate) fn set_live_context(&mut self, context: Option<VivlingLiveContext>) {
+        if self.shadow.live_context == context {
             return;
         }
-        self.shadow.borrow_mut().live_context = context;
+        self.shadow.live_context = context;
         self.request_frame();
     }
 
     /// codex-vl T0 12.C-lite — CRT scene activity (ex direct field write
     /// in `BottomPane::set_vivling_activity`).
-    pub(crate) fn set_activity(&self, activity: Option<crate::vl::VivlingActivity>) {
-        self.shadow.borrow_mut().activity = activity;
+    pub(crate) fn set_activity(&mut self, activity: Option<crate::vl::VivlingActivity>) {
+        self.shadow.activity = activity;
     }
 
     pub(crate) fn activity(&self) -> Option<crate::vl::VivlingActivity> {
-        *self.shadow.borrow().activity
+        self.shadow.activity
     }
 
-    pub(crate) fn set_animation_text(&self, text: String) {
+    pub(crate) fn set_animation_text(&mut self, text: String) {
         self.set_animation_text_at(text, Instant::now());
     }
 
-    pub(crate) fn set_animation_text_at(&self, text: String, now: Instant) {
+    pub(crate) fn set_animation_text_at(&mut self, text: String, now: Instant) {
         let text = text.trim().to_string();
         if text.is_empty() {
             self.clear_animation_text();
             return;
         }
-        {
-            let mut shadow = self.shadow.borrow_mut();
-            shadow.animation_text = Some(text.clone());
-            shadow.animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
-        }
+        self.shadow.animation_text = Some(text.clone());
+        self.shadow.animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
         self.request_frame();
     }
 
     pub(crate) fn current_animation_text_at(&self, now: Instant) -> Option<String> {
-        let shadow = self.shadow.borrow();
-        let expired = shadow
+        let expired = self
+            .shadow
             .animation_text_expires_at
             .is_some_and(|deadline| deadline <= now);
         if expired {
-            drop(shadow);
-            self.clear_animation_text();
+            // codex-vl T0: la pulizia è differita al `tick` (&mut); qui la
+            // lettura resta pura perché il render path è `&self`.
             return None;
         }
-        shadow.animation_text.clone()
+        self.shadow.animation_text.clone()
     }
 
-    fn clear_animation_text(&self) {
-        {
-            let mut shadow = self.shadow.borrow_mut();
-            shadow.animation_text = None;
-            shadow.animation_text_expires_at = None;
-        }
+    fn clear_animation_text(&mut self) {
+        self.shadow.animation_text = None;
+        self.shadow.animation_text_expires_at = None;
         self.request_frame();
     }
 }

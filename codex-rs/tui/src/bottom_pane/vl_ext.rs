@@ -188,7 +188,7 @@ impl BottomPane {
     /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
     /// in volo. Inoltra al wrapper; `false` se uno è già in corso.
     pub(crate) fn try_begin_vivling_expression(
-        &self,
+        &mut self,
         kind: crate::vivling::ExpressionKind,
     ) -> bool {
         self.vivling.try_begin_expression(kind)
@@ -388,6 +388,9 @@ impl BottomPane {
         sidebar_collapsed: bool,
         loop_tick_running: bool,
     ) -> Option<crate::vl::TickResult> {
+        // codex-vl T0 12.C-lite — per-frame maintenance del wrapper
+        // (expiry animazione + frame pacing), estratta dal render path.
+        self.vivling.tick(std::time::Instant::now());
         self.ensure_vl_lifecycle();
         // codex-vl care-effects boundary adapter: read bond tone from the
         // vivling domain and translate to a lifecycle-local enum. The
@@ -449,16 +452,16 @@ impl BottomPane {
         self.composer.active_agent_label()
     }
 
-    pub(crate) fn set_vivling_animation_text(&self, text: String) {
+    pub(crate) fn set_vivling_animation_text(&mut self, text: String) {
         self.vivling.set_animation_text(text);
     }
 
-    pub(crate) fn set_vivling_activity(&self, activity: crate::vl::VivlingActivity) {
+    pub(crate) fn set_vivling_activity(&mut self, activity: crate::vl::VivlingActivity) {
         self.vivling.set_activity(Some(activity));
     }
 
     pub(crate) fn set_vivling_live_context(
-        &self,
+        &mut self,
         context: Option<crate::vivling::VivlingLiveContext>,
     ) {
         self.vivling.set_live_context(context);
@@ -538,7 +541,7 @@ impl BottomPane {
     /// the Vivling companion so its idle/working animation stays in sync
     /// with the upstream task lifecycle. Extracted from
     /// `BottomPane::set_task_running` in iter C2 (bottom_pane VL boundary).
-    pub(super) fn codex_vl_on_task_running(&self, running: bool) {
+    pub(super) fn codex_vl_on_task_running(&mut self, running: bool) {
         self.vivling.set_task_running(running);
     }
 

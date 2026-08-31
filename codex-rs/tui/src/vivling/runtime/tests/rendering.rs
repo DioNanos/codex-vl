@@ -80,7 +80,7 @@ fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
     let reloaded = configured_vivling(temp.path());
     let state = reloaded.state.as_ref().expect("reloaded state");
     assert_eq!(state.last_message.as_deref(), Some(original.as_str()));
-    assert!(reloaded.animation_text.borrow().is_none());
+    assert!(reloaded.shadow.animation_text.is_none());
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn animation_text_expires_without_touching_saved_last_message() {
             .current_animation_text_at(now + ANIMATION_TEXT_TTL)
             .is_none()
     );
-    assert!(vivling.animation_text.borrow().is_none());
+    assert!(vivling.shadow.animation_text.is_none());
     assert_eq!(
         vivling
             .state

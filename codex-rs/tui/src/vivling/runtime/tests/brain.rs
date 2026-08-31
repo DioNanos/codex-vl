@@ -1272,7 +1272,7 @@ fn bootstrap_dispatches_on_first_load() {
         state.work_memory = saturated_memory_entries();
     }
     assert!(
-        !vivling.shadow.borrow().startup_dispatched,
+        !vivling.shadow.startup_dispatched,
         "fresh wrapper starts with flag=false"
     );
     let request = vivling
@@ -1280,7 +1280,7 @@ fn bootstrap_dispatches_on_first_load() {
         .expect("first bootstrap dispatch must produce a request");
     assert!(request.bootstrap, "bootstrap request must carry the flag");
     assert!(
-        vivling.shadow.borrow().startup_dispatched,
+        vivling.shadow.startup_dispatched,
         "flag must be set after dispatch"
     );
 }
@@ -1327,7 +1327,7 @@ fn bootstrap_respects_cache_fresh_skip() {
         "fresh cache must short-circuit bootstrap dispatch"
     );
     assert!(
-        vivling.shadow.borrow().startup_dispatched,
+        vivling.shadow.startup_dispatched,
         "flag still flips so next frame is a no-op"
     );
 }
@@ -1348,7 +1348,7 @@ fn bootstrap_failure_marks_dispatched_true_to_prevent_loop() {
     let request = vivling.try_dispatch_bootstrap_expression();
     assert!(request.is_none(), "Off mode must refuse the bootstrap");
     assert!(
-        vivling.shadow.borrow().startup_dispatched,
+        vivling.shadow.startup_dispatched,
         "flag must flip on refusal too — no retry on next frame"
     );
 }

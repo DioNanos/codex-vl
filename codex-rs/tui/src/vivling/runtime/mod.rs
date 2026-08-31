@@ -73,8 +73,6 @@ pub(crate) use codex_vivling_core::safety::backup_pre_migration;
 pub(crate) use codex_vivling_core::safety::write_atomic;
 pub(crate) use ratatui::buffer::Buffer;
 pub(crate) use ratatui::layout::Rect;
-pub(crate) use std::cell::Cell;
-pub(crate) use std::cell::RefCell;
 pub(crate) use std::fs;
 pub(crate) use std::io;
 pub(crate) use std::io::Write;
@@ -184,9 +182,9 @@ pub(crate) struct Vivling {
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
     /// turns when the user has never opened the dedicated panel.
-    /// codex-vl T0 12.C-lite — shadow state (privato: v. `ShadowState`);
-    /// `RefCell` transitoria della fase A, appiattita a fine migrazione.
-    shadow: RefCell<ShadowState>,
+    /// codex-vl T0 12.C-lite — shadow state (privato: v. `ShadowState`).
+    /// Unica fonte di verità mutabile: il compilatore è il gate.
+    shadow: ShadowState,
 }
 
 impl Clone for Vivling {
