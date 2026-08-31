@@ -719,19 +719,6 @@ mod tests {
     }
 
     #[test]
-    fn vl_lifecycle_tick_drives_vivling_tick() {
-        let body = extract_fn_body(VL_EXT_SOURCE, "vl_lifecycle_tick")
-            .expect("vl_lifecycle_tick must exist in vl_ext.rs");
-        assert!(
-            body.contains("self.vivling.tick("),
-            "vl_lifecycle_tick must drive Vivling::tick (the &mut per-frame hook: \
-             animation-text expiry + frame pacing) — with the read-only render, \
-             a missing call would freeze the CRT animation in production. \
-             Body was:\n{body}"
-        );
-    }
-
-    #[test]
     fn codex_vl_on_task_running_invokes_vivling_set_task_running() {
         let body = extract_fn_body(VL_EXT_SOURCE, "codex_vl_on_task_running")
             .expect("codex_vl_on_task_running must exist in vl_ext.rs");

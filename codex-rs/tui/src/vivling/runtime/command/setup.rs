@@ -93,7 +93,15 @@ impl Vivling {
             let phase = &mut self.shadow.lifecycle;
             phase.set_available(); // configure() precede sempre un task
             if running {
-                phase.begin_task(std::time::Instant::now());
+                // codex-vl T0 — regressione presa da
+                // footer_pose_animates_while_visible_and_idle: la FSM entra in
+                // task PRIMA di mark_recent_activity, che già vedeva
+                // is_task_running()=true e non seminava mai il clock della
+                // pose (frame congelato). Il seed avviene qui, all'inizio
+                // del task: il clock di animazione parte con la FSM.
+                let now = std::time::Instant::now();
+                phase.begin_task(now);
+                self.shadow.active_started_at = Some(now);
             } else {
                 phase.end_task();
             }
