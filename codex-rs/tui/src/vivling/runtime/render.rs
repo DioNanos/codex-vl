@@ -74,8 +74,10 @@ impl Vivling {
         }
 
         let frames = active_footer_sprites_for_species(species, state.stage());
-        // codex-vl T0: read-only — lazy-init e frame pacing sono passati
-        // al `tick` (&mut), chiamato dal lifecycle hook del BottomPane.
+        // codex-vl T0: read-only (salvo CrtAnimationLedger, v. nota di
+        // perimetro su Vivling::crt_animation_ledger) — lazy-init e frame
+        // pacing sono passati al `tick` (&mut), chiamato dal lifecycle hook
+        // del BottomPane.
         let started = self.shadow.active_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let frame_idx =

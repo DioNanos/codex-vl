@@ -1,6 +1,8 @@
 //! codex-vl T0 12.C-lite — pin del cablaggio di ticking.
 //!
-//! Il render del wrapper è read-only (`Renderable::render(&self)`):
+//! Il render del wrapper è read-only salvo `CrtAnimationLedger` (v.
+//! nota di perimetro su `Vivling::crt_animation_ledger` —
+//! `Renderable::render(&self)`):
 //! l'expiry del testo animato e il frame pacing vivono in
 //! `Vivling::tick(&mut)`, invocato da `BottomPane::vl_lifecycle_tick`
 //! nel percorso pre-draw. Questo test pinnia il link; la catena a monte
