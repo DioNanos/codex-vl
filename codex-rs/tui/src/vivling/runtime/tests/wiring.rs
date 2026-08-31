@@ -54,8 +54,10 @@ fn vl_lifecycle_tick_drives_vivling_tick() {
     assert!(
         body.contains("self.vivling.tick("),
         "vl_lifecycle_tick must drive Vivling::tick (the &mut per-frame hook: \
-         animation-text expiry + frame pacing) — with the read-only render, \
-         a missing call would freeze the CRT animation in production. \
+         animation-text expiry + frame pacing) — with the render read-only \
+         (except CrtAnimationLedger, see the perimeter note on \
+         Vivling::crt_animation_ledger), a missing call would freeze the \
+         CRT animation in production. \
          Body was:\n{body}"
     );
 }
