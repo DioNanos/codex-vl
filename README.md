@@ -67,7 +67,7 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.150.1` line is based on the upstream Codex `rust-v0.150.1` stable
+The `0.151.0` line is based on the upstream Codex `rust-v0.151.0` stable
 release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
