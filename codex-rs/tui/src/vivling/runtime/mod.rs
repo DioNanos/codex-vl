@@ -159,6 +159,12 @@ pub(crate) struct Vivling {
     /// when `configure()` is called with a new home.
     pub(crate) crt_config: crate::vl::crt::VivlingCrtConfig,
     /// Per-render transition snapshot generator. Mutated inside `render()`.
+    ///
+    /// codex-vl T0: NOTA DI PERIMETRO (audit 2026-08-31) — è l'unica eccezione
+    /// residua al render read-only: `CrtAnimationLedger` (vl/crt, fuori dal
+    /// perimetro T0) muta il proprio stato per-frame via interior
+    /// mutability, per design. La sua migrazione è tracciata come voce
+    /// separata a registro (post-treno).
     pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
     /// Frame pacing target detected from the runtime environment.
     /// Memory V2 Step 12.B.L — runtime-only flag set the first time a

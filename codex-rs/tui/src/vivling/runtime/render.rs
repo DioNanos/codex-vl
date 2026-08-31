@@ -24,6 +24,9 @@ impl Vivling {
     /// (che è `&self` per il trait `Renderable`): expiry del testo
     /// animato e frame pacing. Chiamata dal lifecycle hook `&mut` del
     /// BottomPane (`vl_lifecycle_tick`).
+    ///
+    /// Il render resta read-only SALVO `CrtAnimationLedger` (per-frame per
+    /// design, fuori dal perimetro T0 — v. la nota sul campo in mod.rs).
     pub(crate) fn tick(&mut self, now: Instant) {
         let shadow = &mut self.shadow;
         if shadow

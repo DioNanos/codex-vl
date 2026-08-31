@@ -100,8 +100,12 @@ impl Vivling {
                 // pose (frame congelato). Il seed avviene qui, all'inizio
                 // del task: il clock di animazione parte con la FSM.
                 let now = std::time::Instant::now();
-                phase.begin_task(now);
-                self.shadow.active_started_at = Some(now);
+                let started_transition = phase.begin_task(now);
+                if started_transition {
+                    // Idempotente: true→true (task già in corso) non riazzera
+                    // il clock della pose; solo la transizione reale lo semina.
+                    self.shadow.active_started_at = Some(now);
+                }
             } else {
                 phase.end_task();
             }
