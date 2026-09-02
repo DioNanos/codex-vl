@@ -331,6 +331,7 @@ pub(super) async fn handle_loop_tick_finished(
     thread_id: ThreadId,
     job_id: String,
     occurrence_ms: Option<i64>,
+    started_ms: i64,
     result: Result<VivlingLoopTickResult, String>,
 ) -> color_eyre::Result<()> {
     // FIX-G — the tick completion path resolves ONLY the exact scope of the
@@ -451,21 +452,24 @@ pub(super) async fn handle_loop_tick_finished(
             app.refresh_loop_jobs(thread_id).await?;
             // FIX-J (3) — the failed tick is finished in-process (no remove on
             // this path, the job is alive): persist-before-emit summary.
-            if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
-                app,
-                &state_runtime,
-                &job,
-                descriptor.as_ref(),
-                None,
-                super::summary::LoopManager::Main,
-                "tick_failed".to_string(),
-                super::summary::LoopTickOutcome::Failed,
-                now.saturating_sub(job.last_run_ms.unwrap_or(now)),
-            )
-            .await
+            if let Some(job_after) = state_runtime
+                .get_thread_loop_job_by_id(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?
             {
-                app.app_event_tx
-                    .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+                let _ = super::notify::persist_summary_with_outcome(
+                    app,
+                    &state_runtime,
+                    &job_after,
+                    descriptor.as_ref(),
+                    None,
+                    super::summary::LoopManager::Main,
+                    "tick_failed".to_string(),
+                    occurrence_ms,
+                    super::summary::LoopTickOutcome::Failed,
+                    started_ms,
+                )
+                .await;
             }
             return Ok(());
         }
@@ -510,6 +514,60 @@ pub(super) async fn handle_loop_tick_finished(
                 .get_loop_delegation(thread_id, &job.id)
                 .await
                 .map_err(loop_state_error)?;
+            let action_request = if managed_source.is_some()
+                && delegation
+                    .as_ref()
+                    .is_some_and(|delegation| managed_action_gate_is_green(app, delegation))
+            {
+                tick_action_request(thread_id, &job, status, &result)
+                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+            } else {
+                None
+            };
+
+            // Update the runtime row before building the summary. A successful
+            // recurring tick must report the post-tick next occurrence; the
+            // pre-dispatch snapshot is only safe before destructive actions.
+            let (next_run_ms, pending_tick, last_error) = match status {
+                LOOP_STATUS_PROGRESS => {
+                    let next_run_ms = descriptor.as_ref().map(|descriptor| {
+                        super::state::next_run_after_tick_ms(
+                            &super::state::SchedulePlan {
+                                schedule_kind: &descriptor.schedule_kind,
+                                interval_seconds: job.interval_seconds,
+                                schedule_at: descriptor.schedule_at.as_deref(),
+                                tz: descriptor.tz.as_deref(),
+                                one_shot_at_ms: descriptor.one_shot_at_ms,
+                            },
+                            now,
+                        )
+                    });
+                    (next_run_ms, false, None)
+                }
+                LOOP_STATUS_BLOCKED => (None, true, Some(result.message.clone())),
+                LOOP_STATUS_DONE => (None, false, None),
+                _ => unreachable!(),
+            };
+            state_runtime
+                .update_thread_loop_job_runtime(
+                    thread_id,
+                    &job.id,
+                    codex_state::ThreadLoopJobRuntimeUpdate {
+                        next_run_ms,
+                        last_run_ms: Some(now),
+                        last_status: Some(status.to_string()),
+                        last_error,
+                        pending_tick,
+                        updated_at_ms: now,
+                    },
+                )
+                .await
+                .map_err(loop_state_error)?;
+            let job_after = state_runtime
+                .get_thread_loop_job_by_id(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+
             // FIX-J (3) — persist-before-mutate: the summary (and the R3
             // pending) is durable BEFORE the completion action can remove or
             // disable the job (auto_remove_on_completion defaults to true, so
@@ -531,42 +589,23 @@ pub(super) async fn handle_loop_tick_finished(
                     "not_delegated".to_string(),
                 ),
             };
-            if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
-                app,
-                &state_runtime,
-                &job,
-                descriptor.as_ref(),
-                delegation.as_ref(),
-                manager,
-                manager_reason,
-                summary_outcome,
-                now.saturating_sub(job.last_run_ms.unwrap_or(now)),
-            )
-            .await
-            {
-                app.app_event_tx
-                    .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+            if let Some(job_after) = job_after.as_ref() {
+                let _ = super::notify::persist_summary_with_outcome(
+                    app,
+                    &state_runtime,
+                    job_after,
+                    descriptor.as_ref(),
+                    delegation.as_ref(),
+                    manager,
+                    manager_reason,
+                    occurrence_ms,
+                    summary_outcome,
+                    started_ms,
+                )
+                .await;
             }
 
-            let action_request = if managed_source.is_some()
-                && delegation
-                    .as_ref()
-                    .is_some_and(|delegation| managed_action_gate_is_green(app, delegation))
-            {
-                tick_action_request(thread_id, &job, status, &result)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?
-            } else {
-                None
-            };
-            let mut skipped_runtime_update = false;
-
             if let Some(request) = action_request {
-                if matches!(
-                    &request,
-                    LoopCommandRequest::Remove { .. } | LoopCommandRequest::Trigger { .. }
-                ) {
-                    skipped_runtime_update = true;
-                }
                 if let Some(source) = managed_source.clone() {
                     let _ = jobs::run_command_request(app, thread_id, request, source).await?;
                 } else {
@@ -620,50 +659,7 @@ pub(super) async fn handle_loop_tick_finished(
                 /*hint*/ None,
             );
 
-            let updated_job = state_runtime
-                .get_thread_loop_job_by_id(thread_id, &job.id)
-                .await
-                .map_err(loop_state_error)?;
-            if let Some(updated_job) = updated_job
-                && !skipped_runtime_update
-            {
-                let (next_run_ms, pending_tick, last_error) = match status {
-                    LOOP_STATUS_PROGRESS => {
-                        // T3/T5 — one scheduler truth drives every schedule;
-                        // a successful one-shot is terminal and never re-arms.
-                        let next_run_ms = descriptor.as_ref().map(|descriptor| {
-                            super::state::next_run_after_tick_ms(
-                                &super::state::SchedulePlan {
-                                    schedule_kind: &descriptor.schedule_kind,
-                                    interval_seconds: updated_job.interval_seconds,
-                                    schedule_at: descriptor.schedule_at.as_deref(),
-                                    tz: descriptor.tz.as_deref(),
-                                    one_shot_at_ms: descriptor.one_shot_at_ms,
-                                },
-                                now,
-                            )
-                        });
-                        (next_run_ms, false, None)
-                    }
-                    LOOP_STATUS_BLOCKED => (None, true, Some(result.message.clone())),
-                    LOOP_STATUS_DONE => (None, false, None),
-                    _ => unreachable!(),
-                };
-                state_runtime
-                    .update_thread_loop_job_runtime(
-                        thread_id,
-                        &updated_job.id,
-                        codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms,
-                            last_run_ms: Some(now),
-                            last_status: Some(status.to_string()),
-                            last_error,
-                            pending_tick,
-                            updated_at_ms: now,
-                        },
-                    )
-                    .await
-                    .map_err(loop_state_error)?;
+            if let Some(updated_job) = job_after {
                 let runtime_state = if !updated_job.enabled {
                     Some("disabled")
                 } else if pending_tick {
@@ -811,6 +807,7 @@ pub(super) fn run_loop_tick(
     thread_id: ThreadId,
     job_id: String,
     occurrence_ms: Option<i64>,
+    started_ms: i64,
     request: crate::vivling::VivlingLoopTickRequest,
     runner_model: Option<String>,
 ) {
@@ -838,6 +835,7 @@ pub(super) fn run_loop_tick(
             thread_id,
             job_id,
             occurrence_ms,
+            started_ms,
             result,
         });
     });

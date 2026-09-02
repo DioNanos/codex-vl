@@ -630,6 +630,7 @@ pub(super) async fn process_submission(
             thread_id,
             job_id: job.id.clone(),
             occurrence_ms,
+            started_ms,
             request,
             runner_model,
         });
@@ -712,6 +713,7 @@ pub(super) async fn process_submission(
                     thread_id,
                     job_id: job.id.clone(),
                     occurrence_ms,
+                    started_ms,
                     request,
                     runner_model: None,
                 });

@@ -47,6 +47,8 @@ pub(crate) enum LoopNotifyChannel {
     /// stitching test). Never constructed outside tests.
     #[cfg(test)]
     TestSink(std::sync::Arc<std::sync::atomic::AtomicBool>),
+    #[cfg(test)]
+    TestSinkFailure,
 }
 
 impl LoopNotifyChannel {
@@ -88,6 +90,23 @@ pub(crate) async fn persist_and_queue(
         .await?;
     if first {
         enqueue_or_drop(LOOP_SUMMARY_TX.get(), summary);
+    }
+    Ok(first)
+}
+
+/// Persist first, then emit the in-process event exactly once. Callers must
+/// not re-emit the returned summary: the persistence wrapper owns this seam.
+pub(super) async fn persist_and_emit(
+    app: &mut App,
+    state_runtime: &codex_state::StateRuntime,
+    summary: &LoopTickSummary,
+) -> anyhow::Result<bool> {
+    let first = persist_and_queue(state_runtime, summary).await?;
+    if first {
+        app.app_event_tx
+            .send_vl(crate::vl::VlEvent::LoopTickSummary {
+                summary: summary.clone(),
+            });
     }
     Ok(first)
 }
@@ -181,10 +200,7 @@ pub(super) async fn record_sync_tick_summary(
     )
     .await
     {
-        Ok(Some(summary)) => {
-            app.app_event_tx
-                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
-        }
+        Ok(Some(_summary)) => {}
         Ok(None) => {}
         Err(err) => tracing::warn!(
             target: "codex_vl::loop_summary",
@@ -287,13 +303,7 @@ pub(crate) async fn persist_and_queue_tick(
         started_ms,
         loop_now_ms(),
     );
-    let first = persist_and_queue(state_runtime, &summary).await?;
-    if first {
-        app.app_event_tx
-            .send_vl(crate::vl::VlEvent::LoopTickSummary {
-                summary: summary.clone(),
-            });
-    }
+    let first = persist_and_emit(app, state_runtime, &summary).await?;
     Ok(first.then_some(summary))
 }
 
@@ -309,6 +319,7 @@ pub(super) async fn persist_summary_with_outcome(
     delegation: Option<&codex_state::LoopDelegation>,
     manager: LoopManager,
     manager_reason: String,
+    occurrence_ms: Option<i64>,
     outcome: LoopTickOutcome,
     started_ms: i64,
 ) -> anyhow::Result<Option<LoopTickSummary>> {
@@ -318,19 +329,13 @@ pub(super) async fn persist_summary_with_outcome(
         delegation,
         manager,
         manager_reason,
-        job_snapshot.next_run_ms,
+        occurrence_ms,
         /*occurrence_claimed*/ true,
         started_ms,
         loop_now_ms(),
     );
     summary.outcome = outcome;
-    let first = persist_and_queue(state_runtime, &summary).await?;
-    if first {
-        app.app_event_tx
-            .send_vl(crate::vl::VlEvent::LoopTickSummary {
-                summary: summary.clone(),
-            });
-    }
+    let first = persist_and_emit(app, state_runtime, &summary).await?;
     Ok(first.then_some(summary))
 }
 
@@ -393,10 +398,22 @@ async fn deliver_once(
             flag.store(true, std::sync::atomic::Ordering::Release);
             true
         }
+        #[cfg(test)]
+        LoopNotifyChannel::TestSinkFailure => false,
     };
-    let _ = event_id; // consumed by the real channel variants (m2-final wiring)
-    let _ = delivered;
-    let _ = state_runtime;
+    if delivered {
+        if let Err(err) = state_runtime
+            .mark_loop_notification_delivered(event_id)
+            .await
+        {
+            tracing::warn!(
+                target: "codex_vl::loop_summary",
+                error = %err,
+                event_id = %event_id,
+                "delivered loop notification could not be acknowledged"
+            );
+        }
+    }
 }
 
 /// FIX-J (1) — starts (once per process) the bounded queue and the separate
@@ -429,6 +446,7 @@ mod tests {
     use super::LoopTickOutcome;
     use super::LoopTickSummary;
     use super::NextRun;
+    use super::deliver_once;
     use super::derive_outcome;
     use super::enqueue_or_drop;
     use super::enqueue_or_drop_result;
@@ -481,6 +499,22 @@ mod tests {
             derive_outcome(&job(false, None, None), "one_shot", false),
             DerivedOutcome::OneShotExpired
         );
+    }
+
+    #[test]
+    fn summary_duration_uses_the_dispatch_start_timestamp() {
+        let summary = super::build_tick_summary(
+            &job(false, Some(60), None),
+            None,
+            None,
+            LoopManager::Main,
+            "not_delegated".to_string(),
+            Some(100),
+            true,
+            1_000,
+            1_025,
+        );
+        assert_eq!(summary.duration_ms, 25);
     }
 
     // R11 gate 2 — a full bounded queue drops the emission (Err) without
@@ -584,6 +618,61 @@ mod tests {
         assert!(
             pending.is_empty(),
             "a delivered pending row must leave the pending set"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_or_absent_delivery_keeps_the_pending_row() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let state_runtime = std::sync::Arc::new(
+            codex_state::StateRuntime::init(
+                codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?,
+        );
+        state_runtime
+            .record_loop_notification_with_pending(
+                codex_state::LoopNotificationRecord {
+                    event_id: "evt-failed-delivery".to_string(),
+                    thread_id: ThreadId::new(),
+                    job_id: "job-f".to_string(),
+                    label: "failed-delivery".to_string(),
+                    kind: codex_state::LOOP_NOTIFICATION_KIND_SUMMARY,
+                    summary_json: "{}".to_string(),
+                    created_at_ms: 1_700_000_000_000,
+                },
+                Some(codex_state::LoopNotificationRecord {
+                    event_id: "pending:evt-failed-delivery".to_string(),
+                    thread_id: ThreadId::new(),
+                    job_id: "job-f".to_string(),
+                    label: "failed-delivery".to_string(),
+                    kind: codex_state::LOOP_NOTIFICATION_KIND_PENDING,
+                    summary_json: "{}".to_string(),
+                    created_at_ms: 1_700_000_000_000,
+                }),
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+        deliver_once(
+            &state_runtime,
+            "pending:evt-failed-delivery",
+            "failed-delivery",
+            &LoopNotifyChannel::Absent,
+        )
+        .await;
+        deliver_once(
+            &state_runtime,
+            "pending:evt-failed-delivery",
+            "failed-delivery",
+            &LoopNotifyChannel::TestSinkFailure,
+        )
+        .await;
+        assert_eq!(
+            state_runtime.list_pending_loop_notifications().await?.len(),
+            1
         );
         Ok(())
     }

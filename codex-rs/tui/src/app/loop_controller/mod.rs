@@ -258,6 +258,7 @@ impl App {
         thread_id: ThreadId,
         job_id: String,
         occurrence_ms: Option<i64>,
+        started_ms: i64,
         result: Result<crate::vivling::VivlingLoopTickResult, String>,
     ) -> color_eyre::Result<()> {
         vivling_delegation::handle_loop_tick_finished(
@@ -265,6 +266,7 @@ impl App {
             thread_id,
             job_id,
             occurrence_ms,
+            started_ms,
             result,
         )
         .await
@@ -294,6 +296,7 @@ impl App {
         thread_id: ThreadId,
         job_id: String,
         occurrence_ms: Option<i64>,
+        started_ms: i64,
         request: crate::vivling::VivlingLoopTickRequest,
         runner_model: Option<String>,
     ) {
@@ -302,6 +305,7 @@ impl App {
             thread_id,
             job_id,
             occurrence_ms,
+            started_ms,
             request,
             runner_model,
         );

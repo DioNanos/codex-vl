@@ -158,6 +158,8 @@ pub(crate) enum VlEvent {
         job_id: String,
         /// The claimed occurrence key carried through the async boundary.
         occurrence_ms: Option<i64>,
+        /// Wall-clock timestamp captured immediately before dispatch.
+        started_ms: i64,
         request: VivlingLoopTickRequest,
         /// Explicit runner model for child-agent ticks; `None` preserves the
         /// legacy Vivling/session model path.
@@ -168,6 +170,7 @@ pub(crate) enum VlEvent {
         thread_id: ThreadId,
         job_id: String,
         occurrence_ms: Option<i64>,
+        started_ms: i64,
         result: Result<VivlingLoopTickResult, String>,
     },
     /// Memory V2 Step 12.B.D.2 — start a background Expression LLM

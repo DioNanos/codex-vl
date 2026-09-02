@@ -52,29 +52,82 @@ pub(super) async fn rearm_disarmed_jobs(
         if !descriptor.rearm_on_boot {
             continue;
         }
-        // Armed with a live (never-claimed) occurrence: the timer is real,
-        // nothing to re-arm (idempotent on repeated reloads).
-        if let Some(scheduled_at_ms) = job.next_run_ms {
-            let claimed = state_runtime
+        if job.next_run_ms.is_none()
+            && job.last_status.as_deref() == Some(super::formatting::LOOP_STATUS_EXPIRED)
+        {
+            continue;
+        }
+        let plan = SchedulePlan {
+            schedule_kind: &descriptor.schedule_kind,
+            interval_seconds: job.interval_seconds,
+            schedule_at: descriptor.schedule_at.as_deref(),
+            tz: descriptor.tz.as_deref(),
+            one_shot_at_ms: descriptor.one_shot_at_ms,
+        };
+        let scheduled_at_ms = job.next_run_ms;
+        let claimed = match scheduled_at_ms {
+            Some(scheduled_at_ms) => state_runtime
                 .has_loop_occurrence(&job.id, scheduled_at_ms)
                 .await
+                .map_err(loop_state_error)?,
+            None => false,
+        };
+        // Expiry is checked before the armed/live-occurrence fast path. A
+        // persisted one-shot can be armed across a restart, and must not be
+        // scheduled or claimed after its grace window.
+        if !claimed && super::state::one_shot_expired(&plan, now) {
+            state_runtime
+                .update_thread_loop_job_runtime(
+                    thread_id,
+                    &job.id,
+                    codex_state::ThreadLoopJobRuntimeUpdate {
+                        next_run_ms: None,
+                        last_run_ms: job.last_run_ms,
+                        last_status: Some(super::formatting::LOOP_STATUS_EXPIRED.to_string()),
+                        last_error: None,
+                        pending_tick: false,
+                        updated_at_ms: now,
+                    },
+                )
+                .await
                 .map_err(loop_state_error)?;
-            if !claimed {
-                continue;
+            if let Some(expired_job) = state_runtime
+                .get_thread_loop_job_by_id(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?
+            {
+                let mut summary = super::notify::build_tick_summary(
+                    &expired_job,
+                    Some(&descriptor),
+                    None,
+                    super::summary::LoopManager::Main,
+                    "bootstrap_expired".to_string(),
+                    scheduled_at_ms,
+                    false,
+                    now,
+                    now,
+                );
+                summary.outcome = super::summary::LoopTickOutcome::OneShotExpired;
+                if let Err(err) =
+                    super::notify::persist_and_emit(app, &state_runtime, &summary).await
+                {
+                    tracing::warn!(
+                        target: "codex_vl::loop_summary",
+                        error = %err,
+                        "expired one-shot summary persistence failed"
+                    );
+                }
             }
+            continue;
+        }
+        // Armed with a live (never-claimed) occurrence: the timer is real,
+        // nothing to re-arm (idempotent on repeated reloads).
+        if scheduled_at_ms.is_some() && !claimed {
+            continue;
         }
         // Pure scheduler (T3): interval/at resolve the next future instant;
         // an expired one-shot recomputes to `None` and stays disarmed.
-        let next_run_ms = next_run_at_ms(
-            &SchedulePlan {
-                schedule_kind: &descriptor.schedule_kind,
-                interval_seconds: job.interval_seconds,
-                schedule_at: descriptor.schedule_at.as_deref(),
-                tz: descriptor.tz.as_deref(),
-                one_shot_at_ms: descriptor.one_shot_at_ms,
-            },
-            now,
-        );
+        let next_run_ms = next_run_at_ms(&plan, now);
         let Some(next_run_ms) = next_run_ms else {
             // FIX-J (6) — a one-shot past its grace is terminal (R5.3/R10)
             // but NOT silent at bootstrap: persist the terminal `expired`
@@ -95,13 +148,20 @@ pub(super) async fn rearm_disarmed_jobs(
                     )
                     .await
                     .map_err(loop_state_error)?;
+                let Some(expired_job) = state_runtime
+                    .get_thread_loop_job_by_id(thread_id, &job.id)
+                    .await
+                    .map_err(loop_state_error)?
+                else {
+                    continue;
+                };
                 let mut summary = super::notify::build_tick_summary(
-                    &job,
+                    &expired_job,
                     Some(&descriptor),
                     None,
                     super::summary::LoopManager::Main,
                     "bootstrap_expired".to_string(),
-                    /*occurrence_ms*/ None,
+                    /*occurrence_ms*/ scheduled_at_ms,
                     /*occurrence_claimed*/ false,
                     now,
                     now,
@@ -109,7 +169,9 @@ pub(super) async fn rearm_disarmed_jobs(
                 // The scheduler has already ruled: this is the terminal
                 // expired esito, whatever the row-derived derivation says.
                 summary.outcome = super::summary::LoopTickOutcome::OneShotExpired;
-                if let Err(err) = super::notify::persist_and_queue(&state_runtime, &summary).await {
+                if let Err(err) =
+                    super::notify::persist_and_emit(app, &state_runtime, &summary).await
+                {
                     tracing::warn!(
                         target: "codex_vl::loop_summary",
                         error = %err,
@@ -413,7 +475,7 @@ mod tests {
             .handle_thread_session(test_thread_session(thread_id, cwd));
         let now = 1_700_000_000_000i64;
         let expired_at = now - 10 * 60 * 1000; // past the grace window
-        let job = create_job(&state_runtime, thread_id, "expired-shot", None).await?;
+        let job = create_job(&state_runtime, thread_id, "expired-shot", Some(expired_at)).await?;
         set_rearm_flag(
             &state_runtime,
             &job.id,
@@ -439,6 +501,14 @@ mod tests {
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?,
             "no occurrence row may be fabricated by the re-arm"
+        );
+        rearm_disarmed_jobs(&mut app, thread_id)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert_eq!(
+            state_runtime.list_pending_loop_notifications().await?.len(),
+            1,
+            "reloading an expired armed one-shot must not duplicate its summary"
         );
         Ok(())
     }
