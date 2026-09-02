@@ -1276,7 +1276,9 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
             .collect::<BTreeSet<_>>();
         assert_eq!(
             vl_versions,
-            BTreeSet::from([930_i64, 931_i64, 932_i64, 935_i64])
+            BTreeSet::from([
+                930_i64, 931_i64, 932_i64, 933_i64, 934_i64, 935_i64, 936_i64
+            ])
         );
 
         let descriptions = migrations
