@@ -153,6 +153,117 @@ pub(super) fn management_gate_is_green(
         })
 }
 
+fn has_suspend_reason(reason: Option<&str>, wanted: &str) -> bool {
+    reason
+        .into_iter()
+        .flat_map(|value| value.split('+'))
+        .any(|value| value == wanted)
+}
+
+fn add_suspend_reason(reason: Option<&str>, wanted: &str) -> String {
+    let mut reasons = reason
+        .into_iter()
+        .flat_map(|value| value.split('+'))
+        .filter(|value| !value.is_empty() && *value != wanted)
+        .collect::<Vec<_>>();
+    reasons.push(wanted);
+    reasons.sort_unstable_by_key(|value| (*value != "3fail", *value != "phase"));
+    reasons.join("+")
+}
+
+fn remove_suspend_reason(reason: Option<&str>, unwanted: &str) -> Option<String> {
+    let mut reasons = reason
+        .into_iter()
+        .flat_map(|value| value.split('+'))
+        .filter(|value| !value.is_empty() && *value != unwanted)
+        .collect::<Vec<_>>();
+    reasons.sort_unstable_by_key(|value| (*value != "3fail", *value != "phase"));
+    (!reasons.is_empty()).then(|| reasons.join("+"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagementSuspensionDecision {
+    strategy: codex_state::LoopDelegationStrategy,
+    cooldown_until_ms: Option<i64>,
+    suspend_reason: Option<String>,
+    event: Option<&'static str>,
+}
+
+fn management_suspension_decision(
+    current_strategy: codex_state::LoopDelegationStrategy,
+    strategy_override: Option<codex_state::LoopDelegationStrategy>,
+    derived_strategy: codex_state::LoopDelegationStrategy,
+    old_reason: Option<&str>,
+    old_cooldown_until_ms: Option<i64>,
+    phase_invalid: bool,
+    last_three_failed: bool,
+    can_resume_three_fail: bool,
+    now_ms: i64,
+) -> ManagementSuspensionDecision {
+    let had_phase = has_suspend_reason(old_reason, "phase");
+    let had_three_fail = has_suspend_reason(old_reason, "3fail");
+    let new_three_fail = last_three_failed && !had_three_fail;
+    let reason_with_three_fail = if new_three_fail {
+        Some(add_suspend_reason(old_reason, "3fail"))
+    } else {
+        old_reason.map(str::to_string)
+    };
+    let cooldown_until_ms = if new_three_fail {
+        Some(now_ms.saturating_add(codex_state::LOOP_MANAGE_COOLDOWN_MS))
+    } else {
+        old_cooldown_until_ms
+    };
+
+    if phase_invalid {
+        return ManagementSuspensionDecision {
+            strategy: if has_suspend_reason(reason_with_three_fail.as_deref(), "3fail") {
+                codex_state::LoopDelegationStrategy::Suggest
+            } else {
+                current_strategy
+            },
+            cooldown_until_ms,
+            suspend_reason: Some(add_suspend_reason(
+                reason_with_three_fail.as_deref(),
+                "phase",
+            )),
+            event: (!had_phase).then_some("managed_suspended_phase"),
+        };
+    }
+
+    if has_suspend_reason(reason_with_three_fail.as_deref(), "3fail") {
+        if had_three_fail && can_resume_three_fail {
+            return ManagementSuspensionDecision {
+                strategy: strategy_override.unwrap_or(derived_strategy),
+                cooldown_until_ms: None,
+                suspend_reason: remove_suspend_reason(reason_with_three_fail.as_deref(), "3fail"),
+                event: Some("managed_resumed_3fail"),
+            };
+        }
+        return ManagementSuspensionDecision {
+            strategy: codex_state::LoopDelegationStrategy::Suggest,
+            cooldown_until_ms,
+            suspend_reason: remove_suspend_reason(reason_with_three_fail.as_deref(), "phase"),
+            event: new_three_fail.then_some("managed_suspended_3fail"),
+        };
+    }
+
+    if had_phase {
+        return ManagementSuspensionDecision {
+            strategy: strategy_override.unwrap_or(derived_strategy),
+            cooldown_until_ms: None,
+            suspend_reason: None,
+            event: Some("managed_resumed_phase"),
+        };
+    }
+
+    ManagementSuspensionDecision {
+        strategy: strategy_override.unwrap_or(derived_strategy),
+        cooldown_until_ms: old_cooldown_until_ms,
+        suspend_reason: None,
+        event: None,
+    }
+}
+
 /// Re-evaluates the T5 state boundary after each tick and before the next
 /// dispatch. Phase suspension is distinct from 3-fail demotion and both are
 /// persisted in 0932-compatible fields added by 0935.
@@ -175,74 +286,41 @@ pub(super) async fn refresh_management_state(
         inputs.unwrap_or((false, false, false, 0, "unavailable"));
     let phase_invalid = phase == "unavailable";
     let last_three_failed = codex_state::has_consecutive_blocked(&parsed.entries, 3);
-    let old_reason = delegation.suspend_reason.as_deref();
-    let (strategy, cooldown_until_ms, suspend_reason, event) = if phase_invalid {
-        (
-            delegation.strategy,
-            delegation.cooldown_until_ms,
-            Some("phase".to_string()),
-            (old_reason != Some("phase")).then_some("managed_suspended_phase"),
-        )
-    } else if old_reason == Some("phase") {
-        (
-            delegation.strategy_override.unwrap_or_else(|| {
-                codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
-            }),
-            None,
-            None,
-            Some("managed_resumed_phase"),
-        )
-    } else if last_three_failed && old_reason != Some("3fail") {
-        (
-            codex_state::LoopDelegationStrategy::Suggest,
-            Some(loop_now_ms().saturating_add(codex_state::LOOP_MANAGE_COOLDOWN_MS)),
-            Some("3fail".to_string()),
-            Some("managed_suspended_3fail"),
-        )
-    } else if old_reason == Some("3fail")
+    let now = loop_now_ms();
+    let derived_strategy = if is_adult && brain_enabled && has_profile {
+        codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
+    } else {
+        codex_state::LoopDelegationStrategy::Observe
+    };
+    let can_resume_three_fail = has_suspend_reason(delegation.suspend_reason.as_deref(), "3fail")
         && codex_state::can_resume_after_suspension(
             &parsed.entries,
             delegation.cooldown_until_ms,
-            loop_now_ms(),
-        )
-    {
-        (
-            delegation.strategy_override.unwrap_or_else(|| {
-                codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
-            }),
-            None,
-            None,
-            Some("managed_resumed_3fail"),
-        )
-    } else if old_reason == Some("3fail") {
-        (
-            codex_state::LoopDelegationStrategy::Suggest,
-            delegation.cooldown_until_ms,
-            delegation.suspend_reason.clone(),
-            None,
-        )
-    } else {
-        let strategy = if let Some(strategy_override) = delegation.strategy_override {
-            strategy_override
-        } else if is_adult && brain_enabled && has_profile {
-            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
-        } else {
-            codex_state::LoopDelegationStrategy::Observe
-        };
-        (strategy, delegation.cooldown_until_ms, None, None)
-    };
+            now,
+        );
+    let decision = management_suspension_decision(
+        delegation.strategy,
+        delegation.strategy_override,
+        derived_strategy,
+        delegation.suspend_reason.as_deref(),
+        delegation.cooldown_until_ms,
+        phase_invalid,
+        last_three_failed,
+        can_resume_three_fail,
+        now,
+    );
     let saved = state_runtime
         .upsert_loop_delegation(delegation_params(
             &delegation,
-            strategy,
+            decision.strategy,
             delegation.recent_results_json.clone(),
-            cooldown_until_ms,
-            suspend_reason,
-            loop_now_ms(),
+            decision.cooldown_until_ms,
+            decision.suspend_reason,
+            now,
         ))
         .await
         .map_err(loop_state_error)?;
-    if let Some(event) = event {
+    if let Some(event) = decision.event {
         app.record_vivling_loop_job(event, &job.label, Some(job), LoopCommandSource::Agent);
     }
     Ok(Some(saved))
@@ -818,6 +896,7 @@ mod runner_tests {
 
 #[cfg(test)]
 mod strategy_tests {
+    use super::management_suspension_decision;
     use super::strategy_allows_automatic_actions;
 
     #[test]
@@ -831,6 +910,64 @@ mod strategy_tests {
         assert!(strategy_allows_automatic_actions(
             codex_state::LoopDelegationStrategy::Manage
         ));
+    }
+
+    #[test]
+    fn three_fail_reason_survives_phase_pause_until_clean_cooldown_resume() {
+        let suspended = management_suspension_decision(
+            codex_state::LoopDelegationStrategy::Manage,
+            Some(codex_state::LoopDelegationStrategy::Manage),
+            codex_state::LoopDelegationStrategy::Manage,
+            Some("3fail"),
+            Some(100),
+            true,
+            false,
+            false,
+            200,
+        );
+        assert_eq!(suspended.suspend_reason.as_deref(), Some("3fail+phase"));
+        assert_eq!(
+            suspended.strategy,
+            codex_state::LoopDelegationStrategy::Suggest
+        );
+
+        let phase_valid_before_resume = management_suspension_decision(
+            suspended.strategy,
+            Some(codex_state::LoopDelegationStrategy::Manage),
+            codex_state::LoopDelegationStrategy::Manage,
+            suspended.suspend_reason.as_deref(),
+            suspended.cooldown_until_ms,
+            false,
+            false,
+            false,
+            300,
+        );
+        assert_eq!(
+            phase_valid_before_resume.suspend_reason.as_deref(),
+            Some("3fail")
+        );
+        assert_eq!(
+            phase_valid_before_resume.strategy,
+            codex_state::LoopDelegationStrategy::Suggest
+        );
+
+        let resumed = management_suspension_decision(
+            phase_valid_before_resume.strategy,
+            Some(codex_state::LoopDelegationStrategy::Manage),
+            codex_state::LoopDelegationStrategy::Observe,
+            phase_valid_before_resume.suspend_reason.as_deref(),
+            phase_valid_before_resume.cooldown_until_ms,
+            false,
+            false,
+            true,
+            400,
+        );
+        assert_eq!(resumed.suspend_reason, None);
+        assert_eq!(resumed.cooldown_until_ms, None);
+        assert_eq!(
+            resumed.strategy,
+            codex_state::LoopDelegationStrategy::Manage
+        );
     }
 }
 
