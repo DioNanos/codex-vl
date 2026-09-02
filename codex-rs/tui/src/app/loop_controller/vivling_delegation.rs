@@ -333,6 +333,24 @@ pub(super) async fn handle_loop_tick_finished(
                 &job.created_by,
             );
             app.refresh_loop_jobs(thread_id).await?;
+            // FIX-J (3) — the failed tick is finished in-process (no remove on
+            // this path, the job is alive): persist-before-emit summary.
+            if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
+                app,
+                &state_runtime,
+                &job,
+                descriptor.as_ref(),
+                None,
+                super::summary::LoopManager::Main,
+                "tick_failed".to_string(),
+                super::summary::LoopTickOutcome::Failed,
+                now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+            )
+            .await
+            {
+                app.app_event_tx
+                    .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+            }
             return Ok(());
         }
         Ok(result) => {
@@ -372,6 +390,44 @@ pub(super) async fn handle_loop_tick_finished(
                 .await
                 .map_err(loop_state_error)?;
             refresh_management_state(app, &state_runtime, &job, delegation).await?;
+            // FIX-J (3) — persist-before-mutate: the summary (and the R3
+            // pending) is durable BEFORE the completion action can remove or
+            // disable the job (auto_remove_on_completion defaults to true, so
+            // DONE ticks typically remove it — the summary must not die with
+            // the job). Manager derived from the resolved owner: refining it
+            // with the carried resolution lands with FIX-H transport.
+            let summary_outcome = if status == LOOP_STATUS_BLOCKED {
+                super::summary::LoopTickOutcome::Failed
+            } else {
+                super::summary::LoopTickOutcome::Ok
+            };
+            let (manager, manager_reason) = match owner.owner_kind.as_str() {
+                codex_state::THREAD_LOOP_OWNER_KIND_VIVLING => (
+                    super::summary::LoopManager::Vivling,
+                    "delegated".to_string(),
+                ),
+                _ => (
+                    super::summary::LoopManager::Main,
+                    "not_delegated".to_string(),
+                ),
+            };
+            if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
+                app,
+                &state_runtime,
+                &job,
+                descriptor.as_ref(),
+                delegation.as_ref(),
+                manager,
+                manager_reason,
+                summary_outcome,
+                now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+            )
+            .await
+            {
+                app.app_event_tx
+                    .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+            }
+
             let action_request = tick_action_request(thread_id, &job, status, &result)
                 .map_err(|err| color_eyre::eyre::eyre!(err))?;
             let mut skipped_runtime_update = false;
@@ -501,30 +557,6 @@ pub(super) async fn handle_loop_tick_finished(
 
             app.refresh_loop_jobs(thread_id).await?;
         }
-    }
-
-    // T6 m2 — the runner/vivling tick boundary: persist-before-emit (R11
-    // gate 1); a persistence failure suppresses the summary event only.
-    match super::notify::persist_and_queue_tick(
-        &state_runtime,
-        thread_id,
-        &job_id,
-        /*occurrence_ms*/ None,
-        /*occurrence_claimed*/ true,
-        job.last_run_ms.unwrap_or(now),
-    )
-    .await
-    {
-        Ok(Some(summary)) => {
-            app.app_event_tx
-                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
-        }
-        Ok(None) => {}
-        Err(err) => tracing::warn!(
-            target: "codex_vl::loop_summary",
-            error = %err,
-            "loop tick summary persistence failed; emission suppressed"
-        ),
     }
 
     Ok(())

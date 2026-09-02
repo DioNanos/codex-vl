@@ -112,29 +112,7 @@ pub(super) async fn handle_tick(
         return Ok(());
     }
 
-    let occurrence_ms = job.next_run_ms;
-    let job_id = job.id.clone();
     process_submission(app, thread_id, job).await?;
-    // T6 m2 — the summary is built from the persisted post-tick row, emitted
-    // only when the tick is actually finished in-process (dispatched runner/
-    // vivling ticks close at `handle_loop_tick_finished` instead).
-    if let Ok(Some(job_after)) = state_runtime
-        .get_thread_loop_job_by_id(thread_id, &job_id)
-        .await
-        && !super::notify::is_post_dispatch(job_after.last_status.as_deref())
-        && let Ok(Some(summary)) = super::notify::persist_and_queue_tick(
-            &state_runtime,
-            thread_id,
-            &job_id,
-            occurrence_ms,
-            /*occurrence_claimed*/ true,
-            /*started_ms*/ loop_now_ms(),
-        )
-        .await
-    {
-        app.app_event_tx
-            .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
-    }
     app.refresh_loop_jobs(thread_id).await
 }
 
@@ -155,9 +133,10 @@ pub(super) async fn process_submission(
     let is_one_shot = descriptor
         .as_ref()
         .is_some_and(|descriptor| descriptor.schedule_kind == "one_shot");
+    let started_ms = loop_now_ms();
     if let Some(scheduled_at_ms) = job.next_run_ms {
         let claimed = state_runtime
-            .claim_loop_occurrence(&job.id, scheduled_at_ms, loop_now_ms())
+            .claim_loop_occurrence(&job.id, scheduled_at_ms, started_ms)
             .await
             .map_err(loop_state_error)?;
         if !claimed {
@@ -225,6 +204,15 @@ pub(super) async fn process_submission(
         "resolved loop owner"
     );
     let owner = owner_from_resolution(&resolution, thread_id, loop_now_ms());
+    // FIX-J (7) — the summary manager comes from the tick's own owner
+    // resolution (never re-derived after the fact).
+    let manager = match &resolution.effective {
+        crate::vl::delegated_loops::RequestedLoopOwner::Main => super::notify::LoopManager::Main,
+        crate::vl::delegated_loops::RequestedLoopOwner::Vivling { .. } => {
+            super::notify::LoopManager::Vivling
+        }
+    };
+    let manager_reason = resolution.reason.to_string();
     let now = loop_now_ms();
     let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
     // T3 — the schedule descriptor is read once and drives every reschedule
@@ -285,6 +273,17 @@ pub(super) async fn process_submission(
                 .or(Some(job.prompt_text.as_str())),
             &job.created_by,
         );
+        // T6 m2 — the internal-payload tick is finished in-process.
+        super::notify::record_sync_tick_summary(
+            app,
+            &state_runtime,
+            thread_id,
+            &job,
+            started_ms,
+            manager,
+            manager_reason.clone(),
+        )
+        .await;
         return Ok(());
     }
 
@@ -312,6 +311,18 @@ pub(super) async fn process_submission(
             )
             .await
             .map_err(loop_state_error)?;
+        // T6 m2 — synchronous tick boundary: persist-before-emit summary
+        // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+        super::notify::record_sync_tick_summary(
+            app,
+            &state_runtime,
+            thread_id,
+            &job,
+            started_ms,
+            manager,
+            manager_reason.clone(),
+        )
+        .await;
         return Ok(());
     }
 
@@ -336,6 +347,18 @@ pub(super) async fn process_submission(
                 )
                 .await
                 .map_err(loop_state_error)?;
+            // T6 m2 — synchronous tick boundary: persist-before-emit summary
+            // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+            super::notify::record_sync_tick_summary(
+                app,
+                &state_runtime,
+                thread_id,
+                &job,
+                started_ms,
+                manager,
+                manager_reason.clone(),
+            )
+            .await;
             return Ok(());
         }
 
@@ -357,6 +380,18 @@ pub(super) async fn process_submission(
                     )
                     .await
                     .map_err(loop_state_error)?;
+                // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                super::notify::record_sync_tick_summary(
+                    app,
+                    &state_runtime,
+                    thread_id,
+                    &job,
+                    started_ms,
+                    manager,
+                    manager_reason.clone(),
+                )
+                .await;
                 return Ok(());
             };
             match app
@@ -381,6 +416,18 @@ pub(super) async fn process_submission(
                         )
                         .await
                         .map_err(loop_state_error)?;
+                    // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                    // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                    super::notify::record_sync_tick_summary(
+                        app,
+                        &state_runtime,
+                        thread_id,
+                        &job,
+                        started_ms,
+                        manager,
+                        manager_reason.clone(),
+                    )
+                    .await;
                     return Ok(());
                 }
             }
@@ -403,6 +450,7 @@ pub(super) async fn process_submission(
                 ),
             }
         };
+
         // A persisted child runner is authoritative for this tick. Do not let
         // a Vivling profile silently replace its validated runner model.
         request.brain_target = BrainTarget::SessionDefault;
@@ -474,6 +522,18 @@ pub(super) async fn process_submission(
                 )
                 .await
                 .map_err(loop_state_error)?;
+            // T6 m2 — synchronous tick boundary: persist-before-emit summary
+            // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+            super::notify::record_sync_tick_summary(
+                app,
+                &state_runtime,
+                thread_id,
+                &job,
+                started_ms,
+                manager,
+                manager_reason.clone(),
+            )
+            .await;
             return Ok(());
         };
         match app
@@ -535,6 +595,18 @@ pub(super) async fn process_submission(
                     )
                     .await
                     .map_err(loop_state_error)?;
+                // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                super::notify::record_sync_tick_summary(
+                    app,
+                    &state_runtime,
+                    thread_id,
+                    &job,
+                    started_ms,
+                    manager,
+                    manager_reason.clone(),
+                )
+                .await;
                 return Ok(());
             }
         }
@@ -595,6 +667,18 @@ pub(super) async fn process_submission(
         goal,
         &job.created_by,
     );
+    // T6 m2 — synchronous tick boundary: persist-before-emit summary
+    // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+    super::notify::record_sync_tick_summary(
+        app,
+        &state_runtime,
+        thread_id,
+        &job,
+        started_ms,
+        manager,
+        manager_reason.clone(),
+    )
+    .await;
     Ok(())
 }
 

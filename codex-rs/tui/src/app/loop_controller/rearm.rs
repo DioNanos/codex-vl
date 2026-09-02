@@ -65,7 +65,7 @@ pub(super) async fn rearm_disarmed_jobs(
         }
         // Pure scheduler (T3): interval/at resolve the next future instant;
         // an expired one-shot recomputes to `None` and stays disarmed.
-        let Some(next_run_ms) = next_run_at_ms(
+        let next_run_ms = next_run_at_ms(
             &SchedulePlan {
                 schedule_kind: &descriptor.schedule_kind,
                 interval_seconds: job.interval_seconds,
@@ -74,16 +74,51 @@ pub(super) async fn rearm_disarmed_jobs(
                 one_shot_at_ms: descriptor.one_shot_at_ms,
             },
             now,
-        ) else {
+        );
+        let Some(next_run_ms) = next_run_ms else {
+            // FIX-J (6) — a one-shot past its grace is terminal (R5.3/R10)
+            // but NOT silent at bootstrap: persist the terminal `expired`
+            // status and the T6 summary + pending (R3: anomalous event).
+            if descriptor.schedule_kind == "one_shot" {
+                state_runtime
+                    .update_thread_loop_job_runtime(
+                        thread_id,
+                        &job.id,
+                        codex_state::ThreadLoopJobRuntimeUpdate {
+                            next_run_ms: None,
+                            last_run_ms: job.last_run_ms,
+                            last_status: Some(super::formatting::LOOP_STATUS_EXPIRED.to_string()),
+                            last_error: None,
+                            pending_tick: false,
+                            updated_at_ms: now,
+                        },
+                    )
+                    .await
+                    .map_err(loop_state_error)?;
+                let mut summary = super::notify::build_tick_summary(
+                    &job,
+                    Some(&descriptor),
+                    None,
+                    super::summary::LoopManager::Main,
+                    "bootstrap_expired".to_string(),
+                    /*occurrence_ms*/ None,
+                    /*occurrence_claimed*/ false,
+                    now,
+                    now,
+                );
+                // The scheduler has already ruled: this is the terminal
+                // expired esito, whatever the row-derived derivation says.
+                summary.outcome = super::summary::LoopTickOutcome::OneShotExpired;
+                if let Err(err) = super::notify::persist_and_queue(&state_runtime, &summary).await {
+                    tracing::warn!(
+                        target: "codex_vl::loop_summary",
+                        error = %err,
+                        "expired one-shot summary persistence failed"
+                    );
+                }
+            }
             continue;
         };
-        // A recomputed instant equal to the claimed one (a one-shot still in
-        // its grace window, or a fixed `at` instant) would lose the CAS in
-        // `handle_tick` and never dispatch: keep the job disarmed instead of
-        // arming a dead occurrence (at-most-once).
-        if job.next_run_ms == Some(next_run_ms) {
-            continue;
-        }
         state_runtime
             .update_thread_loop_job_runtime(
                 thread_id,

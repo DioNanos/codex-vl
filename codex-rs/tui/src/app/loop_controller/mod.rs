@@ -72,6 +72,13 @@ use self::types::ManagedToolCallSource;
 // DynamicToolCall handling.
 pub(super) use self::parsing::is_manage_loops_dynamic_tool;
 
+/// T6 m2 — bootstrap hook for `startup_orchestration`: starts the bounded
+/// queue and the separate consumer task; the replay of undelivered pending
+/// rows runs inside it, once per process start (R11 gates 2/3/6).
+pub(crate) fn start_loop_summary_worker(state_db: &std::sync::Arc<codex_state::StateRuntime>) {
+    notify::start_worker(state_db);
+}
+
 impl App {
     fn record_vivling_loop_job(
         &mut self,

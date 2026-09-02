@@ -43,6 +43,10 @@ static LOOP_SUMMARY_TX: OnceLock<mpsc::Sender<LoopTickSummary>> = OnceLock::new(
 /// (off by default, normal state — not an error).
 pub(crate) enum LoopNotifyChannel {
     Absent,
+    /// Test-only sink: the delivery is observable in-process (FIX-J 1
+    /// stitching test). Never constructed outside tests.
+    #[cfg(test)]
+    TestSink(std::sync::Arc<std::sync::atomic::AtomicBool>),
 }
 
 impl LoopNotifyChannel {
@@ -73,9 +77,9 @@ pub(crate) async fn persist_and_queue(
     state_runtime: &codex_state::StateRuntime,
     summary: &LoopTickSummary,
 ) -> anyhow::Result<bool> {
-    let pending = summary.pending_needed().then(|| {
-        notification_record(summary, LOOP_NOTIFICATION_KIND_PENDING, "pending:")
-    });
+    let pending = summary
+        .pending_needed()
+        .then(|| notification_record(summary, LOOP_NOTIFICATION_KIND_PENDING, "pending:"));
     let first = state_runtime
         .record_loop_notification_with_pending(
             notification_record(summary, LOOP_NOTIFICATION_KIND_SUMMARY, ""),
@@ -149,23 +153,44 @@ pub(crate) fn derive_outcome(
     DerivedOutcome::Ok
 }
 
-/// T6 — a dispatched runner/vivling tick is not finished in-process: its
-/// summary lands at `handle_loop_tick_finished` instead. `true` = skip the
-/// post-submission summary to avoid a double record.
-pub(crate) fn is_post_dispatch(last_status: Option<&str>) -> bool {
-    matches!(
-        last_status,
-        Some("runner_dispatched") | Some("delegated_vivling")
+/// FIX-J (7) — synchronous tick boundary: build the summary from the
+/// persisted post-tick row with the manager RESOLVED by the caller (the
+/// same `resolve_effective_owner` result that drove the tick), persist it
+/// (with the R3 pending) and emit the event. Errors are logged, never
+/// propagated: the tick is already done.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn record_sync_tick_summary(
+    app: &mut App,
+    state_runtime: &codex_state::StateRuntime,
+    thread_id: codex_protocol::ThreadId,
+    job: &codex_state::ThreadLoopJob,
+    started_ms: i64,
+    manager: LoopManager,
+    manager_reason: String,
+) {
+    match persist_and_queue_tick(
+        app,
+        state_runtime,
+        thread_id,
+        &job.id,
+        job.next_run_ms,
+        /*occurrence_claimed*/ true,
+        started_ms,
+        manager,
+        manager_reason,
     )
-}
-
-/// Manager resolution for the summary line, from the persisted delegation
-/// (same source T1 reads; the summary never re-derives ownership).
-fn manager_of(delegation: Option<&codex_state::LoopDelegation>) -> (LoopManager, &'static str) {
-    match delegation {
-        Some(delegation) if delegation.override_main => (LoopManager::Main, "hard_main_override"),
-        Some(_) => (LoopManager::Vivling, "delegated"),
-        None => (LoopManager::Main, "not_delegated"),
+    .await
+    {
+        Ok(Some(summary)) => {
+            app.app_event_tx
+                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!(
+            target: "codex_vl::loop_summary",
+            error = %err,
+            "loop tick summary persistence failed; emission suppressed"
+        ),
     }
 }
 
@@ -220,26 +245,9 @@ pub(crate) fn build_tick_summary(
                 .unwrap_or("main")
         ),
         manager,
-        manager_reason: manager_reason.to_string(),
+        manager_reason,
         suspend_reason: delegation.and_then(|delegation| delegation.suspend_reason.clone()),
         occurrence_ms,
-        scheduled_key: descriptor
-            .as_ref()
-            .map(|descriptor| match descriptor.schedule_kind.as_str() {
-                "one_shot" => format!(
-                    "one_shot:{}",
-                    descriptor
-                        .one_shot_at_ms
-                        .map_or_else(|| "none".to_string(), |ms| ms.to_string())
-                ),
-                "at" => format!(
-                    "at:{}:{}",
-                    descriptor.schedule_at.as_deref().unwrap_or("none"),
-                    descriptor.tz.as_deref().unwrap_or("none")
-                ),
-                other => format!("{other}:{}", job_after.interval_seconds),
-            })
-            .unwrap_or_else(|| format!("interval:{}", job_after.interval_seconds)),
         finished_at_ms,
     }
 }
@@ -247,13 +255,18 @@ pub(crate) fn build_tick_summary(
 /// One-shot helper for the tick seams: persist the summary (and its pending
 /// when R3 admits it), then enqueue. Returns whether the summary is the
 /// first persisted instance (and only then the caller emits the event).
+/// FIX-J (7): the manager comes RESOLVED from the tick path (`manager`,
+/// `manager_reason`) — the summary never re-derives ownership.
 pub(crate) async fn persist_and_queue_tick(
+    app: &mut App,
     state_runtime: &codex_state::StateRuntime,
     thread_id: codex_protocol::ThreadId,
     job_id: &str,
     occurrence_ms: Option<i64>,
     occurrence_claimed: bool,
     started_ms: i64,
+    manager: LoopManager,
+    manager_reason: String,
 ) -> anyhow::Result<Option<LoopTickSummary>> {
     let Some(job_after) = state_runtime
         .get_thread_loop_job_by_id(thread_id, job_id)
@@ -267,12 +280,57 @@ pub(crate) async fn persist_and_queue_tick(
         &job_after,
         descriptor.as_ref(),
         delegation.as_ref(),
+        manager,
+        manager_reason,
         occurrence_ms,
         occurrence_claimed,
         started_ms,
         loop_now_ms(),
     );
     let first = persist_and_queue(state_runtime, &summary).await?;
+    if first {
+        app.app_event_tx
+            .send_vl(crate::vl::VlEvent::LoopTickSummary {
+                summary: summary.clone(),
+            });
+    }
+    Ok(first.then_some(summary))
+}
+
+/// FIX-J (3) — explicit-outcome variant for the completion path: the caller
+/// passes the post-tick snapshot and the ruled outcome BEFORE any destructive
+/// action (an `auto_remove` remove) can delete the job — persist-before-mutate.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn persist_summary_with_outcome(
+    app: &mut App,
+    state_runtime: &codex_state::StateRuntime,
+    job_snapshot: &codex_state::ThreadLoopJob,
+    descriptor: Option<&codex_state::LoopDescriptor>,
+    delegation: Option<&codex_state::LoopDelegation>,
+    manager: LoopManager,
+    manager_reason: String,
+    outcome: LoopTickOutcome,
+    started_ms: i64,
+) -> anyhow::Result<Option<LoopTickSummary>> {
+    let mut summary = build_tick_summary(
+        job_snapshot,
+        descriptor,
+        delegation,
+        manager,
+        manager_reason,
+        job_snapshot.next_run_ms,
+        /*occurrence_claimed*/ true,
+        started_ms,
+        loop_now_ms(),
+    );
+    summary.outcome = outcome;
+    let first = persist_and_queue(state_runtime, &summary).await?;
+    if first {
+        app.app_event_tx
+            .send_vl(crate::vl::VlEvent::LoopTickSummary {
+                summary: summary.clone(),
+            });
+    }
     Ok(first.then_some(summary))
 }
 
@@ -319,20 +377,34 @@ async fn deliver_once(
     label: &str,
     channel: &LoopNotifyChannel,
 ) {
-    match channel {
-        LoopNotifyChannel::Absent => tracing::debug!(
-            target: "codex_vl::loop_summary",
-            label = %label,
-            "notify channel absent; pending row stays persisted (normal state)"
-        ),
-    }
+    let delivered = match channel {
+        LoopNotifyChannel::Absent => {
+            tracing::debug!(
+                target: "codex_vl::loop_summary",
+                label = %label,
+                "notify channel absent; pending row stays persisted (normal state)"
+            );
+            false
+        }
+        #[cfg(test)]
+        LoopNotifyChannel::TestSink(flag) => {
+            // Test-only channel: the delivery is the flag flip, observed by
+            // the stitching test.
+            flag.store(true, std::sync::atomic::Ordering::Release);
+            true
+        }
+    };
     let _ = event_id; // consumed by the real channel variants (m2-final wiring)
+    let _ = delivered;
+    let _ = state_runtime;
 }
 
-/// Starts (once per process) the bounded queue and the separate consumer
-/// task; returns the tick-side sender. Called lazily from the tick seam —
-/// tests that never call it keep a no-op tick path.
-pub(crate) fn ensure_worker_started(
+/// FIX-J (1) — starts (once per process) the bounded queue and the separate
+/// consumer task at APP BOOTSTRAP (startup_orchestration, next to the log-db
+/// worker): the consumer replays undelivered pending rows once per start and
+/// then drains the queue. The tick seam reads the sender from the same
+/// `OnceLock`; paths that never start the worker keep a no-op enqueue.
+pub(crate) fn start_worker(
     state_runtime: &std::sync::Arc<codex_state::StateRuntime>,
 ) -> Option<mpsc::Sender<LoopTickSummary>> {
     let tx = LOOP_SUMMARY_TX.get_or_init(|| {
@@ -352,6 +424,7 @@ mod tests {
     use super::DerivedOutcome;
     use super::LOOP_SUMMARY_QUEUE_CAPACITY;
     use super::LoopManager;
+    use super::LoopNotifyChannel;
     use super::LoopScheduleKind;
     use super::LoopTickOutcome;
     use super::LoopTickSummary;
@@ -359,6 +432,7 @@ mod tests {
     use super::derive_outcome;
     use super::enqueue_or_drop;
     use super::enqueue_or_drop_result;
+    use super::run_loop_summary_worker;
     use codex_protocol::ThreadId;
     use tokio::sync::mpsc;
 
@@ -444,8 +518,73 @@ mod tests {
             manager_reason: "not_delegated".to_string(),
             suspend_reason: None,
             occurrence_ms: Some(1),
-            scheduled_key: "interval:60".to_string(),
             finished_at_ms: 2,
         }
+    }
+
+    // FIX-J (1) — stitching test: a persisted pending row is picked up and
+    // processed by the worker itself (bootstrap replay), and a delivered row
+    // leaves the pending set.
+    #[tokio::test]
+    async fn worker_replays_a_persisted_pending_row() -> anyhow::Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let state_runtime = std::sync::Arc::new(
+            codex_state::StateRuntime::init(
+                codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?,
+        );
+        state_runtime
+            .record_loop_notification_with_pending(
+                codex_state::LoopNotificationRecord {
+                    event_id: "evt-cucitura".to_string(),
+                    thread_id: ThreadId::new(),
+                    job_id: "job-c".to_string(),
+                    label: "cucitura".to_string(),
+                    kind: codex_state::LOOP_NOTIFICATION_KIND_SUMMARY,
+                    summary_json: "{}".to_string(),
+                    created_at_ms: 1_700_000_000_000,
+                },
+                Some(codex_state::LoopNotificationRecord {
+                    event_id: "pending:evt-cucitura".to_string(),
+                    thread_id: ThreadId::new(),
+                    job_id: "job-c".to_string(),
+                    label: "cucitura".to_string(),
+                    kind: codex_state::LOOP_NOTIFICATION_KIND_PENDING,
+                    summary_json: "{}".to_string(),
+                    created_at_ms: 1_700_000_000_000,
+                }),
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (_tx, rx) = mpsc::channel(4);
+        tokio::spawn(run_loop_summary_worker(
+            std::sync::Arc::clone(&state_runtime),
+            rx,
+            LoopNotifyChannel::TestSink(std::sync::Arc::clone(&delivered)),
+        ));
+
+        for _ in 0..50 {
+            if delivered.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            delivered.load(std::sync::atomic::Ordering::Acquire),
+            "the worker must pick up and deliver the persisted pending row"
+        );
+        let pending = state_runtime
+            .list_pending_loop_notifications()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert!(
+            pending.is_empty(),
+            "a delivered pending row must leave the pending set"
+        );
+        Ok(())
     }
 }

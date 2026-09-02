@@ -81,8 +81,58 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
             .execute(&mut *tx)
             .await?;
         }
+        // FIX-J (8) — real retention, same transaction as the insert:
+        // summaries keep the last N per job; pending rows older than the
+        // configured age are dropped (canal-less runs do not accumulate).
+        sqlx::query(
+            r#"
+DELETE FROM vl_loop_notifications
+WHERE kind = 'summary' AND job_id = ? AND event_id NOT IN (
+    SELECT event_id FROM (
+        SELECT event_id FROM vl_loop_notifications
+        WHERE kind = 'summary' AND job_id = ?
+        ORDER BY created_at_ms DESC
+        LIMIT ?
+    )
+)
+"#,
+        )
+        .bind(&record.job_id)
+        .bind(&record.job_id)
+        .bind(LOOP_NOTIFICATION_SUMMARY_RETENTION)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+DELETE FROM vl_loop_notifications
+WHERE kind = 'pending' AND created_at_ms < ?
+"#,
+        )
+        .bind(record.created_at_ms - LOOP_NOTIFICATION_PENDING_MAX_AGE_MS)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// FIX-J (8) — number of notification rows of a job for one kind; the
+    /// retention test counts through it.
+    pub async fn count_loop_notifications(
+        &self,
+        job_id: &str,
+        kind: &'static str,
+    ) -> anyhow::Result<i64> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            r#"
+SELECT COUNT(*) FROM vl_loop_notifications
+WHERE job_id = ? AND kind = ?
+"#,
+        )
+        .bind(job_id)
+        .bind(kind)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(row.map(|(count)| count).unwrap_or(0))
     }
 
     /// Pending notification rows, oldest first: the m2 consumer replays them
