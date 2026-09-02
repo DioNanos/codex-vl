@@ -204,26 +204,26 @@ pub(super) async fn process_submission(
         .as_ref()
         .and_then(|descriptor| descriptor.runner_model.clone());
 
-    if runner_kind == codex_state::LoopRunnerKind::ChildAgent {
-        if let Err(err) = validate_runner_model(app, runner_kind, runner_model.as_deref()) {
-            state_runtime
-                .update_thread_loop_job_runtime(
-                    thread_id,
-                    &job.id,
-                    codex_state::ThreadLoopJobRuntimeUpdate {
-                        next_run_ms: None,
-                        last_run_ms: job.last_run_ms,
-                        last_status: Some(LOOP_STATUS_INVALID_RUNNER_MODEL.to_string()),
-                        last_error: Some(err.to_string()),
-                        pending_tick: true,
-                        updated_at_ms: now,
-                    },
-                )
-                .await
-                .map_err(loop_state_error)?;
-            return Ok(());
-        }
+    if let Err(err) = validate_runner_model(app, runner_kind, runner_model.as_deref()) {
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: None,
+                    last_run_ms: job.last_run_ms,
+                    last_status: Some(LOOP_STATUS_INVALID_RUNNER_MODEL.to_string()),
+                    last_error: Some(err.to_string()),
+                    pending_tick: true,
+                    updated_at_ms: now,
+                },
+            )
+            .await
+            .map_err(loop_state_error)?;
+        return Ok(());
+    }
 
+    if runner_kind == codex_state::LoopRunnerKind::ChildAgent {
         if !state_runtime
             .try_begin_loop_tick(&job.id, now)
             .await
