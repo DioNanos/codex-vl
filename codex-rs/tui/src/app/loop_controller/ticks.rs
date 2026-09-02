@@ -35,6 +35,7 @@ use super::formatting::LOOP_STATUS_SUBMITTED;
 use super::jobs::validate_runner_model;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+use super::state::next_run_at_ms;
 use crate::vl::delegated_loops::VivlingReadiness;
 use crate::vl::delegated_loops::owner_from_resolution;
 use crate::vl::delegated_loops::resolve_effective_owner;
@@ -61,6 +62,7 @@ fn execute_internal_payload(
     job: &codex_state::ThreadLoopJob,
     payload: &LoopJobPayload,
     now: i64,
+    next_run_ms: Option<i64>,
 ) -> Option<InternalLoopTickOutcome> {
     let LoopJobPayload::InternalFn { fn_name, args } = payload else {
         return None;
@@ -75,7 +77,7 @@ fn execute_internal_payload(
         "loop.status" | "loop.noop" => Some(InternalLoopTickOutcome {
             message,
             status: LOOP_STATUS_PROGRESS,
-            next_run_ms: Some(now + (job.interval_seconds * 1000)),
+            next_run_ms,
             pending_tick: false,
             last_error: None,
         }),
@@ -107,6 +109,25 @@ pub(super) async fn handle_tick(
         return Ok(());
     };
     if !job.enabled {
+        return Ok(());
+    }
+
+    // T3 — at-most-once dispatch: the occurrence (job, next_run_ms) is
+    // claimed BEFORE anything else runs. A second timer for the same
+    // occurrence loses the CAS and must not dispatch a duplicate tick.
+    let Some(scheduled_at_ms) = job.next_run_ms else {
+        return Ok(());
+    };
+    let claimed = state_runtime
+        .claim_loop_occurrence(&job.id, scheduled_at_ms, loop_now_ms())
+        .await
+        .map_err(loop_state_error)?;
+    if !claimed {
+        tracing::debug!(
+            target: "codex_vl::loop_schedule",
+            label = %job.label,
+            "occurrence already claimed; skipping duplicate timer tick"
+        );
         return Ok(());
     }
 
@@ -152,7 +173,31 @@ pub(super) async fn process_submission(
     let owner = owner_from_resolution(&resolution, thread_id, loop_now_ms());
     let now = loop_now_ms();
     let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
-    if let Some(internal_outcome) = execute_internal_payload(&job, &payload, now) {
+    // T3 — the schedule descriptor is read once and drives every reschedule
+    // of this tick (internal payload, runner dispatch, and the terminal
+    // update in handle_loop_tick_finished).
+    let descriptor = state_runtime
+        .get_loop_descriptor(&job.id)
+        .await
+        .map_err(loop_state_error)?;
+    let scheduled_next_run_ms = descriptor
+        .as_ref()
+        .map(|descriptor| {
+            next_run_at_ms(
+                &super::state::SchedulePlan {
+                    schedule_kind: &descriptor.schedule_kind,
+                    interval_seconds: job.interval_seconds,
+                    schedule_at: descriptor.schedule_at.as_deref(),
+                    tz: descriptor.tz.as_deref(),
+                    one_shot_at_ms: descriptor.one_shot_at_ms,
+                },
+                now,
+            )
+        })
+        .unwrap_or_else(|| Some(now.saturating_add(job.interval_seconds.saturating_mul(1000))));
+    if let Some(internal_outcome) =
+        execute_internal_payload(&job, &payload, now, scheduled_next_run_ms)
+    {
         state_runtime
             .update_thread_loop_job_runtime(
                 thread_id,
@@ -192,10 +237,6 @@ pub(super) async fn process_submission(
         return Ok(());
     }
 
-    let descriptor = state_runtime
-        .get_loop_descriptor(&job.id)
-        .await
-        .map_err(loop_state_error)?;
     let runner_kind = descriptor
         .as_ref()
         .map(|descriptor| descriptor.runner_kind)

@@ -30,6 +30,7 @@ use super::formatting::summarize_loop_goal;
 use super::formatting::thread_loop_owner_summary;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+use super::state::next_run_at_ms;
 use super::types::LoopActionOutcome;
 use super::types::LoopCommandSource;
 
@@ -109,6 +110,10 @@ pub(super) async fn run_command_request(
             auto_remove_on_completion,
             runner_kind,
             runner_model,
+            schedule_kind,
+            schedule_at,
+            one_shot_at_ms,
+            tz,
         } => {
             validate_runner_model(&app, runner_kind, runner_model.as_deref())
                 .map_err(loop_state_error)?;
@@ -123,6 +128,18 @@ pub(super) async fn run_command_request(
                 LoopCommandSource::Agent => "agent",
             }
             .to_string();
+            // T3 — the first run comes from the schedule descriptor values
+            // (interval | at | one_shot), computed by the pure scheduler.
+            let next_run_ms = next_run_at_ms(
+                &super::state::SchedulePlan {
+                    schedule_kind: &schedule_kind,
+                    interval_seconds,
+                    schedule_at: schedule_at.as_deref(),
+                    tz: tz.as_deref(),
+                    one_shot_at_ms,
+                },
+                now,
+            );
             let job = state_runtime
                 .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
                     id: Uuid::new_v4().to_string(),
@@ -135,7 +152,7 @@ pub(super) async fn run_command_request(
                     run_policy: "queue_one".to_string(),
                     auto_remove_on_completion,
                     created_by,
-                    next_run_ms: Some(now + (interval_seconds * 1000)),
+                    next_run_ms,
                     created_at_ms: now,
                     updated_at_ms: now,
                 })
@@ -147,10 +164,10 @@ pub(super) async fn run_command_request(
                     runner_kind,
                     runner_model,
                     runner_reasoning_effort: None,
-                    tz: None,
-                    schedule_kind: "interval".to_string(),
-                    schedule_at: None,
-                    one_shot_at_ms: None,
+                    tz: tz.clone(),
+                    schedule_kind: schedule_kind.clone(),
+                    schedule_at: schedule_at.clone(),
+                    one_shot_at_ms,
                     rearm_on_boot: false,
                     updated_at_ms: now,
                 })
@@ -179,6 +196,10 @@ pub(super) async fn run_command_request(
             enabled,
             runner_kind,
             runner_model,
+            schedule_kind,
+            schedule_at,
+            one_shot_at_ms,
+            tz,
         } => {
             let Some(existing) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
@@ -221,6 +242,40 @@ pub(super) async fn run_command_request(
             let enabled = enabled.unwrap_or(existing.enabled);
             let auto_remove_on_completion =
                 auto_remove_on_completion.unwrap_or(existing.auto_remove_on_completion);
+            // T3 — the schedule triplet is updated atomically: when
+            // `schedule_kind` is provided the triplet from the command wins
+            // as a whole, otherwise the persisted one stays untouched.
+            let (schedule_kind, schedule_at, one_shot_at_ms, tz) = if let Some(kind) = schedule_kind
+            {
+                (kind, schedule_at, one_shot_at_ms, tz)
+            } else {
+                let persisted = descriptor
+                    .as_ref()
+                    .map(|descriptor| {
+                        (
+                            descriptor.schedule_kind.clone(),
+                            descriptor.schedule_at.clone(),
+                            descriptor.one_shot_at_ms,
+                            descriptor.tz.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("interval".to_string(), None, None, None));
+                (persisted.0, persisted.1, persisted.2, persisted.3)
+            };
+            let next_run_ms = if enabled {
+                next_run_at_ms(
+                    &super::state::SchedulePlan {
+                        schedule_kind: &schedule_kind,
+                        interval_seconds,
+                        schedule_at: schedule_at.as_deref(),
+                        tz: tz.as_deref(),
+                        one_shot_at_ms,
+                    },
+                    now,
+                )
+            } else {
+                None
+            };
             let job = state_runtime
                 .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
                     id: existing.id.clone(),
@@ -233,11 +288,7 @@ pub(super) async fn run_command_request(
                     run_policy: existing.run_policy.clone(),
                     auto_remove_on_completion,
                     created_by: existing.created_by.clone(),
-                    next_run_ms: if enabled {
-                        Some(now + (interval_seconds * 1000))
-                    } else {
-                        None
-                    },
+                    next_run_ms,
                     created_at_ms: existing.created_at_ms,
                     updated_at_ms: now,
                 })
@@ -251,19 +302,10 @@ pub(super) async fn run_command_request(
                     runner_reasoning_effort: descriptor
                         .as_ref()
                         .and_then(|descriptor| descriptor.runner_reasoning_effort.clone()),
-                    tz: descriptor
-                        .as_ref()
-                        .and_then(|descriptor| descriptor.tz.clone()),
-                    schedule_kind: descriptor
-                        .as_ref()
-                        .map(|descriptor| descriptor.schedule_kind.clone())
-                        .unwrap_or_else(|| "interval".to_string()),
-                    schedule_at: descriptor
-                        .as_ref()
-                        .and_then(|descriptor| descriptor.schedule_at.clone()),
-                    one_shot_at_ms: descriptor
-                        .as_ref()
-                        .and_then(|descriptor| descriptor.one_shot_at_ms),
+                    tz: tz.clone(),
+                    schedule_kind: schedule_kind.clone(),
+                    schedule_at: schedule_at.clone(),
+                    one_shot_at_ms,
                     rearm_on_boot: descriptor
                         .as_ref()
                         .is_some_and(|descriptor| descriptor.rearm_on_boot),
@@ -331,14 +373,34 @@ pub(super) async fn run_command_request(
                 .map_err(loop_state_error)?
             {
                 let now = loop_now_ms();
+                // T3 — re-enable resumes from the schedule descriptor (`at`
+                // picks the next wall-clock occurrence; a one-shot past its
+                // instant stays disarmed: terminal expired).
+                let descriptor = state_runtime
+                    .get_loop_descriptor(&job.id)
+                    .await
+                    .map_err(loop_state_error)?;
+                let next_run_ms = next_run_at_ms(
+                    &super::state::SchedulePlan {
+                        schedule_kind: descriptor
+                            .as_ref()
+                            .map(|descriptor| descriptor.schedule_kind.as_str())
+                            .unwrap_or("interval"),
+                        interval_seconds: job.interval_seconds,
+                        schedule_at: descriptor
+                            .as_ref()
+                            .and_then(|descriptor| descriptor.schedule_at.as_deref()),
+                        tz: descriptor
+                            .as_ref()
+                            .and_then(|descriptor| descriptor.tz.as_deref()),
+                        one_shot_at_ms: descriptor
+                            .as_ref()
+                            .and_then(|descriptor| descriptor.one_shot_at_ms),
+                    },
+                    now,
+                );
                 state_runtime
-                    .set_thread_loop_job_enabled(
-                        thread_id,
-                        &label,
-                        true,
-                        Some(now + (job.interval_seconds * 1000)),
-                        now,
-                    )
+                    .set_thread_loop_job_enabled(thread_id, &label, true, next_run_ms, now)
                     .await
                     .map_err(loop_state_error)?;
                 state_runtime
@@ -346,7 +408,7 @@ pub(super) async fn run_command_request(
                         thread_id,
                         &job.id,
                         codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: Some(now + (job.interval_seconds * 1000)),
+                            next_run_ms,
                             last_run_ms: job.last_run_ms,
                             last_status: None,
                             last_error: None,

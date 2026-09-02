@@ -29,6 +29,7 @@ anyhow = { workspace = true }
 axum = { workspace = true, default-features = false, features = ["http1", "tokio"] }
 base64 = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+chrono-tz = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 codex-ansi-escape = { workspace = true }
 codex-app-server-client = { workspace = true }

@@ -44,6 +44,14 @@ struct ManageLoopsToolArgs {
     runner: Option<String>,
     #[serde(default)]
     runner_model: Option<String>,
+    #[serde(default)]
+    schedule_kind: Option<String>,
+    #[serde(default)]
+    schedule_at: Option<String>,
+    #[serde(default)]
+    one_shot: Option<String>,
+    #[serde(default)]
+    tz: Option<String>,
 }
 
 fn parse_runner_kind(raw: Option<String>) -> anyhow::Result<LoopRunnerKind> {
@@ -74,6 +82,123 @@ fn parse_runner_model(raw: Option<String>) -> anyhow::Result<Option<String>> {
         }
     })
     .transpose()
+}
+
+/// T3 — RFC 3339 with a mandatory offset (decisione DAG): a naive datetime
+/// is rejected as `one_shot_requires_offset`, never silently assumed UTC.
+/// Returns epoch-ms UTC.
+fn parse_one_shot_ms(raw: Option<&str>) -> anyhow::Result<Option<i64>> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(parsed) => Ok(Some(parsed.timestamp_millis())),
+        Err(_) => {
+            let naive_parse = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"));
+            if naive_parse.is_ok() {
+                Err(anyhow::anyhow!(
+                    "one_shot_requires_offset: pass an RFC 3339 timestamp with an explicit offset, e.g. 2026-10-25T02:30:00+02:00"
+                ))
+            } else {
+                Err(anyhow::anyhow!(
+                    "`one_shot` must be an RFC 3339 timestamp with an explicit offset, e.g. 2026-10-25T02:30:00+02:00"
+                ))
+            }
+        }
+    }
+}
+
+/// T3 — schedule fields for `add` (default `interval`, validated as a
+/// triplet): returns (schedule_kind, schedule_at, one_shot_at_ms, tz).
+fn parse_schedule_fields(
+    schedule_kind: Option<&str>,
+    schedule_at: Option<&str>,
+    one_shot: Option<&str>,
+    tz: Option<&str>,
+) -> anyhow::Result<(String, Option<String>, Option<i64>, Option<String>)> {
+    let kind = match schedule_kind.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(kind) => kind.to_string(),
+        None => "interval".to_string(),
+    };
+    let schedule_at = schedule_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let tz = tz
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let one_shot_at_ms = parse_one_shot_ms(one_shot)?;
+    match kind.as_str() {
+        "interval" => {
+            if schedule_at.is_some() || one_shot_at_ms.is_some() {
+                return Err(anyhow::anyhow!(
+                    "`schedule_at`/`one_shot`/`tz` apply only to schedule_kind=at|one_shot"
+                ));
+            }
+        }
+        "at" => {
+            if schedule_at.is_none() {
+                return Err(anyhow::anyhow!(
+                    "`schedule_at` (HH:MM) is required for schedule_kind=at"
+                ));
+            }
+            if tz.is_none() {
+                return Err(anyhow::anyhow!(
+                    "`tz` (IANA name, e.g. Europe/Rome) is required for schedule_kind=at"
+                ));
+            }
+            if one_shot_at_ms.is_some() {
+                return Err(anyhow::anyhow!(
+                    "`one_shot` applies only to schedule_kind=one_shot"
+                ));
+            }
+        }
+        "one_shot" => {
+            if one_shot_at_ms.is_none() {
+                return Err(anyhow::anyhow!(
+                    "`one_shot` (RFC 3339 with offset) is required for schedule_kind=one_shot"
+                ));
+            }
+            if schedule_at.is_some() {
+                return Err(anyhow::anyhow!(
+                    "`schedule_at` applies only to schedule_kind=at"
+                ));
+            }
+        }
+        other => {
+            return Err(anyhow::anyhow!(
+                "`schedule_kind` must be interval, at, or one_shot (got `{other}`)"
+            ));
+        }
+    }
+    Ok((kind, schedule_at, one_shot_at_ms, tz))
+}
+
+/// T3 — schedule fields for `update`: `None` leaves the schedule untouched;
+/// a non-`None` schedule revalidates the whole triplet in the same call.
+type UpdateSchedule = Option<(String, Option<String>, Option<i64>, Option<String>)>;
+
+fn parse_schedule_fields_update(
+    schedule_kind: Option<&str>,
+    schedule_at: Option<&str>,
+    one_shot: Option<&str>,
+    tz: Option<&str>,
+) -> anyhow::Result<UpdateSchedule> {
+    let touched = [schedule_kind, schedule_at, one_shot, tz]
+        .iter()
+        .any(|value| value.is_some());
+    if !touched {
+        return Ok(None);
+    }
+    let (kind, schedule_at, one_shot_at_ms, tz) =
+        parse_schedule_fields(schedule_kind, schedule_at, one_shot, tz)?;
+    Ok(Some((kind, schedule_at, one_shot_at_ms, tz)))
 }
 
 pub(super) fn parse_manage_loops_interval_seconds(token: &str) -> Option<i64> {
@@ -212,6 +337,12 @@ pub(super) fn parse_manage_loops_tool_request(
             let prompt_text = payload.to_storage_text()?;
             let runner_kind = parse_runner_kind(args.runner)?;
             let runner_model = parse_runner_model(args.runner_model)?;
+            let (schedule_kind, schedule_at, one_shot_at_ms, tz) = parse_schedule_fields(
+                args.schedule_kind.as_deref(),
+                args.schedule_at.as_deref(),
+                args.one_shot.as_deref(),
+                args.tz.as_deref(),
+            )?;
             Ok(LoopCommandRequest::Add {
                 label,
                 interval_seconds,
@@ -220,6 +351,10 @@ pub(super) fn parse_manage_loops_tool_request(
                 auto_remove_on_completion: args.auto_remove_on_completion,
                 runner_kind,
                 runner_model,
+                schedule_kind,
+                schedule_at,
+                one_shot_at_ms,
+                tz,
             })
         }
         "update" => {
@@ -255,6 +390,21 @@ pub(super) fn parse_manage_loops_tool_request(
                 .runner_model
                 .map(|model| parse_runner_model(Some(model)))
                 .transpose()?;
+            let schedule = parse_schedule_fields_update(
+                args.schedule_kind.as_deref(),
+                args.schedule_at.as_deref(),
+                args.one_shot.as_deref(),
+                args.tz.as_deref(),
+            )?;
+            let (schedule_kind, schedule_at, one_shot_at_ms, tz) = match schedule {
+                Some(schedule) => (
+                    Some(schedule.0),
+                    Some(schedule.1),
+                    Some(schedule.2),
+                    Some(schedule.3),
+                ),
+                None => (None, None, None, None),
+            };
             Ok(LoopCommandRequest::Update {
                 label,
                 interval_seconds,
@@ -264,6 +414,10 @@ pub(super) fn parse_manage_loops_tool_request(
                 enabled: args.enabled,
                 runner_kind,
                 runner_model,
+                schedule_kind,
+                schedule_at,
+                one_shot_at_ms,
+                tz,
             })
         }
         other => Err(anyhow::anyhow!("unsupported manage_loops action `{other}`")),
@@ -276,6 +430,46 @@ mod tests {
     use super::parse_manage_loops_tool_request;
     use crate::vl::events::LoopCommandRequest;
     use codex_state::LoopRunnerKind;
+
+    #[test]
+    fn one_shot_without_offset_is_rejected_explicitly() {
+        let err = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "one-shot",
+            "interval": "5m",
+            "prompt": "fire once",
+            "schedule_kind": "one_shot",
+            "one_shot": "2026-10-25T02:30:00"
+        }))
+        .expect_err("naive one_shot must be rejected");
+
+        assert!(err.to_string().contains("one_shot_requires_offset"));
+    }
+
+    #[test]
+    fn one_shot_with_offset_converts_to_utc_ms() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "one-shot",
+            "interval": "5m",
+            "prompt": "fire once",
+            "schedule_kind": "one_shot",
+            "one_shot": "2026-10-25T02:30:00+02:00"
+        }))
+        .expect("valid one_shot request");
+
+        let LoopCommandRequest::Add {
+            one_shot_at_ms,
+            schedule_kind,
+            ..
+        } = request
+        else {
+            panic!("expected an add request");
+        };
+        // 2026-10-25T02:30:00+02:00 == 2026-10-25T00:30:00Z (misurato).
+        assert_eq!(one_shot_at_ms, Some(1_792_888_200_000));
+        assert_eq!(schedule_kind, "one_shot");
+    }
 
     #[test]
     fn parse_manage_loops_add_request() {
@@ -297,6 +491,10 @@ mod tests {
                 auto_remove_on_completion: None,
                 runner_kind: LoopRunnerKind::Main,
                 runner_model: None,
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         );
     }
@@ -341,6 +539,10 @@ mod tests {
                 auto_remove_on_completion: Some(true),
                 runner_kind: LoopRunnerKind::Main,
                 runner_model: None,
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         );
     }
@@ -394,6 +596,10 @@ mod tests {
                 auto_remove_on_completion: None,
                 runner_kind: LoopRunnerKind::ChildAgent,
                 runner_model: Some("gpt-5.3-codex".to_string()),
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         );
 
@@ -425,6 +631,10 @@ mod tests {
                 enabled: None,
                 runner_kind: Some(LoopRunnerKind::ChildAgent),
                 runner_model: Some(Some("gpt-5.3-codex".to_string())),
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         );
     }
@@ -450,6 +660,10 @@ mod tests {
                 enabled: Some(false),
                 runner_kind: None,
                 runner_model: None,
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         );
     }

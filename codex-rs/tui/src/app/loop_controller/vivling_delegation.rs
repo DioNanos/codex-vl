@@ -44,6 +44,7 @@ use super::parsing::parse_manage_loops_interval_seconds;
 use super::parsing::parse_vivling_loop_status;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+use super::state::next_run_at_ms;
 use super::types::LoopCommandSource;
 
 pub(super) async fn handle_loop_tick_finished(
@@ -60,13 +61,13 @@ pub(super) async fn handle_loop_tick_finished(
     else {
         return Ok(());
     };
-    let is_child_agent = state_runtime
+    let descriptor = state_runtime
         .get_loop_descriptor(&job.id)
         .await
-        .map_err(loop_state_error)?
-        .is_some_and(|descriptor| {
-            descriptor.runner_kind == codex_state::LoopRunnerKind::ChildAgent
-        });
+        .map_err(loop_state_error)?;
+    let is_child_agent = descriptor.as_ref().is_some_and(|descriptor| {
+        descriptor.runner_kind == codex_state::LoopRunnerKind::ChildAgent
+    });
     // The finished event is the terminal boundary for the child runner. Clear
     // the atomic guard before processing actions so parse/action failures also
     // cannot strand the job in-flight.
@@ -197,11 +198,30 @@ pub(super) async fn handle_loop_tick_finished(
                 && !skipped_runtime_update
             {
                 let (next_run_ms, pending_tick, last_error) = match status {
-                    LOOP_STATUS_PROGRESS => (
-                        Some(now + (updated_job.interval_seconds * 1000)),
-                        false,
-                        None,
-                    ),
+                    LOOP_STATUS_PROGRESS => {
+                        // T3 — reschedule from the schedule descriptor: interval
+                        // rolls forward, `at` picks the next wall-clock
+                        // occurrence in the persisted tz, and a fired one_shot
+                        // is terminal (next_run_ms stays None: disarmed).
+                        let next_run_ms = match descriptor.as_ref() {
+                            Some(descriptor) if descriptor.schedule_kind == "at" => next_run_at_ms(
+                                &super::state::SchedulePlan {
+                                    schedule_kind: "at",
+                                    interval_seconds: updated_job.interval_seconds,
+                                    schedule_at: descriptor.schedule_at.as_deref(),
+                                    tz: descriptor.tz.as_deref(),
+                                    one_shot_at_ms: descriptor.one_shot_at_ms,
+                                },
+                                now,
+                            ),
+                            _ => {
+                                Some(now.saturating_add(
+                                    updated_job.interval_seconds.saturating_mul(1000),
+                                ))
+                            }
+                        };
+                        (next_run_ms, false, None)
+                    }
                     LOOP_STATUS_BLOCKED => (None, true, Some(result.message.clone())),
                     LOOP_STATUS_DONE => (None, false, None),
                     _ => unreachable!(),

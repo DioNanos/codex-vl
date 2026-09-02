@@ -28,6 +28,15 @@ pub(crate) enum LoopCommandRequest {
         auto_remove_on_completion: Option<bool>,
         runner_kind: LoopRunnerKind,
         runner_model: Option<String>,
+        /// T3 — persisted on the descriptor (0933): "interval" | "at" |
+        /// "one_shot".
+        schedule_kind: Option<String>,
+        /// T3 — "HH:MM" wall clock for `at`, interpreted in `tz`.
+        schedule_at: Option<String>,
+        /// T3 — RFC 3339 with mandatory offset; persisted as epoch-ms UTC.
+        one_shot: Option<String>,
+        /// T3 — IANA tz name for `at` (persisted, never a runtime Local).
+        tz: Option<String>,
     },
     Update {
         label: String,
@@ -38,6 +47,14 @@ pub(crate) enum LoopCommandRequest {
         enabled: Option<bool>,
         runner_kind: Option<LoopRunnerKind>,
         runner_model: Option<Option<String>>,
+        /// T3 — see Add::schedule_kind.
+        schedule_kind: Option<String>,
+        /// T3 — see Add::schedule_at.
+        schedule_at: Option<String>,
+        /// T3 — see Add::one_shot.
+        one_shot: Option<String>,
+        /// T3 — see Add::tz.
+        tz: Option<String>,
     },
     List,
     Show {

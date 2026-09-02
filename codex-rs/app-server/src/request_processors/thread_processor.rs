@@ -452,7 +452,11 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
                 "enabled": {"type": "boolean", "description": "Optional enabled state for update."},
                 "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."},
                 "runner": {"type": "string", "enum": ["main", "child_agent"], "description": "Runner for each tick; defaults to main."},
-                "runner_model": {"type": "string", "description": "Provider-catalog model slug for child_agent ticks."}
+                "runner_model": {"type": "string", "description": "Provider-catalog model slug for child_agent ticks."},
+                "schedule_kind": {"type": "string", "enum": ["interval", "at", "one_shot"], "description": "codex-vl schedule kind; defaults to interval. Applies on add, or on update as a whole triplet."},
+                "schedule_at": {"type": "string", "description": "codex-vl: HH:MM wall clock for schedule_kind=at, interpreted in `tz` (IANA). Required for at."},
+                "one_shot": {"type": "string", "description": "codex-vl: RFC 3339 timestamp with a mandatory offset (e.g. 2026-10-25T02:30:00+02:00) for schedule_kind=one_shot. Required for one_shot."},
+                "tz": {"type": "string", "description": "codex-vl: IANA tz name (e.g. Europe/Rome) used for schedule_kind=at. Required for at."}
             },
             "required": ["action"],
             "additionalProperties": false
