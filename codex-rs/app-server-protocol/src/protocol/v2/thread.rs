@@ -118,6 +118,11 @@ pub struct ThreadStartParams {
     pub history_mode: Option<ThreadHistoryMode>,
     #[ts(optional = nullable)]
     pub session_start_source: Option<ThreadStartSource>,
+    /// codex-vl: fork-owned tool capabilities declared explicitly by the
+    /// client on thread/start. Additive, fork-only field: upstream clients
+    /// ignore it, so the merge keeps it with take-upstream.
+    #[ts(optional = nullable)]
+    pub capabilities: Option<ThreadClientCapabilities>,
     /// Optional client-supplied analytics source classification for this thread.
     #[ts(optional = nullable)]
     pub thread_source: Option<ThreadSource>,
@@ -156,6 +161,20 @@ pub struct ThreadStartParams {
     #[experimental("thread/start.experimentalRawEvents")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub experimental_raw_events: bool,
+}
+
+/// codex-vl: client-declared capabilities for fork-owned dynamic tools
+/// (thread/start `capabilities` field). Requests the fork-owned builtins the
+/// hosting client can serve; the TUI identity check remains the compatibility
+/// fallback during the 0.151.x cycle.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadClientCapabilities {
+    /// Explicitly request the fork-owned `manage_loops` dynamic tool.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
+    pub manage_loops: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]

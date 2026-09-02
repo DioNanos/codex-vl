@@ -7,6 +7,7 @@ use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadClientCapabilities;
 use codex_app_server_protocol::ThreadHistoryMode as ApiThreadHistoryMode;
 use codex_app_server_protocol::ThreadRevertParams;
 use codex_app_server_protocol::ThreadRevertResponse;
@@ -458,13 +459,28 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
     }
 }
 
+/// codex-vl: single decision point for granting the fork-owned manage_loops
+/// builtins (T0b). The explicit `manageLoops` thread/start capability grants
+/// the builtin to any client that can serve the DynamicToolCall; the TUI
+/// identity check is the compatibility fallback for the 0.151.x cycle (the
+/// TUI does not declare capabilities yet). Changing the grant policy is a
+/// one-line edit here; the suite `dynamic_tools.rs` pins all three outcomes.
+fn client_requests_manage_loops_builtins(
+    app_server_client_name: Option<&str>,
+    capabilities: Option<&ThreadClientCapabilities>,
+) -> bool {
+    capabilities.is_some_and(|caps| caps.manage_loops)
+        || app_server_client_name == Some(CODEX_TUI_CLIENT_NAME)
+}
+
 /// Replace any client-supplied built-in manage_loops dynamic tools with the
 /// fork-owned builtins (flat + `codex_app` namespaced), so app-server dynamic
 /// tool resolution always routes manage_loops back to the TUI loop controller.
 /// Preserve other tools already supplied under the `codex_app` namespace.
 ///
-/// Only invoked for the TUI client (see the `thread/start` call site): generic
-/// app-server clients keep their declared dynamic tools untouched.
+/// Only invoked for clients that request the builtin (see
+/// `client_requests_manage_loops_builtins` and the `thread/start` call site):
+/// other app-server clients keep their declared dynamic tools untouched.
 fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
     tools.retain(|tool| {
         !matches!(
@@ -519,6 +535,7 @@ fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToo
 /// requires a zero-tool schema.
 fn dynamic_tools_for_thread_start(
     app_server_client_name: Option<&str>,
+    capabilities: Option<&ThreadClientCapabilities>,
     ephemeral: bool,
     thread_source: Option<&ThreadSource>,
     dynamic_tools: Vec<DynamicToolSpec>,
@@ -528,7 +545,7 @@ fn dynamic_tools_for_thread_start(
             thread_source,
             Some(ThreadSource::Feature(feature)) if feature == "system"
         );
-    if app_server_client_name == Some(CODEX_TUI_CLIENT_NAME)
+    if client_requests_manage_loops_builtins(app_server_client_name, capabilities)
         && !is_temporary_structured_system_request
     {
         with_builtin_dynamic_tools(dynamic_tools)
@@ -1249,6 +1266,7 @@ impl ThreadRequestProcessor {
             history_mode,
             session_start_source,
             thread_source,
+            capabilities,
             project_id,
             environments,
         } = params;
@@ -1515,13 +1533,16 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd, &config.workspace_roots)
         });
-        // codex-vl: the fork-owned manage_loops builtins are scoped to the TUI
-        // client, the only one with the loop controller that serves the
-        // DynamicToolCall. Generic app-server clients keep their declared
+        // codex-vl: the fork-owned manage_loops builtins are granted to
+        // clients that explicitly request them (thread/start `capabilities`
+        // with `manageLoops`) or, as the 0.151.x compatibility fallback, to
+        // the TUI client — the only one with the loop controller that serves
+        // the DynamicToolCall. Other app-server clients keep their declared
         // dynamic tools untouched (same identity-based scoping as
         // `thread_rollback` above).
         let dynamic_tools = dynamic_tools_for_thread_start(
             app_server_client_name.as_deref(),
+            capabilities.as_ref(),
             config.ephemeral,
             thread_source.as_ref(),
             dynamic_tools.unwrap_or_default(),
