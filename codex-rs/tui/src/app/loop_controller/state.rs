@@ -68,18 +68,25 @@ fn next_daily_at_ms(hhmm: &str, tz_name: &str, now_ms: i64) -> Option<i64> {
         let Some(naive) = date.and_hms_opt(hour, minute, 0) else {
             continue;
         };
-        let instant = match tz.from_local_datetime(&naive) {
-            // DST fold: two instants share this local time — the first one
-            // (pre-transition offset) is the earliest strictly-future choice.
-            chrono::MappedLocalTime::Single(instant)
-            | chrono::MappedLocalTime::Ambiguous(instant, _) => instant,
+        match tz.from_local_datetime(&naive) {
+            chrono::MappedLocalTime::Single(instant) => {
+                if instant.timestamp_millis() > now_ms {
+                    return Some(instant.timestamp_millis());
+                }
+            }
+            // DST fold: try both instants in chronological order. If `now`
+            // is exactly the first occurrence, the second occurrence is the
+            // next valid instant on the same wall-clock day.
+            chrono::MappedLocalTime::Ambiguous(first, second) => {
+                for instant in [first, second] {
+                    if instant.timestamp_millis() > now_ms {
+                        return Some(instant.timestamp_millis());
+                    }
+                }
+            }
             // DST gap: the wall-clock time does not exist on this day; the
             // next occurrence is the same HH:MM on the following day.
             chrono::MappedLocalTime::None => continue,
-        };
-        let ms = instant.timestamp_millis();
-        if ms > now_ms {
-            return Some(ms);
         }
     }
     None
