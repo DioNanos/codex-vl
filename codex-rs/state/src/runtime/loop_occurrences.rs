@@ -68,14 +68,16 @@ ORDER BY scheduled_at_ms ASC
         .await?;
         Ok(rows
             .into_iter()
-            .map(|row| LoopOccurrence {
-                job_id: row.try_get("job_id")?,
-                scheduled_at_ms: row.try_get("scheduled_at_ms")?,
-                fired_count: row.try_get("fired_count")?,
-                last_fired_at_ms: row.try_get("last_fired_at_ms")?,
-                claimed_at_ms: row.try_get("claimed_at_ms")?,
+            .map(|row| {
+                Ok::<_, sqlx::Error>(LoopOccurrence {
+                    job_id: row.try_get("job_id")?,
+                    scheduled_at_ms: row.try_get("scheduled_at_ms")?,
+                    fired_count: row.try_get("fired_count")?,
+                    last_fired_at_ms: row.try_get("last_fired_at_ms")?,
+                    claimed_at_ms: row.try_get("claimed_at_ms")?,
+                })
             })
-            .collect())
+            .collect::<Result<Vec<_>, _>>()?)
     }
 }
 
