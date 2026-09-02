@@ -32,7 +32,58 @@ use super::state::loop_now_ms;
 use super::state::loop_state_error;
 use super::state::next_run_at_ms;
 use super::types::LoopActionOutcome;
+use super::types::LoopCommandScope;
 use super::types::LoopCommandSource;
+
+fn managed_request_label(request: &LoopCommandRequest) -> Option<&str> {
+    match request {
+        LoopCommandRequest::Update { label, .. }
+        | LoopCommandRequest::Disable { label }
+        | LoopCommandRequest::Remove { label } => Some(label),
+        _ => None,
+    }
+}
+
+fn managed_request_is_allowed(request: &LoopCommandRequest) -> bool {
+    match request {
+        LoopCommandRequest::Disable { .. } | LoopCommandRequest::Remove { .. } => true,
+        LoopCommandRequest::Update {
+            interval_seconds,
+            prompt_text,
+            goal_text,
+            auto_remove_on_completion,
+            enabled,
+            runner_kind,
+            runner_model,
+            schedule_kind,
+            schedule_at,
+            one_shot_at_ms,
+            tz,
+            ..
+        } => {
+            (interval_seconds.is_some() || prompt_text.is_some())
+                && goal_text.is_none()
+                && auto_remove_on_completion.is_none()
+                && enabled.is_none()
+                && runner_kind.is_none()
+                && runner_model.is_none()
+                && schedule_kind.is_none()
+                && schedule_at.is_none()
+                && one_shot_at_ms.is_none()
+                && tz.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn managed_scope_matches(
+    scope: &LoopCommandScope,
+    thread_id: ThreadId,
+    job_id: &str,
+    label: &str,
+) -> bool {
+    scope.thread_id == thread_id && scope.job_id == job_id && scope.label == label
+}
 
 pub(super) fn validate_runner_model(
     app: &App,
@@ -100,7 +151,65 @@ pub(super) async fn run_command_request(
         ));
     }
 
+    if let LoopCommandSource::Managed(scope) = &source {
+        if scope.thread_id != thread_id || !managed_request_is_allowed(&request) {
+            app.record_vivling_loop_job(
+                "audit_rejected",
+                managed_request_label(&request).unwrap_or("unknown"),
+                None,
+                source.clone(),
+            );
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                "Managed loop action rejected by scope or allowlist.".to_string(),
+            ));
+        }
+    }
+
     let state_runtime = app.loop_state_runtime().await?;
+    if let LoopCommandSource::Managed(scope) = &source {
+        let Some(label) = managed_request_label(&request) else {
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                "Managed loop action has no loop label.".to_string(),
+            ));
+        };
+        let Some(job) = state_runtime
+            .get_thread_loop_job_by_label(thread_id, label)
+            .await
+            .map_err(loop_state_error)?
+        else {
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                format!("Managed loop `{label}` is not in scope."),
+            ));
+        };
+        if !managed_scope_matches(scope, thread_id, &job.id, &job.label) {
+            app.record_vivling_loop_job("audit_rejected", label, Some(&job), source.clone());
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                "Managed loop action names a different job.".to_string(),
+            ));
+        }
+        if matches!(&request, LoopCommandRequest::Disable { .. }) && job.auto_remove_on_completion {
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                "Managed completion policy requires remove, not disable.".to_string(),
+            ));
+        }
+        if matches!(&request, LoopCommandRequest::Remove { .. }) && !job.auto_remove_on_completion {
+            return Ok(loop_action_failure(
+                "scope",
+                thread_id,
+                "Managed completion policy requires disable, not remove.".to_string(),
+            ));
+        }
+    }
     let outcome = match request {
         LoopCommandRequest::Add {
             label,
@@ -124,9 +233,9 @@ pub(super) async fn run_command_request(
                 .filter(|value| !value.is_empty())
                 .or_else(|| Some(prompt_text.trim().to_string()));
             let auto_remove_on_completion = auto_remove_on_completion.unwrap_or(true);
-            let created_by = match source {
+            let created_by = match &source {
                 LoopCommandSource::User => "user",
-                LoopCommandSource::Agent => "agent",
+                LoopCommandSource::Agent | LoopCommandSource::Managed(_) => "agent",
             }
             .to_string();
             // T3 — the first run comes from the schedule descriptor values
@@ -235,7 +344,70 @@ pub(super) async fn run_command_request(
             let descriptor = existing_descriptor;
             validate_runner_model(&app, runner_kind, runner_model.as_deref())
                 .map_err(loop_state_error)?;
-            let prompt_text = prompt_text.unwrap_or_else(|| existing.prompt_text.clone());
+            if let LoopCommandSource::Managed(_scope) = &source {
+                if let Some(requested_interval) = interval_seconds
+                    && requested_interval <= existing.interval_seconds
+                {
+                    return Ok(loop_action_failure(
+                        "scope",
+                        thread_id,
+                        "Managed interval changes must increase cadence only on a churn gate."
+                            .to_string(),
+                    ));
+                }
+                if interval_seconds.is_some() {
+                    let Some(delegation) = state_runtime
+                        .get_loop_delegation(thread_id, &existing.id)
+                        .await
+                        .map_err(loop_state_error)?
+                    else {
+                        return Ok(loop_action_failure(
+                            "scope",
+                            thread_id,
+                            "Managed interval change requires a persisted delegation.".to_string(),
+                        ));
+                    };
+                    let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
+                    let metrics = codex_state::LoopMetrics::from_entries(&parsed.entries);
+                    let Ok((is_adult, brain_enabled, has_profile, bond, phase)) = app
+                        .chat_widget
+                        .vivling_loop_management_gate_inputs(&app.config, &delegation.vivling_id)
+                    else {
+                        return Ok(loop_action_failure(
+                            "scope",
+                            thread_id,
+                            "Managed interval change could not verify its gate inputs.".to_string(),
+                        ));
+                    };
+                    let strategy = codex_state::loop_management_strategy(
+                        delegation.ticks_managed,
+                        bond,
+                        metrics,
+                    );
+                    if !is_adult
+                        || !brain_enabled
+                        || !has_profile
+                        || phase == "unavailable"
+                        || strategy != codex_state::LoopDelegationStrategy::Manage
+                        || metrics.noisy_churn == 0
+                    {
+                        return Ok(loop_action_failure(
+                            "scope",
+                            thread_id,
+                            "Managed interval change rejected: Manage/churn gate is not green."
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            let prompt_text = match (&source, prompt_text) {
+                (LoopCommandSource::Managed(_), Some(enrichment)) => format!(
+                    "{}\n\n[managed prompt enrichment]\n{}",
+                    existing.prompt_text, enrichment
+                ),
+                (_, Some(prompt_text)) => prompt_text,
+                (_, None) => existing.prompt_text.clone(),
+            };
             let goal_text = match goal_text {
                 Some(next_goal) => next_goal,
                 None => existing.goal_text.clone(),
@@ -625,6 +797,12 @@ pub(super) async fn run_command_request(
                         .as_ref()
                         .and_then(|delegation| delegation.last_plan_approved),
                     override_main: owner_kind == "main",
+                    cooldown_until_ms: existing
+                        .as_ref()
+                        .and_then(|delegation| delegation.cooldown_until_ms),
+                    suspend_reason: existing
+                        .as_ref()
+                        .and_then(|delegation| delegation.suspend_reason.clone()),
                     created_at_ms: existing
                         .as_ref()
                         .map(|delegation| delegation.created_at_ms)
@@ -782,6 +960,8 @@ pub(super) async fn run_command_request(
                     recent_results_json: existing.recent_results_json.clone(),
                     last_plan_approved: existing.last_plan_approved,
                     override_main: existing.override_main,
+                    cooldown_until_ms: existing.cooldown_until_ms,
+                    suspend_reason: existing.suspend_reason.clone(),
                     created_at_ms: existing.created_at_ms,
                     updated_at_ms: loop_now_ms(),
                 })
@@ -891,8 +1071,45 @@ pub(super) async fn run_command_request(
 
 #[cfg(test)]
 mod tests {
+    use super::managed_request_is_allowed;
+    use super::managed_scope_matches;
     use super::validate_runner_model_against_catalog;
+    use crate::app::loop_controller::types::LoopCommandScope;
+    use crate::vl::events::LoopCommandRequest;
+    use codex_protocol::ThreadId;
     use codex_state::LoopRunnerKind;
+
+    #[test]
+    fn managed_scope_rejects_a_different_job_even_when_label_is_supplied() {
+        let thread_id = ThreadId::new();
+        let scope = LoopCommandScope {
+            instance_id: "tick-1".to_string(),
+            thread_id,
+            job_id: "job-1".to_string(),
+            label: "safe".to_string(),
+        };
+        assert!(managed_scope_matches(&scope, thread_id, "job-1", "safe"));
+        assert!(!managed_scope_matches(&scope, thread_id, "job-2", "safe"));
+        assert!(!managed_scope_matches(&scope, thread_id, "job-1", "other"));
+    }
+
+    #[test]
+    fn managed_allowlist_has_no_create_or_owner_surface() {
+        let request = LoopCommandRequest::Add {
+            label: "x".to_string(),
+            interval_seconds: 60,
+            prompt_text: "x".to_string(),
+            goal_text: None,
+            auto_remove_on_completion: None,
+            runner_kind: LoopRunnerKind::Main,
+            runner_model: None,
+            schedule_kind: "interval".to_string(),
+            schedule_at: None,
+            one_shot_at_ms: None,
+            tz: None,
+        };
+        assert!(!managed_request_is_allowed(&request));
+    }
 
     #[test]
     fn invalid_runner_model_is_rejected_against_the_effective_catalog() {

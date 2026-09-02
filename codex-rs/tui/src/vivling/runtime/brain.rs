@@ -252,6 +252,25 @@ impl Vivling {
         }
     }
 
+    /// T5 gate inputs, read from the same persisted state as the suggestion
+    /// gate. No second source of bond or lifecycle truth is introduced.
+    pub(crate) fn loop_management_gate_inputs(
+        &self,
+        owner_vivling_id: &str,
+    ) -> Result<(bool, bool, bool, u8, &'static str), String> {
+        let state = self
+            .load_state_for_id(owner_vivling_id)
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| format!("Vivling owner `{owner_vivling_id}` is missing on disk."))?;
+        Ok((
+            state.stage() == Stage::Adult,
+            state.brain_enabled,
+            state.brain_profile.is_some(),
+            state.bond.value,
+            self.shadow.lifecycle.kind_label(),
+        ))
+    }
+
     pub(crate) fn prepare_loop_tick_request(
         &mut self,
         owner_vivling_id: &str,

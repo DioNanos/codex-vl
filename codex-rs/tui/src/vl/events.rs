@@ -17,6 +17,16 @@ use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
 use codex_state::LoopRunnerKind;
 
+/// Server-issued identity for one in-flight managed loop tick. It is
+/// deliberately separate from caller-supplied tool arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoopCommandScope {
+    pub(crate) instance_id: String,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) job_id: String,
+    pub(crate) label: String,
+}
+
 /// User-facing request for one of the `/loop ...` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LoopCommandRequest {

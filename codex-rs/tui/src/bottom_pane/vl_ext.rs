@@ -304,6 +304,15 @@ impl BottomPane {
         self.vivling.loop_owner_readiness(owner_vivling_id)
     }
 
+    pub(crate) fn vivling_loop_management_gate_inputs(
+        &mut self,
+        config: &Config,
+        owner_vivling_id: &str,
+    ) -> Result<(bool, bool, bool, u8, &'static str), String> {
+        self.configure_vivling(config);
+        self.vivling.loop_management_gate_inputs(owner_vivling_id)
+    }
+
     pub(crate) fn prepare_vivling_loop_tick(
         &mut self,
         config: &Config,

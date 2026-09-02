@@ -46,6 +46,8 @@ pub struct LoopDelegation {
     pub recent_results_json: String,
     pub last_plan_approved: Option<bool>,
     pub override_main: bool,
+    pub cooldown_until_ms: Option<i64>,
+    pub suspend_reason: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -61,6 +63,8 @@ pub struct LoopDelegationUpsertParams {
     pub recent_results_json: String,
     pub last_plan_approved: Option<bool>,
     pub override_main: bool,
+    pub cooldown_until_ms: Option<i64>,
+    pub suspend_reason: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -75,6 +79,8 @@ pub(crate) struct LoopDelegationRow {
     pub(crate) recent_results_json: String,
     pub(crate) last_plan_approved: Option<bool>,
     pub(crate) override_main: bool,
+    pub(crate) cooldown_until_ms: Option<i64>,
+    pub(crate) suspend_reason: Option<String>,
     pub(crate) created_at_ms: i64,
     pub(crate) updated_at_ms: i64,
 }
@@ -91,6 +97,8 @@ impl LoopDelegationRow {
             recent_results_json: row.try_get("recent_results_json")?,
             last_plan_approved: row.try_get("last_plan_approved")?,
             override_main: row.try_get("override_main")?,
+            cooldown_until_ms: row.try_get("cooldown_until_ms")?,
+            suspend_reason: row.try_get("suspend_reason")?,
             created_at_ms: row.try_get("created_at_ms")?,
             updated_at_ms: row.try_get("updated_at_ms")?,
         })
@@ -111,6 +119,8 @@ impl TryFrom<LoopDelegationRow> for LoopDelegation {
             recent_results_json: value.recent_results_json,
             last_plan_approved: value.last_plan_approved,
             override_main: value.override_main,
+            cooldown_until_ms: value.cooldown_until_ms,
+            suspend_reason: value.suspend_reason,
             created_at_ms: value.created_at_ms,
             updated_at_ms: value.updated_at_ms,
         })

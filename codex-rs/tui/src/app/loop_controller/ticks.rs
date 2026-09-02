@@ -149,6 +149,9 @@ pub(super) async fn process_submission(
         .get_loop_delegation(thread_id, &job.id)
         .await
         .map_err(loop_state_error)?;
+    let delegation =
+        super::vivling_delegation::refresh_management_state(app, &state_runtime, &job, delegation)
+            .await?;
     let delegated_vivling_id = delegation
         .as_ref()
         .map(|delegation| delegation.vivling_id.as_str())
@@ -355,6 +358,17 @@ pub(super) async fn process_submission(
         // A persisted child runner is authoritative for this tick. Do not let
         // a Vivling profile silently replace its validated runner model.
         request.brain_target = BrainTarget::SessionDefault;
+        if let Some(delegation) = delegation.as_ref() {
+            let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
+            let metrics = codex_state::LoopMetrics::from_entries(&parsed.entries);
+            request.prompt_context.push_str(&format!(
+                "\n\n[managed loop context]\nticks_managed={} clean={} noisy={} blocked={}\nAllowed managed actions: enrich prompt; disable/remove only according to auto_remove_on_completion; increase interval only when the Manage churn gate is green. Never create, split, change owner, file/git, rearm, at, or one_shot.\n",
+                delegation.ticks_managed,
+                metrics.clean_submissions,
+                metrics.noisy_churn,
+                metrics.blocked_runs,
+            ));
+        }
 
         tracing::info!(
             target: "codex_vl::loop_delegation",
@@ -378,6 +392,7 @@ pub(super) async fn process_submission(
             )
             .await
             .map_err(loop_state_error)?;
+        app.register_managed_loop_scope(thread_id, &job.id, &job.label);
         app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
             thread_id,
             job_id: job.id.clone(),

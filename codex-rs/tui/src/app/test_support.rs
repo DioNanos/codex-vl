@@ -83,6 +83,7 @@ pub(super) async fn make_test_app() -> App {
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
         vivling_context_bus: crate::vl::context_bus::VivlingContextBus::default(),
+        managed_loop_scopes: Vec::new(),
         recap: recap::RecapState::default(),
     }
 }

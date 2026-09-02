@@ -20,6 +20,8 @@ SELECT
     recent_results_json,
     last_plan_approved,
     override_main,
+    cooldown_until_ms,
+    suspend_reason,
     created_at_ms,
     updated_at_ms
 FROM vl_loop_delegations
@@ -54,6 +56,8 @@ SELECT
     recent_results_json,
     last_plan_approved,
     override_main,
+    cooldown_until_ms,
+    suspend_reason,
     created_at_ms,
     updated_at_ms
 FROM vl_loop_delegations
@@ -89,9 +93,11 @@ INSERT INTO vl_loop_delegations (
     recent_results_json,
     last_plan_approved,
     override_main,
+    cooldown_until_ms,
+    suspend_reason,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, job_id) DO UPDATE SET
     loop_label = excluded.loop_label,
     vivling_id = excluded.vivling_id,
@@ -100,6 +106,8 @@ ON CONFLICT(thread_id, job_id) DO UPDATE SET
     recent_results_json = excluded.recent_results_json,
     last_plan_approved = excluded.last_plan_approved,
     override_main = excluded.override_main,
+    cooldown_until_ms = excluded.cooldown_until_ms,
+    suspend_reason = excluded.suspend_reason,
     updated_at_ms = excluded.updated_at_ms
             "#,
         )
@@ -112,6 +120,8 @@ ON CONFLICT(thread_id, job_id) DO UPDATE SET
         .bind(&params.recent_results_json)
         .bind(params.last_plan_approved)
         .bind(params.override_main)
+        .bind(params.cooldown_until_ms)
+        .bind(&params.suspend_reason)
         .bind(params.created_at_ms)
         .bind(params.updated_at_ms)
         .execute(self.pool.as_ref())
@@ -162,6 +172,8 @@ mod tests {
             recent_results_json: "[]".to_string(),
             last_plan_approved: Some(true),
             override_main: true,
+            cooldown_until_ms: None,
+            suspend_reason: None,
             created_at_ms: 1_700_000_000_000,
             updated_at_ms: 1_700_000_000_001,
         };

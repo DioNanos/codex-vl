@@ -61,6 +61,7 @@ use crate::vl::events::LoopCommandRequest;
 
 use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
+use self::types::LoopCommandScope;
 use self::types::LoopCommandSource;
 
 // codex-vl: re-exported for the app-server event router, which must route
@@ -82,9 +83,11 @@ impl App {
         let goal = job.and_then(|job| job.goal_text.as_deref());
         self.chat_widget.record_vivling_loop_event(
             VivlingLoopEventKind::Config,
-            match source {
+            match &source {
                 LoopCommandSource::User => VivlingLoopEventSource::User,
-                LoopCommandSource::Agent => VivlingLoopEventSource::Agent,
+                LoopCommandSource::Agent | LoopCommandSource::Managed(_) => {
+                    VivlingLoopEventSource::Agent
+                }
             },
             action,
             label,
@@ -126,6 +129,44 @@ impl App {
                 "loop jobs are unavailable because the process state database is not initialized"
             )
         })
+    }
+
+    pub(super) fn register_managed_loop_scope(
+        &mut self,
+        thread_id: ThreadId,
+        job_id: &str,
+        label: &str,
+    ) -> LoopCommandScope {
+        let scope = LoopCommandScope {
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            thread_id,
+            job_id: job_id.to_string(),
+            label: label.to_string(),
+        };
+        self.managed_loop_scopes.push(scope.clone());
+        scope
+    }
+
+    pub(super) fn clear_managed_loop_scope(&mut self, thread_id: ThreadId, job_id: &str) {
+        self.managed_loop_scopes
+            .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
+    }
+
+    pub(super) fn managed_loop_command_source(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<LoopCommandSource> {
+        let mut scopes = self
+            .managed_loop_scopes
+            .iter()
+            .filter(|scope| scope.thread_id == thread_id);
+        let scope = scopes.next()?.clone();
+        // More than one child tick on a thread has no unambiguous caller
+        // identity in DynamicToolCallParams.  Reject it rather than guessing.
+        scopes
+            .next()
+            .is_none()
+            .then_some(LoopCommandSource::Managed(scope))
     }
 
     pub(super) async fn refresh_loop_jobs(

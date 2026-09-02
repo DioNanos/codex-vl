@@ -161,6 +161,8 @@ mod tests {
             recent_results_json: "[]".to_string(),
             last_plan_approved: None,
             override_main,
+            cooldown_until_ms: None,
+            suspend_reason: None,
             created_at_ms: 0,
             updated_at_ms: 0,
         }

@@ -1272,7 +1272,10 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
             .filter(|migration| migration.description.as_ref().starts_with("vl "))
             .map(|migration| migration.version)
             .collect::<BTreeSet<_>>();
-        assert_eq!(vl_versions, BTreeSet::from([930_i64, 931_i64, 932_i64]));
+        assert_eq!(
+            vl_versions,
+            BTreeSet::from([930_i64, 931_i64, 932_i64, 935_i64])
+        );
 
         let descriptions = migrations
             .iter()

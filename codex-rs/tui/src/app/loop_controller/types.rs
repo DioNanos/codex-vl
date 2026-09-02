@@ -10,8 +10,13 @@ pub(super) struct LoopActionOutcome {
     pub(super) payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use crate::vl::events::LoopCommandScope;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LoopCommandSource {
     User,
     Agent,
+    /// An agent call made while one managed tick is in flight.  The scope is
+    /// issued by the TUI and is never accepted from tool arguments.
+    Managed(LoopCommandScope),
 }

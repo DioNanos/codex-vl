@@ -47,12 +47,188 @@ use super::state::loop_state_error;
 use super::state::next_run_at_ms;
 use super::types::LoopCommandSource;
 
+async fn persist_managed_tick_result(
+    state_runtime: &codex_state::StateRuntime,
+    delegation: Option<codex_state::LoopDelegation>,
+    status: &str,
+    ts_ms: i64,
+    clean: bool,
+    noisy: bool,
+    blocked: bool,
+) -> color_eyre::Result<Option<codex_state::LoopDelegation>> {
+    let Some(delegation) = delegation else {
+        return Ok(None);
+    };
+    let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
+    if let Some(diagnostic) = parsed.diagnostic.as_deref() {
+        tracing::warn!(
+            target: "codex_vl::loop_management",
+            job_id = %delegation.job_id,
+            "recent loop result history reset: {diagnostic}"
+        );
+    }
+    let mut entries = parsed.entries;
+    entries.push(codex_state::LoopResultEntry {
+        ts_ms,
+        status: status.to_string(),
+        clean,
+        noisy,
+        blocked,
+    });
+    let recent_results_json = codex_state::RecentLoopResults::new(entries)
+        .to_json()
+        .map_err(|err| color_eyre::eyre::eyre!(err))?;
+    let saved = state_runtime
+        .upsert_loop_delegation(codex_state::LoopDelegationUpsertParams {
+            thread_id: delegation.thread_id,
+            job_id: delegation.job_id,
+            loop_label: delegation.loop_label,
+            vivling_id: delegation.vivling_id,
+            strategy: delegation.strategy,
+            ticks_managed: delegation.ticks_managed.saturating_add(1),
+            recent_results_json,
+            last_plan_approved: delegation.last_plan_approved,
+            override_main: delegation.override_main,
+            cooldown_until_ms: delegation.cooldown_until_ms,
+            suspend_reason: delegation.suspend_reason,
+            created_at_ms: delegation.created_at_ms,
+            updated_at_ms: ts_ms,
+        })
+        .await
+        .map_err(loop_state_error)?;
+    Ok(Some(saved))
+}
+
+fn delegation_params(
+    delegation: &codex_state::LoopDelegation,
+    strategy: codex_state::LoopDelegationStrategy,
+    recent_results_json: String,
+    cooldown_until_ms: Option<i64>,
+    suspend_reason: Option<String>,
+    updated_at_ms: i64,
+) -> codex_state::LoopDelegationUpsertParams {
+    codex_state::LoopDelegationUpsertParams {
+        thread_id: delegation.thread_id,
+        job_id: delegation.job_id.clone(),
+        loop_label: delegation.loop_label.clone(),
+        vivling_id: delegation.vivling_id.clone(),
+        strategy,
+        ticks_managed: delegation.ticks_managed,
+        recent_results_json,
+        last_plan_approved: delegation.last_plan_approved,
+        override_main: delegation.override_main,
+        cooldown_until_ms,
+        suspend_reason,
+        created_at_ms: delegation.created_at_ms,
+        updated_at_ms,
+    }
+}
+
+/// Re-evaluates the T5 state boundary after each tick and before the next
+/// dispatch. Phase suspension is distinct from 3-fail demotion and both are
+/// persisted in 0932-compatible fields added by 0935.
+pub(super) async fn refresh_management_state(
+    app: &mut App,
+    state_runtime: &codex_state::StateRuntime,
+    job: &codex_state::ThreadLoopJob,
+    delegation: Option<codex_state::LoopDelegation>,
+) -> color_eyre::Result<Option<codex_state::LoopDelegation>> {
+    let Some(delegation) = delegation else {
+        return Ok(None);
+    };
+    let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
+    let metrics = codex_state::LoopMetrics::from_entries(&parsed.entries);
+    let inputs = app
+        .chat_widget
+        .vivling_loop_management_gate_inputs(&app.config, &delegation.vivling_id)
+        .ok();
+    let (is_adult, brain_enabled, has_profile, bond, phase) =
+        inputs.unwrap_or((false, false, false, 0, "unavailable"));
+    let phase_invalid = phase == "unavailable";
+    let last_three_failed = parsed.entries.iter().rev().take(3).count() == 3
+        && parsed
+            .entries
+            .iter()
+            .rev()
+            .take(3)
+            .all(|entry| entry.blocked);
+    let clean_streak = codex_state::LoopMetrics::clean_streak(&parsed.entries);
+    let old_reason = delegation.suspend_reason.as_deref();
+    let (strategy, cooldown_until_ms, suspend_reason, event) = if phase_invalid {
+        (
+            delegation.strategy,
+            delegation.cooldown_until_ms,
+            Some("phase".to_string()),
+            (old_reason != Some("phase")).then_some("managed_suspended_phase"),
+        )
+    } else if old_reason == Some("phase") {
+        (
+            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics),
+            None,
+            None,
+            Some("managed_resumed_phase"),
+        )
+    } else if last_three_failed && old_reason != Some("3fail") {
+        (
+            codex_state::LoopDelegationStrategy::Suggest,
+            Some(loop_now_ms().saturating_add(codex_state::LOOP_MANAGE_COOLDOWN_MS)),
+            Some("3fail".to_string()),
+            Some("managed_suspended_3fail"),
+        )
+    } else if old_reason == Some("3fail")
+        && clean_streak >= codex_state::LOOP_MANAGE_CLEAN_STREAK
+        && delegation
+            .cooldown_until_ms
+            .is_none_or(|cooldown| cooldown <= loop_now_ms())
+    {
+        (
+            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics),
+            None,
+            None,
+            Some("managed_resumed_3fail"),
+        )
+    } else if old_reason == Some("3fail") {
+        (
+            codex_state::LoopDelegationStrategy::Suggest,
+            delegation.cooldown_until_ms,
+            delegation.suspend_reason.clone(),
+            None,
+        )
+    } else {
+        let strategy = if is_adult && brain_enabled && has_profile {
+            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
+        } else {
+            codex_state::LoopDelegationStrategy::Observe
+        };
+        (strategy, delegation.cooldown_until_ms, None, None)
+    };
+    let saved = state_runtime
+        .upsert_loop_delegation(delegation_params(
+            &delegation,
+            strategy,
+            delegation.recent_results_json.clone(),
+            cooldown_until_ms,
+            suspend_reason,
+            loop_now_ms(),
+        ))
+        .await
+        .map_err(loop_state_error)?;
+    if let Some(event) = event {
+        app.record_vivling_loop_job(event, &job.label, Some(job), LoopCommandSource::Agent);
+    }
+    Ok(Some(saved))
+}
+
 pub(super) async fn handle_loop_tick_finished(
     app: &mut App,
     thread_id: ThreadId,
     job_id: String,
     result: Result<VivlingLoopTickResult, String>,
 ) -> color_eyre::Result<()> {
+    let managed_source = app.managed_loop_command_source(thread_id);
+    // The finished event is the cleanup boundary for every child tick scope:
+    // success, provider error, timeout, and cancellation all pass here.
+    app.clear_managed_loop_scope(thread_id, &job_id);
     let state_runtime = app.loop_state_runtime().await?;
     let Some(job) = state_runtime
         .get_thread_loop_job_by_id(thread_id, &job_id)
@@ -123,6 +299,25 @@ pub(super) async fn handle_loop_tick_finished(
                 )
                 .await
                 .map_err(loop_state_error)?;
+            let delegation = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            persist_managed_tick_result(
+                &state_runtime,
+                delegation,
+                failure_status,
+                now,
+                false,
+                false,
+                true,
+            )
+            .await?;
+            let delegation = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            refresh_management_state(app, &state_runtime, &job, delegation).await?;
             app.chat_widget
                 .add_error_message(format!("Vivling loop `{}` failed: {err}", job.label));
             app.record_vivling_loop_runtime(
@@ -153,6 +348,29 @@ pub(super) async fn handle_loop_tick_finished(
 
             let status = parse_vivling_loop_status(&result.status)
                 .map_err(|err| color_eyre::eyre::eyre!(err))?;
+            let delegation = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            let noisy = result
+                .loop_action
+                .as_ref()
+                .is_some_and(|action| action.action.eq_ignore_ascii_case("trigger"));
+            persist_managed_tick_result(
+                &state_runtime,
+                delegation,
+                status,
+                now,
+                matches!(status, LOOP_STATUS_PROGRESS | LOOP_STATUS_DONE),
+                noisy,
+                status == LOOP_STATUS_BLOCKED,
+            )
+            .await?;
+            let delegation = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            refresh_management_state(app, &state_runtime, &job, delegation).await?;
             let action_request = tick_action_request(thread_id, &job, status, &result)
                 .map_err(|err| color_eyre::eyre::eyre!(err))?;
             let mut skipped_runtime_update = false;
@@ -164,9 +382,16 @@ pub(super) async fn handle_loop_tick_finished(
                 ) {
                     skipped_runtime_update = true;
                 }
-                let _ =
-                    jobs::run_command_request(app, thread_id, request, LoopCommandSource::Agent)
-                        .await?;
+                if let Some(source) = managed_source.clone() {
+                    let _ = jobs::run_command_request(app, thread_id, request, source).await?;
+                } else {
+                    app.record_vivling_loop_job(
+                        "audit_rejected",
+                        &job.label,
+                        Some(&job),
+                        LoopCommandSource::Agent,
+                    );
+                }
             }
 
             // FASE5 5A — gated loop suggestion (NO-AUTO channel). Emessa solo se
@@ -337,18 +562,13 @@ fn tick_action_request(
                 .as_ref()
                 .map(|prompt| prompt.trim().to_string())
                 .filter(|prompt| !prompt.is_empty());
-            let goal_text = match action.goal.as_ref() {
-                Some(goal) if goal.trim().is_empty() => Some(None),
-                Some(goal) => Some(Some(goal.trim().to_string())),
-                None => None,
-            };
             LoopCommandRequest::Update {
                 label: job.label.clone(),
                 interval_seconds,
                 prompt_text,
-                goal_text,
+                goal_text: None,
                 auto_remove_on_completion: None,
-                enabled: action.enabled,
+                enabled: None,
                 runner_kind: None,
                 runner_model: None,
                 schedule_kind: None,

@@ -49,8 +49,14 @@ async fn execute_dynamic_tool(
 ) -> LoopActionOutcome {
     match parse_manage_loops_tool_request(arguments) {
         Ok(request) => {
-            match jobs::run_command_request(app, thread_id, request, LoopCommandSource::Agent).await
-            {
+            let Some(source) = app.managed_loop_command_source(thread_id) else {
+                return loop_action_failure(
+                    "scope",
+                    thread_id,
+                    "manage_loops requires one active server-issued loop tick scope.".to_string(),
+                );
+            };
+            match jobs::run_command_request(app, thread_id, request, source).await {
                 Ok(outcome) => outcome,
                 Err(err) => loop_action_failure("unknown", thread_id, err.to_string()),
             }
