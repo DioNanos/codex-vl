@@ -41,6 +41,7 @@ pub struct LoopDescriptor {
     pub schedule_at: Option<String>,
     pub one_shot_at_ms: Option<i64>,
     pub rearm_on_boot: bool,
+    pub in_flight: bool,
     pub updated_at_ms: i64,
 }
 
@@ -68,6 +69,7 @@ pub(crate) struct LoopDescriptorRow {
     pub(crate) schedule_at: Option<String>,
     pub(crate) one_shot_at_ms: Option<i64>,
     pub(crate) rearm_on_boot: bool,
+    pub(crate) in_flight: bool,
     pub(crate) updated_at_ms: i64,
 }
 
@@ -83,6 +85,7 @@ impl LoopDescriptorRow {
             schedule_at: row.try_get("schedule_at")?,
             one_shot_at_ms: row.try_get("one_shot_at_ms")?,
             rearm_on_boot: row.try_get("rearm_on_boot")?,
+            in_flight: row.try_get("in_flight")?,
             updated_at_ms: row.try_get("updated_at_ms")?,
         })
     }
@@ -102,6 +105,7 @@ impl TryFrom<LoopDescriptorRow> for LoopDescriptor {
             schedule_at: value.schedule_at,
             one_shot_at_ms: value.one_shot_at_ms,
             rearm_on_boot: value.rearm_on_boot,
+            in_flight: value.in_flight,
             updated_at_ms: value.updated_at_ms,
         })
     }

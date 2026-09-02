@@ -13,6 +13,14 @@ CREATE TABLE IF NOT EXISTS vl_loop_descriptors (
     schedule_at TEXT,
     one_shot_at_ms INTEGER,
     rearm_on_boot INTEGER NOT NULL DEFAULT 0,
+    in_flight INTEGER NOT NULL DEFAULT 0,
     updated_at_ms INTEGER NOT NULL
 );
 
+INSERT INTO vl_loop_descriptors (job_id, updated_at_ms)
+SELECT id, updated_at_ms
+FROM vl_thread_loop_jobs
+WHERE NOT EXISTS (
+    SELECT 1 FROM vl_loop_descriptors AS existing
+    WHERE existing.job_id = vl_thread_loop_jobs.id
+);

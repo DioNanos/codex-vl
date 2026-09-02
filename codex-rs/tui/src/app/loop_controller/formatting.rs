@@ -7,6 +7,10 @@ use super::types::LoopActionOutcome;
 use crate::vl::loop_runtime::LoopJobPayload;
 
 pub(super) const LOOP_STATUS_SUBMITTED: &str = "submitted";
+pub(super) const LOOP_STATUS_RUNNER_DISPATCHED: &str = "runner_dispatched";
+pub(super) const LOOP_STATUS_SKIPPED_BUSY: &str = "skipped_busy";
+pub(super) const LOOP_STATUS_INVALID_RUNNER_MODEL: &str = "invalid_runner_model";
+pub(super) const LOOP_STATUS_NEEDS_APPROVAL: &str = "needs_approval";
 pub(super) const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
 pub(super) const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
 pub(super) const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";

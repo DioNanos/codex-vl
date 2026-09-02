@@ -10,7 +10,8 @@ impl StateRuntime {
         let row = sqlx::query(
             r#"
 SELECT job_id, runner_kind, runner_model, runner_reasoning_effort, tz,
-       schedule_kind, schedule_at, one_shot_at_ms, rearm_on_boot, updated_at_ms
+       schedule_kind, schedule_at, one_shot_at_ms, rearm_on_boot, in_flight,
+       updated_at_ms
 FROM vl_loop_descriptors
 WHERE job_id = ?
             "#,
@@ -72,5 +73,29 @@ ON CONFLICT(job_id) DO UPDATE SET
             .execute(self.pool.as_ref())
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Atomically claims one tick for a job before any runner is spawned.
+    pub async fn try_begin_loop_tick(&self, job_id: &str, now_ms: i64) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE vl_loop_descriptors SET in_flight = 1, updated_at_ms = ? WHERE job_id = ? AND in_flight = 0",
+        )
+        .bind(now_ms)
+        .bind(job_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Releases the per-job tick guard on every terminal runner outcome.
+    pub async fn finish_loop_tick(&self, job_id: &str, now_ms: i64) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE vl_loop_descriptors SET in_flight = 0, updated_at_ms = ? WHERE job_id = ?",
+        )
+        .bind(now_ms)
+        .bind(job_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 }

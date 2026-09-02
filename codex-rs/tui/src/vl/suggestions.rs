@@ -114,6 +114,8 @@ pub(crate) fn map_to_command(
                 goal_text: None,
                 auto_remove_on_completion: None,
                 enabled: None,
+                runner_kind: None,
+                runner_model: None,
             })
         }
         VivlingSuggestionKind::RefinePrompt => {
@@ -128,6 +130,8 @@ pub(crate) fn map_to_command(
                 goal_text: None,
                 auto_remove_on_completion: None,
                 enabled: None,
+                runner_kind: None,
+                runner_model: None,
             })
         }
         VivlingSuggestionKind::Disable => Some(LoopCommandRequest::Disable { label }),

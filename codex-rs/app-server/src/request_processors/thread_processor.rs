@@ -450,7 +450,9 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
                 "prompt": {"type": "string", "description": "Prompt text to auto-submit on each loop tick. Required for add, optional for update."},
                 "goal": {"type": ["string", "null"], "description": "Optional short statement of what the loop is trying to monitor or complete. Use null in update to clear it."},
                 "enabled": {"type": "boolean", "description": "Optional enabled state for update."},
-                "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."}
+                "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."},
+                "runner": {"type": "string", "enum": ["main", "child_agent"], "description": "Runner for each tick; defaults to main."},
+                "runner_model": {"type": "string", "description": "Provider-catalog model slug for child_agent ticks."}
             },
             "required": ["action"],
             "additionalProperties": false

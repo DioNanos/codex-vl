@@ -17,6 +17,7 @@ use codex_protocol::ThreadId;
 
 use crate::app::App;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
+use crate::vivling::{BrainTarget, VivlingLoopTickRequest};
 use crate::vl::VlEvent;
 use crate::vl::loop_runtime::LoopJobPayload;
 
@@ -25,9 +26,13 @@ use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use super::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use super::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use super::formatting::LOOP_STATUS_DELEGATED_VIVLING;
+use super::formatting::LOOP_STATUS_INVALID_RUNNER_MODEL;
 use super::formatting::LOOP_STATUS_PENDING_BUSY;
 use super::formatting::LOOP_STATUS_PROGRESS;
+use super::formatting::LOOP_STATUS_RUNNER_DISPATCHED;
+use super::formatting::LOOP_STATUS_SKIPPED_BUSY;
 use super::formatting::LOOP_STATUS_SUBMITTED;
+use super::jobs::validate_runner_model;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
 use crate::vl::delegated_loops::VivlingReadiness;
@@ -186,6 +191,168 @@ pub(super) async fn process_submission(
         );
         return Ok(());
     }
+
+    let descriptor = state_runtime
+        .get_loop_descriptor(&job.id)
+        .await
+        .map_err(loop_state_error)?;
+    let runner_kind = descriptor
+        .as_ref()
+        .map(|descriptor| descriptor.runner_kind)
+        .unwrap_or(codex_state::LoopRunnerKind::Main);
+    let runner_model = descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.runner_model.clone());
+
+    if runner_kind == codex_state::LoopRunnerKind::ChildAgent {
+        if let Err(err) = validate_runner_model(app, runner_kind, runner_model.as_deref()) {
+            state_runtime
+                .update_thread_loop_job_runtime(
+                    thread_id,
+                    &job.id,
+                    codex_state::ThreadLoopJobRuntimeUpdate {
+                        next_run_ms: None,
+                        last_run_ms: job.last_run_ms,
+                        last_status: Some(LOOP_STATUS_INVALID_RUNNER_MODEL.to_string()),
+                        last_error: Some(err.to_string()),
+                        pending_tick: true,
+                        updated_at_ms: now,
+                    },
+                )
+                .await
+                .map_err(loop_state_error)?;
+            return Ok(());
+        }
+
+        if !state_runtime
+            .try_begin_loop_tick(&job.id, now)
+            .await
+            .map_err(loop_state_error)?
+        {
+            state_runtime
+                .update_thread_loop_job_runtime(
+                    thread_id,
+                    &job.id,
+                    codex_state::ThreadLoopJobRuntimeUpdate {
+                        next_run_ms: None,
+                        last_run_ms: job.last_run_ms,
+                        last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
+                        last_error: None,
+                        pending_tick: true,
+                        updated_at_ms: now,
+                    },
+                )
+                .await
+                .map_err(loop_state_error)?;
+            return Ok(());
+        }
+
+        let mut request = if owner.owner_kind == codex_state::THREAD_LOOP_OWNER_KIND_VIVLING {
+            let Some(owner_vivling_id) = owner.owner_vivling_id.clone() else {
+                let _ = state_runtime.finish_loop_tick(&job.id, now).await;
+                state_runtime
+                    .update_thread_loop_job_runtime(
+                        thread_id,
+                        &job.id,
+                        codex_state::ThreadLoopJobRuntimeUpdate {
+                            next_run_ms: None,
+                            last_run_ms: job.last_run_ms,
+                            last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
+                            last_error: Some("Vivling loop owner is missing.".to_string()),
+                            pending_tick: true,
+                            updated_at_ms: now,
+                        },
+                    )
+                    .await
+                    .map_err(loop_state_error)?;
+                return Ok(());
+            };
+            match app
+                .chat_widget
+                .prepare_vivling_loop_tick(&app.config, &owner_vivling_id, &job)
+            {
+                Ok(request) => request,
+                Err(err) => {
+                    let _ = state_runtime.finish_loop_tick(&job.id, now).await;
+                    state_runtime
+                        .update_thread_loop_job_runtime(
+                            thread_id,
+                            &job.id,
+                            codex_state::ThreadLoopJobRuntimeUpdate {
+                                next_run_ms: None,
+                                last_run_ms: job.last_run_ms,
+                                last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
+                                last_error: Some(err),
+                                pending_tick: true,
+                                updated_at_ms: now,
+                            },
+                        )
+                        .await
+                        .map_err(loop_state_error)?;
+                    return Ok(());
+                }
+            }
+        } else {
+            VivlingLoopTickRequest {
+                vivling_id: "main".to_string(),
+                vivling_name: "main".to_string(),
+                brain_target: BrainTarget::SessionDefault,
+                loop_label: job.label.clone(),
+                loop_goal: job
+                    .goal_text
+                    .clone()
+                    .unwrap_or_else(|| payload.display_text()),
+                prompt_text: payload.display_text(),
+                auto_remove_on_completion: job.auto_remove_on_completion,
+                prompt_context: format!(
+                    "This loop tick runs as an isolated child agent. Return only the structured loop result; do not ask for interactive approval.\nLoop goal: {}\nLoop prompt: {}",
+                    job.goal_text.as_deref().unwrap_or("none"),
+                    payload.display_text()
+                ),
+            }
+        };
+        // A persisted child runner is authoritative for this tick. Do not let
+        // a Vivling profile silently replace its validated runner model.
+        request.brain_target = BrainTarget::SessionDefault;
+
+        tracing::info!(
+            target: "codex_vl::loop_delegation",
+            provider = %app.config.model_provider_id,
+            model = %runner_model.as_deref().unwrap_or("<missing>"),
+            label = %job.label,
+            "dispatching child-agent loop tick"
+        );
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: None,
+                    last_run_ms: Some(now),
+                    last_status: Some(LOOP_STATUS_RUNNER_DISPATCHED.to_string()),
+                    last_error: None,
+                    pending_tick: false,
+                    updated_at_ms: now,
+                },
+            )
+            .await
+            .map_err(loop_state_error)?;
+        app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
+            thread_id,
+            job_id: job.id.clone(),
+            request,
+            runner_model,
+        });
+        app.record_vivling_loop_runtime(
+            &job.label,
+            Some("child_agent"),
+            Some(LOOP_STATUS_RUNNER_DISPATCHED),
+            job.goal_text.as_deref().or(Some(job.prompt_text.as_str())),
+            &job.created_by,
+        );
+        return Ok(());
+    }
+
     if owner.owner_kind == codex_state::THREAD_LOOP_OWNER_KIND_VIVLING {
         let Some(owner_vivling_id) = owner.owner_vivling_id.clone() else {
             state_runtime
@@ -237,6 +404,7 @@ pub(super) async fn process_submission(
                     thread_id,
                     job_id: job.id.clone(),
                     request,
+                    runner_model: None,
                 });
                 app.record_vivling_loop_runtime(
                     &job.label,

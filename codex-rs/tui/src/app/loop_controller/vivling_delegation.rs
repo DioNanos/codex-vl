@@ -25,6 +25,7 @@
 //! does not exist.
 
 use codex_protocol::ThreadId;
+use std::time::Duration;
 
 use crate::app::App;
 use crate::vivling::VivlingLoopTickResult;
@@ -56,6 +57,22 @@ pub(super) async fn handle_loop_tick_finished(
     else {
         return Ok(());
     };
+    let is_child_agent = state_runtime
+        .get_loop_descriptor(&job.id)
+        .await
+        .map_err(loop_state_error)?
+        .is_some_and(|descriptor| {
+            descriptor.runner_kind == codex_state::LoopRunnerKind::ChildAgent
+        });
+    // The finished event is the terminal boundary for the child runner. Clear
+    // the atomic guard before processing actions so parse/action failures also
+    // cannot strand the job in-flight.
+    if is_child_agent {
+        state_runtime
+            .finish_loop_tick(&job.id, loop_now_ms())
+            .await
+            .map_err(loop_state_error)?;
+    }
     let owner = state_runtime
         .get_thread_loop_owner(thread_id)
         .await
@@ -65,7 +82,8 @@ pub(super) async fn handle_loop_tick_finished(
 
     match result {
         Err(err) => {
-            if let Some(vivling_id) = owner_vivling_id.as_deref()
+            if !is_child_agent
+                && let Some(vivling_id) = owner_vivling_id.as_deref()
                 && let Err(persist_err) = app
                     .chat_widget
                     .mark_vivling_brain_runtime_error_for(vivling_id, &err)
@@ -102,7 +120,8 @@ pub(super) async fn handle_loop_tick_finished(
             return Ok(());
         }
         Ok(result) => {
-            if let Some(vivling_id) = owner_vivling_id.as_deref()
+            if !is_child_agent
+                && let Some(vivling_id) = owner_vivling_id.as_deref()
                 && let Err(persist_err) = app
                     .chat_widget
                     .mark_vivling_brain_reply_for(vivling_id, &result.message)
@@ -280,6 +299,8 @@ fn tick_action_request(
                 goal_text,
                 auto_remove_on_completion: None,
                 enabled: action.enabled,
+                runner_kind: None,
+                runner_model: None,
             }
         }
         other => {
@@ -327,20 +348,35 @@ pub(super) fn run_loop_tick(
     thread_id: ThreadId,
     job_id: String,
     request: crate::vivling::VivlingLoopTickRequest,
+    runner_model: Option<String>,
 ) {
     let app_event_tx = app.app_event_tx.clone();
-    let config = crate::app::vivling_background::config_with_session_model(
-        &app.config,
-        app.chat_widget.effective_collaboration_mode().model(),
-    );
+    let model = runner_model.unwrap_or_else(|| {
+        app.chat_widget
+            .effective_collaboration_mode()
+            .model()
+            .to_string()
+    });
+    let config = crate::app::vivling_background::config_with_session_model(&app.config, &model);
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
-        let result = crate::app::vivling_background::run_vivling_loop_tick_request(
-            config,
-            session_telemetry,
-            request,
+        const MAX_LOOP_TICK_DURATION: Duration = Duration::from_secs(300);
+        let result = match tokio::time::timeout(
+            MAX_LOOP_TICK_DURATION,
+            crate::app::vivling_background::run_vivling_loop_tick_request(
+                config,
+                session_telemetry,
+                request,
+            ),
         )
-        .await;
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "loop tick timed out after {} seconds",
+                MAX_LOOP_TICK_DURATION.as_secs()
+            )),
+        };
         app_event_tx.send_vl(VlEvent::VivlingLoopTickFinished {
             thread_id,
             job_id,

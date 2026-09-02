@@ -259,6 +259,8 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
                 prompt_text,
                 goal_text: None,
                 auto_remove_on_completion: None,
+                runner_kind: codex_state::LoopRunnerKind::Main,
+                runner_model: None,
             })
         }
         _ => None,
@@ -378,6 +380,7 @@ mod tests {
                 prompt_text,
                 goal_text,
                 auto_remove_on_completion,
+                ..
             } => {
                 assert_eq!(label, "nightly");
                 assert_eq!(interval_seconds, 30);

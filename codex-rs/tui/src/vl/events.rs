@@ -15,6 +15,7 @@ use crate::vivling::VivlingExpressionRequest;
 use crate::vivling::VivlingExpressionResult;
 use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
+use codex_state::LoopRunnerKind;
 
 /// User-facing request for one of the `/loop ...` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub(crate) enum LoopCommandRequest {
         prompt_text: String,
         goal_text: Option<String>,
         auto_remove_on_completion: Option<bool>,
+        runner_kind: LoopRunnerKind,
+        runner_model: Option<String>,
     },
     Update {
         label: String,
@@ -33,6 +36,8 @@ pub(crate) enum LoopCommandRequest {
         goal_text: Option<Option<String>>,
         auto_remove_on_completion: Option<bool>,
         enabled: Option<bool>,
+        runner_kind: Option<LoopRunnerKind>,
+        runner_model: Option<Option<String>>,
     },
     List,
     Show {
@@ -117,6 +122,9 @@ pub(crate) enum VlEvent {
         thread_id: ThreadId,
         job_id: String,
         request: VivlingLoopTickRequest,
+        /// Explicit runner model for child-agent ticks; `None` preserves the
+        /// legacy Vivling/session model path.
+        runner_model: Option<String>,
     },
     /// Result of a Vivling-managed loop tick.
     VivlingLoopTickFinished {

@@ -206,8 +206,9 @@ impl App {
         thread_id: ThreadId,
         job_id: String,
         request: crate::vivling::VivlingLoopTickRequest,
+        runner_model: Option<String>,
     ) {
-        vivling_delegation::run_loop_tick(self, thread_id, job_id, request);
+        vivling_delegation::run_loop_tick(self, thread_id, job_id, request, runner_model);
     }
 
     /// Memory V2 Step 12.B.D.2 — dispatch a Vivling Expression LLM

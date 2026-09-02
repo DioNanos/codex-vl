@@ -5,6 +5,7 @@
 
 use crate::vl::events::LoopCommandRequest;
 use crate::vl::loop_runtime::LoopJobPayload;
+use codex_state::LoopRunnerKind;
 
 use super::formatting::LOOP_STATUS_BLOCKED;
 use super::formatting::LOOP_STATUS_DONE;
@@ -39,6 +40,40 @@ struct ManageLoopsToolArgs {
     owner: Option<String>,
     #[serde(default)]
     strategy: Option<String>,
+    #[serde(default)]
+    runner: Option<String>,
+    #[serde(default)]
+    runner_model: Option<String>,
+}
+
+fn parse_runner_kind(raw: Option<String>) -> anyhow::Result<LoopRunnerKind> {
+    match raw
+        .as_deref()
+        .unwrap_or("main")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "main" => Ok(LoopRunnerKind::Main),
+        "child_agent" => Ok(LoopRunnerKind::ChildAgent),
+        other => Err(anyhow::anyhow!(
+            "`runner` must be `main` or `child_agent`, got `{other}`"
+        )),
+    }
+}
+
+fn parse_runner_model(raw: Option<String>) -> anyhow::Result<Option<String>> {
+    raw.map(|model| {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            Err(anyhow::anyhow!(
+                "`runner_model` cannot be empty when provided"
+            ))
+        } else {
+            Ok(model)
+        }
+    })
+    .transpose()
 }
 
 pub(super) fn parse_manage_loops_interval_seconds(token: &str) -> Option<i64> {
@@ -175,12 +210,16 @@ pub(super) fn parse_manage_loops_tool_request(
             .ok_or_else(|| anyhow::anyhow!("`interval` must be between 30s and 24h"))?;
             let payload = LoopJobPayload::from_tool_payload(args.payload, args.prompt)?;
             let prompt_text = payload.to_storage_text()?;
+            let runner_kind = parse_runner_kind(args.runner)?;
+            let runner_model = parse_runner_model(args.runner_model)?;
             Ok(LoopCommandRequest::Add {
                 label,
                 interval_seconds,
                 prompt_text,
                 goal_text: parse_add_goal(goal_argument)?,
                 auto_remove_on_completion: args.auto_remove_on_completion,
+                runner_kind,
+                runner_model,
             })
         }
         "update" => {
@@ -208,6 +247,11 @@ pub(super) fn parse_manage_loops_tool_request(
                     None => None,
                 },
             };
+            let runner_kind = args.runner.map(parse_runner_kind).transpose()?;
+            let runner_model = args
+                .runner_model
+                .map(|model| parse_runner_model(Some(model)))
+                .transpose()?;
             Ok(LoopCommandRequest::Update {
                 label,
                 interval_seconds,
@@ -215,6 +259,8 @@ pub(super) fn parse_manage_loops_tool_request(
                 goal_text: parse_update_goal(goal_argument)?,
                 auto_remove_on_completion: args.auto_remove_on_completion,
                 enabled: args.enabled,
+                runner_kind,
+                runner_model,
             })
         }
         other => Err(anyhow::anyhow!("unsupported manage_loops action `{other}`")),
@@ -226,6 +272,7 @@ mod tests {
     use super::is_manage_loops_dynamic_tool;
     use super::parse_manage_loops_tool_request;
     use crate::vl::events::LoopCommandRequest;
+    use codex_state::LoopRunnerKind;
 
     #[test]
     fn parse_manage_loops_add_request() {
@@ -245,6 +292,8 @@ mod tests {
                 prompt_text: "check forge".to_string(),
                 goal_text: None,
                 auto_remove_on_completion: None,
+                runner_kind: LoopRunnerKind::Main,
+                runner_model: None,
             }
         );
     }
@@ -287,6 +336,8 @@ mod tests {
                 prompt_text: "check forge".to_string(),
                 goal_text: Some("watch package pipeline".to_string()),
                 auto_remove_on_completion: Some(true),
+                runner_kind: LoopRunnerKind::Main,
+                runner_model: None,
             }
         );
     }
@@ -319,6 +370,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_manage_loops_child_runner_requires_explicit_model_shape() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "child",
+            "interval": "1m",
+            "prompt": "check status",
+            "runner": "child_agent",
+            "runner_model": "gpt-5.3-codex"
+        }))
+        .expect("valid child runner request");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Add {
+                label: "child".to_string(),
+                interval_seconds: 60,
+                prompt_text: "check status".to_string(),
+                goal_text: None,
+                auto_remove_on_completion: None,
+                runner_kind: LoopRunnerKind::ChildAgent,
+                runner_model: Some("gpt-5.3-codex".to_string()),
+            }
+        );
+
+        let error = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "bad",
+            "interval": "1m",
+            "prompt": "check status",
+            "runner": "worker"
+        }))
+        .expect_err("closed runner enum must reject unknown values");
+        assert!(error.to_string().contains("`child_agent`"));
+
+        let update = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "update",
+            "label": "child",
+            "runner": "child_agent",
+            "runner_model": "gpt-5.3-codex"
+        }))
+        .expect("valid child runner update");
+        assert_eq!(
+            update,
+            LoopCommandRequest::Update {
+                label: "child".to_string(),
+                interval_seconds: None,
+                prompt_text: None,
+                goal_text: None,
+                auto_remove_on_completion: None,
+                enabled: None,
+                runner_kind: Some(LoopRunnerKind::ChildAgent),
+                runner_model: Some(Some("gpt-5.3-codex".to_string())),
+            }
+        );
+    }
+
+    #[test]
     fn parse_manage_loops_update_request_supports_partial_updates() {
         let request = parse_manage_loops_tool_request(serde_json::json!({
             "action": "update",
@@ -337,6 +445,8 @@ mod tests {
                 goal_text: Some(None),
                 auto_remove_on_completion: None,
                 enabled: Some(false),
+                runner_kind: None,
+                runner_model: None,
             }
         );
     }

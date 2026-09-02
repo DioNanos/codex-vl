@@ -32,6 +32,37 @@ use super::state::loop_state_error;
 use super::types::LoopActionOutcome;
 use super::types::LoopCommandSource;
 
+pub(super) fn validate_runner_model(
+    app: &App,
+    runner_kind: codex_state::LoopRunnerKind,
+    runner_model: Option<&str>,
+) -> anyhow::Result<()> {
+    if runner_kind == codex_state::LoopRunnerKind::ChildAgent && runner_model.is_none() {
+        return Err(anyhow::anyhow!(
+            "invalid_runner_model: child_agent requires `runner_model`"
+        ));
+    }
+    let Some(model) = runner_model else {
+        return Ok(());
+    };
+    let available = app
+        .chat_widget
+        .model_catalog()
+        .try_list_models()
+        .map_err(|err| anyhow::anyhow!("invalid_runner_model: {err:?}"))?;
+    if available
+        .iter()
+        .any(|preset| preset.model == model || preset.id == model)
+    {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "invalid_runner_model: provider `{}` does not advertise `{model}`",
+            app.config.model_provider_id
+        ))
+    }
+}
+
 pub(super) async fn run_command_request(
     app: &mut App,
     thread_id: ThreadId,
@@ -54,7 +85,11 @@ pub(super) async fn run_command_request(
             prompt_text,
             goal_text,
             auto_remove_on_completion,
+            runner_kind,
+            runner_model,
         } => {
+            validate_runner_model(&app, runner_kind, runner_model.as_deref())
+                .map_err(loop_state_error)?;
             let now = loop_now_ms();
             let goal_text = goal_text
                 .map(|value| value.trim().to_string())
@@ -84,6 +119,21 @@ pub(super) async fn run_command_request(
                 })
                 .await
                 .map_err(loop_state_error)?;
+            state_runtime
+                .upsert_loop_descriptor(codex_state::LoopDescriptorUpsertParams {
+                    job_id: job.id.clone(),
+                    runner_kind,
+                    runner_model,
+                    runner_reasoning_effort: None,
+                    tz: None,
+                    schedule_kind: "interval".to_string(),
+                    schedule_at: None,
+                    one_shot_at_ms: None,
+                    rearm_on_boot: false,
+                    updated_at_ms: now,
+                })
+                .await
+                .map_err(loop_state_error)?;
             app.record_vivling_loop_job("add", &label, Some(&job), source);
             loop_action_success(
                 "add",
@@ -105,6 +155,8 @@ pub(super) async fn run_command_request(
             goal_text,
             auto_remove_on_completion,
             enabled,
+            runner_kind,
+            runner_model,
         } => {
             let Some(existing) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
@@ -118,6 +170,26 @@ pub(super) async fn run_command_request(
                 ));
             };
             let now = loop_now_ms();
+            let existing_descriptor = state_runtime
+                .get_loop_descriptor(&existing.id)
+                .await
+                .map_err(loop_state_error)?;
+            let runner_kind = runner_kind
+                .or_else(|| {
+                    existing_descriptor
+                        .as_ref()
+                        .map(|descriptor| descriptor.runner_kind)
+                })
+                .unwrap_or(codex_state::LoopRunnerKind::Main);
+            let runner_model = match runner_model {
+                Some(model) => model,
+                None => existing_descriptor
+                    .as_ref()
+                    .and_then(|descriptor| descriptor.runner_model.clone()),
+            };
+            let descriptor = existing_descriptor;
+            validate_runner_model(&app, runner_kind, runner_model.as_deref())
+                .map_err(loop_state_error)?;
             let prompt_text = prompt_text.unwrap_or_else(|| existing.prompt_text.clone());
             let goal_text = match goal_text {
                 Some(next_goal) => next_goal,
@@ -145,6 +217,34 @@ pub(super) async fn run_command_request(
                         None
                     },
                     created_at_ms: existing.created_at_ms,
+                    updated_at_ms: now,
+                })
+                .await
+                .map_err(loop_state_error)?;
+            state_runtime
+                .upsert_loop_descriptor(codex_state::LoopDescriptorUpsertParams {
+                    job_id: job.id.clone(),
+                    runner_kind,
+                    runner_model,
+                    runner_reasoning_effort: descriptor
+                        .as_ref()
+                        .and_then(|descriptor| descriptor.runner_reasoning_effort.clone()),
+                    tz: descriptor
+                        .as_ref()
+                        .and_then(|descriptor| descriptor.tz.clone()),
+                    schedule_kind: descriptor
+                        .as_ref()
+                        .map(|descriptor| descriptor.schedule_kind.clone())
+                        .unwrap_or_else(|| "interval".to_string()),
+                    schedule_at: descriptor
+                        .as_ref()
+                        .and_then(|descriptor| descriptor.schedule_at.clone()),
+                    one_shot_at_ms: descriptor
+                        .as_ref()
+                        .and_then(|descriptor| descriptor.one_shot_at_ms),
+                    rearm_on_boot: descriptor
+                        .as_ref()
+                        .is_some_and(|descriptor| descriptor.rearm_on_boot),
                     updated_at_ms: now,
                 })
                 .await
@@ -302,6 +402,10 @@ pub(super) async fn run_command_request(
             {
                 state_runtime
                     .delete_loop_delegation(thread_id, &job.id)
+                    .await
+                    .map_err(loop_state_error)?;
+                state_runtime
+                    .delete_loop_descriptor(&job.id)
                     .await
                     .map_err(loop_state_error)?;
                 state_runtime

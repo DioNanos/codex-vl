@@ -281,8 +281,9 @@ impl App {
                 thread_id,
                 job_id,
                 request,
+                runner_model,
             } => {
-                self.run_vivling_loop_tick(thread_id, job_id, request);
+                self.run_vivling_loop_tick(thread_id, job_id, request, runner_model);
             }
             VlEvent::VivlingLoopTickFinished {
                 thread_id,

@@ -520,4 +520,39 @@ mod tests {
         assert_eq!(descriptor.job_id, "job-1");
         Ok(())
     }
+
+    #[tokio::test]
+    async fn loop_tick_claim_is_atomic_and_reusable_after_finish() -> anyhow::Result<()> {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-atomic".to_string(),
+                thread_id,
+                label: "atomic".to_string(),
+                prompt_text: "tick".to_string(),
+                goal_text: None,
+                interval_seconds: 30,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(1_000),
+                created_at_ms: 1_000,
+                updated_at_ms: 1_000,
+            })
+            .await?;
+
+        assert!(runtime.try_begin_loop_tick("job-atomic", 2_000).await?);
+        assert!(!runtime.try_begin_loop_tick("job-atomic", 2_001).await?);
+        assert!(runtime.finish_loop_tick("job-atomic", 2_002).await?);
+        assert!(runtime.try_begin_loop_tick("job-atomic", 2_003).await?);
+        assert!(runtime.finish_loop_tick("job-atomic", 2_004).await?);
+        Ok(())
+    }
 }
