@@ -112,25 +112,6 @@ pub(super) async fn handle_tick(
         return Ok(());
     }
 
-    // T3 — at-most-once dispatch: the occurrence (job, next_run_ms) is
-    // claimed BEFORE anything else runs. A second timer for the same
-    // occurrence loses the CAS and must not dispatch a duplicate tick.
-    let Some(scheduled_at_ms) = job.next_run_ms else {
-        return Ok(());
-    };
-    let claimed = state_runtime
-        .claim_loop_occurrence(&job.id, scheduled_at_ms, loop_now_ms())
-        .await
-        .map_err(loop_state_error)?;
-    if !claimed {
-        tracing::debug!(
-            target: "codex_vl::loop_schedule",
-            label = %job.label,
-            "occurrence already claimed; skipping duplicate timer tick"
-        );
-        return Ok(());
-    }
-
     process_submission(app, thread_id, job).await?;
     app.refresh_loop_jobs(thread_id).await
 }
@@ -141,6 +122,54 @@ pub(super) async fn process_submission(
     job: codex_state::ThreadLoopJob,
 ) -> color_eyre::Result<()> {
     let state_runtime = app.loop_state_runtime().await?;
+    // T3 — at-most-once dispatch: every path into submission (the timer and
+    // the pending/restore path) claims the occurrence before owner resolution,
+    // validation, or runner dispatch. Keeping the CAS here prevents a caller
+    // that bypasses `handle_tick` from emitting a duplicate child event.
+    let descriptor = state_runtime
+        .get_loop_descriptor(&job.id)
+        .await
+        .map_err(loop_state_error)?;
+    let is_one_shot = descriptor
+        .as_ref()
+        .is_some_and(|descriptor| descriptor.schedule_kind == "one_shot");
+    if let Some(scheduled_at_ms) = job.next_run_ms {
+        let claimed = state_runtime
+            .claim_loop_occurrence(&job.id, scheduled_at_ms, loop_now_ms())
+            .await
+            .map_err(loop_state_error)?;
+        if !claimed {
+            tracing::debug!(
+                target: "codex_vl::loop_schedule",
+                label = %job.label,
+                scheduled_at_ms,
+                "occurrence already claimed; skipping duplicate timer tick"
+            );
+            let busy = state_runtime
+                .get_loop_descriptor(&job.id)
+                .await
+                .map_err(loop_state_error)?
+                .is_some_and(|descriptor| descriptor.in_flight);
+            if busy {
+                state_runtime
+                    .update_thread_loop_job_runtime(
+                        thread_id,
+                        &job.id,
+                        codex_state::ThreadLoopJobRuntimeUpdate {
+                            next_run_ms: None,
+                            last_run_ms: job.last_run_ms,
+                            last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
+                            last_error: None,
+                            pending_tick: !is_one_shot,
+                            updated_at_ms: loop_now_ms(),
+                        },
+                    )
+                    .await
+                    .map_err(loop_state_error)?;
+            }
+            return Ok(());
+        }
+    }
     let thread_owner = state_runtime
         .get_thread_loop_owner(thread_id)
         .await
@@ -179,10 +208,6 @@ pub(super) async fn process_submission(
     // T3 — the schedule descriptor is read once and drives every reschedule
     // of this tick (internal payload, runner dispatch, and the terminal
     // update in handle_loop_tick_finished).
-    let descriptor = state_runtime
-        .get_loop_descriptor(&job.id)
-        .await
-        .map_err(loop_state_error)?;
     let scheduled_next_run_ms = descriptor
         .as_ref()
         .map(|descriptor| {
@@ -201,6 +226,7 @@ pub(super) async fn process_submission(
     if let Some(internal_outcome) =
         execute_internal_payload(&job, &payload, now, scheduled_next_run_ms)
     {
+        let pending_tick = internal_outcome.pending_tick && !is_one_shot;
         state_runtime
             .update_thread_loop_job_runtime(
                 thread_id,
@@ -210,7 +236,7 @@ pub(super) async fn process_submission(
                     last_run_ms: Some(now),
                     last_status: Some(internal_outcome.status.to_string()),
                     last_error: internal_outcome.last_error.clone(),
-                    pending_tick: internal_outcome.pending_tick,
+                    pending_tick,
                     updated_at_ms: now,
                 },
             )
@@ -220,7 +246,7 @@ pub(super) async fn process_submission(
             format!("Loop `{}`: {}", job.label, internal_outcome.message),
             /*hint*/ None,
         );
-        let runtime_state = if internal_outcome.pending_tick {
+        let runtime_state = if pending_tick {
             Some("pending")
         } else if internal_outcome.next_run_ms.is_some() {
             Some("scheduled")
@@ -258,7 +284,7 @@ pub(super) async fn process_submission(
                     last_run_ms: job.last_run_ms,
                     last_status: Some(LOOP_STATUS_INVALID_RUNNER_MODEL.to_string()),
                     last_error: Some(err.to_string()),
-                    pending_tick: true,
+                    pending_tick: !is_one_shot,
                     updated_at_ms: now,
                 },
             )
@@ -282,7 +308,7 @@ pub(super) async fn process_submission(
                         last_run_ms: job.last_run_ms,
                         last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
                         last_error: None,
-                        pending_tick: true,
+                        pending_tick: !is_one_shot,
                         updated_at_ms: now,
                     },
                 )
@@ -303,7 +329,7 @@ pub(super) async fn process_submission(
                             last_run_ms: job.last_run_ms,
                             last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                             last_error: Some("Vivling loop owner is missing.".to_string()),
-                            pending_tick: true,
+                            pending_tick: !is_one_shot,
                             updated_at_ms: now,
                         },
                     )
@@ -327,7 +353,7 @@ pub(super) async fn process_submission(
                                 last_run_ms: job.last_run_ms,
                                 last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                                 last_error: Some(err),
-                                pending_tick: true,
+                                pending_tick: !is_one_shot,
                                 updated_at_ms: now,
                             },
                         )
@@ -420,7 +446,7 @@ pub(super) async fn process_submission(
                         last_run_ms: job.last_run_ms,
                         last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                         last_error: Some("Vivling loop owner is missing.".to_string()),
-                        pending_tick: true,
+                        pending_tick: !is_one_shot,
                         updated_at_ms: now,
                     },
                 )
@@ -481,7 +507,7 @@ pub(super) async fn process_submission(
                             last_run_ms: job.last_run_ms,
                             last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                             last_error: Some(err),
-                            pending_tick: true,
+                            pending_tick: !is_one_shot,
                             updated_at_ms: now,
                         },
                     )
