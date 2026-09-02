@@ -225,6 +225,33 @@ impl Vivling {
         Ok((state.vivling_id.clone(), state.name.clone()))
     }
 
+    /// Shared T1 readiness probe for a persisted loop delegation. The resolver
+    /// receives this result and remains pure; it never inspects wrapper state.
+    pub(crate) fn loop_owner_readiness(
+        &mut self,
+        owner_vivling_id: &str,
+    ) -> crate::vl::delegated_loops::VivlingReadiness {
+        let phase = self.shadow.lifecycle.clone();
+        let state = match self.load_state_for_id(owner_vivling_id) {
+            Ok(Some(state)) => state,
+            Ok(None) | Err(_) => {
+                return crate::vl::delegated_loops::VivlingReadiness::WrapperUnavailable;
+            }
+        };
+        match Self::vivling_runnable_from(&phase, &state) {
+            Ok(()) => crate::vl::delegated_loops::VivlingReadiness::Runnable,
+            Err(VivlingReadinessReason::WrapperUnavailable) => {
+                crate::vl::delegated_loops::VivlingReadiness::WrapperUnavailable
+            }
+            Err(VivlingReadinessReason::NotAdult) => {
+                crate::vl::delegated_loops::VivlingReadiness::NotAdult
+            }
+            Err(VivlingReadinessReason::BrainDisabled) => {
+                crate::vl::delegated_loops::VivlingReadiness::BrainDisabled
+            }
+        }
+    }
+
     pub(crate) fn prepare_loop_tick_request(
         &mut self,
         owner_vivling_id: &str,

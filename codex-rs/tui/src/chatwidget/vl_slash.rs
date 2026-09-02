@@ -202,6 +202,16 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "dismiss" => Some(LoopCommandRequest::Dismiss {
             suggestion_id: parts.next()?.to_string(),
         }),
+        "delegate" => Some(LoopCommandRequest::Delegate {
+            label: parts.next()?.to_string(),
+            owner_kind: parts.next()?.to_string(),
+        }),
+        "undelegate" => Some(LoopCommandRequest::Undelegate {
+            label: parts.next()?.to_string(),
+        }),
+        "delegation" => Some(LoopCommandRequest::Delegation {
+            label: parts.next().map(str::to_string),
+        }),
         "owner" => match parts.next() {
             None => Some(LoopCommandRequest::OwnerShow),
             Some("main") => Some(LoopCommandRequest::OwnerSetMain),

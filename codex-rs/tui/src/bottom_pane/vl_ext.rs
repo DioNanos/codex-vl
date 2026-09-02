@@ -295,6 +295,15 @@ impl BottomPane {
         self.vivling.active_loop_owner_identity()
     }
 
+    pub(crate) fn vivling_loop_owner_readiness(
+        &mut self,
+        config: &Config,
+        owner_vivling_id: &str,
+    ) -> crate::vl::delegated_loops::VivlingReadiness {
+        self.configure_vivling(config);
+        self.vivling.loop_owner_readiness(owner_vivling_id)
+    }
+
     pub(crate) fn prepare_vivling_loop_tick(
         &mut self,
         config: &Config,

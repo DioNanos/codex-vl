@@ -50,6 +50,16 @@ pub(crate) enum LoopCommandRequest {
     Trigger {
         label: String,
     },
+    Delegate {
+        label: String,
+        owner_kind: String,
+    },
+    Undelegate {
+        label: String,
+    },
+    Delegation {
+        label: Option<String>,
+    },
     OwnerShow,
     OwnerSetMain,
     OwnerSetVivling,

@@ -295,12 +295,15 @@ pub(super) async fn run_command_request(
             }
         }
         LoopCommandRequest::Remove { label } => {
-            if state_runtime
+            if let Some(job) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
                 .await
                 .map_err(loop_state_error)?
-                .is_some()
             {
+                state_runtime
+                    .delete_loop_delegation(thread_id, &job.id)
+                    .await
+                    .map_err(loop_state_error)?;
                 state_runtime
                     .delete_thread_loop_job(thread_id, &label)
                     .await
@@ -372,6 +375,190 @@ pub(super) async fn run_command_request(
                 Some(&updated),
                 None,
             )
+        }
+        LoopCommandRequest::Delegate { label, owner_kind } => {
+            let owner_kind = owner_kind.trim().to_ascii_lowercase();
+            if !matches!(owner_kind.as_str(), "main" | "vivling") {
+                return Ok(loop_action_failure(
+                    "delegate",
+                    thread_id,
+                    "`owner` must be `main` or `vivling`.".to_string(),
+                ));
+            }
+            let Some(job) = state_runtime
+                .get_thread_loop_job_by_label(thread_id, &label)
+                .await
+                .map_err(loop_state_error)?
+            else {
+                return Ok(loop_action_failure(
+                    "delegate",
+                    thread_id,
+                    format!("Loop `{label}` not found."),
+                ));
+            };
+            let existing = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            let (vivling_id, vivling_name) = if owner_kind == "vivling" {
+                app.chat_widget
+                    .active_vivling_loop_owner_identity(&app.config)
+                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+            } else if let Some(existing) = existing.as_ref() {
+                (existing.vivling_id.clone(), "persisted Vivling".to_string())
+            } else if let Some(vivling_id) = state_runtime
+                .get_thread_loop_owner(thread_id)
+                .await
+                .map_err(loop_state_error)?
+                .owner_vivling_id
+            {
+                (vivling_id, "thread owner Vivling".to_string())
+            } else {
+                app.chat_widget
+                    .active_vivling_loop_owner_identity(&app.config)
+                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+            };
+            let now = loop_now_ms();
+            let saved = state_runtime
+                .upsert_loop_delegation(codex_state::LoopDelegationUpsertParams {
+                    thread_id,
+                    job_id: job.id.clone(),
+                    loop_label: job.label.clone(),
+                    vivling_id,
+                    strategy: existing
+                        .as_ref()
+                        .map(|delegation| delegation.strategy)
+                        .unwrap_or(codex_state::LoopDelegationStrategy::Observe),
+                    ticks_managed: existing
+                        .as_ref()
+                        .map(|delegation| delegation.ticks_managed)
+                        .unwrap_or_default(),
+                    recent_results_json: existing
+                        .as_ref()
+                        .map(|delegation| delegation.recent_results_json.clone())
+                        .unwrap_or_else(|| "[]".to_string()),
+                    last_plan_approved: existing
+                        .as_ref()
+                        .and_then(|delegation| delegation.last_plan_approved),
+                    override_main: owner_kind == "main",
+                    created_at_ms: existing
+                        .as_ref()
+                        .map(|delegation| delegation.created_at_ms)
+                        .unwrap_or(now),
+                    updated_at_ms: now,
+                })
+                .await
+                .map_err(loop_state_error)?;
+            app.record_vivling_loop_job("delegate", &label, Some(&job), source);
+            loop_action_success(
+                "delegate",
+                thread_id,
+                format!("Loop `{label}` delegated to {owner_kind} ({vivling_name})."),
+                Some(&job),
+                Some(vec![serde_json::json!({
+                    "delegation": {
+                        "job_id": saved.job_id,
+                        "vivling_id": saved.vivling_id,
+                        "strategy": saved.strategy.as_str(),
+                        "override_main": saved.override_main,
+                    }
+                })]),
+            )
+        }
+        LoopCommandRequest::Undelegate { label } => {
+            let Some(job) = state_runtime
+                .get_thread_loop_job_by_label(thread_id, &label)
+                .await
+                .map_err(loop_state_error)?
+            else {
+                return Ok(loop_action_failure(
+                    "undelegate",
+                    thread_id,
+                    format!("Loop `{label}` not found."),
+                ));
+            };
+            let removed = state_runtime
+                .delete_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
+            if !removed {
+                return Ok(loop_action_failure(
+                    "undelegate",
+                    thread_id,
+                    format!("Loop `{label}` has no persisted delegation."),
+                ));
+            }
+            app.record_vivling_loop_job("undelegate", &label, Some(&job), source);
+            loop_action_success(
+                "undelegate",
+                thread_id,
+                format!("Loop `{label}` returned to its thread-level owner."),
+                Some(&job),
+                None,
+            )
+        }
+        LoopCommandRequest::Delegation { label } => {
+            if let Some(label) = label {
+                let Some(job) = state_runtime
+                    .get_thread_loop_job_by_label(thread_id, &label)
+                    .await
+                    .map_err(loop_state_error)?
+                else {
+                    return Ok(loop_action_failure(
+                        "delegation",
+                        thread_id,
+                        format!("Loop `{label}` not found."),
+                    ));
+                };
+                let Some(delegation) = state_runtime
+                    .get_loop_delegation(thread_id, &job.id)
+                    .await
+                    .map_err(loop_state_error)?
+                else {
+                    return Ok(loop_action_failure(
+                        "delegation",
+                        thread_id,
+                        format!("Loop `{label}` has no persisted delegation."),
+                    ));
+                };
+                loop_action_success(
+                    "delegation",
+                    thread_id,
+                    format!(
+                        "Loop `{label}`: {} strategy={}, override_main={}.",
+                        delegation.vivling_id,
+                        delegation.strategy.as_str(),
+                        delegation.override_main
+                    ),
+                    Some(&job),
+                    None,
+                )
+            } else {
+                let delegations = state_runtime
+                    .list_loop_delegations(thread_id)
+                    .await
+                    .map_err(loop_state_error)?;
+                let items = delegations
+                    .into_iter()
+                    .map(|delegation| {
+                        serde_json::json!({
+                            "job_id": delegation.job_id,
+                            "label": delegation.loop_label,
+                            "vivling_id": delegation.vivling_id,
+                            "strategy": delegation.strategy.as_str(),
+                            "override_main": delegation.override_main,
+                            "ticks_managed": delegation.ticks_managed,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                loop_action_success(
+                    "delegation",
+                    thread_id,
+                    format!("{} persisted loop delegation(s).", items.len()),
+                    None,
+                    Some(items),
+                )
+            }
         }
         LoopCommandRequest::OwnerShow => {
             let owner = state_runtime

@@ -163,6 +163,15 @@ impl ChatWidget {
         self.bottom_pane.active_vivling_loop_owner_identity(config)
     }
 
+    pub(crate) fn vivling_loop_owner_readiness(
+        &mut self,
+        config: &Config,
+        owner_vivling_id: &str,
+    ) -> crate::vl::delegated_loops::VivlingReadiness {
+        self.bottom_pane
+            .vivling_loop_owner_readiness(config, owner_vivling_id)
+    }
+
     pub(crate) fn prepare_vivling_loop_tick(
         &mut self,
         config: &Config,

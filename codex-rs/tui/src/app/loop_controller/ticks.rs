@@ -30,6 +30,9 @@ use super::formatting::LOOP_STATUS_PROGRESS;
 use super::formatting::LOOP_STATUS_SUBMITTED;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+use crate::vl::delegated_loops::VivlingReadiness;
+use crate::vl::delegated_loops::owner_from_resolution;
+use crate::vl::delegated_loops::resolve_effective_owner;
 
 fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
     match outcome {
@@ -112,10 +115,36 @@ pub(super) async fn process_submission(
     job: codex_state::ThreadLoopJob,
 ) -> color_eyre::Result<()> {
     let state_runtime = app.loop_state_runtime().await?;
-    let owner = state_runtime
+    let thread_owner = state_runtime
         .get_thread_loop_owner(thread_id)
         .await
         .map_err(loop_state_error)?;
+    let delegation = state_runtime
+        .get_loop_delegation(thread_id, &job.id)
+        .await
+        .map_err(loop_state_error)?;
+    let delegated_vivling_id = delegation
+        .as_ref()
+        .map(|delegation| delegation.vivling_id.as_str())
+        .or_else(|| thread_owner.owner_vivling_id.as_deref());
+    let readiness = delegated_vivling_id
+        .map(|vivling_id| {
+            app.chat_widget
+                .vivling_loop_owner_readiness(&app.config, vivling_id)
+        })
+        .unwrap_or(VivlingReadiness::NotRequested);
+    let resolution = resolve_effective_owner(delegation.as_ref(), &thread_owner, readiness);
+    tracing::debug!(
+        target: "codex_vl::loop_delegation",
+        label = %job.label,
+        source = resolution.source.label(),
+        requested = ?resolution.requested,
+        readiness = resolution.readiness.label(),
+        effective = ?resolution.effective,
+        reason = resolution.reason,
+        "resolved loop owner"
+    );
+    let owner = owner_from_resolution(&resolution, thread_id, loop_now_ms());
     let now = loop_now_ms();
     let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
     if let Some(internal_outcome) = execute_internal_payload(&job, &payload, now) {

@@ -35,6 +35,8 @@ struct ManageLoopsToolArgs {
     auto_remove_on_completion: Option<bool>,
     #[serde(default)]
     enabled: Option<bool>,
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 pub(super) fn parse_manage_loops_interval_seconds(token: &str) -> Option<i64> {
@@ -131,6 +133,23 @@ pub(super) fn parse_manage_loops_tool_request(
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| anyhow::anyhow!("`label` is required for trigger"))?,
         }),
+        "delegate" => Ok(LoopCommandRequest::Delegate {
+            label: args
+                .label
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`label` is required for delegate"))?,
+            owner_kind: args
+                .owner
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`owner` is required for delegate"))?,
+        }),
+        "undelegate" => Ok(LoopCommandRequest::Undelegate {
+            label: args
+                .label
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`label` is required for undelegate"))?,
+        }),
+        "delegation" => Ok(LoopCommandRequest::Delegation { label: args.label }),
         "add" => {
             let label = args
                 .label
