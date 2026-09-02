@@ -476,7 +476,7 @@ fn client_requests_manage_loops_builtins(
     app_server_client_name: Option<&str>,
     capabilities: Option<&ThreadClientCapabilities>,
 ) -> bool {
-    capabilities.is_some_and(|caps| caps.manage_loops)
+    capabilities.is_some_and(|caps| caps.manage_loops.unwrap_or(false))
         || app_server_client_name == Some(CODEX_TUI_CLIENT_NAME)
 }
 

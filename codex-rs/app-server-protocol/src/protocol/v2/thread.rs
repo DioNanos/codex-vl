@@ -172,9 +172,9 @@ pub struct ThreadStartParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadClientCapabilities {
     /// Explicitly request the fork-owned `manage_loops` dynamic tool.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub manage_loops: bool,
+    pub manage_loops: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS)]

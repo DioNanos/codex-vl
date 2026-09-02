@@ -625,7 +625,9 @@ async fn manage_loops_builtin_grant_follows_capability_or_tui_identity() -> Resu
     let capable_tools = first_request_model_tools_with_client(
         DEFAULT_CLIENT_NAME,
         true,
-        Some(ThreadClientCapabilities { manage_loops: true }),
+        Some(ThreadClientCapabilities {
+            manage_loops: Some(true),
+        }),
     )
     .await?;
     assert!(
