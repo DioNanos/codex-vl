@@ -222,7 +222,11 @@ pub(super) async fn handle_loop_tick_finished(
     job_id: String,
     result: Result<VivlingLoopTickResult, String>,
 ) -> color_eyre::Result<()> {
-    let managed_source = app.managed_loop_command_source(thread_id);
+    // FIX-G — the tick completion path resolves ONLY the exact scope of the
+    // finishing (thread_id, job_id), fail-closed: `None` (no scope, or a
+    // scope of a different job) records `audit_rejected` and never falls
+    // back to `Agent`.
+    let managed_source = app.resolve_managed_tick_source(thread_id, &job_id);
     // The finished event is the cleanup boundary for every child tick scope:
     // success, provider error, timeout, and cancellation all pass here.
     app.clear_managed_loop_scope(thread_id, &job_id);

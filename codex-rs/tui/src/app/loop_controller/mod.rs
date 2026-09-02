@@ -65,6 +65,7 @@ use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
 use self::types::LoopCommandScope;
 use self::types::LoopCommandSource;
+use self::types::ManagedToolCallSource;
 
 // codex-vl: re-exported for the app-server event router, which must route
 // `manage_loops` dynamic tool calls to this module before the upstream
@@ -162,21 +163,41 @@ impl App {
             .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
     }
 
-    pub(super) fn managed_loop_command_source(
-        &self,
-        thread_id: ThreadId,
-    ) -> Option<LoopCommandSource> {
+    /// FIX-G — resolver for the agent `manage_loops` DynamicToolCall ONLY
+    /// (`manage_tool.rs`). The managed-tick completion path has its own,
+    /// stricter resolver (`resolve_managed_tick_source`) that can never
+    /// yield `Agent`.
+    pub(super) fn resolve_tool_call_source(&self, thread_id: ThreadId) -> ManagedToolCallSource {
         let mut scopes = self
             .managed_loop_scopes
             .iter()
             .filter(|scope| scope.thread_id == thread_id);
-        let scope = scopes.next()?.clone();
-        // More than one child tick on a thread has no unambiguous caller
-        // identity in DynamicToolCallParams.  Reject it rather than guessing.
-        scopes
-            .next()
-            .is_none()
-            .then_some(LoopCommandSource::Managed(scope))
+        let Some(scope) = scopes.next() else {
+            // No active scope: an ordinary agent call (pre-T5 behaviour).
+            return ManagedToolCallSource::OrdinaryAgent;
+        };
+        if scopes.next().is_some() {
+            // More than one child tick on a thread has no unambiguous caller
+            // identity in DynamicToolCallParams. Reject it rather than guessing.
+            return ManagedToolCallSource::Ambiguous;
+        }
+        ManagedToolCallSource::Managed(LoopCommandSource::Managed(scope.clone()))
+    }
+
+    /// FIX-G — resolver for the managed-tick completion path ONLY
+    /// (`vivling_delegation.rs`): fail-closed and bound to the exact
+    /// (thread_id, job_id) scope of the finishing tick. Never yields
+    /// `Agent`: the caller executes the structured tick action on `Some`
+    /// or records `audit_rejected` on `None`.
+    pub(super) fn resolve_managed_tick_source(
+        &self,
+        thread_id: ThreadId,
+        job_id: &str,
+    ) -> Option<LoopCommandSource> {
+        self.managed_loop_scopes
+            .iter()
+            .find(|scope| scope.thread_id == thread_id && scope.job_id == job_id)
+            .map(|scope| LoopCommandSource::Managed(scope.clone()))
     }
 
     pub(super) async fn refresh_loop_jobs(
