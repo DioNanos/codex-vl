@@ -207,4 +207,10 @@ pub(crate) enum VlEvent {
         active_loops: Vec<String>,
         blockers: Vec<String>,
     },
+    /// T6 — structured fixed-format summary of one finished loop tick
+    /// (persist-before-emit: the row is already durable when this flies).
+    /// The consumer (bounded queue + notifier worker) lands in m2.
+    LoopTickSummary {
+        summary: crate::app::loop_controller::summary::LoopTickSummary,
+    },
 }

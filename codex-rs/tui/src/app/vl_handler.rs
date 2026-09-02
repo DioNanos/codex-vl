@@ -331,6 +331,18 @@ impl App {
                     chrono::Utc::now(),
                 );
             }
+            VlEvent::LoopTickSummary { summary } => {
+                // T6 m1 — the summary row is already durable when this event
+                // flies (persist-before-emit). The real consumer (bounded
+                // queue + notifier worker) lands in m2; until then the arm
+                // only keeps the match exhaustive with a diagnostic trace.
+                tracing::debug!(
+                    target: "codex_vl::loop_summary",
+                    label = %summary.label,
+                    outcome = ?summary.outcome,
+                    "loop tick summary event received (consumer lands in m2)"
+                );
+            }
             VlEvent::SidebarPushMessage {
                 kind,
                 text,

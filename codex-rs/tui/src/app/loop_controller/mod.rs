@@ -47,6 +47,7 @@ mod events;
 mod jobs;
 mod manage_tool;
 mod rearm;
+pub(crate) mod summary;
 mod ticks;
 mod vivling_delegation;
 
