@@ -6,6 +6,8 @@
 //! migrating SQLite from a consumer path. Only the byte-pure timing and
 //! error helpers remain here.
 
+use chrono::TimeZone;
+
 pub(super) fn loop_now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -94,13 +96,13 @@ fn parse_hhmm(hhmm: &str) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
 
-    fn plan(
-        schedule_kind: &str,
+    fn plan<'a>(
+        schedule_kind: &'a str,
         interval_seconds: i64,
-        schedule_at: Option<&str>,
-        tz: Option<&str>,
+        schedule_at: Option<&'a str>,
+        tz: Option<&'a str>,
         one_shot_at_ms: Option<i64>,
-    ) -> SchedulePlan<'_> {
+    ) -> SchedulePlan<'a> {
         SchedulePlan {
             schedule_kind,
             interval_seconds,

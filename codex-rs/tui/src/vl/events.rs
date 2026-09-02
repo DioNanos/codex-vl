@@ -30,11 +30,12 @@ pub(crate) enum LoopCommandRequest {
         runner_model: Option<String>,
         /// T3 — persisted on the descriptor (0933): "interval" | "at" |
         /// "one_shot".
-        schedule_kind: Option<String>,
+        schedule_kind: String,
         /// T3 — "HH:MM" wall clock for `at`, interpreted in `tz`.
         schedule_at: Option<String>,
-        /// T3 — RFC 3339 with mandatory offset; persisted as epoch-ms UTC.
-        one_shot: Option<String>,
+        /// T3 — epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// obbligatorio).
+        one_shot_at_ms: Option<i64>,
         /// T3 — IANA tz name for `at` (persisted, never a runtime Local).
         tz: Option<String>,
     },
@@ -47,12 +48,14 @@ pub(crate) enum LoopCommandRequest {
         enabled: Option<bool>,
         runner_kind: Option<LoopRunnerKind>,
         runner_model: Option<Option<String>>,
-        /// T3 — see Add::schedule_kind.
+        /// T3 — `Some` when the schedule triplet is provided as a whole;
+        /// `None` leaves the persisted schedule untouched.
         schedule_kind: Option<String>,
         /// T3 — see Add::schedule_at.
         schedule_at: Option<String>,
-        /// T3 — see Add::one_shot.
-        one_shot: Option<String>,
+        /// T3 — epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// obbligatorio).
+        one_shot_at_ms: Option<i64>,
         /// T3 — see Add::tz.
         tz: Option<String>,
     },

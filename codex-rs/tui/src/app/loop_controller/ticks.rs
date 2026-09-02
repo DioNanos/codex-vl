@@ -541,6 +541,7 @@ mod tests {
     use super::execute_internal_payload;
     use super::process_submission;
     use crate::app::tests::make_test_app_with_channels;
+    use crate::app::tests::test_thread_session;
     use crate::vl::loop_runtime::LoopJobPayload;
     use codex_protocol::ThreadId;
     use codex_state::LoopDescriptorUpsertParams;
@@ -585,7 +586,9 @@ mod tests {
         let thread_id = ThreadId::new();
         app.primary_thread_id = Some(thread_id);
         app.active_thread_id = Some(thread_id);
-        app.chat_widget.thread_id = Some(thread_id);
+        let cwd = app.config.cwd.to_path_buf();
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, cwd));
         let now = 1_700_000_000_000i64;
         let job = state_runtime
             .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
@@ -671,7 +674,9 @@ mod tests {
         let thread_id = ThreadId::new();
         app.primary_thread_id = Some(thread_id);
         app.active_thread_id = Some(thread_id);
-        app.chat_widget.thread_id = Some(thread_id);
+        let cwd = app.config.cwd.to_path_buf();
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, cwd));
         let now = 1_700_000_000_000i64;
         let one_shot_at_ms = now + 60_000; // future, inside the grace window
         let job = state_runtime

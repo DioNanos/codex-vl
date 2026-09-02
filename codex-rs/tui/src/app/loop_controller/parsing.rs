@@ -397,12 +397,7 @@ pub(super) fn parse_manage_loops_tool_request(
                 args.tz.as_deref(),
             )?;
             let (schedule_kind, schedule_at, one_shot_at_ms, tz) = match schedule {
-                Some(schedule) => (
-                    Some(schedule.0),
-                    Some(schedule.1),
-                    Some(schedule.2),
-                    Some(schedule.3),
-                ),
+                Some(schedule) => (Some(schedule.0), schedule.1, schedule.2, schedule.3),
                 None => (None, None, None, None),
             };
             Ok(LoopCommandRequest::Update {

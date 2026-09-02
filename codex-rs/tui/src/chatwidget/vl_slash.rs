@@ -261,7 +261,7 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
                 auto_remove_on_completion: None,
                 runner_kind: codex_state::LoopRunnerKind::Main,
                 runner_model: None,
-                schedule_kind: Some("interval".to_string()),
+                schedule_kind: "interval".to_string(),
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,

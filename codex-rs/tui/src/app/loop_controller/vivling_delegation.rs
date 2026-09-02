@@ -351,6 +351,10 @@ fn tick_action_request(
                 enabled: action.enabled,
                 runner_kind: None,
                 runner_model: None,
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
             }
         }
         other => {
