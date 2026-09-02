@@ -15,6 +15,10 @@ export type ThreadStartParams = {model?: string | null, modelProvider?: string |
  * and subsequent turns.
  */
 approvalsReviewer?: ApprovalsReviewer | null, sandbox?: SandboxMode | null, config?: { [key in string]?: JsonValue } | null, serviceName?: string | null, baseInstructions?: string | null, developerInstructions?: string | null, personality?: Personality | null, ephemeral?: boolean | null, sessionStartSource?: ThreadStartSource | null, /**
+ * codex-vl: client-declared capabilities for fork-owned dynamic tools
+ * on thread/start.
+ */
+capabilities?: ThreadClientCapabilities | null, /**
  * Optional client-supplied analytics source classification for this thread.
  */
-threadSource?: ThreadSource | null, capabilities?: ThreadClientCapabilities | null};
+threadSource?: ThreadSource | null};

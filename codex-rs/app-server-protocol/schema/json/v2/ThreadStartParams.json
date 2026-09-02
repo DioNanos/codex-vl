@@ -262,7 +262,10 @@
       "properties": {
         "manageLoops": {
           "description": "Explicitly request the fork-owned `manage_loops` dynamic tool.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
