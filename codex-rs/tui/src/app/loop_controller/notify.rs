@@ -325,8 +325,14 @@ pub(crate) fn ensure_worker_started(
 mod tests {
     use super::DerivedOutcome;
     use super::LOOP_SUMMARY_QUEUE_CAPACITY;
+    use super::LoopManager;
+    use super::LoopScheduleKind;
+    use super::LoopTickOutcome;
+    use super::LoopTickSummary;
+    use super::NextRun;
     use super::derive_outcome;
     use super::enqueue_or_drop;
+    use super::enqueue_or_drop_result;
     use codex_protocol::ThreadId;
     use tokio::sync::mpsc;
 

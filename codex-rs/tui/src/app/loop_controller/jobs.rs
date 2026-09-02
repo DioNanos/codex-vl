@@ -1111,6 +1111,7 @@ mod tests {
             schedule_at: None,
             one_shot_at_ms: None,
             tz: None,
+            rearm_on_boot: None,
         };
         assert!(!managed_request_is_allowed(&request));
     }
