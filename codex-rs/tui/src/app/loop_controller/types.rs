@@ -33,7 +33,7 @@ pub(super) enum ManagedToolCallSource {
     /// (pre-T5 behaviour, normal permissions).
     OrdinaryAgent,
     /// Exactly one managed tick in flight: the T5 allowlist governs.
-    Managed(LoopCommandSource),
+    Single(LoopCommandSource),
     /// Two or more scopes on the thread: caller identity is ambiguous —
     /// fail closed.
     Ambiguous,

@@ -181,7 +181,7 @@ impl App {
             // identity in DynamicToolCallParams. Reject it rather than guessing.
             return ManagedToolCallSource::Ambiguous;
         }
-        ManagedToolCallSource::Managed(LoopCommandSource::Managed(scope.clone()))
+        ManagedToolCallSource::Single(LoopCommandSource::Managed(scope.clone()))
     }
 
     /// FIX-G — resolver for the managed-tick completion path ONLY
