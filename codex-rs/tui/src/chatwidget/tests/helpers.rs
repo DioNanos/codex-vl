@@ -145,7 +145,7 @@ pub(super) fn test_model_catalog(_config: &Config) -> Arc<ModelCatalog> {
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
-pub(super) async fn make_chatwidget_manual(
+pub(crate) async fn make_chatwidget_manual(
     model_override: Option<&str>,
 ) -> (
     ChatWidget,
@@ -217,7 +217,7 @@ pub(crate) fn set_active_cell(chat: &mut ChatWidget, cell: Box<dyn HistoryCell>)
 
 // ChatWidget may emit other `Op`s (e.g. history/logging updates) on the same channel; this helper
 // filters until we see a submission op.
-pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
+pub(crate) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
     loop {
         match op_rx.try_recv() {
             Ok(op @ Op::UserTurn { .. }) => return op,

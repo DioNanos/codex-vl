@@ -589,7 +589,9 @@ mod tests {
 
         // The second timer must persist skipped_busy and leave the first
         // child's guard in place, without dispatching another child event.
-        process_submission(&mut app, thread_id, job.clone()).await?;
+        process_submission(&mut app, thread_id, job.clone())
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let updated = state_runtime
             .get_thread_loop_job_by_id(thread_id, &job.id)
             .await?

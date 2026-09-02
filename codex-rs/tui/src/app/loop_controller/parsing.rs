@@ -247,7 +247,10 @@ pub(super) fn parse_manage_loops_tool_request(
                     None => None,
                 },
             };
-            let runner_kind = args.runner.map(parse_runner_kind).transpose()?;
+            let runner_kind = args
+                .runner
+                .map(|runner| parse_runner_kind(Some(runner)))
+                .transpose()?;
             let runner_model = args
                 .runner_model
                 .map(|model| parse_runner_model(Some(model)))

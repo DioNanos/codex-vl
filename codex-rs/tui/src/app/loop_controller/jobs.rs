@@ -308,7 +308,7 @@ pub(super) async fn run_command_request(
             )
         }
         LoopCommandRequest::Show { label } => {
-            if let Some(job) = state_runtime
+            if let Some(_job) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
                 .await
                 .map_err(loop_state_error)?
