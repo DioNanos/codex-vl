@@ -60,6 +60,7 @@ mod goals;
 mod logs;
 mod loop_delegations;
 mod loop_descriptors;
+mod loop_occurrences;
 mod memories;
 mod projects;
 mod queued_items;

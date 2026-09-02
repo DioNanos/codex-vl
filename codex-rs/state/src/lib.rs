@@ -33,6 +33,7 @@ pub use model::LoopDelegationStrategy;
 pub use model::LoopDelegationUpsertParams;
 pub use model::LoopDescriptor;
 pub use model::LoopDescriptorUpsertParams;
+pub use model::LoopOccurrence;
 pub use model::LoopRunnerKind;
 pub use model::Phase2JobClaimOutcome;
 pub use model::Project;
