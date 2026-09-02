@@ -132,13 +132,15 @@ mod tests {
     use codex_utils_absolute_path::test_support::PathExt;
     use tempfile::tempdir;
 
-    async fn runtime() -> anyhow::Result<StateRuntime> {
+    async fn runtime() -> anyhow::Result<std::sync::Arc<StateRuntime>> {
         let codex_home = tempdir()?;
-        Ok(StateRuntime::init(
-            SqliteConfig::new_for_testing(codex_home.path().abs()),
-            "test-provider".to_string(),
-        )
-        .await?)
+        Ok(std::sync::Arc::new(
+            StateRuntime::init(
+                SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?,
+        ))
     }
 
     async fn create_job(
