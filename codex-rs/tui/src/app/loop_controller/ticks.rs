@@ -498,7 +498,17 @@ pub(super) async fn process_submission(
 mod tests {
     use super::LOOP_STATUS_PROGRESS;
     use super::execute_internal_payload;
+    use super::process_submission;
+    use crate::app::tests::make_test_app_with_channels;
     use crate::vl::loop_runtime::LoopJobPayload;
+    use codex_protocol::ThreadId;
+    use codex_state::LoopDescriptorUpsertParams;
+    use codex_state::LoopRunnerKind;
+    use codex_state::SqliteConfig;
+    use codex_state::StateRuntime;
+    use codex_state::ThreadLoopJobCreateParams;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use tempfile::tempdir;
 
     #[test]
     fn internal_status_payload_schedules_next_tick() {
@@ -517,5 +527,86 @@ mod tests {
         assert_eq!(outcome.status, LOOP_STATUS_PROGRESS);
         assert_eq!(outcome.next_run_ms, Some(301_000));
         assert!(!outcome.pending_tick);
+    }
+
+    #[tokio::test]
+    async fn double_timer_persists_skipped_busy_without_second_child_event() -> anyhow::Result<()> {
+        let (mut app, mut app_events, _ops) = make_test_app_with_channels().await;
+        let codex_home = tempdir()?;
+        let state_runtime = StateRuntime::init(
+            SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        app.state_db = Some(state_runtime.clone());
+
+        let thread_id = ThreadId::new();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget.thread_id = Some(thread_id);
+        let now = 1_700_000_000_000i64;
+        let job = state_runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-double-timer".to_string(),
+                thread_id,
+                label: "double-timer".to_string(),
+                prompt_text: "child tick".to_string(),
+                goal_text: Some("test busy guard".to_string()),
+                interval_seconds: 60,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(now),
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .await?;
+        let model = app
+            .chat_widget
+            .model_catalog()
+            .try_list_models()?
+            .first()
+            .map(|preset| preset.model.clone())
+            .expect("test model catalog is not empty");
+        state_runtime
+            .upsert_loop_descriptor(LoopDescriptorUpsertParams {
+                job_id: job.id.clone(),
+                runner_kind: LoopRunnerKind::ChildAgent,
+                runner_model: Some(model),
+                runner_reasoning_effort: None,
+                tz: None,
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                rearm_on_boot: false,
+                updated_at_ms: now,
+            })
+            .await?;
+
+        // The first timer has already spawned its child and owns the guard.
+        assert!(state_runtime.try_begin_loop_tick(&job.id, now + 1).await?);
+
+        // The second timer must persist skipped_busy and leave the first
+        // child's guard in place, without dispatching another child event.
+        process_submission(&mut app, thread_id, job.clone()).await?;
+        let updated = state_runtime
+            .get_thread_loop_job_by_id(thread_id, &job.id)
+            .await?
+            .expect("job should remain present");
+        assert_eq!(updated.last_status.as_deref(), Some("skipped_busy"));
+        assert!(updated.pending_tick);
+        assert!(
+            state_runtime
+                .get_loop_descriptor(&job.id)
+                .await?
+                .expect("descriptor should remain present")
+                .in_flight
+        );
+        assert!(
+            app_events.try_recv().is_err(),
+            "busy timer emitted a second child event"
+        );
+        Ok(())
     }
 }
