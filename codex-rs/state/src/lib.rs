@@ -20,9 +20,15 @@ mod sqlite;
 mod telemetry;
 
 pub use model::CreatedProject;
+pub use model::LOOP_DELEGATION_STRATEGY_MANAGE;
+pub use model::LOOP_DELEGATION_STRATEGY_OBSERVE;
+pub use model::LOOP_DELEGATION_STRATEGY_SUGGEST;
 pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
+pub use model::LoopDelegation;
+pub use model::LoopDelegationStrategy;
+pub use model::LoopDelegationUpsertParams;
 pub use model::Phase2JobClaimOutcome;
 pub use model::Project;
 pub use model::ProjectRoot;
