@@ -111,7 +111,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_utils_absolute_path::test_support::PathExt;
 
-    async fn runtime_with_job() -> anyhow::Result<(StateRuntime, String)> {
+    async fn runtime_with_job() -> anyhow::Result<(std::sync::Arc<StateRuntime>, String)> {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),

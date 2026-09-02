@@ -118,9 +118,8 @@ pub struct ThreadStartParams {
     pub history_mode: Option<ThreadHistoryMode>,
     #[ts(optional = nullable)]
     pub session_start_source: Option<ThreadStartSource>,
-    /// codex-vl: fork-owned tool capabilities declared explicitly by the
-    /// client on thread/start. Additive, fork-only field: upstream clients
-    /// ignore it, so the merge keeps it with take-upstream.
+    /// codex-vl: client-declared capabilities for fork-owned dynamic tools
+    /// on thread/start.
     #[ts(optional = nullable)]
     pub capabilities: Option<ThreadClientCapabilities>,
     /// Optional client-supplied analytics source classification for this thread.

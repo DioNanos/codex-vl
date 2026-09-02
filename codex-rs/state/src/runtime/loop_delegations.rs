@@ -150,6 +150,7 @@ ON CONFLICT(thread_id, job_id) DO UPDATE SET
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LoopDelegationStrategy;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_utils_absolute_path::test_support::PathExt;
 
