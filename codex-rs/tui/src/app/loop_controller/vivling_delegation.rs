@@ -101,6 +101,13 @@ pub(super) async fn handle_loop_tick_finished(
                     "failed to persist Vivling loop brain error for {vivling_id}: {persist_err}"
                 );
             }
+            // T3 fail-once (§4-bis 3): a failed one_shot tick is terminal —
+            // the `failed` outcome is persisted together with the disarm in
+            // the same atomic update and the job never re-arms (no retry,
+            // `pending_tick` stays false; repeating means a new occurrence).
+            let is_one_shot = descriptor
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.schedule_kind == "one_shot");
             state_runtime
                 .update_thread_loop_job_runtime(
                     thread_id,
@@ -110,7 +117,7 @@ pub(super) async fn handle_loop_tick_finished(
                         last_run_ms: job.last_run_ms,
                         last_status: Some(failure_status.to_string()),
                         last_error: Some(err.clone()),
-                        pending_tick: true,
+                        pending_tick: !is_one_shot,
                         updated_at_ms: now,
                     },
                 )
@@ -120,7 +127,11 @@ pub(super) async fn handle_loop_tick_finished(
                 .add_error_message(format!("Vivling loop `{}` failed: {err}", job.label));
             app.record_vivling_loop_runtime(
                 &job.label,
-                Some("pending"),
+                if is_one_shot {
+                    Some("expired")
+                } else {
+                    Some("pending")
+                },
                 Some(failure_status),
                 job.goal_text.as_deref().or(Some(job.prompt_text.as_str())),
                 &job.created_by,

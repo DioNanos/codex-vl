@@ -562,7 +562,8 @@ mod tests {
         .unwrap();
         let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
 
-        let outcome = execute_internal_payload(&job, &payload, 1_000).expect("internal outcome");
+        let outcome = execute_internal_payload(&job, &payload, 1_000, Some(301_000))
+            .expect("internal outcome");
 
         assert_eq!(outcome.message, "watching");
         assert_eq!(outcome.status, LOOP_STATUS_PROGRESS);
@@ -649,6 +650,109 @@ mod tests {
         assert!(
             app_events.try_recv().is_err(),
             "busy timer emitted a second child event"
+        );
+        Ok(())
+    }
+
+    // T3 fail-once (§4-bis 3): a one_shot tick that fails is terminal — the
+    // failed outcome is persisted with the disarm and no later timer can
+    // resurrect the job (no second child event).
+    #[tokio::test]
+    async fn one_shot_failure_disarms_without_retry() -> anyhow::Result<()> {
+        let (mut app, mut app_events, _ops) = make_test_app_with_channels().await;
+        let codex_home = tempdir()?;
+        let state_runtime = StateRuntime::init(
+            SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        app.state_db = Some(state_runtime.clone());
+
+        let thread_id = ThreadId::new();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        app.chat_widget.thread_id = Some(thread_id);
+        let now = 1_700_000_000_000i64;
+        let one_shot_at_ms = now + 60_000; // future, inside the grace window
+        let job = state_runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-one-shot".to_string(),
+                thread_id,
+                label: "one-shot".to_string(),
+                prompt_text: "child tick".to_string(),
+                goal_text: Some("test fail-once".to_string()),
+                interval_seconds: 60,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(one_shot_at_ms),
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .await?;
+        let model = app
+            .chat_widget
+            .model_catalog()
+            .try_list_models()?
+            .first()
+            .map(|preset| preset.model.clone())
+            .expect("test model catalog is not empty");
+        state_runtime
+            .upsert_loop_descriptor(LoopDescriptorUpsertParams {
+                job_id: job.id.clone(),
+                runner_kind: LoopRunnerKind::ChildAgent,
+                runner_model: Some(model),
+                runner_reasoning_effort: None,
+                tz: None,
+                schedule_kind: "one_shot".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: Some(one_shot_at_ms),
+                rearm_on_boot: false,
+                updated_at_ms: now,
+            })
+            .await?;
+
+        // The one_shot occurrence fires once: the timer dispatches the child.
+        super::handle_tick(&mut app, thread_id, job.id.clone())
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert!(
+            app_events.try_recv().is_ok(),
+            "one-shot occurrence must dispatch its child tick"
+        );
+
+        // The child fails: fail-once disarms the one_shot (no pending retry)
+        // while persisting the failed outcome.
+        crate::app::loop_controller::vivling_delegation::handle_loop_tick_finished(
+            &mut app,
+            thread_id,
+            job.id.clone(),
+            Err("boom".to_string()),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let updated = state_runtime
+            .get_thread_loop_job_by_id(thread_id, &job.id)
+            .await?
+            .expect("job should remain present");
+        assert!(
+            updated.last_status.as_deref().is_some(),
+            "failed outcome persisted"
+        );
+        assert!(
+            !updated.pending_tick,
+            "failed one_shot must not be re-armed"
+        );
+        assert_eq!(updated.next_run_ms, None, "failed one_shot is disarmed");
+
+        // No later timer tick resurrects the failed one-shot.
+        super::handle_tick(&mut app, thread_id, job.id.clone())
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert!(
+            app_events.try_recv().is_err(),
+            "failed one_shot must never dispatch a second tick"
         );
         Ok(())
     }
