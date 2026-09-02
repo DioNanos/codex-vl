@@ -134,13 +134,11 @@ mod tests {
 
     async fn runtime() -> anyhow::Result<std::sync::Arc<StateRuntime>> {
         let codex_home = tempdir()?;
-        Ok(std::sync::Arc::new(
-            StateRuntime::init(
-                SqliteConfig::new_for_testing(codex_home.path().abs()),
-                "test-provider".to_string(),
-            )
-            .await?,
-        ))
+        StateRuntime::init(
+            SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await
     }
 
     async fn create_job(
@@ -171,7 +169,7 @@ mod tests {
             .get_thread_loop_job_by_id(thread_id, &format!("job-{label}"))
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?
-            .expect("job just created")
+            .ok_or_else(|| anyhow::anyhow!("job just created"))
     }
 
     async fn persist_pending(
@@ -219,7 +217,8 @@ mod tests {
                 updated_at_ms: now,
             })
             .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        Ok(())
     }
 
     async fn load_job(
