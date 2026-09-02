@@ -846,9 +846,9 @@ pub async fn sqlite_integrity_check(
 #[cfg(test)]
 mod tests {
     use super::SqliteConnectOptions;
+    use super::SqliteIntegrityCheck;
     use super::SqliteJournalMode;
     use super::SqliteRuntimeMode;
-    use super::SqliteIntegrityCheck;
     use super::StateRuntime;
     use super::open_state_sqlite;
     use super::runtime_state_migrator;

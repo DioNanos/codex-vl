@@ -229,10 +229,7 @@ mod thread_processor_behavior_tests {
             .get("properties")
             .and_then(Value::as_object)
             .expect("manage_loops schema properties");
-        assert_eq!(
-            properties["runner"]["enum"],
-            json!(["main", "child_agent"])
-        );
+        assert_eq!(properties["runner"]["enum"], json!(["main", "child_agent"]));
         assert_eq!(properties["runner_model"]["type"], json!("string"));
     }
 
