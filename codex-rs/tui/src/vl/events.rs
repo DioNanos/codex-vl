@@ -38,6 +38,8 @@ pub(crate) enum LoopCommandRequest {
         one_shot_at_ms: Option<i64>,
         /// T3 — IANA tz name for `at` (persisted, never a runtime Local).
         tz: Option<String>,
+        /// T4 — re-arm this loop at bootstrap (0933, default false).
+        rearm_on_boot: Option<bool>,
     },
     Update {
         label: String,
@@ -58,6 +60,9 @@ pub(crate) enum LoopCommandRequest {
         one_shot_at_ms: Option<i64>,
         /// T3 — see Add::tz.
         tz: Option<String>,
+        /// T4 — `Some` overrides the persisted `rearm_on_boot`; `None` keeps
+        /// it (0933, default false).
+        rearm_on_boot: Option<bool>,
     },
     List,
     Show {

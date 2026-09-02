@@ -456,7 +456,8 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
                 "schedule_kind": {"type": "string", "enum": ["interval", "at", "one_shot"], "description": "codex-vl schedule kind; defaults to interval. Applies on add, or on update as a whole triplet."},
                 "schedule_at": {"type": "string", "description": "codex-vl: HH:MM wall clock for schedule_kind=at, interpreted in `tz` (IANA). Required for at."},
                 "one_shot": {"type": "string", "description": "codex-vl: RFC 3339 timestamp with a mandatory offset (e.g. 2026-10-25T02:30:00+02:00) for schedule_kind=one_shot. Required for one_shot."},
-                "tz": {"type": "string", "description": "codex-vl: IANA tz name (e.g. Europe/Rome) used for schedule_kind=at. Required for at."}
+                "tz": {"type": "string", "description": "codex-vl: IANA tz name (e.g. Europe/Rome) used for schedule_kind=at. Required for at."},
+                "rearm_on_boot": {"type": "boolean", "description": "codex-vl: re-arm this loop automatically at app bootstrap (T4). Defaults to false; manually disabled loops stay disabled."}
             },
             "required": ["action"],
             "additionalProperties": false

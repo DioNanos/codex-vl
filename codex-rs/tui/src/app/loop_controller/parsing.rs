@@ -52,6 +52,8 @@ struct ManageLoopsToolArgs {
     one_shot: Option<String>,
     #[serde(default)]
     tz: Option<String>,
+    #[serde(default)]
+    rearm_on_boot: Option<bool>,
 }
 
 fn parse_runner_kind(raw: Option<String>) -> anyhow::Result<LoopRunnerKind> {
@@ -355,6 +357,7 @@ pub(super) fn parse_manage_loops_tool_request(
                 schedule_at,
                 one_shot_at_ms,
                 tz,
+                rearm_on_boot: args.rearm_on_boot,
             })
         }
         "update" => {
@@ -413,6 +416,7 @@ pub(super) fn parse_manage_loops_tool_request(
                 schedule_at,
                 one_shot_at_ms,
                 tz,
+                rearm_on_boot: args.rearm_on_boot,
             })
         }
         other => Err(anyhow::anyhow!("unsupported manage_loops action `{other}`")),
@@ -490,6 +494,7 @@ mod tests {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         );
     }
@@ -538,6 +543,7 @@ mod tests {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         );
     }
@@ -595,6 +601,7 @@ mod tests {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         );
 
@@ -630,6 +637,7 @@ mod tests {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         );
     }
@@ -659,6 +667,7 @@ mod tests {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         );
     }
@@ -703,6 +712,62 @@ mod tests {
             LoopCommandRequest::SetStrategy {
                 label: "forge".to_string(),
                 strategy: "suggest".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_rearm_on_boot_add_and_partial_update() {
+        let request = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "add",
+            "label": "nightly",
+            "interval": "5m",
+            "prompt": "check nightly",
+            "rearm_on_boot": true
+        }))
+        .expect("valid add with rearm_on_boot");
+
+        assert_eq!(
+            request,
+            LoopCommandRequest::Add {
+                label: "nightly".to_string(),
+                interval_seconds: 300,
+                prompt_text: "check nightly".to_string(),
+                goal_text: None,
+                auto_remove_on_completion: None,
+                runner_kind: LoopRunnerKind::Main,
+                runner_model: None,
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
+                rearm_on_boot: Some(true),
+            }
+        );
+
+        let update = parse_manage_loops_tool_request(serde_json::json!({
+            "action": "update",
+            "label": "nightly",
+            "rearm_on_boot": false
+        }))
+        .expect("valid update with rearm_on_boot");
+
+        assert_eq!(
+            update,
+            LoopCommandRequest::Update {
+                label: "nightly".to_string(),
+                interval_seconds: None,
+                prompt_text: None,
+                goal_text: None,
+                auto_remove_on_completion: None,
+                enabled: None,
+                runner_kind: None,
+                runner_model: None,
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
+                rearm_on_boot: Some(false),
             }
         );
     }

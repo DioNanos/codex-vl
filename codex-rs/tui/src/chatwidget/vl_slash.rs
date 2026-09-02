@@ -265,6 +265,7 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             })
         }
         _ => None,

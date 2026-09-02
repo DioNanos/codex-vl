@@ -114,6 +114,7 @@ pub(super) async fn run_command_request(
             schedule_at,
             one_shot_at_ms,
             tz,
+            rearm_on_boot,
         } => {
             validate_runner_model(&app, runner_kind, runner_model.as_deref())
                 .map_err(loop_state_error)?;
@@ -168,7 +169,7 @@ pub(super) async fn run_command_request(
                     schedule_kind: schedule_kind.clone(),
                     schedule_at: schedule_at.clone(),
                     one_shot_at_ms,
-                    rearm_on_boot: false,
+                    rearm_on_boot: rearm_on_boot.unwrap_or(false),
                     updated_at_ms: now,
                 })
                 .await
@@ -200,6 +201,7 @@ pub(super) async fn run_command_request(
             schedule_at,
             one_shot_at_ms,
             tz,
+            rearm_on_boot,
         } => {
             let Some(existing) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
@@ -306,9 +308,11 @@ pub(super) async fn run_command_request(
                     schedule_kind: schedule_kind.clone(),
                     schedule_at: schedule_at.clone(),
                     one_shot_at_ms,
-                    rearm_on_boot: descriptor
-                        .as_ref()
-                        .is_some_and(|descriptor| descriptor.rearm_on_boot),
+                    rearm_on_boot: rearm_on_boot
+                        .or(descriptor
+                            .as_ref()
+                            .map(|descriptor| descriptor.rearm_on_boot))
+                        .unwrap_or(false),
                     updated_at_ms: now,
                 })
                 .await

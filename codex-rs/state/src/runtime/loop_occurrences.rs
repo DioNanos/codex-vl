@@ -79,6 +79,29 @@ ORDER BY scheduled_at_ms ASC
             })
             .collect::<Result<Vec<_>, _>>()?)
     }
+
+    /// Whether the occurrence (job_id, scheduled_at_ms) was already claimed
+    /// (T4 re-arm idempotency: a claimed occurrence dispatches at-most-once,
+    /// so a schedule pointer onto it is dead and must never be re-armed
+    /// as-is).
+    pub async fn has_loop_occurrence(
+        &self,
+        job_id: &str,
+        scheduled_at_ms: i64,
+    ) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            r#"
+SELECT 1 FROM vl_loop_occurrences
+WHERE job_id = ? AND scheduled_at_ms = ?
+LIMIT 1
+"#,
+        )
+        .bind(job_id)
+        .bind(scheduled_at_ms)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        Ok(row.is_some())
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +169,19 @@ mod tests {
         assert_eq!(occurrences[0].scheduled_at_ms, scheduled_at_ms);
         assert_eq!(occurrences[0].fired_count, 1);
         assert_eq!(occurrences[0].last_fired_at_ms, Some(1_700_000_100_300));
+
+        // T4 re-arm idempotency probe: a claimed occurrence is visible, a
+        // never-claimed instant is not.
+        assert!(
+            runtime
+                .has_loop_occurrence(&job_id, scheduled_at_ms)
+                .await?
+        );
+        assert!(
+            !runtime
+                .has_loop_occurrence(&job_id, scheduled_at_ms + 30_000)
+                .await?
+        );
 
         // A distinct occurrence of the same job claims normally.
         assert!(

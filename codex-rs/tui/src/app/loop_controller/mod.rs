@@ -46,6 +46,7 @@ mod types;
 mod events;
 mod jobs;
 mod manage_tool;
+mod rearm;
 mod ticks;
 mod vivling_delegation;
 

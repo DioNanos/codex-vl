@@ -355,6 +355,7 @@ fn tick_action_request(
                 schedule_at: None,
                 one_shot_at_ms: None,
                 tz: None,
+                rearm_on_boot: None,
             }
         }
         other => {
