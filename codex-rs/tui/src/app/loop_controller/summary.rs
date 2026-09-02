@@ -197,7 +197,7 @@ impl LoopTickSummary {
     /// Explicit projection for persistence: the typed summary stays the
     /// single source of truth, the JSON form is derived from it field by
     /// field (no generic value bags).
-    fn to_persisted_json(&self) -> Result<String, serde_json::Error> {
+    pub(crate) fn to_persisted_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&PersistedSummary {
             thread_id: self.thread_id.to_string(),
             job_id: &self.job_id,

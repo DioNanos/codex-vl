@@ -10,7 +10,7 @@ pub(super) struct LoopActionOutcome {
     pub(super) payload: serde_json::Value,
 }
 
-use crate::vl::events::LoopCommandScope;
+pub(super) use crate::vl::events::LoopCommandScope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LoopCommandSource {
