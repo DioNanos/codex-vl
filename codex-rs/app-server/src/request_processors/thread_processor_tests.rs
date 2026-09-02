@@ -225,6 +225,7 @@ mod thread_processor_behavior_tests {
     fn normal_tui_thread_without_declared_tools_receives_builtins() {
         let tools = dynamic_tools_for_thread_start(
             Some(CODEX_TUI_CLIENT_NAME),
+            None,
             /*ephemeral*/ false,
             Some(&codex_protocol::protocol::ThreadSource::User),
             vec![],
@@ -255,6 +256,7 @@ mod thread_processor_behavior_tests {
     fn temporary_system_tui_thread_without_declared_tools_remains_tool_free() {
         let tools = dynamic_tools_for_thread_start(
             Some(CODEX_TUI_CLIENT_NAME),
+            None,
             /*ephemeral*/ true,
             Some(&codex_protocol::protocol::ThreadSource::Feature(
                 "system".to_string(),
