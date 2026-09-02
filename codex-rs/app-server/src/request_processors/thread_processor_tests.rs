@@ -222,6 +222,21 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn manage_loops_schema_exposes_closed_runner_fields() {
+        let spec = manage_loops_dynamic_function_spec();
+        let properties = spec
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("manage_loops schema properties");
+        assert_eq!(
+            properties["runner"]["enum"],
+            json!(["main", "child_agent"])
+        );
+        assert_eq!(properties["runner_model"]["type"], json!("string"));
+    }
+
+    #[test]
     fn normal_tui_thread_without_declared_tools_receives_builtins() {
         let tools = dynamic_tools_for_thread_start(
             Some(CODEX_TUI_CLIENT_NAME),

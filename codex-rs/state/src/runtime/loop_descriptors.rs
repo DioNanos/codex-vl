@@ -90,7 +90,7 @@ ON CONFLICT(job_id) DO UPDATE SET
     /// Releases the per-job tick guard on every terminal runner outcome.
     pub async fn finish_loop_tick(&self, job_id: &str, now_ms: i64) -> anyhow::Result<bool> {
         let result = sqlx::query(
-            "UPDATE vl_loop_descriptors SET in_flight = 0, updated_at_ms = ? WHERE job_id = ?",
+            "UPDATE vl_loop_descriptors SET in_flight = 0, updated_at_ms = ? WHERE job_id = ? AND in_flight = 1",
         )
         .bind(now_ms)
         .bind(job_id)

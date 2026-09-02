@@ -25,6 +25,7 @@
 //! does not exist.
 
 use codex_protocol::ThreadId;
+use std::future::Future;
 use std::time::Duration;
 
 use crate::app::App;
@@ -35,7 +36,9 @@ use crate::vl::events::LoopCommandRequest;
 use super::formatting::LOOP_STATUS_BLOCKED;
 use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use super::formatting::LOOP_STATUS_DONE;
+use super::formatting::LOOP_STATUS_NEEDS_APPROVAL;
 use super::formatting::LOOP_STATUS_PROGRESS;
+use super::formatting::LOOP_STATUS_TIMEOUT;
 use super::jobs;
 use super::parsing::parse_manage_loops_interval_seconds;
 use super::parsing::parse_vivling_loop_status;
@@ -82,6 +85,11 @@ pub(super) async fn handle_loop_tick_finished(
 
     match result {
         Err(err) => {
+            let failure_status = if is_child_agent {
+                child_tick_failure_status(&err)
+            } else {
+                LOOP_STATUS_BLOCKED_OWNER
+            };
             if !is_child_agent
                 && let Some(vivling_id) = owner_vivling_id.as_deref()
                 && let Err(persist_err) = app
@@ -99,7 +107,7 @@ pub(super) async fn handle_loop_tick_finished(
                     codex_state::ThreadLoopJobRuntimeUpdate {
                         next_run_ms: None,
                         last_run_ms: job.last_run_ms,
-                        last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
+                        last_status: Some(failure_status.to_string()),
                         last_error: Some(err.clone()),
                         pending_tick: true,
                         updated_at_ms: now,
@@ -112,7 +120,7 @@ pub(super) async fn handle_loop_tick_finished(
             app.record_vivling_loop_runtime(
                 &job.label,
                 Some("pending"),
-                Some(LOOP_STATUS_BLOCKED_OWNER),
+                Some(failure_status),
                 job.goal_text.as_deref().or(Some(job.prompt_text.as_str())),
                 &job.created_by,
             );
@@ -240,6 +248,17 @@ pub(super) async fn handle_loop_tick_finished(
     Ok(())
 }
 
+fn child_tick_failure_status(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if error.contains("approval") || error.contains("permission") || error.contains("interactive") {
+        LOOP_STATUS_NEEDS_APPROVAL
+    } else if error.contains("timed out") || error.contains("timeout") {
+        LOOP_STATUS_TIMEOUT
+    } else {
+        LOOP_STATUS_BLOCKED_OWNER
+    }
+}
+
 fn tick_action_request(
     _thread_id: ThreadId,
     job: &codex_state::ThreadLoopJob,
@@ -361,28 +380,72 @@ pub(super) fn run_loop_tick(
     let session_telemetry = app.session_telemetry.clone();
     tokio::spawn(async move {
         const MAX_LOOP_TICK_DURATION: Duration = Duration::from_secs(300);
-        let result = match tokio::time::timeout(
-            MAX_LOOP_TICK_DURATION,
+        let result = run_loop_tick_with_timeout(
             crate::app::vivling_background::run_vivling_loop_tick_request(
                 config,
                 session_telemetry,
                 request,
             ),
+            MAX_LOOP_TICK_DURATION,
         )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(format!(
-                "loop tick timed out after {} seconds",
-                MAX_LOOP_TICK_DURATION.as_secs()
-            )),
-        };
+        .await;
         app_event_tx.send_vl(VlEvent::VivlingLoopTickFinished {
             thread_id,
             job_id,
             result,
         });
     });
+}
+
+async fn run_loop_tick_with_timeout<F, T>(future: F, timeout: Duration) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "loop tick timed out after {} seconds",
+            timeout.as_secs()
+        )),
+    }
+}
+
+#[cfg(test)]
+mod runner_tests {
+    use super::child_tick_failure_status;
+    use super::run_loop_tick_with_timeout;
+    use crate::app::loop_controller::formatting::LOOP_STATUS_BLOCKED_OWNER;
+    use crate::app::loop_controller::formatting::LOOP_STATUS_NEEDS_APPROVAL;
+    use crate::app::loop_controller::formatting::LOOP_STATUS_TIMEOUT;
+    use std::future::pending;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn timeout_cancels_the_child_future_and_returns_timeout_error() {
+        let result =
+            run_loop_tick_with_timeout(pending::<Result<(), String>>(), Duration::from_millis(1))
+                .await;
+        assert_eq!(
+            result.expect_err("pending child must time out"),
+            "loop tick timed out after 0 seconds"
+        );
+    }
+
+    #[test]
+    fn child_failures_surface_approval_and_timeout_boundaries() {
+        assert_eq!(
+            child_tick_failure_status("interactive approval is required"),
+            LOOP_STATUS_NEEDS_APPROVAL
+        );
+        assert_eq!(
+            child_tick_failure_status("loop tick timed out after 300 seconds"),
+            LOOP_STATUS_TIMEOUT
+        );
+        assert_eq!(
+            child_tick_failure_status("provider request failed"),
+            LOOP_STATUS_BLOCKED_OWNER
+        );
+    }
 }
 
 /// Memory V2 Step 12.B.D.2 — spawn the async Expression LLM runner

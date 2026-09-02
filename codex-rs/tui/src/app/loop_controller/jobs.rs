@@ -11,6 +11,7 @@
 //! the `pub(super)` helpers in sibling sub-modules.
 
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ModelPreset;
 use uuid::Uuid;
 
 use crate::app::App;
@@ -50,6 +51,28 @@ pub(super) fn validate_runner_model(
         .model_catalog()
         .try_list_models()
         .map_err(|err| anyhow::anyhow!("invalid_runner_model: {err:?}"))?;
+    validate_runner_model_against_catalog(
+        runner_kind,
+        Some(model),
+        &available,
+        &app.config.model_provider_id,
+    )
+}
+
+fn validate_runner_model_against_catalog(
+    runner_kind: codex_state::LoopRunnerKind,
+    runner_model: Option<&str>,
+    available: &[ModelPreset],
+    provider: &str,
+) -> anyhow::Result<()> {
+    if runner_kind == codex_state::LoopRunnerKind::ChildAgent && runner_model.is_none() {
+        return Err(anyhow::anyhow!(
+            "invalid_runner_model: child_agent requires `runner_model`"
+        ));
+    }
+    let Some(model) = runner_model else {
+        return Ok(());
+    };
     if available
         .iter()
         .any(|preset| preset.model == model || preset.id == model)
@@ -57,8 +80,7 @@ pub(super) fn validate_runner_model(
         Ok(())
     } else {
         Err(anyhow::anyhow!(
-            "invalid_runner_model: provider `{}` does not advertise `{model}`",
-            app.config.model_provider_id
+            "invalid_runner_model: provider `{provider}` does not advertise `{model}`"
         ))
     }
 }
@@ -401,15 +423,7 @@ pub(super) async fn run_command_request(
                 .map_err(loop_state_error)?
             {
                 state_runtime
-                    .delete_loop_delegation(thread_id, &job.id)
-                    .await
-                    .map_err(loop_state_error)?;
-                state_runtime
-                    .delete_loop_descriptor(&job.id)
-                    .await
-                    .map_err(loop_state_error)?;
-                state_runtime
-                    .delete_thread_loop_job(thread_id, &label)
+                    .delete_thread_loop_job_with_dependents(thread_id, &label)
                     .await
                     .map_err(loop_state_error)?;
                 app.record_vivling_loop_job("remove", &label, None, source);
@@ -807,4 +821,46 @@ pub(super) async fn run_command_request(
 
     app.refresh_loop_jobs(thread_id).await?;
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_runner_model_against_catalog;
+    use codex_state::LoopRunnerKind;
+
+    #[test]
+    fn invalid_runner_model_is_rejected_against_the_effective_catalog() {
+        let catalog = crate::test_support::TEST_MODEL_PRESETS.clone();
+        let known = catalog.first().expect("test catalog is not empty");
+
+        assert!(
+            validate_runner_model_against_catalog(
+                LoopRunnerKind::ChildAgent,
+                Some(known.model.as_str()),
+                &catalog,
+                "test-provider",
+            )
+            .is_ok()
+        );
+        let error = validate_runner_model_against_catalog(
+            LoopRunnerKind::ChildAgent,
+            Some("model-that-is-not-in-the-provider-catalog"),
+            &catalog,
+            "test-provider",
+        )
+        .expect_err("unknown runner model must be rejected");
+        assert!(error.to_string().contains("invalid_runner_model"));
+    }
+
+    #[test]
+    fn child_runner_without_model_is_invalid_without_a_main_fallback() {
+        let error = validate_runner_model_against_catalog(
+            LoopRunnerKind::ChildAgent,
+            None,
+            &[],
+            "test-provider",
+        )
+        .expect_err("child runner without model must be rejected");
+        assert!(error.to_string().contains("requires `runner_model`"));
+    }
 }

@@ -323,6 +323,44 @@ WHERE thread_id = ? AND label = ?
         Ok(result.rows_affected() > 0)
     }
 
+    /// Remove a loop and its loop-owned children as one SQLite transaction.
+    /// The explicit deletes keep cleanup atomic even when a connection has
+    /// foreign-key enforcement disabled; the migration FK remains a second
+    /// integrity boundary.
+    pub async fn delete_thread_loop_job_with_dependents(
+        &self,
+        thread_id: ThreadId,
+        label: &str,
+    ) -> anyhow::Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let job_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM vl_thread_loop_jobs WHERE thread_id = ? AND label = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(label)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(job_id) = job_id else {
+            return Ok(false);
+        };
+        sqlx::query("DELETE FROM vl_loop_delegations WHERE thread_id = ? AND job_id = ?")
+            .bind(thread_id.to_string())
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM vl_loop_descriptors WHERE job_id = ?")
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        let result = sqlx::query("DELETE FROM vl_thread_loop_jobs WHERE thread_id = ? AND id = ?")
+            .bind(thread_id.to_string())
+            .bind(job_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn update_thread_loop_job_runtime(
         &self,
         thread_id: ThreadId,
@@ -433,8 +471,13 @@ mod tests {
         assert!(updated.pending_tick);
         assert_eq!(updated.last_status.as_deref(), Some("pending"));
 
-        assert!(runtime.delete_thread_loop_job(thread_id, "ci").await?);
+        assert!(
+            runtime
+                .delete_thread_loop_job_with_dependents(thread_id, "ci")
+                .await?
+        );
         assert!(runtime.list_thread_loop_jobs(thread_id).await?.is_empty());
+        assert!(runtime.get_loop_descriptor("job-1").await?.is_none());
         Ok(())
     }
 
@@ -553,6 +596,7 @@ mod tests {
         assert!(runtime.finish_loop_tick("job-atomic", 2_002).await?);
         assert!(runtime.try_begin_loop_tick("job-atomic", 2_003).await?);
         assert!(runtime.finish_loop_tick("job-atomic", 2_004).await?);
+        assert!(!runtime.finish_loop_tick("job-atomic", 2_005).await?);
         Ok(())
     }
 }
