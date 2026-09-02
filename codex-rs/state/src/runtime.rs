@@ -1277,7 +1277,7 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
         assert_eq!(
             vl_versions,
             BTreeSet::from([
-                930_i64, 931_i64, 932_i64, 933_i64, 934_i64, 935_i64, 936_i64
+                930_i64, 931_i64, 932_i64, 933_i64, 934_i64, 935_i64, 936_i64, 937_i64
             ])
         );
 
@@ -1296,6 +1296,10 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
         assert_eq!(
             descriptions.get(&29).map(String::as_str),
             Some("thread goals")
+        );
+        assert_eq!(
+            descriptions.get(&937).map(String::as_str),
+            Some("vl loop strategy override")
         );
     }
     #[tokio::test]

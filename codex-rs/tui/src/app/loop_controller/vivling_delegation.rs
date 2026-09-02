@@ -371,6 +371,16 @@ pub(super) async fn handle_loop_tick_finished(
         .await
         .map_err(loop_state_error)?;
     let owner_vivling_id = owner.owner_vivling_id.clone();
+    let (manager, manager_reason) = match owner.owner_kind.as_str() {
+        codex_state::THREAD_LOOP_OWNER_KIND_VIVLING => (
+            super::summary::LoopManager::Vivling,
+            "delegated".to_string(),
+        ),
+        _ => (
+            super::summary::LoopManager::Main,
+            "not_delegated".to_string(),
+        ),
+    };
     let now = loop_now_ms();
 
     match result {
@@ -463,7 +473,7 @@ pub(super) async fn handle_loop_tick_finished(
                     &job_after,
                     descriptor.as_ref(),
                     None,
-                    super::summary::LoopManager::Main,
+                    manager,
                     "tick_failed".to_string(),
                     occurrence_ms,
                     super::summary::LoopTickOutcome::Failed,
@@ -530,7 +540,9 @@ pub(super) async fn handle_loop_tick_finished(
             // pre-dispatch snapshot is only safe before destructive actions.
             let (next_run_ms, pending_tick, last_error) = match status {
                 LOOP_STATUS_PROGRESS => {
-                    let next_run_ms = descriptor.as_ref().map(|descriptor| {
+                    // A missing descriptor has no authoritative schedule: fail closed
+                    // instead of inventing an interval cadence.
+                    let next_run_ms = descriptor.as_ref().and_then(|descriptor| {
                         super::state::next_run_after_tick_ms(
                             &super::state::SchedulePlan {
                                 schedule_kind: &descriptor.schedule_kind,
@@ -578,16 +590,6 @@ pub(super) async fn handle_loop_tick_finished(
                 super::summary::LoopTickOutcome::Failed
             } else {
                 super::summary::LoopTickOutcome::Ok
-            };
-            let (manager, manager_reason) = match owner.owner_kind.as_str() {
-                codex_state::THREAD_LOOP_OWNER_KIND_VIVLING => (
-                    super::summary::LoopManager::Vivling,
-                    "delegated".to_string(),
-                ),
-                _ => (
-                    super::summary::LoopManager::Main,
-                    "not_delegated".to_string(),
-                ),
             };
             if let Some(job_after) = job_after.as_ref() {
                 let _ = super::notify::persist_summary_with_outcome(
