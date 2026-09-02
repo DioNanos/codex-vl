@@ -109,7 +109,6 @@ INSERT INTO vl_thread_loop_jobs (
     updated_at_ms
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
 ON CONFLICT(thread_id, label) DO UPDATE SET
-    id = excluded.id,
     prompt_text = excluded.prompt_text,
     goal_text = excluded.goal_text,
     interval_seconds = excluded.interval_seconds,
@@ -142,9 +141,24 @@ ON CONFLICT(thread_id, label) DO UPDATE SET
         .execute(self.pool.as_ref())
         .await?;
 
-        self.get_thread_loop_job_by_label(thread_id, &label)
+        let job = self
+            .get_thread_loop_job_by_label(thread_id, &label)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("loop job disappeared after upsert"))
+            .ok_or_else(|| anyhow::anyhow!("loop job disappeared after upsert"))?;
+        // Every persisted loop has one descriptor. Preserve an existing
+        // descriptor when replacing the job by label.
+        sqlx::query(
+            r#"
+INSERT INTO vl_loop_descriptors (job_id, updated_at_ms)
+VALUES (?, ?)
+ON CONFLICT(job_id) DO NOTHING
+            "#,
+        )
+        .bind(&job.id)
+        .bind(updated_at_ms)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(job)
     }
 
     pub async fn list_thread_loop_jobs(
@@ -486,7 +500,7 @@ mod tests {
             })
             .await?;
 
-        assert_eq!(replaced.id, "job-2");
+        assert_eq!(replaced.id, "job-1");
         assert_eq!(replaced.prompt_text, "check ci again");
         assert_eq!(replaced.goal_text.as_deref(), Some("monitor ci again"));
         assert_eq!(replaced.interval_seconds, 600);
@@ -499,6 +513,11 @@ mod tests {
         assert!(!replaced.pending_tick);
         assert_eq!(replaced.created_at_ms, now + 10);
         assert_eq!(replaced.updated_at_ms, now + 10);
+        let descriptor = runtime
+            .get_loop_descriptor("job-1")
+            .await?
+            .expect("replace should preserve the descriptor key");
+        assert_eq!(descriptor.job_id, "job-1");
         Ok(())
     }
 }
