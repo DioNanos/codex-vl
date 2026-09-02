@@ -44,6 +44,8 @@ pub use loop_metrics::LoopMetrics;
 pub use loop_metrics::LoopResultEntry;
 pub use loop_metrics::ParsedRecentLoopResults;
 pub use loop_metrics::RecentLoopResults;
+pub use loop_metrics::can_resume_after_suspension;
+pub use loop_metrics::has_consecutive_blocked;
 pub use loop_metrics::loop_management_strategy;
 pub use loop_metrics::parse_recent_results;
 pub use loop_occurrence::LoopOccurrence;

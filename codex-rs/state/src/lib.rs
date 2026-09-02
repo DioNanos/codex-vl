@@ -56,6 +56,8 @@ pub use model::RecentLoopResults;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
+pub use model::can_resume_after_suspension;
+pub use model::has_consecutive_blocked;
 pub use model::loop_management_strategy;
 pub use model::parse_recent_results;
 /// Preferred entrypoint: owns configuration and metrics.

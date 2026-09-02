@@ -127,6 +127,21 @@ pub fn loop_management_strategy(
     }
 }
 
+pub fn has_consecutive_blocked(entries: &[LoopResultEntry], count: usize) -> bool {
+    count > 0
+        && entries.len() >= count
+        && entries.iter().rev().take(count).all(|entry| entry.blocked)
+}
+
+pub fn can_resume_after_suspension(
+    entries: &[LoopResultEntry],
+    cooldown_until_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    LoopMetrics::clean_streak(entries) >= LOOP_MANAGE_CLEAN_STREAK
+        && cooldown_until_ms.is_none_or(|cooldown| cooldown <= now_ms)
+}
+
 fn cap_entries(mut entries: Vec<LoopResultEntry>) -> Vec<LoopResultEntry> {
     if entries.len() > LOOP_METRICS_WINDOW {
         let keep_from = entries.len() - LOOP_METRICS_WINDOW;
@@ -218,5 +233,14 @@ mod tests {
     fn clean_streak_is_derived_from_the_tail_only() {
         let entries = vec![entry(true, false, false), entry(false, false, true)];
         assert_eq!(LoopMetrics::clean_streak(&entries), 0);
+    }
+
+    #[test]
+    fn suspension_helpers_are_hysteresis_sensitive() {
+        let failed = vec![entry(false, false, true); 3];
+        assert!(has_consecutive_blocked(&failed, 3));
+        let clean = vec![entry(true, false, false); LOOP_MANAGE_CLEAN_STREAK];
+        assert!(!can_resume_after_suspension(&clean, Some(101), 100));
+        assert!(can_resume_after_suspension(&clean, Some(100), 100));
     }
 }

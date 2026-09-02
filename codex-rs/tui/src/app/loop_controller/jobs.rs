@@ -887,10 +887,12 @@ pub(super) async fn run_command_request(
                     "delegation",
                     thread_id,
                     format!(
-                        "Loop `{label}`: {} strategy={}, override_main={}.",
+                        "Loop `{label}`: {} strategy={}, override_main={}, suspend_reason={:?}, cooldown_until_ms={:?}.",
                         delegation.vivling_id,
                         delegation.strategy.as_str(),
-                        delegation.override_main
+                        delegation.override_main,
+                        delegation.suspend_reason,
+                        delegation.cooldown_until_ms,
                     ),
                     Some(&job),
                     None,
@@ -910,6 +912,8 @@ pub(super) async fn run_command_request(
                             "strategy": delegation.strategy.as_str(),
                             "override_main": delegation.override_main,
                             "ticks_managed": delegation.ticks_managed,
+                            "cooldown_until_ms": delegation.cooldown_until_ms,
+                            "suspend_reason": delegation.suspend_reason,
                         })
                     })
                     .collect::<Vec<_>>();

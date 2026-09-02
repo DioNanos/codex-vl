@@ -59,6 +59,9 @@ async fn persist_managed_tick_result(
     let Some(delegation) = delegation else {
         return Ok(None);
     };
+    if delegation.override_main {
+        return Ok(Some(delegation));
+    }
     let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
     if let Some(diagnostic) = parsed.diagnostic.as_deref() {
         tracing::warn!(
@@ -145,14 +148,7 @@ pub(super) async fn refresh_management_state(
     let (is_adult, brain_enabled, has_profile, bond, phase) =
         inputs.unwrap_or((false, false, false, 0, "unavailable"));
     let phase_invalid = phase == "unavailable";
-    let last_three_failed = parsed.entries.iter().rev().take(3).count() == 3
-        && parsed
-            .entries
-            .iter()
-            .rev()
-            .take(3)
-            .all(|entry| entry.blocked);
-    let clean_streak = codex_state::LoopMetrics::clean_streak(&parsed.entries);
+    let last_three_failed = codex_state::has_consecutive_blocked(&parsed.entries, 3);
     let old_reason = delegation.suspend_reason.as_deref();
     let (strategy, cooldown_until_ms, suspend_reason, event) = if phase_invalid {
         (
@@ -176,10 +172,11 @@ pub(super) async fn refresh_management_state(
             Some("managed_suspended_3fail"),
         )
     } else if old_reason == Some("3fail")
-        && clean_streak >= codex_state::LOOP_MANAGE_CLEAN_STREAK
-        && delegation
-            .cooldown_until_ms
-            .is_none_or(|cooldown| cooldown <= loop_now_ms())
+        && codex_state::can_resume_after_suspension(
+            &parsed.entries,
+            delegation.cooldown_until_ms,
+            loop_now_ms(),
+        )
     {
         (
             codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics),

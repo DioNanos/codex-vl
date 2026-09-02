@@ -137,6 +137,8 @@ impl App {
         job_id: &str,
         label: &str,
     ) -> LoopCommandScope {
+        self.managed_loop_scopes
+            .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
         let scope = LoopCommandScope {
             instance_id: uuid::Uuid::new_v4().to_string(),
             thread_id,
@@ -144,6 +146,12 @@ impl App {
             label: label.to_string(),
         };
         self.managed_loop_scopes.push(scope.clone());
+        tracing::debug!(
+            target: "codex_vl::loop_management",
+            instance_id = %scope.instance_id,
+            job_id,
+            "issued managed loop command scope"
+        );
         scope
     }
 
