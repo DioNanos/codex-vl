@@ -1,15 +1,13 @@
 use super::*;
 use crate::guardian::BUNDLED_GUARDIAN_POLICY;
-use crate::session::TurnInput;
 use crate::session::handlers::submission_loop;
 use crate::session::step_context::StepContext;
 use crate::session::step_settings::StepSettings;
+use crate::session::tests::HeldStepTask;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::update_selected_settings_for_test;
 use crate::session::tests::update_turn_settings_for_test;
 use crate::state::TaskKind;
-use crate::tasks::SessionTask;
-use crate::tasks::SessionTaskResult;
 use codex_config::AutoReviewRequirementsToml;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigRequirements;
@@ -163,35 +161,6 @@ impl ModelsManager for GatedModelsManager {
     }
 }
 
-struct HeldStepTask {
-    finish: Arc<Notify>,
-}
-
-impl SessionTask for HeldStepTask {
-    fn kind(&self) -> TaskKind {
-        // Publication also works for a non-regular task that never samples.
-        TaskKind::Compact
-    }
-
-    fn span_name(&self) -> &'static str {
-        "session_task.step_activation_test"
-    }
-
-    async fn run(
-        self: Arc<Self>,
-        _session: Arc<Session>,
-        _turn: Arc<TurnContext>,
-        _input: Vec<TurnInput>,
-        cancellation_token: CancellationToken,
-    ) -> SessionTaskResult {
-        tokio::select! {
-            _ = cancellation_token.cancelled() => {},
-            _ = self.finish.notified() => {},
-        }
-        Ok(None)
-    }
-}
-
 struct ActivationFixture {
     session: Arc<Session>,
     turn: Arc<TurnContext>,
@@ -237,6 +206,7 @@ async fn activation_fixture(models: Vec<ModelInfo>) -> ActivationFixture {
             prepared,
             Vec::new(),
             HeldStepTask {
+                kind: TaskKind::Compact,
                 finish: Arc::clone(&finish),
             },
         )
@@ -307,6 +277,8 @@ async fn submitted_sparse_updates_preserve_captured_steps_and_ordering() {
             .as_mut()
             .expect("model messages")
             .token_budget = Some(ModelTokenBudgetConfig {
+            enabled: false,
+            use_history_notes_extension: false,
             reminder_threshold_tokens: 2_000,
             reminder_message_template: "{n_remaining} tokens remain.".to_string(),
             guidance_message: format!("Guidance for {}.", model.slug),
@@ -607,6 +579,7 @@ async fn delayed_activation_does_not_retarget_a_task(change: TaskChangeDuringLoo
                     Arc::clone(&replacement),
                     Vec::new(),
                     HeldStepTask {
+                        kind: TaskKind::Compact,
                         finish: Arc::new(Notify::new()),
                     },
                 )
@@ -888,6 +861,7 @@ fn parent_review_messages(model: &mut ModelInfo) -> &mut AutoReviewMessages {
         .get_or_insert(AutoReviewMessages {
             policy: None,
             policy_template: None,
+            node_repl_policy: None,
             rejection_instructions: None,
             timeout_instructions: None,
         })
@@ -1023,6 +997,11 @@ async fn parent_fallback_preserves_explicit_empty_and_bundled_defaults() {
     );
     parent_review_messages(&mut destination).policy = None;
     assert_eq!(check(&destination), Ok(()));
+    parent_review_messages(&mut destination).node_repl_policy = Some(String::new());
+    assert_eq!(
+        check(&destination),
+        Err("the destination changes the Guardian parent-fallback node REPL policy".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1035,6 +1014,7 @@ async fn unchanged_explicit_reviewer_does_not_use_parent_policy() {
     parent_review_messages(&mut admitted).policy = Some("catalog policy A".to_string());
     parent_review_messages(&mut destination).policy = Some("catalog policy B".to_string());
     parent_review_messages(&mut destination).policy_template = Some(String::new());
+    parent_review_messages(&mut destination).node_repl_policy = Some(String::new());
     assert_eq!(
         check_legacy_model_safety(
             &admitted,

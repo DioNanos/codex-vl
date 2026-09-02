@@ -116,6 +116,7 @@ mod app_server_approval_conversions;
 mod app_server_session;
 mod approval_events;
 mod ascii_animation;
+mod backend_banners;
 mod bottom_pane;
 mod branch_summary;
 mod chatwidget;
@@ -228,6 +229,7 @@ mod updates_cache;
 mod version;
 mod vivling;
 mod vl;
+mod vim_search;
 mod width;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
