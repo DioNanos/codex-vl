@@ -60,7 +60,7 @@ mod goals;
 mod logs;
 mod loop_delegations;
 mod loop_descriptors;
-mod loop_notifications;
+pub mod loop_notifications;
 mod loop_occurrences;
 mod memories;
 mod projects;
