@@ -209,11 +209,12 @@ mod tests {
                 .expect("scoped job exists");
             app.register_managed_loop_scope(thread_id, &job.id, "scoped");
 
-            // Allowlisted update: interval change goes through.
+            // Allowlisted update: prompt enrichment goes through (an interval
+            // change would additionally require the T5 churn gate).
             let update = execute_dynamic_tool(
                 &mut app,
                 thread_id,
-                serde_json::json!({"action":"update","label":"scoped","interval":"10m"}),
+                serde_json::json!({"action":"update","label":"scoped","prompt":"enriched"}),
             )
             .await;
             assert!(

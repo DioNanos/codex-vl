@@ -29,6 +29,62 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         Ok(result.rows_affected() == 1)
     }
 
+    /// FIX-J (5) — atomic variant: the summary and its notification pending
+    /// land in ONE transaction, so a failed pending write can never leave a
+    /// persisted summary whose retry then dedups against and never recreates
+    /// the pending. Same dedup verdict as `record_loop_notification`:
+    /// `true` = first time seen (emit allowed), `false` = duplicate.
+    pub async fn record_loop_notification_with_pending(
+        &self,
+        record: LoopNotificationRecord,
+        pending: Option<LoopNotificationRecord>,
+    ) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let summary = sqlx::query(
+            r#"
+INSERT OR IGNORE INTO vl_loop_notifications
+    (event_id, thread_id, job_id, label, kind, summary_json, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+"#,
+        )
+        .bind(&record.event_id)
+        .bind(record.thread_id.to_string())
+        .bind(&record.job_id)
+        .bind(&record.label)
+        .bind(record.kind)
+        .bind(&record.summary_json)
+        .bind(record.created_at_ms)
+        .execute(&mut *tx)
+        .await?;
+        if summary.rows_affected() == 0 {
+            // Duplicate event: nothing was written by this call, the pending
+            // of the first attempt is already durable (or intentionally
+            // absent). Commit the no-op and refuse the re-emit.
+            tx.commit().await?;
+            return Ok(false);
+        }
+        if let Some(pending) = pending {
+            sqlx::query(
+                r#"
+INSERT OR IGNORE INTO vl_loop_notifications
+    (event_id, thread_id, job_id, label, kind, summary_json, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+"#,
+            )
+            .bind(&pending.event_id)
+            .bind(pending.thread_id.to_string())
+            .bind(&pending.job_id)
+            .bind(&pending.label)
+            .bind(pending.kind)
+            .bind(&pending.summary_json)
+            .bind(pending.created_at_ms)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Pending notification rows, oldest first: the m2 consumer replays them
     /// at bootstrap (anomalies and one-shots only ever land here).
     pub async fn list_pending_loop_notifications(

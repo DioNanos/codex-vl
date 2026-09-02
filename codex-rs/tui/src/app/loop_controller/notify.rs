@@ -65,41 +65,45 @@ pub(crate) enum DerivedOutcome {
 /// Persist-before-emit (R11 gate 1) + bounded enqueue (gate 2). Returns
 /// `true` when this is the first persistence of the event and the caller
 /// may emit it; `false` = duplicate `event_id` (already durable, never emit
-/// again). The pending row (anomalies + one-shots only) is written here,
-/// before the queue — a later failed delivery always has its row.
+/// again). The pending row (anomalies + one-shots only) is written in the
+/// SAME transaction as the summary — FIX-J (5): a failed pending write can
+/// never leave a durable summary whose retry would dedup and never recreate
+/// the pending.
 pub(crate) async fn persist_and_queue(
     state_runtime: &codex_state::StateRuntime,
     summary: &LoopTickSummary,
 ) -> anyhow::Result<bool> {
+    let pending = summary.pending_needed().then(|| {
+        notification_record(summary, LOOP_NOTIFICATION_KIND_PENDING, "pending:")
+    });
     let first = state_runtime
-        .record_loop_notification(LoopNotificationRecord {
-            event_id: summary.event_id(),
-            thread_id: summary.thread_id,
-            job_id: summary.job_id.clone(),
-            label: summary.label.clone(),
-            kind: LOOP_NOTIFICATION_KIND_SUMMARY,
-            summary_json: summary.to_persisted_json()?,
-            created_at_ms: summary.finished_at_ms,
-        })
+        .record_loop_notification_with_pending(
+            notification_record(summary, LOOP_NOTIFICATION_KIND_SUMMARY, ""),
+            pending,
+        )
         .await?;
-    if !first {
-        return Ok(false);
+    if first {
+        enqueue_or_drop(LOOP_SUMMARY_TX.get(), summary);
     }
-    if summary.pending_needed() {
-        state_runtime
-            .record_loop_notification(LoopNotificationRecord {
-                event_id: format!("pending:{}", summary.event_id()),
-                thread_id: summary.thread_id,
-                job_id: summary.job_id.clone(),
-                label: summary.label.clone(),
-                kind: LOOP_NOTIFICATION_KIND_PENDING,
-                summary_json: summary.to_persisted_json()?,
-                created_at_ms: summary.finished_at_ms,
-            })
-            .await?;
+    Ok(first)
+}
+
+fn notification_record(
+    summary: &LoopTickSummary,
+    kind: &'static str,
+    event_prefix: &str,
+) -> LoopNotificationRecord {
+    LoopNotificationRecord {
+        event_id: format!("{event_prefix}{}", summary.event_id()),
+        thread_id: summary.thread_id,
+        job_id: summary.job_id.clone(),
+        label: summary.label.clone(),
+        kind,
+        summary_json: summary
+            .to_persisted_json()
+            .expect("fixed-format summary serializes"),
+        created_at_ms: summary.finished_at_ms,
     }
-    enqueue_or_drop(LOOP_SUMMARY_TX.get(), summary);
-    Ok(true)
 }
 
 /// Queue is transport only: full or absent, the summary is dropped here and
@@ -165,12 +169,17 @@ fn manager_of(delegation: Option<&codex_state::LoopDelegation>) -> (LoopManager,
     }
 }
 
-/// Build the typed summary from the persisted post-tick row.
+/// Build the typed summary from the persisted post-tick row. FIX-J (7): the
+/// manager (and its reason) arrive RESOLVED from the tick path — the summary
+/// never re-derives ownership from the delegation row, which would report
+/// `vivling` even when the readiness fallback handed the tick to main.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_tick_summary(
     job_after: &codex_state::ThreadLoopJob,
     descriptor: Option<&codex_state::LoopDescriptor>,
     delegation: Option<&codex_state::LoopDelegation>,
+    manager: LoopManager,
+    manager_reason: String,
     occurrence_ms: Option<i64>,
     occurrence_claimed: bool,
     started_ms: i64,
@@ -190,7 +199,7 @@ pub(crate) fn build_tick_summary(
         Some(ms) => NextRun::At(ms),
         None => NextRun::Terminal("tick terminal or disarmed".to_string()),
     };
-    let (manager, manager_reason) = manager_of(delegation);
+    let (manager, manager_reason) = (manager, manager_reason);
     LoopTickSummary {
         thread_id: job_after.thread_id,
         job_id: job_after.id.clone(),
@@ -214,6 +223,23 @@ pub(crate) fn build_tick_summary(
         manager_reason: manager_reason.to_string(),
         suspend_reason: delegation.and_then(|delegation| delegation.suspend_reason.clone()),
         occurrence_ms,
+        scheduled_key: descriptor
+            .as_ref()
+            .map(|descriptor| match descriptor.schedule_kind.as_str() {
+                "one_shot" => format!(
+                    "one_shot:{}",
+                    descriptor
+                        .one_shot_at_ms
+                        .map_or_else(|| "none".to_string(), |ms| ms.to_string())
+                ),
+                "at" => format!(
+                    "at:{}:{}",
+                    descriptor.schedule_at.as_deref().unwrap_or("none"),
+                    descriptor.tz.as_deref().unwrap_or("none")
+                ),
+                other => format!("{other}:{}", job_after.interval_seconds),
+            })
+            .unwrap_or_else(|| format!("interval:{}", job_after.interval_seconds)),
         finished_at_ms,
     }
 }
@@ -418,6 +444,7 @@ mod tests {
             manager_reason: "not_delegated".to_string(),
             suspend_reason: None,
             occurrence_ms: Some(1),
+            scheduled_key: "interval:60".to_string(),
             finished_at_ms: 2,
         }
     }

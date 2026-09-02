@@ -120,8 +120,12 @@ pub(crate) struct LoopTickSummary {
     /// Present only when the T5 delegation is actually suspended.
     pub suspend_reason: Option<String>,
     /// Claimed occurrence instant bound into the dedup event id; a manual
-    /// trigger without an occurrence carries `None`.
+    /// trigger or a completion path without the carried key carries `None`
+    /// (the descriptor-derived `scheduled_key` is the stable fallback).
     pub occurrence_ms: Option<i64>,
+    /// FIX-J (4) — descriptor-derived occurrence key: stable across retries
+    /// and across finish instants, so the dedup id never depends on timing.
+    pub scheduled_key: String,
     pub finished_at_ms: i64,
 }
 
@@ -149,15 +153,22 @@ impl LoopTickSummary {
         rendered
     }
 
-    /// Stable dedup key: bound to the occurrence (or the finish instant for
-    /// occurrence-less manual triggers) so a retried persist is a no-op.
+    /// Stable dedup key: bound to (job_id, occurrence key) — FIX-J (4).
+    /// `finished_at_ms` must NOT enter the id: a retried persist, or a tick
+    /// that finishes later than another attempt, is the same event. When the
+    /// claimed occurrence is carried (`occurrence_ms`) it is the key;
+    /// otherwise the descriptor-derived `scheduled_key` is the stable
+    /// fallback for legacy paths.
     pub(crate) fn event_id(&self) -> String {
         format!(
             "{}:{}:{}",
             self.job_id,
+            self.schedule_kind.render(),
             self.occurrence_ms
-                .map_or(String::new(), |ms| ms.to_string()),
-            self.finished_at_ms
+                .map_or_else(
+                    || format!("sched:{}", self.scheduled_key),
+                    |ms| format!("occ:{ms}")
+                ),
         )
     }
 
@@ -271,6 +282,7 @@ mod tests {
             manager_reason: "not_delegated".to_string(),
             suspend_reason: None,
             occurrence_ms: Some(1_700_000_000_000),
+            scheduled_key: "interval:60".to_string(),
             finished_at_ms: 1_700_000_000_500,
         }
     }
@@ -345,14 +357,34 @@ mod tests {
         assert!(summary(LoopTickOutcome::OneShotExpired).pending_needed());
     }
 
-    // The dedup id is stable per occurrence and changes with it.
+    // FIX-J (4) — the dedup id is bound to (job_id, occurrence key): it is
+    // stable across retries and MUST NOT change when the finish instant
+    // moves; a different occurrence is a different event.
     #[test]
-    fn event_id_is_stable_per_occurrence() {
+    fn event_id_is_stable_per_occurrence_and_finish_instant() {
         let summary = summary(LoopTickOutcome::Ok);
         assert_eq!(summary.event_id(), summary.event_id());
+
+        let mut retried_later = summary.clone();
+        retried_later.finished_at_ms += 9_999;
+        assert_eq!(
+            summary.event_id(),
+            retried_later.event_id(),
+            "moving the finish instant must not mint a new event id"
+        );
+
         let mut other_occurrence = summary.clone();
         other_occurrence.occurrence_ms = Some(1_700_000_060_000);
         assert_ne!(summary.event_id(), other_occurrence.event_id());
+
+        // Legacy path without a carried occurrence: the descriptor-derived
+        // scheduled key is the stable fallback.
+        let mut legacy = summary.clone();
+        legacy.occurrence_ms = None;
+        assert_eq!(legacy.event_id(), legacy.event_id());
+        let mut legacy_later = legacy.clone();
+        legacy_later.finished_at_ms += 5_000;
+        assert_eq!(legacy.event_id(), legacy_later.event_id());
     }
 
     // The persisted JSON projection is derived field-by-field from the typed
