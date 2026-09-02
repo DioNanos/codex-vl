@@ -112,7 +112,29 @@ pub(super) async fn handle_tick(
         return Ok(());
     }
 
+    let occurrence_ms = job.next_run_ms;
+    let job_id = job.id.clone();
     process_submission(app, thread_id, job).await?;
+    // T6 m2 — the summary is built from the persisted post-tick row, emitted
+    // only when the tick is actually finished in-process (dispatched runner/
+    // vivling ticks close at `handle_loop_tick_finished` instead).
+    if let Ok(Some(job_after)) = state_runtime
+        .get_thread_loop_job_by_id(thread_id, &job_id)
+        .await
+        && !super::notify::is_post_dispatch(job_after.last_status.as_deref())
+        && let Ok(Some(summary)) = super::notify::persist_and_queue_tick(
+            &state_runtime,
+            thread_id,
+            &job_id,
+            occurrence_ms,
+            /*occurrence_claimed*/ true,
+            /*started_ms*/ loop_now_ms(),
+        )
+        .await
+    {
+        app.app_event_tx
+            .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+    }
     app.refresh_loop_jobs(thread_id).await
 }
 

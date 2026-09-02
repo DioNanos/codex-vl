@@ -46,6 +46,7 @@ mod types;
 mod events;
 mod jobs;
 mod manage_tool;
+mod notify;
 mod rearm;
 pub(crate) mod summary;
 mod ticks;

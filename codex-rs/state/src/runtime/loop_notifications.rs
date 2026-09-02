@@ -59,6 +59,21 @@ ORDER BY created_at_ms ASC
             })
             .collect::<Result<Vec<_>, _>>()?)
     }
+
+    /// Delivery receipt: a delivered pending row leaves the pending set
+    /// (R3 — replay at bootstrap only picks up undelivered rows).
+    pub async fn mark_loop_notification_delivered(&self, event_id: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+DELETE FROM vl_loop_notifications
+WHERE event_id = ? AND kind = 'pending'
+"#,
+        )
+        .bind(event_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 /// A pending notification row as the m2 consumer reads it (thread_id stays
@@ -158,6 +173,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["pend-2", "pend-3"],
             "only pending rows replay, oldest first"
+        );
+
+        // Delivery receipt: a delivered pending row leaves the pending set
+        // (and a summary row is never touched by the delivery receipt).
+        assert!(runtime.mark_loop_notification_delivered("pend-2").await?);
+        let pending = runtime.list_pending_loop_notifications().await?;
+        assert_eq!(
+            pending
+                .iter()
+                .map(|row| row.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pend-3"],
+            "only the delivered row leaves the pending set"
+        );
+        assert!(
+            !runtime.mark_loop_notification_delivered("sum-1").await?,
+            "delivery receipt must never remove a summary row"
         );
         Ok(())
     }

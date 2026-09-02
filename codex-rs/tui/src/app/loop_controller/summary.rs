@@ -38,7 +38,7 @@ impl LoopScheduleKind {
         }
     }
 
-    fn render(self) -> &'static str {
+    pub(crate) fn render(self) -> &'static str {
         match self {
             LoopScheduleKind::Interval => "interval",
             LoopScheduleKind::At => "at",

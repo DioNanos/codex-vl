@@ -498,6 +498,31 @@ pub(super) async fn handle_loop_tick_finished(
             app.refresh_loop_jobs(thread_id).await?;
         }
     }
+
+    // T6 m2 — the runner/vivling tick boundary: persist-before-emit (R11
+    // gate 1); a persistence failure suppresses the summary event only.
+    match super::notify::persist_and_queue_tick(
+        &state_runtime,
+        thread_id,
+        &job_id,
+        /*occurrence_ms*/ None,
+        /*occurrence_claimed*/ true,
+        job.last_run_ms.unwrap_or(now),
+    )
+    .await
+    {
+        Ok(Some(summary)) => {
+            app.app_event_tx
+                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!(
+            target: "codex_vl::loop_summary",
+            error = %err,
+            "loop tick summary persistence failed; emission suppressed"
+        ),
+    }
+
     Ok(())
 }
 
