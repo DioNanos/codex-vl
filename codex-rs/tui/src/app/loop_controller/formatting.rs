@@ -24,6 +24,8 @@ pub(super) const LOOP_STATUS_EXPIRED: &str = "expired";
 pub(super) const LOOP_STATUS_PROGRESS: &str = "progress";
 pub(super) const LOOP_STATUS_BLOCKED: &str = "blocked";
 pub(super) const LOOP_STATUS_DONE: &str = "done";
+pub(super) const LOOP_STATUS_EXPIRED: &str = "expired";
+pub(super) const LOOP_STATUS_PENDING_OCCURRENCE_MISSING: &str = "pending_occurrence_missing";
 pub(super) const LOOP_STATUS_DISABLED: &str = "disabled";
 pub(super) const LOOP_STATUS_REMOVED: &str = "removed";
 

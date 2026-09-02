@@ -44,7 +44,8 @@ use super::parsing::parse_manage_loops_interval_seconds;
 use super::parsing::parse_vivling_loop_status;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
-use super::state::next_run_at_ms;
+use super::state::next_run_after_tick_ms;
+use super::state::retry_tick_runtime_state;
 use super::types::LoopCommandSource;
 
 async fn persist_managed_tick_result(
@@ -251,6 +252,7 @@ pub(super) async fn handle_loop_tick_finished(
     app: &mut App,
     thread_id: ThreadId,
     job_id: String,
+    occurrence_ms: Option<i64>,
     result: Result<VivlingLoopTickResult, String>,
 ) -> color_eyre::Result<()> {
     // FIX-G — the tick completion path resolves ONLY the exact scope of the
@@ -316,16 +318,21 @@ pub(super) async fn handle_loop_tick_finished(
             let is_one_shot = descriptor
                 .as_ref()
                 .is_some_and(|descriptor| descriptor.schedule_kind == "one_shot");
+            let schedule_kind = descriptor
+                .as_ref()
+                .map(|descriptor| descriptor.schedule_kind.as_str())
+                .unwrap_or("interval");
+            let retry_state = retry_tick_runtime_state(schedule_kind, occurrence_ms);
             state_runtime
                 .update_thread_loop_job_runtime(
                     thread_id,
                     &job.id,
                     codex_state::ThreadLoopJobRuntimeUpdate {
-                        next_run_ms: None,
+                        next_run_ms: retry_state.next_run_ms,
                         last_run_ms: job.last_run_ms,
                         last_status: Some(failure_status.to_string()),
                         last_error: Some(err.clone()),
-                        pending_tick: !is_one_shot,
+                        pending_tick: retry_state.pending_tick,
                         updated_at_ms: now,
                     },
                 )
@@ -544,27 +551,20 @@ pub(super) async fn handle_loop_tick_finished(
             {
                 let (next_run_ms, pending_tick, last_error) = match status {
                     LOOP_STATUS_PROGRESS => {
-                        // T3 — reschedule from the schedule descriptor: interval
-                        // rolls forward, `at` picks the next wall-clock
-                        // occurrence in the persisted tz, and a fired one_shot
-                        // is terminal (next_run_ms stays None: disarmed).
-                        let next_run_ms = match descriptor.as_ref() {
-                            Some(descriptor) if descriptor.schedule_kind == "at" => next_run_at_ms(
+                        // T3/T5 — one scheduler truth drives every schedule;
+                        // a successful one-shot is terminal and never re-arms.
+                        let next_run_ms = descriptor.as_ref().map(|descriptor| {
+                            super::state::next_run_after_tick_ms(
                                 &super::state::SchedulePlan {
-                                    schedule_kind: "at",
+                                    schedule_kind: &descriptor.schedule_kind,
                                     interval_seconds: updated_job.interval_seconds,
                                     schedule_at: descriptor.schedule_at.as_deref(),
                                     tz: descriptor.tz.as_deref(),
                                     one_shot_at_ms: descriptor.one_shot_at_ms,
                                 },
                                 now,
-                            ),
-                            _ => {
-                                Some(now.saturating_add(
-                                    updated_job.interval_seconds.saturating_mul(1000),
-                                ))
-                            }
-                        };
+                            )
+                        });
                         (next_run_ms, false, None)
                     }
                     LOOP_STATUS_BLOCKED => (None, true, Some(result.message.clone())),
@@ -732,6 +732,7 @@ pub(super) fn run_loop_tick(
     app: &mut App,
     thread_id: ThreadId,
     job_id: String,
+    occurrence_ms: Option<i64>,
     request: crate::vivling::VivlingLoopTickRequest,
     runner_model: Option<String>,
 ) {
@@ -758,6 +759,7 @@ pub(super) fn run_loop_tick(
         app_event_tx.send_vl(VlEvent::VivlingLoopTickFinished {
             thread_id,
             job_id,
+            occurrence_ms,
             result,
         });
     });

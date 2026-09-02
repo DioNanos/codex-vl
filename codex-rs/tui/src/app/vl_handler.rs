@@ -280,17 +280,19 @@ impl App {
             VlEvent::RunVivlingLoopTick {
                 thread_id,
                 job_id,
+                occurrence_ms,
                 request,
                 runner_model,
             } => {
-                self.run_vivling_loop_tick(thread_id, job_id, request, runner_model);
+                self.run_vivling_loop_tick(thread_id, job_id, occurrence_ms, request, runner_model);
             }
             VlEvent::VivlingLoopTickFinished {
                 thread_id,
                 job_id,
+                occurrence_ms,
                 result,
             } => {
-                self.handle_vivling_loop_tick_finished(thread_id, job_id, result)
+                self.handle_vivling_loop_tick_finished(thread_id, job_id, occurrence_ms, result)
                     .await?;
             }
             VlEvent::RunVivlingExpression { request } => {

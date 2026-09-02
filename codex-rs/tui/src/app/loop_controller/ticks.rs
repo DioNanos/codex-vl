@@ -26,8 +26,10 @@ use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use super::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use super::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use super::formatting::LOOP_STATUS_DELEGATED_VIVLING;
+use super::formatting::LOOP_STATUS_EXPIRED;
 use super::formatting::LOOP_STATUS_INVALID_RUNNER_MODEL;
 use super::formatting::LOOP_STATUS_PENDING_BUSY;
+use super::formatting::LOOP_STATUS_PENDING_OCCURRENCE_MISSING;
 use super::formatting::LOOP_STATUS_PROGRESS;
 use super::formatting::LOOP_STATUS_RUNNER_DISPATCHED;
 use super::formatting::LOOP_STATUS_SKIPPED_BUSY;
@@ -35,7 +37,10 @@ use super::formatting::LOOP_STATUS_SUBMITTED;
 use super::jobs::validate_runner_model;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
+use super::state::next_run_after_tick_ms;
 use super::state::next_run_at_ms;
+use super::state::one_shot_expired;
+use super::state::retry_tick_runtime_state;
 use crate::vl::delegated_loops::VivlingReadiness;
 use crate::vl::delegated_loops::owner_from_resolution;
 use crate::vl::delegated_loops::resolve_effective_owner;
@@ -116,6 +121,66 @@ pub(super) async fn handle_tick(
     app.refresh_loop_jobs(thread_id).await
 }
 
+async fn claim_occurrence_for_dispatch(
+    state_runtime: &codex_state::StateRuntime,
+    app: &mut App,
+    thread_id: ThreadId,
+    job: &codex_state::ThreadLoopJob,
+    retry_state: super::state::RetryTickRuntimeState,
+) -> color_eyre::Result<bool> {
+    let Some(occurrence_ms) = job.next_run_ms else {
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: None,
+                    last_run_ms: job.last_run_ms,
+                    last_status: Some(LOOP_STATUS_PENDING_OCCURRENCE_MISSING.to_string()),
+                    last_error: Some(
+                        "tick has no persisted occurrence key; dispatch refused".to_string(),
+                    ),
+                    pending_tick: false,
+                    updated_at_ms: loop_now_ms(),
+                },
+            )
+            .await
+            .map_err(loop_state_error)?;
+        app.record_vivling_loop_job(
+            "audit_rejected",
+            &job.label,
+            Some(job),
+            super::types::LoopCommandSource::Agent,
+        );
+        return Ok(false);
+    };
+
+    if state_runtime
+        .claim_loop_occurrence(&job.id, occurrence_ms, loop_now_ms())
+        .await
+        .map_err(loop_state_error)?
+    {
+        return Ok(true);
+    }
+
+    state_runtime
+        .update_thread_loop_job_runtime(
+            thread_id,
+            &job.id,
+            codex_state::ThreadLoopJobRuntimeUpdate {
+                next_run_ms: retry_state.next_run_ms,
+                last_run_ms: job.last_run_ms,
+                last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
+                last_error: None,
+                pending_tick: retry_state.pending_tick,
+                updated_at_ms: loop_now_ms(),
+            },
+        )
+        .await
+        .map_err(loop_state_error)?;
+    Ok(false)
+}
+
 pub(super) async fn process_submission(
     app: &mut App,
     thread_id: ThreadId,
@@ -134,42 +199,74 @@ pub(super) async fn process_submission(
         .as_ref()
         .is_some_and(|descriptor| descriptor.schedule_kind == "one_shot");
     let started_ms = loop_now_ms();
-    if let Some(scheduled_at_ms) = job.next_run_ms {
-        let claimed = state_runtime
-            .claim_loop_occurrence(&job.id, scheduled_at_ms, started_ms)
+    let schedule_kind = descriptor
+        .as_ref()
+        .map(|descriptor| descriptor.schedule_kind.as_str())
+        .unwrap_or("interval");
+    let occurrence_ms = job.next_run_ms;
+    let retry_state = retry_tick_runtime_state(schedule_kind, occurrence_ms);
+    if job.pending_tick && occurrence_ms.is_none() {
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: None,
+                    last_run_ms: job.last_run_ms,
+                    last_status: Some(LOOP_STATUS_PENDING_OCCURRENCE_MISSING.to_string()),
+                    last_error: Some(
+                        "pending tick has no persisted occurrence key; dispatch refused"
+                            .to_string(),
+                    ),
+                    pending_tick: false,
+                    updated_at_ms: loop_now_ms(),
+                },
+            )
             .await
             .map_err(loop_state_error)?;
-        if !claimed {
-            tracing::debug!(
-                target: "codex_vl::loop_schedule",
-                label = %job.label,
-                scheduled_at_ms,
-                "occurrence already claimed; skipping duplicate timer tick"
-            );
-            let busy = state_runtime
-                .get_loop_descriptor(&job.id)
-                .await
-                .map_err(loop_state_error)?
-                .is_some_and(|descriptor| descriptor.in_flight);
-            if busy {
-                state_runtime
-                    .update_thread_loop_job_runtime(
-                        thread_id,
-                        &job.id,
-                        codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
-                            last_run_ms: job.last_run_ms,
-                            last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
-                            last_error: None,
-                            pending_tick: !is_one_shot,
-                            updated_at_ms: loop_now_ms(),
-                        },
-                    )
-                    .await
-                    .map_err(loop_state_error)?;
-            }
-            return Ok(());
-        }
+        app.record_vivling_loop_job(
+            "audit_rejected",
+            &job.label,
+            Some(&job),
+            super::types::LoopCommandSource::Agent,
+        );
+        return Ok(());
+    }
+    if is_one_shot
+        && let Some(scheduled_at_ms) = occurrence_ms
+        && descriptor.as_ref().is_some_and(|descriptor| {
+            one_shot_expired(
+                &super::state::SchedulePlan {
+                    schedule_kind: &descriptor.schedule_kind,
+                    interval_seconds: job.interval_seconds,
+                    schedule_at: descriptor.schedule_at.as_deref(),
+                    tz: descriptor.tz.as_deref(),
+                    one_shot_at_ms: descriptor.one_shot_at_ms,
+                },
+                loop_now_ms(),
+            )
+        })
+        && !state_runtime
+            .has_loop_occurrence(&job.id, scheduled_at_ms)
+            .await
+            .map_err(loop_state_error)?
+    {
+        state_runtime
+            .update_thread_loop_job_runtime(
+                thread_id,
+                &job.id,
+                codex_state::ThreadLoopJobRuntimeUpdate {
+                    next_run_ms: None,
+                    last_run_ms: job.last_run_ms,
+                    last_status: Some(LOOP_STATUS_EXPIRED.to_string()),
+                    last_error: None,
+                    pending_tick: false,
+                    updated_at_ms: loop_now_ms(),
+                },
+            )
+            .await
+            .map_err(loop_state_error)?;
+        return Ok(());
     }
     let thread_owner = state_runtime
         .get_thread_loop_owner(thread_id)
@@ -233,16 +330,39 @@ pub(super) async fn process_submission(
             )
         })
         .unwrap_or_else(|| Some(now.saturating_add(job.interval_seconds.saturating_mul(1000))));
+    let rescheduled_next_run_ms = descriptor
+        .as_ref()
+        .map(|descriptor| {
+            next_run_after_tick_ms(
+                &super::state::SchedulePlan {
+                    schedule_kind: &descriptor.schedule_kind,
+                    interval_seconds: job.interval_seconds,
+                    schedule_at: descriptor.schedule_at.as_deref(),
+                    tz: descriptor.tz.as_deref(),
+                    one_shot_at_ms: descriptor.one_shot_at_ms,
+                },
+                now,
+            )
+        })
+        .unwrap_or_else(|| Some(now.saturating_add(job.interval_seconds.saturating_mul(1000))));
     if let Some(internal_outcome) =
         execute_internal_payload(&job, &payload, now, scheduled_next_run_ms)
     {
-        let pending_tick = internal_outcome.pending_tick && !is_one_shot;
+        if !claim_occurrence_for_dispatch(&state_runtime, app, thread_id, &job, retry_state).await?
+        {
+            return Ok(());
+        }
+        let (next_run_ms, pending_tick) = if internal_outcome.pending_tick {
+            (retry_state.next_run_ms, retry_state.pending_tick)
+        } else {
+            (rescheduled_next_run_ms, false)
+        };
         state_runtime
             .update_thread_loop_job_runtime(
                 thread_id,
                 &job.id,
                 codex_state::ThreadLoopJobRuntimeUpdate {
-                    next_run_ms: internal_outcome.next_run_ms,
+                    next_run_ms,
                     last_run_ms: Some(now),
                     last_status: Some(internal_outcome.status.to_string()),
                     last_error: internal_outcome.last_error.clone(),
@@ -301,11 +421,11 @@ pub(super) async fn process_submission(
                 thread_id,
                 &job.id,
                 codex_state::ThreadLoopJobRuntimeUpdate {
-                    next_run_ms: None,
+                    next_run_ms: retry_state.next_run_ms,
                     last_run_ms: job.last_run_ms,
                     last_status: Some(LOOP_STATUS_INVALID_RUNNER_MODEL.to_string()),
                     last_error: Some(err.to_string()),
-                    pending_tick: !is_one_shot,
+                    pending_tick: retry_state.pending_tick,
                     updated_at_ms: now,
                 },
             )
@@ -337,11 +457,11 @@ pub(super) async fn process_submission(
                     thread_id,
                     &job.id,
                     codex_state::ThreadLoopJobRuntimeUpdate {
-                        next_run_ms: None,
+                        next_run_ms: retry_state.next_run_ms,
                         last_run_ms: job.last_run_ms,
                         last_status: Some(LOOP_STATUS_SKIPPED_BUSY.to_string()),
                         last_error: None,
-                        pending_tick: !is_one_shot,
+                        pending_tick: retry_state.pending_tick,
                         updated_at_ms: now,
                     },
                 )
@@ -370,11 +490,11 @@ pub(super) async fn process_submission(
                         thread_id,
                         &job.id,
                         codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
+                            next_run_ms: retry_state.next_run_ms,
                             last_run_ms: job.last_run_ms,
                             last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                             last_error: Some("Vivling loop owner is missing.".to_string()),
-                            pending_tick: !is_one_shot,
+                            pending_tick: retry_state.pending_tick,
                             updated_at_ms: now,
                         },
                     )
@@ -406,11 +526,11 @@ pub(super) async fn process_submission(
                             thread_id,
                             &job.id,
                             codex_state::ThreadLoopJobRuntimeUpdate {
-                                next_run_ms: None,
+                                next_run_ms: retry_state.next_run_ms,
                                 last_run_ms: job.last_run_ms,
                                 last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                                 last_error: Some(err),
-                                pending_tick: !is_one_shot,
+                                pending_tick: retry_state.pending_tick,
                                 updated_at_ms: now,
                             },
                         )
@@ -450,6 +570,11 @@ pub(super) async fn process_submission(
                 ),
             }
         };
+        if !claim_occurrence_for_dispatch(&state_runtime, app, thread_id, &job, retry_state).await?
+        {
+            let _ = state_runtime.finish_loop_tick(&job.id, now).await;
+            return Ok(());
+        }
 
         // A persisted child runner is authoritative for this tick. Do not let
         // a Vivling profile silently replace its validated runner model.
@@ -504,6 +629,7 @@ pub(super) async fn process_submission(
         app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
             thread_id,
             job_id: job.id.clone(),
+            occurrence_ms,
             request,
             runner_model,
         });
@@ -524,11 +650,11 @@ pub(super) async fn process_submission(
                     thread_id,
                     &job.id,
                     codex_state::ThreadLoopJobRuntimeUpdate {
-                        next_run_ms: None,
+                        next_run_ms: retry_state.next_run_ms,
                         last_run_ms: job.last_run_ms,
                         last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                         last_error: Some("Vivling loop owner is missing.".to_string()),
-                        pending_tick: !is_one_shot,
+                        pending_tick: retry_state.pending_tick,
                         updated_at_ms: now,
                     },
                 )
@@ -553,6 +679,11 @@ pub(super) async fn process_submission(
             .prepare_vivling_loop_tick(&app.config, &owner_vivling_id, &job)
         {
             Ok(mut request) => {
+                if !claim_occurrence_for_dispatch(&state_runtime, app, thread_id, &job, retry_state)
+                    .await?
+                {
+                    return Ok(());
+                }
                 // FASE5 5A — feed del worker context (volatile bus) nel prompt
                 // del loop tick, così il Vivling vede l'attività worker recente.
                 if let Some(summary) = app.vivling_context_bus.worker_context_summary() {
@@ -566,7 +697,7 @@ pub(super) async fn process_submission(
                         thread_id,
                         &job.id,
                         codex_state::ThreadLoopJobRuntimeUpdate {
-                            next_run_ms: None,
+                            next_run_ms: retry_state.next_run_ms,
                             last_run_ms: Some(now),
                             last_status: Some(LOOP_STATUS_DELEGATED_VIVLING.to_string()),
                             last_error: None,
@@ -576,9 +707,11 @@ pub(super) async fn process_submission(
                     )
                     .await
                     .map_err(loop_state_error)?;
+                app.register_managed_loop_scope(thread_id, &job.id, &job.label);
                 app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
                     thread_id,
                     job_id: job.id.clone(),
+                    occurrence_ms,
                     request,
                     runner_model: None,
                 });
@@ -601,7 +734,7 @@ pub(super) async fn process_submission(
                             last_run_ms: job.last_run_ms,
                             last_status: Some(LOOP_STATUS_BLOCKED_OWNER.to_string()),
                             last_error: Some(err),
-                            pending_tick: !is_one_shot,
+                            pending_tick: retry_state.pending_tick,
                             updated_at_ms: now,
                         },
                     )
@@ -624,19 +757,22 @@ pub(super) async fn process_submission(
         }
     }
 
+    if !claim_occurrence_for_dispatch(&state_runtime, app, thread_id, &job, retry_state).await? {
+        return Ok(());
+    }
     let submission = app.chat_widget.submit_loop_prompt(&job, &owner);
 
     let (next_run_ms, pending_tick, last_status) = match submission {
         LoopPromptSubmissionOutcome::Submitted => (
-            Some(now + (job.interval_seconds * 1000)),
+            rescheduled_next_run_ms,
             false,
             loop_submission_status(submission).map(str::to_string),
         ),
         LoopPromptSubmissionOutcome::BlockedUserTurn
         | LoopPromptSubmissionOutcome::BlockedReviewMode
         | LoopPromptSubmissionOutcome::BlockedSideConversation => (
-            None,
-            true,
+            retry_state.next_run_ms,
+            retry_state.pending_tick,
             loop_submission_status(submission).map(str::to_string),
         ),
         LoopPromptSubmissionOutcome::BlockedMissingThread => {
@@ -892,6 +1028,7 @@ mod tests {
             &mut app,
             thread_id,
             job.id.clone(),
+            Some(one_shot_at_ms),
             Err("boom".to_string()),
         )
         .await

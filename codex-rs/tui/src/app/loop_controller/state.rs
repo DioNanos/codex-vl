@@ -36,6 +36,51 @@ pub(super) struct SchedulePlan<'a> {
 /// late execution, T6 riepilogo).
 pub(super) const ONE_SHOT_GRACE_MS: i64 = 5 * 60 * 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RetryTickRuntimeState {
+    pub next_run_ms: Option<i64>,
+    pub pending_tick: bool,
+}
+
+/// One transition for every failed or busy tick. One-shots are consumed;
+/// recurring schedules retain the claimed occurrence as the pending key.
+pub(super) fn retry_tick_runtime_state(
+    schedule_kind: &str,
+    occurrence_ms: Option<i64>,
+) -> RetryTickRuntimeState {
+    if schedule_kind == "one_shot" {
+        RetryTickRuntimeState {
+            next_run_ms: None,
+            pending_tick: false,
+        }
+    } else if occurrence_ms.is_some() {
+        RetryTickRuntimeState {
+            next_run_ms: occurrence_ms,
+            pending_tick: true,
+        }
+    } else {
+        RetryTickRuntimeState {
+            next_run_ms: None,
+            pending_tick: false,
+        }
+    }
+}
+
+pub(super) fn next_run_after_tick_ms(plan: &SchedulePlan<'_>, now_ms: i64) -> Option<i64> {
+    if plan.schedule_kind == "one_shot" {
+        None
+    } else {
+        next_run_at_ms(plan, now_ms)
+    }
+}
+
+pub(super) fn one_shot_expired(plan: &SchedulePlan<'_>, now_ms: i64) -> bool {
+    plan.schedule_kind == "one_shot"
+        && plan
+            .one_shot_at_ms
+            .is_some_and(|at| now_ms > at.saturating_add(ONE_SHOT_GRACE_MS))
+}
+
 /// Pure scheduler (T3, §T3: the single place computing the next run instant).
 /// `interval` keeps today's behaviour (`now + interval`); `at` resolves the
 /// next wall-clock HH:MM in the persisted IANA tz (DST-aware: fold picks the
@@ -48,9 +93,9 @@ pub(super) fn next_run_at_ms(plan: &SchedulePlan<'_>, now_ms: i64) -> Option<i64
     match plan.schedule_kind {
         "interval" => Some(now_ms.saturating_add(plan.interval_seconds.saturating_mul(1000))),
         "at" => next_daily_at_ms(plan.schedule_at?, plan.tz?, now_ms),
-        "one_shot" => plan
-            .one_shot_at_ms
-            .filter(|at| now_ms <= *at + ONE_SHOT_GRACE_MS),
+        "one_shot" => (!one_shot_expired(plan, now_ms))
+            .then_some(plan.one_shot_at_ms)
+            .flatten(),
         _ => None,
     }
 }
@@ -191,6 +236,56 @@ mod tests {
             Some(5_000)
         );
         // Past the grace: terminal expired, never rescheduled.
+        assert_eq!(next_run_at_ms(&plan, 5_000 + ONE_SHOT_GRACE_MS + 1), None);
+    }
+
+    #[test]
+    fn retry_transition_is_shared_across_runner_paths() {
+        let occurrence_ms = Some(5_000);
+        for runner in ["main", "child_agent", "vivling"] {
+            assert_eq!(
+                retry_tick_runtime_state("interval", occurrence_ms),
+                RetryTickRuntimeState {
+                    next_run_ms: occurrence_ms,
+                    pending_tick: true,
+                },
+                "recurring failure/busy transition diverged for {runner}"
+            );
+            assert_eq!(
+                retry_tick_runtime_state("one_shot", occurrence_ms),
+                RetryTickRuntimeState {
+                    next_run_ms: None,
+                    pending_tick: false,
+                },
+                "one-shot failure/busy transition diverged for {runner}"
+            );
+        }
+        assert_eq!(
+            retry_tick_runtime_state("interval", None),
+            RetryTickRuntimeState {
+                next_run_ms: None,
+                pending_tick: false,
+            }
+        );
+    }
+
+    #[test]
+    fn successful_one_shot_is_terminal_and_at_uses_wall_clock_scheduler() {
+        let one_shot = plan("one_shot", 60, None, None, Some(5_000));
+        assert_eq!(next_run_after_tick_ms(&one_shot, 5_000), None);
+
+        let at = plan("at", 60, Some("09:00"), Some("Europe/Rome"), None);
+        assert_eq!(
+            next_run_after_tick_ms(&at, 1_788_422_400_000),
+            Some(1_788_505_200_000)
+        );
+    }
+
+    #[test]
+    fn expired_one_shot_is_terminal_before_claim_or_schedule() {
+        let plan = plan("one_shot", 60, None, None, Some(5_000));
+        assert!(!one_shot_expired(&plan, 5_000 + ONE_SHOT_GRACE_MS));
+        assert!(one_shot_expired(&plan, 5_000 + ONE_SHOT_GRACE_MS + 1));
         assert_eq!(next_run_at_ms(&plan, 5_000 + ONE_SHOT_GRACE_MS + 1), None);
     }
 }

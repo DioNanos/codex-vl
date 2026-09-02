@@ -257,9 +257,17 @@ impl App {
         &mut self,
         thread_id: ThreadId,
         job_id: String,
+        occurrence_ms: Option<i64>,
         result: Result<crate::vivling::VivlingLoopTickResult, String>,
     ) -> color_eyre::Result<()> {
-        vivling_delegation::handle_loop_tick_finished(self, thread_id, job_id, result).await
+        vivling_delegation::handle_loop_tick_finished(
+            self,
+            thread_id,
+            job_id,
+            occurrence_ms,
+            result,
+        )
+        .await
     }
 
     pub(super) async fn resolve_manage_loops_app_server_request(
@@ -285,10 +293,18 @@ impl App {
         &mut self,
         thread_id: ThreadId,
         job_id: String,
+        occurrence_ms: Option<i64>,
         request: crate::vivling::VivlingLoopTickRequest,
         runner_model: Option<String>,
     ) {
-        vivling_delegation::run_loop_tick(self, thread_id, job_id, request, runner_model);
+        vivling_delegation::run_loop_tick(
+            self,
+            thread_id,
+            job_id,
+            occurrence_ms,
+            request,
+            runner_model,
+        );
     }
 
     /// Memory V2 Step 12.B.D.2 — dispatch a Vivling Expression LLM
