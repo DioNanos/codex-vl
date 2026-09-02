@@ -326,7 +326,9 @@ WHERE thread_id = ? AND label = ?
     /// Remove a loop and its loop-owned children as one SQLite transaction.
     /// The explicit deletes keep cleanup atomic even when a connection has
     /// foreign-key enforcement disabled; the migration FK remains a second
-    /// integrity boundary.
+    /// integrity boundary. Occurrence rows (0934) are deleted explicitly too:
+    /// they are children of the job, so a removal must leave no orphan
+    /// occurrence behind regardless of FK enforcement.
     pub async fn delete_thread_loop_job_with_dependents(
         &self,
         thread_id: ThreadId,
@@ -345,6 +347,10 @@ WHERE thread_id = ? AND label = ?
         };
         sqlx::query("DELETE FROM vl_loop_delegations WHERE thread_id = ? AND job_id = ?")
             .bind(thread_id.to_string())
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM vl_loop_occurrences WHERE job_id = ?")
             .bind(&job_id)
             .execute(&mut *transaction)
             .await?;
@@ -471,13 +477,46 @@ mod tests {
         assert!(updated.pending_tick);
         assert_eq!(updated.last_status.as_deref(), Some("pending"));
 
+        // FIX-I — occurrence accounting (0934) is job-owned: a second job
+        // with its own occurrence proves the cleanup removes only the
+        // removed job's occurrences, not the whole table.
+        runtime
+            .claim_loop_occurrence("job-1", now + 300_000, now + 3)
+            .await?;
+        runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-2".to_string(),
+                thread_id,
+                label: "other".to_string(),
+                prompt_text: "check other".to_string(),
+                goal_text: None,
+                interval_seconds: 300,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(now + 300_000),
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .await?;
+        runtime
+            .claim_loop_occurrence("job-2", now + 300_000, now + 3)
+            .await?;
+
         assert!(
             runtime
                 .delete_thread_loop_job_with_dependents(thread_id, "ci")
                 .await?
         );
-        assert!(runtime.list_thread_loop_jobs(thread_id).await?.is_empty());
+        let remaining = runtime.list_thread_loop_jobs(thread_id).await?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "job-2");
         assert!(runtime.get_loop_descriptor("job-1").await?.is_none());
+        // No orphan occurrence rows may survive for the removed job, while
+        // the other job's occurrence stays untouched.
+        assert!(runtime.list_loop_occurrences("job-1").await?.is_empty());
+        assert_eq!(runtime.list_loop_occurrences("job-2").await?.len(), 1);
         Ok(())
     }
 
