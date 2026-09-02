@@ -4,7 +4,7 @@ mod log;
 mod loop_delegation;
 mod loop_descriptor;
 mod loop_metrics;
-pub mod loop_notification;
+mod loop_notification;
 mod loop_occurrence;
 mod memories;
 mod project;

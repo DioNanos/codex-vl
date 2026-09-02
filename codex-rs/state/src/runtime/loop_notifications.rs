@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::loop_notification::{LOOP_NOTIFICATION_KIND_PENDING, LoopNotificationRecord};
+use crate::model::{LOOP_NOTIFICATION_KIND_PENDING, LoopNotificationRecord};
 
 impl StateRuntime {
     /// R11 gates 1 and 6 — persist-before-emit with dedup. The INSERT OR
@@ -91,7 +91,7 @@ pub struct LoopNotificationPendingRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::loop_notification::LOOP_NOTIFICATION_KIND_SUMMARY;
+    use crate::model::LOOP_NOTIFICATION_KIND_SUMMARY;
     use crate::runtime::test_support::unique_temp_dir;
     use codex_protocol::ThreadId;
     use codex_utils_absolute_path::test_support::PathExt;
