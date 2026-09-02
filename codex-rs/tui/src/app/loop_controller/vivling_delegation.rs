@@ -91,6 +91,7 @@ async fn persist_managed_tick_result(
             ticks_managed: delegation.ticks_managed.saturating_add(1),
             recent_results_json,
             last_plan_approved: delegation.last_plan_approved,
+            strategy_override: delegation.strategy_override,
             override_main: delegation.override_main,
             cooldown_until_ms: delegation.cooldown_until_ms,
             suspend_reason: delegation.suspend_reason,
@@ -119,12 +120,36 @@ fn delegation_params(
         ticks_managed: delegation.ticks_managed,
         recent_results_json,
         last_plan_approved: delegation.last_plan_approved,
+        strategy_override: delegation.strategy_override,
         override_main: delegation.override_main,
         cooldown_until_ms,
         suspend_reason,
         created_at_ms: delegation.created_at_ms,
         updated_at_ms,
     }
+}
+
+pub(super) fn managed_action_gate_is_green(
+    app: &App,
+    delegation: &codex_state::LoopDelegation,
+) -> bool {
+    strategy_allows_automatic_actions(delegation.strategy)
+        && management_gate_is_green(app, delegation)
+}
+
+fn strategy_allows_automatic_actions(strategy: codex_state::LoopDelegationStrategy) -> bool {
+    strategy == codex_state::LoopDelegationStrategy::Manage
+}
+
+pub(super) fn management_gate_is_green(
+    app: &App,
+    delegation: &codex_state::LoopDelegation,
+) -> bool {
+    app.chat_widget
+        .vivling_loop_management_gate_inputs(&app.config, &delegation.vivling_id)
+        .is_ok_and(|(is_adult, brain_enabled, has_profile, _bond, phase)| {
+            is_adult && brain_enabled && has_profile && phase != "unavailable"
+        })
 }
 
 /// Re-evaluates the T5 state boundary after each tick and before the next
@@ -159,7 +184,9 @@ pub(super) async fn refresh_management_state(
         )
     } else if old_reason == Some("phase") {
         (
-            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics),
+            delegation.strategy_override.unwrap_or_else(|| {
+                codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
+            }),
             None,
             None,
             Some("managed_resumed_phase"),
@@ -179,7 +206,9 @@ pub(super) async fn refresh_management_state(
         )
     {
         (
-            codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics),
+            delegation.strategy_override.unwrap_or_else(|| {
+                codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
+            }),
             None,
             None,
             Some("managed_resumed_3fail"),
@@ -192,7 +221,9 @@ pub(super) async fn refresh_management_state(
             None,
         )
     } else {
-        let strategy = if is_adult && brain_enabled && has_profile {
+        let strategy = if let Some(strategy_override) = delegation.strategy_override {
+            strategy_override
+        } else if is_adult && brain_enabled && has_profile {
             codex_state::loop_management_strategy(delegation.ticks_managed, bond, metrics)
         } else {
             codex_state::LoopDelegationStrategy::Observe
@@ -390,6 +421,10 @@ pub(super) async fn handle_loop_tick_finished(
                 .await
                 .map_err(loop_state_error)?;
             refresh_management_state(app, &state_runtime, &job, delegation).await?;
+            let delegation = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?;
             // FIX-J (3) — persist-before-mutate: the summary (and the R3
             // pending) is durable BEFORE the completion action can remove or
             // disable the job (auto_remove_on_completion defaults to true, so
@@ -428,8 +463,16 @@ pub(super) async fn handle_loop_tick_finished(
                     .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
             }
 
-            let action_request = tick_action_request(thread_id, &job, status, &result)
-                .map_err(|err| color_eyre::eyre::eyre!(err))?;
+            let action_request = if managed_source.is_some()
+                && delegation
+                    .as_ref()
+                    .is_some_and(|delegation| managed_action_gate_is_green(app, delegation))
+            {
+                tick_action_request(thread_id, &job, status, &result)
+                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+            } else {
+                None
+            };
             let mut skipped_runtime_update = false;
 
             if let Some(request) = action_request {
@@ -449,6 +492,15 @@ pub(super) async fn handle_loop_tick_finished(
                         LoopCommandSource::Agent,
                     );
                 }
+            } else if managed_source.is_some()
+                && (result.loop_action.is_some() || status == LOOP_STATUS_DONE)
+            {
+                app.record_vivling_loop_job(
+                    "audit_rejected",
+                    &job.label,
+                    Some(&job),
+                    managed_source.clone().unwrap_or(LoopCommandSource::Agent),
+                );
             }
 
             // FASE5 5A — gated loop suggestion (NO-AUTO channel). Emessa solo se
@@ -759,6 +811,24 @@ mod runner_tests {
             child_tick_failure_status("provider request failed"),
             LOOP_STATUS_BLOCKED_OWNER
         );
+    }
+}
+
+#[cfg(test)]
+mod strategy_tests {
+    use super::strategy_allows_automatic_actions;
+
+    #[test]
+    fn only_manage_allows_automatic_actions() {
+        assert!(!strategy_allows_automatic_actions(
+            codex_state::LoopDelegationStrategy::Observe
+        ));
+        assert!(!strategy_allows_automatic_actions(
+            codex_state::LoopDelegationStrategy::Suggest
+        ));
+        assert!(strategy_allows_automatic_actions(
+            codex_state::LoopDelegationStrategy::Manage
+        ));
     }
 }
 

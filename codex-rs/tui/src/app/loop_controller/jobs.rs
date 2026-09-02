@@ -209,6 +209,27 @@ pub(super) async fn run_command_request(
                 "Managed completion policy requires disable, not remove.".to_string(),
             ));
         }
+        let Some(delegation) = state_runtime
+            .get_loop_delegation(thread_id, &job.id)
+            .await
+            .map_err(loop_state_error)?
+        else {
+            app.record_vivling_loop_job("audit_rejected", label, Some(&job), source.clone());
+            return Ok(loop_action_failure(
+                "strategy",
+                thread_id,
+                "Managed loop actions require a persisted delegation.".to_string(),
+            ));
+        };
+        if !super::vivling_delegation::managed_action_gate_is_green(app, &delegation) {
+            app.record_vivling_loop_job("audit_rejected", label, Some(&job), source.clone());
+            return Ok(loop_action_failure(
+                "strategy",
+                thread_id,
+                "Managed loop actions require an active Manage strategy and green gate."
+                    .to_string(),
+            ));
+        }
     }
     let outcome = match request {
         LoopCommandRequest::Add {
@@ -796,6 +817,9 @@ pub(super) async fn run_command_request(
                     last_plan_approved: existing
                         .as_ref()
                         .and_then(|delegation| delegation.last_plan_approved),
+                    strategy_override: existing
+                        .as_ref()
+                        .and_then(|delegation| delegation.strategy_override),
                     override_main: owner_kind == "main",
                     cooldown_until_ms: existing
                         .as_ref()
@@ -910,6 +934,7 @@ pub(super) async fn run_command_request(
                             "label": delegation.loop_label,
                             "vivling_id": delegation.vivling_id,
                             "strategy": delegation.strategy.as_str(),
+                            "strategy_override": delegation.strategy_override.map(|value| value.as_str()),
                             "override_main": delegation.override_main,
                             "ticks_managed": delegation.ticks_managed,
                             "cooldown_until_ms": delegation.cooldown_until_ms,
@@ -949,9 +974,43 @@ pub(super) async fn run_command_request(
                     format!("Loop `{label}` has no persisted delegation."),
                 ));
             };
-            let strategy = match codex_state::LoopDelegationStrategy::try_from(strategy.trim()) {
-                Ok(strategy) => strategy,
-                Err(err) => return Ok(loop_action_failure("strategy", thread_id, err.to_string())),
+            let requested = strategy.trim();
+            let clear_override = requested.eq_ignore_ascii_case("auto");
+            let strategy = if clear_override {
+                let parsed = codex_state::parse_recent_results(&existing.recent_results_json);
+                let metrics = codex_state::LoopMetrics::from_entries(&parsed.entries);
+                let Ok((is_adult, brain_enabled, has_profile, bond, _phase)) = app
+                    .chat_widget
+                    .vivling_loop_management_gate_inputs(&app.config, &existing.vivling_id)
+                else {
+                    return Ok(loop_action_failure(
+                        "strategy",
+                        thread_id,
+                        "Automatic strategy could not verify its gate inputs.".to_string(),
+                    ));
+                };
+                if is_adult && brain_enabled && has_profile {
+                    codex_state::loop_management_strategy(existing.ticks_managed, bond, metrics)
+                } else {
+                    codex_state::LoopDelegationStrategy::Observe
+                }
+            } else {
+                match codex_state::LoopDelegationStrategy::try_from(requested) {
+                    Ok(strategy) => strategy,
+                    Err(err) => {
+                        return Ok(loop_action_failure("strategy", thread_id, err.to_string()));
+                    }
+                }
+            };
+            if strategy == codex_state::LoopDelegationStrategy::Manage
+                && !super::vivling_delegation::management_gate_is_green(app, &existing)
+            {
+                return Ok(loop_action_failure(
+                    "strategy",
+                    thread_id,
+                    "Manage strategy rejected: Adult, brain, profile, and active phase are required."
+                        .to_string(),
+                ));
             };
             let saved = state_runtime
                 .upsert_loop_delegation(codex_state::LoopDelegationUpsertParams {
@@ -963,6 +1022,7 @@ pub(super) async fn run_command_request(
                     ticks_managed: existing.ticks_managed,
                     recent_results_json: existing.recent_results_json.clone(),
                     last_plan_approved: existing.last_plan_approved,
+                    strategy_override: (!clear_override).then_some(strategy),
                     override_main: existing.override_main,
                     cooldown_until_ms: existing.cooldown_until_ms,
                     suspend_reason: existing.suspend_reason.clone(),

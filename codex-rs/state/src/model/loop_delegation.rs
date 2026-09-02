@@ -45,6 +45,7 @@ pub struct LoopDelegation {
     pub ticks_managed: i64,
     pub recent_results_json: String,
     pub last_plan_approved: Option<bool>,
+    pub strategy_override: Option<LoopDelegationStrategy>,
     pub override_main: bool,
     pub cooldown_until_ms: Option<i64>,
     pub suspend_reason: Option<String>,
@@ -62,6 +63,7 @@ pub struct LoopDelegationUpsertParams {
     pub ticks_managed: i64,
     pub recent_results_json: String,
     pub last_plan_approved: Option<bool>,
+    pub strategy_override: Option<LoopDelegationStrategy>,
     pub override_main: bool,
     pub cooldown_until_ms: Option<i64>,
     pub suspend_reason: Option<String>,
@@ -78,6 +80,7 @@ pub(crate) struct LoopDelegationRow {
     pub(crate) ticks_managed: i64,
     pub(crate) recent_results_json: String,
     pub(crate) last_plan_approved: Option<bool>,
+    pub(crate) strategy_override: Option<String>,
     pub(crate) override_main: bool,
     pub(crate) cooldown_until_ms: Option<i64>,
     pub(crate) suspend_reason: Option<String>,
@@ -96,6 +99,7 @@ impl LoopDelegationRow {
             ticks_managed: row.try_get("ticks_managed")?,
             recent_results_json: row.try_get("recent_results_json")?,
             last_plan_approved: row.try_get("last_plan_approved")?,
+            strategy_override: row.try_get("strategy_override")?,
             override_main: row.try_get("override_main")?,
             cooldown_until_ms: row.try_get("cooldown_until_ms")?,
             suspend_reason: row.try_get("suspend_reason")?,
@@ -118,6 +122,11 @@ impl TryFrom<LoopDelegationRow> for LoopDelegation {
             ticks_managed: value.ticks_managed,
             recent_results_json: value.recent_results_json,
             last_plan_approved: value.last_plan_approved,
+            strategy_override: value
+                .strategy_override
+                .as_deref()
+                .map(LoopDelegationStrategy::try_from)
+                .transpose()?,
             override_main: value.override_main,
             cooldown_until_ms: value.cooldown_until_ms,
             suspend_reason: value.suspend_reason,

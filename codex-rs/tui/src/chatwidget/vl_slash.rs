@@ -59,7 +59,7 @@ pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
         let mut parts = rest.split_whitespace();
         let (Some(label), Some(strategy), None) = (parts.next(), parts.next(), parts.next()) else {
             cw.add_error_message(
-                "Usage: /vivling loop-strategy <label> <observe|suggest|manage>".to_string(),
+                "Usage: /vivling loop-strategy <label> <observe|suggest|manage|auto>".to_string(),
             );
             return;
         };

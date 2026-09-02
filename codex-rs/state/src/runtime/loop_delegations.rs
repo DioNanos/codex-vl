@@ -19,6 +19,7 @@ SELECT
     ticks_managed,
     recent_results_json,
     last_plan_approved,
+    strategy_override,
     override_main,
     cooldown_until_ms,
     suspend_reason,
@@ -55,6 +56,7 @@ SELECT
     ticks_managed,
     recent_results_json,
     last_plan_approved,
+    strategy_override,
     override_main,
     cooldown_until_ms,
     suspend_reason,
@@ -92,12 +94,13 @@ INSERT INTO vl_loop_delegations (
     ticks_managed,
     recent_results_json,
     last_plan_approved,
+    strategy_override,
     override_main,
     cooldown_until_ms,
     suspend_reason,
     created_at_ms,
     updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, job_id) DO UPDATE SET
     loop_label = excluded.loop_label,
     vivling_id = excluded.vivling_id,
@@ -105,6 +108,7 @@ ON CONFLICT(thread_id, job_id) DO UPDATE SET
     ticks_managed = excluded.ticks_managed,
     recent_results_json = excluded.recent_results_json,
     last_plan_approved = excluded.last_plan_approved,
+    strategy_override = excluded.strategy_override,
     override_main = excluded.override_main,
     cooldown_until_ms = excluded.cooldown_until_ms,
     suspend_reason = excluded.suspend_reason,
@@ -119,6 +123,11 @@ ON CONFLICT(thread_id, job_id) DO UPDATE SET
         .bind(params.ticks_managed)
         .bind(&params.recent_results_json)
         .bind(params.last_plan_approved)
+        .bind(
+            params
+                .strategy_override
+                .map(|strategy| strategy.as_str().to_string()),
+        )
         .bind(params.override_main)
         .bind(params.cooldown_until_ms)
         .bind(&params.suspend_reason)
@@ -172,6 +181,7 @@ mod tests {
             ticks_managed: 2,
             recent_results_json: "[]".to_string(),
             last_plan_approved: Some(true),
+            strategy_override: Some(LoopDelegationStrategy::Suggest),
             override_main: true,
             cooldown_until_ms: None,
             suspend_reason: None,
@@ -182,6 +192,10 @@ mod tests {
         let saved = runtime.upsert_loop_delegation(params).await?;
         assert_eq!(saved.thread_id, thread_id);
         assert_eq!(saved.strategy, LoopDelegationStrategy::Observe);
+        assert_eq!(
+            saved.strategy_override,
+            Some(LoopDelegationStrategy::Suggest)
+        );
         assert!(saved.override_main);
         assert_eq!(runtime.list_loop_delegations(thread_id).await?.len(), 1);
         assert!(runtime.delete_loop_delegation(thread_id, "job-1").await?);

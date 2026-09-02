@@ -457,12 +457,24 @@ pub(super) async fn process_submission(
         if let Some(delegation) = delegation.as_ref() {
             let parsed = codex_state::parse_recent_results(&delegation.recent_results_json);
             let metrics = codex_state::LoopMetrics::from_entries(&parsed.entries);
+            let allowed_actions = match delegation.strategy {
+                codex_state::LoopDelegationStrategy::Manage => {
+                    "Allowed managed actions at this tick: enrich prompt; disable/remove only according to auto_remove_on_completion; increase interval only when the Manage churn gate is green."
+                }
+                codex_state::LoopDelegationStrategy::Suggest => {
+                    "Managed actions are suggestions only at this tick; do not request or perform mutations without explicit user confirmation."
+                }
+                codex_state::LoopDelegationStrategy::Observe => {
+                    "Managed actions are disabled at this tick; report observations only and do not request mutations."
+                }
+            };
             request.prompt_context.push_str(&format!(
-                "\n\n[managed loop context]\nticks_managed={} clean={} noisy={} blocked={}\nAllowed managed actions: enrich prompt; disable/remove only according to auto_remove_on_completion; increase interval only when the Manage churn gate is green. Never create, split, change owner, file/git, rearm, at, or one_shot.\n",
+                "\n\n[managed loop context]\nticks_managed={} clean={} noisy={} blocked={}\n{} Never create, split, change owner, file/git, rearm, at, or one_shot.\n",
                 delegation.ticks_managed,
                 metrics.clean_submissions,
                 metrics.noisy_churn,
                 metrics.blocked_runs,
+                allowed_actions,
             ));
         }
 
