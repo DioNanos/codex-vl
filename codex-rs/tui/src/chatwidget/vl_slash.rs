@@ -55,6 +55,29 @@ pub(super) fn dispatch_loop_with_args(cw: &mut ChatWidget, trimmed: &str) {
 
 /// `/vivling [args]` — full Vivling action dispatch.
 pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
+    if let Some(rest) = args.trim().strip_prefix("loop-strategy") {
+        let mut parts = rest.split_whitespace();
+        let (Some(label), Some(strategy), None) = (parts.next(), parts.next(), parts.next()) else {
+            cw.add_error_message(
+                "Usage: /vivling loop-strategy <label> <observe|suggest|manage>".to_string(),
+            );
+            return;
+        };
+        let Some(thread_id) = cw.thread_id else {
+            cw.add_error_message(
+                "'/vivling loop-strategy' is unavailable before the session starts.".to_string(),
+            );
+            return;
+        };
+        cw.app_event_tx.send_vl(VlEvent::LoopCommand {
+            thread_id,
+            request: LoopCommandRequest::SetStrategy {
+                label: label.to_string(),
+                strategy: strategy.to_string(),
+            },
+        });
+        return;
+    }
     cw.sync_vivling_live_context();
     let outcome = VivlingAction::parse(args)
         .and_then(|action| cw.bottom_pane.run_vivling_command(&cw.config, action));
@@ -209,6 +232,10 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "undelegate" => Some(LoopCommandRequest::Undelegate {
             label: parts.next()?.to_string(),
         }),
+        "strategy" => Some(LoopCommandRequest::SetStrategy {
+            label: parts.next()?.to_string(),
+            strategy: parts.next()?.to_string(),
+        }),
         "delegation" => Some(LoopCommandRequest::Delegation {
             label: parts.next().map(str::to_string),
         }),
@@ -321,6 +348,24 @@ mod tests {
         assert!(parse_loop_command("owner xxx").is_none());
         assert!(parse_loop_command("").is_none());
         assert!(parse_loop_command("nope").is_none());
+    }
+
+    #[test]
+    fn parse_loop_command_recognizes_delegation_subcommands() {
+        assert!(matches!(
+            parse_loop_command("delegate forge vivling"),
+            Some(LoopCommandRequest::Delegate { label, owner_kind })
+                if label == "forge" && owner_kind == "vivling"
+        ));
+        assert!(matches!(
+            parse_loop_command("undelegate forge"),
+            Some(LoopCommandRequest::Undelegate { label }) if label == "forge"
+        ));
+        assert!(matches!(
+            parse_loop_command("strategy forge suggest"),
+            Some(LoopCommandRequest::SetStrategy { label, strategy })
+                if label == "forge" && strategy == "suggest"
+        ));
     }
 
     #[test]

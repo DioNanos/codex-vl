@@ -60,6 +60,10 @@ pub(crate) enum LoopCommandRequest {
     Delegation {
         label: Option<String>,
     },
+    SetStrategy {
+        label: String,
+        strategy: String,
+    },
     OwnerShow,
     OwnerSetMain,
     OwnerSetVivling,

@@ -206,4 +206,16 @@ mod tests {
         assert_eq!(hard_main.effective, RequestedLoopOwner::Main);
         assert_eq!(hard_main.reason, "hard_main_override");
     }
+
+    #[test]
+    fn non_runnable_vivling_falls_back_to_main_without_deleting_state() {
+        let resolved = resolve_effective_owner(
+            Some(&delegation(false)),
+            &owner(codex_state::THREAD_LOOP_OWNER_KIND_MAIN, None),
+            VivlingReadiness::NotAdult,
+        );
+        assert_eq!(resolved.effective, RequestedLoopOwner::Main);
+        assert_eq!(resolved.reason, "vivling_not_runnable");
+        assert_eq!(resolved.readiness, VivlingReadiness::NotAdult);
+    }
 }

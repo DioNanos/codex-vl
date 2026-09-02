@@ -37,6 +37,8 @@ struct ManageLoopsToolArgs {
     enabled: Option<bool>,
     #[serde(default)]
     owner: Option<String>,
+    #[serde(default)]
+    strategy: Option<String>,
 }
 
 pub(super) fn parse_manage_loops_interval_seconds(token: &str) -> Option<i64> {
@@ -150,6 +152,16 @@ pub(super) fn parse_manage_loops_tool_request(
                 .ok_or_else(|| anyhow::anyhow!("`label` is required for undelegate"))?,
         }),
         "delegation" => Ok(LoopCommandRequest::Delegation { label: args.label }),
+        "strategy" => Ok(LoopCommandRequest::SetStrategy {
+            label: args
+                .label
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`label` is required for strategy"))?,
+            strategy: args
+                .strategy
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("`strategy` is required for strategy"))?,
+        }),
         "add" => {
             let label = args
                 .label
@@ -341,6 +353,34 @@ mod tests {
             request,
             LoopCommandRequest::Trigger {
                 label: "forge".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_manage_loops_delegation_requests() {
+        assert_eq!(
+            parse_manage_loops_tool_request(serde_json::json!({
+                "action": "delegate",
+                "label": "forge",
+                "owner": "vivling"
+            }))
+            .expect("delegate parses"),
+            LoopCommandRequest::Delegate {
+                label: "forge".to_string(),
+                owner_kind: "vivling".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_manage_loops_tool_request(serde_json::json!({
+                "action": "strategy",
+                "label": "forge",
+                "strategy": "suggest"
+            }))
+            .expect("strategy parses"),
+            LoopCommandRequest::SetStrategy {
+                label: "forge".to_string(),
+                strategy: "suggest".to_string(),
             }
         );
     }

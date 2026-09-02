@@ -560,6 +560,61 @@ pub(super) async fn run_command_request(
                 )
             }
         }
+        LoopCommandRequest::SetStrategy { label, strategy } => {
+            let Some(job) = state_runtime
+                .get_thread_loop_job_by_label(thread_id, &label)
+                .await
+                .map_err(loop_state_error)?
+            else {
+                return Ok(loop_action_failure(
+                    "strategy",
+                    thread_id,
+                    format!("Loop `{label}` not found."),
+                ));
+            };
+            let Some(existing) = state_runtime
+                .get_loop_delegation(thread_id, &job.id)
+                .await
+                .map_err(loop_state_error)?
+            else {
+                return Ok(loop_action_failure(
+                    "strategy",
+                    thread_id,
+                    format!("Loop `{label}` has no persisted delegation."),
+                ));
+            };
+            let strategy = match codex_state::LoopDelegationStrategy::try_from(strategy.trim()) {
+                Ok(strategy) => strategy,
+                Err(err) => return Ok(loop_action_failure("strategy", thread_id, err.to_string())),
+            };
+            let saved = state_runtime
+                .upsert_loop_delegation(codex_state::LoopDelegationUpsertParams {
+                    thread_id,
+                    job_id: existing.job_id.clone(),
+                    loop_label: job.label.clone(),
+                    vivling_id: existing.vivling_id.clone(),
+                    strategy,
+                    ticks_managed: existing.ticks_managed,
+                    recent_results_json: existing.recent_results_json.clone(),
+                    last_plan_approved: existing.last_plan_approved,
+                    override_main: existing.override_main,
+                    created_at_ms: existing.created_at_ms,
+                    updated_at_ms: loop_now_ms(),
+                })
+                .await
+                .map_err(loop_state_error)?;
+            app.record_vivling_loop_job("strategy", &label, Some(&job), source);
+            loop_action_success(
+                "strategy",
+                thread_id,
+                format!(
+                    "Loop `{label}` strategy set to {}.",
+                    saved.strategy.as_str()
+                ),
+                Some(&job),
+                None,
+            )
+        }
         LoopCommandRequest::OwnerShow => {
             let owner = state_runtime
                 .get_thread_loop_owner(thread_id)
