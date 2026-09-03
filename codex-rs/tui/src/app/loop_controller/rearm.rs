@@ -1,11 +1,11 @@
-//! codex-vl loop_controller: T4 — re-arm at bootstrap (`rearm_on_boot`).
+//! codex-vl loop_controller: re-arm at bootstrap (`rearm_on_boot`).
 //!
 //! Hook called from `events::handle_reload` (the single loop-restore
 //! path, already guarded active-primary). For every enabled, non-pending
 //! job whose 0933 descriptor carries `rearm_on_boot`, the hook re-arms
 //! the timer when the job is disarmed (`next_run_ms = None`) or when its
 //! scheduled occurrence was already claimed in 0934: a claimed occurrence
-//! dispatches at-most-once (T3), so a schedule pointer onto it is dead.
+//! dispatches at-most-once, so a schedule pointer onto it is dead.
 //! Idempotency on repeated reloads comes from those skips: a job armed
 //! with a live (never-claimed) occurrence is left untouched. The pure
 //! scheduler recomputes an expired one-shot to `None` (terminal
@@ -125,7 +125,7 @@ pub(super) async fn rearm_disarmed_jobs(
         if scheduled_at_ms.is_some() && !claimed {
             continue;
         }
-        // Pure scheduler (T3): interval/at resolve the next future instant;
+        // Pure scheduler: interval/at resolve the next future instant;
         // an expired one-shot recomputes to `None` and stays disarmed.
         let next_run_ms = next_run_at_ms(&plan, now);
         let Some(next_run_ms) = next_run_ms else {
@@ -331,7 +331,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("job {job_id} missing"))
     }
 
-    // T4: a disarmed interval loop with rearm_on_boot=1 is re-armed by the
+    // A disarmed interval loop with rearm_on_boot=1 is re-armed by the
     // hook, and the same test pins that the 0933 descriptor is untouched.
     #[tokio::test]
     async fn rearm_schedules_disarmed_interval_job_and_keeps_descriptor() -> anyhow::Result<()> {
@@ -388,7 +388,7 @@ mod tests {
         Ok(())
     }
 
-    // T4 idempotency: a second reload must not re-arm (or move) a job that
+    // Re-arm idempotency: a second reload must not re-arm (or move) a job that
     // is already armed with a live occurrence.
     #[tokio::test]
     async fn second_reload_does_not_rearm_an_armed_job() -> anyhow::Result<()> {
@@ -432,7 +432,7 @@ mod tests {
         Ok(())
     }
 
-    // T4: rearm_on_boot=0 keeps today's behaviour — a disarmed job stays
+    // With rearm_on_boot=0 today's behaviour holds — a disarmed job stays
     // disarmed through the reload hook.
     #[tokio::test]
     async fn flag_false_leaves_the_disarmed_job_untouched() -> anyhow::Result<()> {

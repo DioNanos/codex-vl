@@ -3,7 +3,7 @@ use crate::LoopOccurrence;
 
 impl StateRuntime {
     /// Atomically claims the occurrence (job_id, scheduled_at_ms) BEFORE any
-    /// dispatch (T3, §4-bis 2). The INSERT OR IGNORE is the CAS over the
+    /// dispatch. The INSERT OR IGNORE is the CAS over the
     /// occurrence key and `rows_affected` is the verdict: `true` = this timer
     /// owns the tick, `false` = the occurrence was already claimed and the
     /// second tick must skip.
@@ -81,7 +81,7 @@ ORDER BY scheduled_at_ms ASC
     }
 
     /// Whether the occurrence (job_id, scheduled_at_ms) was already claimed
-    /// (T4 re-arm idempotency: a claimed occurrence dispatches at-most-once,
+    /// (re-arm idempotency: a claimed occurrence dispatches at-most-once,
     /// so a schedule pointer onto it is dead and must never be re-armed
     /// as-is).
     pub async fn has_loop_occurrence(
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(occurrences[0].fired_count, 1);
         assert_eq!(occurrences[0].last_fired_at_ms, Some(1_700_000_100_300));
 
-        // T4 re-arm idempotency probe: a claimed occurrence is visible, a
+        // Re-arm idempotency probe: a claimed occurrence is visible, a
         // never-claimed instant is not.
         assert!(
             runtime

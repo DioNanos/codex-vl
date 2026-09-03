@@ -19,7 +19,7 @@ pub(super) fn loop_state_error(err: anyhow::Error) -> color_eyre::Report {
     color_eyre::eyre::eyre!("{err}")
 }
 
-/// Schedule descriptor inputs for [`next_run_at_ms`] (T3). All values come
+/// Schedule descriptor inputs for [`next_run_at_ms`]. All values come
 /// from persisted storage (0930 job + 0933 descriptor); nothing here touches
 /// I/O or the clock — `now_ms` is always passed in by the caller.
 pub(super) struct SchedulePlan<'a> {
@@ -32,7 +32,7 @@ pub(super) struct SchedulePlan<'a> {
 
 /// Grace window for an expired, never-claimed one-shot: a rapid restart within 5 minutes still fires the
 /// tick; past the grace the occurrence is terminal `expired` (disarm, no
-/// late execution, T6 riepilogo).
+/// late execution, tick summary).
 pub(super) const ONE_SHOT_GRACE_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub(super) fn one_shot_expired(plan: &SchedulePlan<'_>, now_ms: i64) -> bool {
             .is_some_and(|at| now_ms > at.saturating_add(ONE_SHOT_GRACE_MS))
 }
 
-/// Pure scheduler (T3, §T3: the single place computing the next run instant).
+/// Pure scheduler (the single place computing the next run instant).
 /// `interval` keeps today's behaviour (`now + interval`); `at` resolves the
 /// next wall-clock HH:MM in the persisted IANA tz (DST-aware: fold picks the
 /// first valid instant, gap skips to the next day — both pinned by tests);

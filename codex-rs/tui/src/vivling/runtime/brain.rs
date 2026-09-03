@@ -40,7 +40,7 @@ fn load_vivling_skills(roster_dir: &Path, vivling_id: &str) -> Vec<VivlingSkill>
     }
 }
 
-/// codex-vl T0 — prima causa di non-runnability (log per-tick R3 / gate).
+/// codex-vl — prima causa di non-runnability (log per-tick / gate).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VivlingReadinessReason {
     WrapperUnavailable,
@@ -169,8 +169,8 @@ impl Vivling {
         })
     }
 
-    /// codex-vl T0 — readiness eseguibile del Vivling, definizione unica
-    /// condivisa (resolver T1, gate Manage T5, fondazione T0): fase wrapper
+    /// codex-vl — readiness eseguibile del Vivling, definizione unica
+    /// condivisa (delegation resolver, Manage gate, runtime foundation): fase wrapper
     /// disponibile (non Unavailable) + stato Adult + brain abilitato.
     /// `Ok(())` = runnable; `Err(reason)` porta la prima causa, per il log
     /// per-tick e per i messaggi dei gate (i call-site mantengono i loro
@@ -225,7 +225,7 @@ impl Vivling {
         Ok((state.vivling_id.clone(), state.name.clone()))
     }
 
-    /// Shared T1 readiness probe for a persisted loop delegation. The resolver
+    /// Shared readiness probe for a persisted loop delegation. The resolver
     /// receives this result and remains pure; it never inspects wrapper state.
     pub(crate) fn loop_owner_readiness(
         &mut self,
@@ -252,7 +252,7 @@ impl Vivling {
         }
     }
 
-    /// T5 gate inputs, read from the same persisted state as the suggestion
+    /// Managed-tick gate inputs, read from the same persisted state as the suggestion
     /// gate. No second source of bond or lifecycle truth is introduced.
     pub(crate) fn loop_management_gate_inputs(
         &self,

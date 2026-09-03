@@ -121,7 +121,7 @@ impl ChatWidget {
         self.bottom_pane.try_begin_vivling_expression(kind)
     }
 
-    /// FASE5 5A — dati di gating suggestion del Vivling attivo.
+    /// Dati di gating suggestion del Vivling attivo.
     pub(crate) fn vivling_suggestion_gate(
         &mut self,
         config: &Config,

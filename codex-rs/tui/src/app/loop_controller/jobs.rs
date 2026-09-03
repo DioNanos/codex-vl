@@ -1099,7 +1099,7 @@ pub(super) async fn run_command_request(
                 None,
             )
         }
-        // FASE5 5A — `/loop apply`/`/loop dismiss`: puro routing ad eventi
+        // `/loop apply`/`/loop dismiss`: puro routing ad eventi
         // Vivling. Nessun tocco allo state DB qui; l'applicazione effettiva
         // (map_to_command + run_command_request ricorsivo) avviene nel
         // handler ApplyLoopSuggestion, sempre gated dal comando utente.

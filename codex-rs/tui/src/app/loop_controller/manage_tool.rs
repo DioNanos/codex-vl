@@ -51,8 +51,8 @@ async fn execute_dynamic_tool(
     match parse_manage_loops_tool_request(arguments) {
         Ok(request) => {
             // three explicit cases for the agent tool call: no
-            // active scope is an ordinary agent call (pre-T5 behaviour),
-            // one scope binds the T5 allowlist, two or more are ambiguous
+            // active scope is an ordinary agent call (pre-governance behaviour),
+            // one scope binds the managed-tick allowlist, two or more are ambiguous
             // and fail closed. Never collapse these again.
             let source = match app.resolve_tool_call_source(thread_id) {
                 ManagedToolCallSource::OrdinaryAgent => LoopCommandSource::Agent,
@@ -122,7 +122,7 @@ mod tests {
     use super::loop_action_outcome_to_app_server_response;
 
     // manage_loops source resolution regression tests -----------------------
-    // The T5 regression: with `managed_loop_command_source` returning a bare
+    // The managed-scope regression: with `managed_loop_command_source` returning a bare
     // `Option`, «no active scope» was rejected like «ambiguous» and the
     // ordinary agent could no longer create loops. These tests pin the three
     // explicit cases plus the fail-closed tick-completion resolver.
@@ -199,7 +199,7 @@ mod tests {
             Ok(())
         }
 
-        // (b) With exactly one scope the T5 allowlist governs: allowed
+        // (b) With exactly one scope the managed-tick allowlist governs: allowed
         // updates go through, disallowed adds are refused by scope.
         #[tokio::test]
         async fn single_scope_applies_the_allowlist() -> anyhow::Result<()> {
@@ -236,7 +236,7 @@ mod tests {
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
             // Allowlisted update: prompt enrichment goes through (an interval
-            // change would additionally require the T5 churn gate).
+            // change would additionally require the interval-churn gate).
             let update = execute_dynamic_tool(
                 &mut app,
                 thread_id,
@@ -253,7 +253,7 @@ mod tests {
             let refused = execute_dynamic_tool(&mut app, thread_id, add_args("other")).await;
             assert!(
                 !refused.success,
-                "managed-scope add must be refused by the T5 allowlist"
+                "managed-scope add must be refused by the managed-tick allowlist"
             );
             let other = state_runtime
                 .get_thread_loop_job_by_label(thread_id, "other")

@@ -5,7 +5,7 @@
 //! `try_send`s onto a fixed-capacity channel — the queue is transport only,
 //! a full queue drops the emission, never the tick, and no channel error
 //! ever reaches the tick. The consumer below is a distinct task: it drains
-//! the queue and, for the events R3 admits (anomalies + one-shots), tries
+//! the queue and, only for anomalous outcomes and one-shot ticks, tries
 //! the external notifier **only if configured**. An absent channel is a
 //! normal state: the persisted `pending` rows stay untouched and replay at
 //! the next bootstrap (once per start; the m1 `INSERT OR IGNORE` on
@@ -176,7 +176,7 @@ pub(crate) fn derive_outcome(
 /// synchronous tick boundary: build the summary from the
 /// persisted post-tick row with the manager RESOLVED by the caller (the
 /// same `resolve_effective_owner` result that drove the tick), persist it
-/// (with the R3 pending) and emit the event. Errors are logged, never
+/// (with the pending row) and emit the event. Errors are logged, never
 /// propagated: the tick is already done.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn record_sync_tick_summary(
@@ -270,7 +270,7 @@ pub(crate) fn build_tick_summary(
 }
 
 /// One-shot helper for the tick seams: persist the summary (and its pending
-/// when R3 admits it), then enqueue. Returns whether the summary is the
+/// when the summary policy admits it), then enqueue. Returns whether the summary is the
 /// first persisted instance (and only then the caller emits the event).
 /// The manager comes RESOLVED from the tick path (`manager`,
 /// `manager_reason`) — the summary never re-derives ownership.

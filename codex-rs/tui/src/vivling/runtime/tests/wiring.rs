@@ -1,4 +1,4 @@
-//! codex-vl T0 12.C-lite — pin del cablaggio di ticking.
+//! codex-vl — pin del cablaggio di ticking.
 //!
 //! Il render del wrapper è read-only salvo `CrtAnimationLedger` (v.
 //! nota di perimetro su `Vivling::crt_animation_ledger` —

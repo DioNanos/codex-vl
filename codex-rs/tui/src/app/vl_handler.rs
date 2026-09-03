@@ -349,7 +349,7 @@ impl App {
                 );
             }
             VlEvent::LoopTickSummary { summary } => {
-                // R3 level 1: the fixed-format summary reaches the UI
+                // The fixed-format summary reaches the UI
                 // (history line) and the loop audit event, which IS the
                 // durable log (no dedicated session_log exists — see
                 // ricognizione 2026-09-02). The row was already durable when
@@ -378,7 +378,7 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
-    /// FASE5 5A — applica una suggestion confermata dall'utente (`/loop apply`).
+    /// Applica una suggestion confermata dall'utente (`/loop apply`).
     /// Mappa la suggestion in un LoopCommandRequest non-distruttivo e lo
     /// instrada come un normale comando loop. I kind senza azione automatica
     /// (Unblock/Split) o le proposal invalida producono solo un messaggio:

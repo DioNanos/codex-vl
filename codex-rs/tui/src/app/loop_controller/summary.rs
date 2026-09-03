@@ -1,6 +1,6 @@
 //! codex-vl loop_controller: pure builder of the fixed-format loop
 //! tick summary (`loop · label · esito · durata · prossimo run · runner`),
-//! plus manager and runner with their respective reasons (matrice T2).
+//! plus manager and runner with their respective reasons (governance matrix).
 //!
 //! The struct is the contract: every field of the fixed format is a required
 //! field, so a missing field is a compile error, never a runtime hole. No
@@ -48,7 +48,7 @@ impl LoopScheduleKind {
 }
 
 /// Terminal esito of the tick. `Ok` covers the silent success of an
-/// interval/at tick; every other value is anomalous for R3 notification.
+/// interval/at tick; every other value is anomalous for notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoopTickOutcome {
     Ok,
@@ -85,7 +85,7 @@ impl NextRun {
     }
 }
 
-/// Who manages the loop (matrice T2 gestore), with the resolution reason.
+/// Who manages the loop (the resolved manager), with the resolution reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoopManager {
     Main,
@@ -117,7 +117,7 @@ pub(crate) struct LoopTickSummary {
     pub runner_reason: String,
     pub manager: LoopManager,
     pub manager_reason: String,
-    /// Present only when the T5 delegation is actually suspended.
+    /// Present only when the managed-tick delegation is actually suspended.
     pub suspend_reason: Option<String>,
     /// Claimed occurrence instant — the real dedup key when it is carried.
     /// `None` (legacy completion paths that do not carry the key yet) means
@@ -128,7 +128,7 @@ pub(crate) struct LoopTickSummary {
 }
 
 impl LoopTickSummary {
-    /// Fixed-format §T6 line, plus manager/runner reasons and, when present,
+    /// Fixed-format summary line, plus manager/runner reasons and, when present,
     /// the suspension reason. One format, no variants.
     pub(crate) fn render(&self) -> String {
         let mut rendered = format!(
@@ -169,7 +169,7 @@ impl LoopTickSummary {
         }
     }
 
-    /// R3 — a notification pending exists only for anomalous outcomes and
+    /// A notification pending exists only for anomalous outcomes and
     /// one-shot ticks. Silent interval/at successes never create one.
     pub(crate) fn pending_needed(&self) -> bool {
         match self.outcome {
@@ -244,7 +244,7 @@ struct PersistedSummary<'a> {
 }
 
 /// The pending flavor of `persist_before_emit`, valid only for
-/// the events R3 admits; callers must check [`LoopTickSummary::pending_needed`]
+/// the events the summary policy admits; callers must check [`LoopTickSummary::pending_needed`]
 /// before reaching for it.
 pub(crate) fn pending_kind() -> &'static str {
     LOOP_NOTIFICATION_KIND_PENDING
@@ -283,7 +283,7 @@ mod tests {
         }
     }
 
-    // §T6 fixed format, one render per esito — four different outcomes all
+    // Fixed summary format, one render per esito — four different outcomes all
     // render from the same single format.
     #[test]
     fn render_is_fixed_for_ok_interval_tick() {
@@ -333,7 +333,7 @@ mod tests {
         );
     }
 
-    // R3 — a pending exists only for anomalous outcomes and one-shot ticks:
+    // A pending exists only for anomalous outcomes and one-shot ticks:
     // a silent interval (or at) success must never create one.
     #[test]
     fn pending_not_created_for_silent_interval_tick() {

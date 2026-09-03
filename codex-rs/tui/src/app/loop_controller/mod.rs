@@ -180,7 +180,7 @@ impl App {
             .iter()
             .filter(|scope| scope.thread_id == thread_id);
         let Some(scope) = scopes.next() else {
-            // No active scope: an ordinary agent call (pre-T5 behaviour).
+            // No active scope: an ordinary agent call (pre-governance behaviour).
             return ManagedToolCallSource::OrdinaryAgent;
         };
         if scopes.next().is_some() {

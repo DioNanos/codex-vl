@@ -97,7 +97,7 @@ pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
 pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
-/// codex-vl T0 12.C-lite — shadow state del wrapper. Step A: scritto a
+/// codex-vl — shadow state del wrapper. Step A: scritto a
 /// fianco dei campi legacy `Cell`/`RefCell` (che restano la fonte letta);
 /// la migrazione campo-per-campo lo rende l'unica fonte e appiattisce la
 /// `RefCell` (transitoria di questa fase). PRIVATO del modulo: il
@@ -160,9 +160,9 @@ pub(crate) struct Vivling {
     pub(crate) crt_config: crate::vl::crt::VivlingCrtConfig,
     /// Per-render transition snapshot generator. Mutated inside `render()`.
     ///
-    /// codex-vl T0: NOTA DI PERIMETRO (audit 2026-08-31) — è l'unica eccezione
+    /// codex-vl: NOTA DI PERIMETRO — è l'unica eccezione
     /// residua al render read-only: `CrtAnimationLedger` (vl/crt, fuori dal
-    /// perimetro T0) muta il proprio stato per-frame via interior
+    /// perimetro del refactoring) muta il proprio stato per-frame via interior
     /// mutability, per design. La sua migrazione è tracciata come voce
     /// separata a registro (post-treno).
     pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
@@ -190,7 +190,7 @@ pub(crate) struct Vivling {
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
     /// turns when the user has never opened the dedicated panel.
-    /// codex-vl T0 12.C-lite — shadow state (privato: v. `ShadowState`).
+    /// codex-vl — shadow state (privato: v. `ShadowState`).
     /// Unica fonte di verità mutabile: il compilatore è il gate.
     shadow: ShadowState,
 }

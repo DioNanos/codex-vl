@@ -20,13 +20,13 @@ impl Vivling {
         self.request_frame();
     }
 
-    /// codex-vl T0 12.C-lite — per-frame maintenance estratta dal render
+    /// codex-vl — per-frame maintenance estratta dal render
     /// (che è `&self` per il trait `Renderable`): expiry del testo
     /// animato e frame pacing. Chiamata dal lifecycle hook `&mut` del
     /// BottomPane (`vl_lifecycle_tick`).
     ///
     /// Il render resta read-only SALVO `CrtAnimationLedger` (per-frame per
-    /// design, fuori dal perimetro T0 — v. la nota sul campo in mod.rs).
+    /// design, fuori dal perimetro del refactoring — v. la nota sul campo in mod.rs).
     pub(crate) fn tick(&mut self, now: Instant) {
         let shadow = &mut self.shadow;
         if shadow
@@ -74,7 +74,7 @@ impl Vivling {
         }
 
         let frames = active_footer_sprites_for_species(species, state.stage());
-        // codex-vl T0: read-only (salvo CrtAnimationLedger, v. nota di
+        // codex-vl: read-only (salvo CrtAnimationLedger, v. nota di
         // perimetro su Vivling::crt_animation_ledger) — lazy-init e frame
         // pacing sono passati al `tick` (&mut), chiamato dal lifecycle hook
         // del BottomPane.

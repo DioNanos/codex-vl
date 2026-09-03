@@ -2,7 +2,7 @@ use codex_protocol::ThreadId;
 
 /// Kind values for [`LoopNotificationRecord`] (closed pair, CHECK-enforced
 /// in migration 0936): `"summary"` lands on every finished tick, `"pending"`
-/// only on the events R3 admits (anomalous outcomes and one-shot ticks).
+/// only on anomalous outcomes and one-shot ticks.
 pub const LOOP_NOTIFICATION_KIND_SUMMARY: &str = "summary";
 pub const LOOP_NOTIFICATION_KIND_PENDING: &str = "pending";
 

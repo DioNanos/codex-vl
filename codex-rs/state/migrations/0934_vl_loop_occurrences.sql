@@ -1,4 +1,4 @@
--- Occurrence accounting for loop ticks (T3). One row per (job_id,
+-- Occurrence accounting for loop ticks. One row per (job_id,
 -- scheduled_at_ms): the claim is the INSERT itself, so a second timer for
 -- the same occurrence finds the row already present (rows_affected = 0) and
 -- skips — an occurrence is dispatched at most once. Keep job_id stable so

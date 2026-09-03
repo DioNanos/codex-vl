@@ -264,7 +264,7 @@ fn management_suspension_decision(
     }
 }
 
-/// Re-evaluates the T5 state boundary after each tick and before the next
+/// Re-evaluates the managed-tick state boundary after each tick and before the next
 /// dispatch. Phase suspension is distinct from 3-fail demotion and both are
 /// persisted in 0932-compatible fields added by 0935.
 pub(super) async fn refresh_management_state(
@@ -400,7 +400,7 @@ pub(super) async fn handle_loop_tick_finished(
                     "failed to persist Vivling loop brain error for {vivling_id}: {persist_err}"
                 );
             }
-            // T3 fail-once (§4-bis 3): a failed one_shot tick is terminal —
+            // Fail-once: a failed one_shot tick is terminal —
             // the `failed` outcome is persisted together with the disarm in
             // the same atomic update and the job never re-arms (no retry,
             // `pending_tick` stays false; repeating means a new occurrence).
@@ -580,7 +580,7 @@ pub(super) async fn handle_loop_tick_finished(
                 .await
                 .map_err(loop_state_error)?;
 
-            // persist-before-mutate: the summary (and the R3
+            // persist-before-mutate: the summary (and the pending row
             // pending) is durable BEFORE the completion action can remove or
             // disable the job (auto_remove_on_completion defaults to true, so
             // DONE ticks typically remove it — the summary must not die with
@@ -629,7 +629,7 @@ pub(super) async fn handle_loop_tick_finished(
                 );
             }
 
-            // FASE5 5A — gated loop suggestion (NO-AUTO channel). Emessa solo se
+            // Gated loop suggestion (NO-AUTO channel). Emessa solo se
             // il gate (Adult + brain + bond>=50 + exposure>=20 + conf>=0.60)
             // passa; MAI applicata qui — l'utente deve `/loop apply <id>`.
             if let Some(raw) = result.suggestion.as_ref() {
@@ -641,7 +641,7 @@ pub(super) async fn handle_loop_tick_finished(
                 {
                     let sugg = crate::vl::suggestions::VivlingLoopSuggestion {
                         id: format!("sg-{}", uuid::Uuid::new_v4().simple()),
-                        // FASE5 5A safety (audit): il target e' VINCOLATO al job del
+                        // Safety: il target e' VINCOLATO al job del
                         // tick, MAI a raw.loop_label (LLM-controlled) -> niente label
                         // injection / edit di un loop non corrispondente.
                         loop_label: job.label.clone(),

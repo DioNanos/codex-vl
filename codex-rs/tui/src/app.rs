@@ -642,7 +642,7 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
-    /// FASE5 5A — volatile in-session context bus (worker snapshots +
+    /// Volatile in-session context bus (worker snapshots +
     /// pending loop suggestions). Not persisted, not part of VivlingState.
     pub(crate) vivling_context_bus: crate::vl::context_bus::VivlingContextBus,
     /// server-issued scopes for child-agent loop ticks.  A dynamic

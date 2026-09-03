@@ -783,7 +783,7 @@ pub(super) async fn process_submission(
                 {
                     return Ok(());
                 }
-                // FASE5 5A — feed del worker context (volatile bus) nel prompt
+                // Feed del worker context (volatile bus) nel prompt
                 // del loop tick, così il Vivling vede l'attività worker recente.
                 if let Some(summary) = app.vivling_context_bus.worker_context_summary() {
                     request
@@ -1063,7 +1063,7 @@ mod tests {
         Ok(())
     }
 
-    // T3 fail-once (§4-bis 3): a one_shot tick that fails is terminal — the
+    // Fail-once: a one_shot tick that fails is terminal — the
     // failed outcome is persisted with the disarm and no later timer can
     // resurrect the job (no second child event).
     #[tokio::test]

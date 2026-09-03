@@ -93,7 +93,7 @@ impl Vivling {
             let phase = &mut self.shadow.lifecycle;
             phase.set_available(); // configure() precede sempre un task
             if running {
-                // codex-vl T0 — regressione presa da
+                // codex-vl — regressione presa da
                 // footer_pose_animates_while_visible_and_idle: la FSM entra in
                 // task PRIMA di mark_recent_activity, che già vedeva
                 // is_task_running()=true e non seminava mai il clock della
@@ -200,7 +200,7 @@ impl Vivling {
         self.request_frame();
     }
 
-    /// codex-vl T0 12.C-lite — CRT scene activity (ex direct field write
+    /// codex-vl — CRT scene activity (ex direct field write
     /// in `BottomPane::set_vivling_activity`).
     pub(crate) fn set_activity(&mut self, activity: Option<crate::vl::VivlingActivity>) {
         self.shadow.activity = activity;
@@ -231,7 +231,7 @@ impl Vivling {
             .animation_text_expires_at
             .is_some_and(|deadline| deadline <= now);
         if expired {
-            // codex-vl T0: la pulizia è differita al `tick` (&mut); qui la
+            // codex-vl: la pulizia è differita al `tick` (&mut); qui la
             // lettura resta pura perché il render path è `&self`.
             return None;
         }

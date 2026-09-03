@@ -107,11 +107,11 @@ pub(crate) enum LoopCommandRequest {
     OwnerShow,
     OwnerSetMain,
     OwnerSetVivling,
-    /// FASE5 5A — apply a pending suggestion by id (user-confirmed via `/loop apply`).
+    /// Apply a pending suggestion by id (user-confirmed via `/loop apply`).
     Apply {
         suggestion_id: String,
     },
-    /// FASE5 5A — dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
+    /// Dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
     Dismiss {
         suggestion_id: String,
     },
@@ -196,17 +196,17 @@ pub(crate) enum VlEvent {
         text: String,
         vivling_id: Option<String>,
     },
-    /// FASE5 5A — a gated loop suggestion is ready to surface to the user.
+    /// A gated loop suggestion is ready to surface to the user.
     /// Stored in the in-session context bus; the user applies it with
     /// `/loop apply <id>` or discards it with `/loop dismiss <id>`. No
     /// automatic action is ever taken from this event alone.
     SuggestionReady { suggestion: VivlingLoopSuggestion },
-    /// FASE5 5A — user confirmed `/loop apply <id>`: map the suggestion to
+    /// User confirmed `/loop apply <id>`: map the suggestion to
     /// a safe LoopCommandRequest and route it (only non-destructive kinds).
     ApplyLoopSuggestion { suggestion_id: String },
-    /// FASE5 5A — user confirmed `/loop dismiss <id>`: drop the suggestion.
+    /// User confirmed `/loop dismiss <id>`: drop the suggestion.
     DismissLoopSuggestion { suggestion_id: String },
-    /// FASE5 5A — worker turn snapshot for the volatile context bus.
+    /// Worker turn snapshot for the volatile context bus.
     /// `blockers` only ever carries explicit signals (never invented).
     ContextBusTurn {
         summary: String,

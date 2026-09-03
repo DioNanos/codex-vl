@@ -19,7 +19,7 @@ fn footer_pose_animates_while_visible_and_idle() {
     vivling.state = Some(seeded_state());
     vivling.configure_runtime(FrameRequester::test_dummy(), true);
 
-    // codex-vl T0: il clock della pose parte dal percorso di produzione
+    // codex-vl: il clock della pose parte dal percorso di produzione
     // (set_task_running → mark_recent_activity); il render è read-only
     // (salvo CrtAnimationLedger, v. nota di perimetro) e non inizializza
     // più `active_started_at` al primo draw.
@@ -112,7 +112,7 @@ fn animation_text_expires_without_touching_saved_last_message() {
             .current_animation_text_at(now + ANIMATION_TEXT_TTL)
             .is_none()
     );
-    // codex-vl T0: il render è read-only (salvo CrtAnimationLedger, v.
+    // codex-vl: il render è read-only (salvo CrtAnimationLedger, v.
     // nota di perimetro) — la pulizia dell'expiry vive in Vivling::tick,
     // quindi il test la guida col percorso di produzione.
     vivling.tick(now + ANIMATION_TEXT_TTL);

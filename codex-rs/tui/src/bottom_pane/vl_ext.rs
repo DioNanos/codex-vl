@@ -194,7 +194,7 @@ impl BottomPane {
         self.vivling.try_begin_expression(kind)
     }
 
-    /// FASE5 5A — estrai i dati di gating del Vivling attivo (Adult/brain/
+    /// Estrai i dati di gating del Vivling attivo (Adult/brain/
     /// bond/exposure). None se non c'e' uno stato Vivling attivo. Il
     /// `confidence` lo passa il chiamante (dal `RawLoopSuggestion` dell'LLM).
     /// NIENTE brain_profile: a V10 SessionDefault e' target valido.
@@ -406,7 +406,7 @@ impl BottomPane {
         sidebar_collapsed: bool,
         loop_tick_running: bool,
     ) -> Option<crate::vl::TickResult> {
-        // codex-vl T0 12.C-lite — per-frame maintenance del wrapper
+        // codex-vl — per-frame maintenance del wrapper
         // (expiry animazione + frame pacing), estratta dal render path.
         self.vivling.tick(std::time::Instant::now());
         self.ensure_vl_lifecycle();

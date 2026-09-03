@@ -218,7 +218,7 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "rm" => Some(LoopCommandRequest::Remove {
             label: parts.next()?.to_string(),
         }),
-        // FASE5 5A — `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
+        // `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
         "apply" => Some(LoopCommandRequest::Apply {
             suggestion_id: parts.next()?.to_string(),
         }),
