@@ -350,12 +350,9 @@ mod tests {
             .get_loop_descriptor(&job.id)
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        // FIX-J follow-up (semantica, risposta a Dev 05:43): il descrittore
-        // 0933 nasce CON il job — `create_or_replace_thread_loop_job` fa
-        // `INSERT INTO vl_loop_descriptors … ON CONFLICT DO NOTHING`
-        // (thread_loop_jobs.rs:152-160) e la DDL 0933 porta il default
-        // `rearm_on_boot = 0`. La precondizione giusta è quindi il DEFAULT
-        // spento, non l'assenza del descrittore.
+        // The descriptor is created with the job (default `rearm_on_boot`
+        // off) and must survive the re-arm unchanged: the hook is allowed to
+        // move the runtime row only, never the descriptor.
         assert!(
             before
                 .as_ref()
