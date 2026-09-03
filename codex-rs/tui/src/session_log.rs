@@ -229,16 +229,20 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "loop_tick_summary",
+                "thread_id": summary.thread_id,
                 "job_id": summary.job_id,
                 "label": summary.label,
+                "schedule_kind": format!("{:?}", summary.schedule_kind),
                 "outcome": outcome,
                 "duration_ms": summary.duration_ms,
                 "next_run": next_run,
                 "runner": summary.runner.as_str(),
+                "runner_reason": summary.runner_reason,
                 "manager": format!("{:?}", summary.manager),
                 "manager_reason": summary.manager_reason,
                 "suspend_reason": summary.suspend_reason,
                 "occurrence_ms": summary.occurrence_ms,
+                "finished_at_ms": summary.finished_at_ms,
             });
             logger.write_json_line(value);
         }

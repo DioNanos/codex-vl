@@ -59,8 +59,9 @@ fn loop_tick_summary_records_the_typed_payload() {
     let logger = SessionLogger::new();
     logger.open(path.clone()).expect("open session log");
 
+    let thread_id = ThreadId::new();
     let summary = LoopTickSummary {
-        thread_id: ThreadId::new(),
+        thread_id,
         job_id: "job-log".to_string(),
         label: "nightly".to_string(),
         schedule_kind: LoopScheduleKind::OneShot,
@@ -82,10 +83,63 @@ fn loop_tick_summary_records_the_typed_payload() {
         written.contains("\"kind\":\"loop_tick_summary\""),
         "the log must carry the summary payload kind: {written}"
     );
-    assert!(written.contains("OneShotExpired"), "outcome recorded");
-    assert!(written.contains("nightly"), "label recorded");
+    // Every field of the typed payload, not just a sample: the doc comment
+    // on this match arm claims the full payload is kept, so the test must
+    // actually pin all of it.
+    assert!(
+        written.contains(&format!("\"thread_id\":\"{thread_id}\"")),
+        "thread_id recorded: {written}"
+    );
+    assert!(
+        written.contains("\"job_id\":\"job-log\""),
+        "job_id recorded: {written}"
+    );
+    assert!(
+        written.contains("\"label\":\"nightly\""),
+        "label recorded: {written}"
+    );
+    assert!(
+        written.contains("\"schedule_kind\":\"OneShot\""),
+        "schedule_kind recorded: {written}"
+    );
+    assert!(
+        written.contains("\"outcome\":\"OneShotExpired\""),
+        "outcome recorded: {written}"
+    );
+    assert!(
+        written.contains("\"duration_ms\":0"),
+        "duration_ms recorded: {written}"
+    );
+    assert!(
+        written.contains("\"next_run\":\"terminal:past the grace window\""),
+        "next_run recorded: {written}"
+    );
+    assert!(
+        written.contains("\"runner\":\"main\""),
+        "runner recorded: {written}"
+    );
+    assert!(
+        written.contains("\"runner_reason\":\"runner=main\""),
+        "runner_reason recorded: {written}"
+    );
+    assert!(
+        written.contains("\"manager\":\"Main\""),
+        "manager recorded: {written}"
+    );
     assert!(
         written.contains("\"manager_reason\":\"expired\""),
-        "manager reason recorded"
+        "manager_reason recorded: {written}"
+    );
+    assert!(
+        written.contains("\"suspend_reason\":null"),
+        "suspend_reason recorded: {written}"
+    );
+    assert!(
+        written.contains("\"occurrence_ms\":null"),
+        "occurrence_ms recorded: {written}"
+    );
+    assert!(
+        written.contains("\"finished_at_ms\":1700000000000"),
+        "finished_at_ms recorded: {written}"
     );
 }
