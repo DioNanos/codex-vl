@@ -45,34 +45,6 @@ use crate::vl::delegated_loops::VivlingReadiness;
 use crate::vl::delegated_loops::owner_from_resolution;
 use crate::vl::delegated_loops::resolve_effective_owner;
 
-#[cfg(test)]
-fn trace_second_tick(
-    emitter: &str,
-    branch: &str,
-    job_id: &str,
-    occurrence_ms: Option<i64>,
-    pending_tick: Option<bool>,
-    claimed: Option<bool>,
-    began: Option<bool>,
-) {
-    eprintln!(
-        "VL-TRACE-2ND-TICK emitter={emitter} branch={branch} job_id={job_id} occurrence_ms={occurrence_ms:?} pending_tick={pending_tick:?} claimed={claimed:?} began={began:?}"
-    );
-}
-
-#[cfg(not(test))]
-#[allow(clippy::too_many_arguments)]
-fn trace_second_tick(
-    _emitter: &str,
-    _branch: &str,
-    _job_id: &str,
-    _occurrence_ms: Option<i64>,
-    _pending_tick: Option<bool>,
-    _claimed: Option<bool>,
-    _began: Option<bool>,
-) {
-}
-
 fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
     match outcome {
         LoopPromptSubmissionOutcome::Submitted => Some(LOOP_STATUS_SUBMITTED),
@@ -187,15 +159,6 @@ async fn claim_occurrence_for_dispatch(
         .claim_loop_occurrence(&job.id, occurrence_ms, loop_now_ms())
         .await
         .map_err(loop_state_error)?;
-    trace_second_tick(
-        "claim_occurrence_for_dispatch",
-        "claim",
-        &job.id,
-        Some(occurrence_ms),
-        Some(job.pending_tick),
-        Some(claimed),
-        None,
-    );
     if claimed {
         return Ok(true);
     }
@@ -223,15 +186,6 @@ pub(super) async fn process_submission(
     thread_id: ThreadId,
     job: codex_state::ThreadLoopJob,
 ) -> color_eyre::Result<()> {
-    trace_second_tick(
-        "process_submission",
-        "entry",
-        &job.id,
-        job.next_run_ms,
-        Some(job.pending_tick),
-        None,
-        None,
-    );
     let state_runtime = app.loop_state_runtime().await?;
     // at-most-once dispatch: every path into submission (the timer and
     // the pending/restore path) claims the occurrence before owner resolution,
@@ -531,15 +485,6 @@ pub(super) async fn process_submission(
             .try_begin_loop_tick(&job.id, now)
             .await
             .map_err(loop_state_error)?;
-        trace_second_tick(
-            "try_begin_loop_tick",
-            "child_agent",
-            &job.id,
-            occurrence_ms,
-            Some(job.pending_tick),
-            None,
-            Some(began),
-        );
         if !began {
             state_runtime
                 .update_thread_loop_job_runtime(
@@ -715,15 +660,6 @@ pub(super) async fn process_submission(
             .await
             .map_err(loop_state_error)?;
         app.register_managed_loop_scope(thread_id, &job.id, &job.label);
-        trace_second_tick(
-            "ticks::process_submission",
-            "child_agent",
-            &job.id,
-            occurrence_ms,
-            Some(job.pending_tick),
-            None,
-            Some(true),
-        );
         app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
             thread_id,
             job_id: job.id.clone(),
@@ -807,15 +743,6 @@ pub(super) async fn process_submission(
                     .await
                     .map_err(loop_state_error)?;
                 app.register_managed_loop_scope(thread_id, &job.id, &job.label);
-                trace_second_tick(
-                    "ticks::process_submission",
-                    "vivling",
-                    &job.id,
-                    occurrence_ms,
-                    Some(job.pending_tick),
-                    None,
-                    Some(true),
-                );
                 app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
                     thread_id,
                     job_id: job.id.clone(),
@@ -945,8 +872,11 @@ mod tests {
     use super::execute_internal_payload;
     use super::loop_now_ms;
     use super::process_submission;
+    use crate::app::loop_controller::summary::LoopTickOutcome;
     use crate::app::tests::make_test_app_with_channels;
     use crate::app::tests::test_thread_session;
+    use crate::app_event::AppEvent;
+    use crate::vl::VlEvent;
     use crate::vl::loop_runtime::LoopJobPayload;
     use codex_protocol::ThreadId;
     use codex_state::LoopDescriptorUpsertParams;
@@ -956,6 +886,23 @@ mod tests {
     use codex_state::ThreadLoopJobCreateParams;
     use codex_utils_absolute_path::test_support::PathExt;
     use tempfile::tempdir;
+
+    fn collect_loop_events(
+        app_events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    ) -> (usize, Vec<LoopTickOutcome>) {
+        let mut child_ticks = 0;
+        let mut summaries = Vec::new();
+        while let Ok(event) = app_events.try_recv() {
+            match event {
+                AppEvent::Vl(VlEvent::RunVivlingLoopTick { .. }) => child_ticks += 1,
+                AppEvent::Vl(VlEvent::LoopTickSummary { summary }) => {
+                    summaries.push(summary.outcome)
+                }
+                _ => {}
+            }
+        }
+        (child_ticks, summaries)
+    }
 
     #[test]
     fn internal_status_payload_schedules_next_tick() {
@@ -994,7 +941,6 @@ mod tests {
         let cwd = app.config.cwd.to_path_buf();
         app.chat_widget
             .handle_thread_session(test_thread_session(thread_id, cwd));
-        while app_events.try_recv().is_ok() {}
         let now = 1_700_000_000_000i64;
         let job = state_runtime
             .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
@@ -1038,8 +984,9 @@ mod tests {
         // The first timer has already spawned its child and owns the guard.
         assert!(state_runtime.try_begin_loop_tick(&job.id, now + 1).await?);
 
-        // The second timer must persist skipped_busy and leave the first
-        // child's guard in place, without dispatching another child event.
+        // A busy timer still emits exactly one SkippedBusy summary: the
+        // occurrence was evaluated, but this is not a child dispatch. Filter
+        // by event variant so T6's required summary does not look like a tick.
         process_submission(&mut app, thread_id, job.clone())
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -1056,10 +1003,9 @@ mod tests {
                 .expect("descriptor should remain present")
                 .in_flight
         );
-        assert!(
-            app_events.try_recv().is_err(),
-            "busy timer emitted a second child event"
-        );
+        let (child_ticks, summaries) = collect_loop_events(&mut app_events);
+        assert_eq!(child_ticks, 0, "busy timer emitted a second child tick");
+        assert_eq!(summaries, vec![LoopTickOutcome::SkippedBusy]);
         Ok(())
     }
 
@@ -1083,7 +1029,6 @@ mod tests {
         let cwd = app.config.cwd.to_path_buf();
         app.chat_widget
             .handle_thread_session(test_thread_session(thread_id, cwd));
-        while app_events.try_recv().is_ok() {}
         let now = loop_now_ms();
         let one_shot_at_ms = now + 60_000; // future, inside the grace window
         let job = state_runtime
@@ -1129,9 +1074,10 @@ mod tests {
         super::handle_tick(&mut app, thread_id, job.id.clone())
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        assert!(
-            app_events.try_recv().is_ok(),
-            "one-shot occurrence must dispatch its child tick"
+        let (child_ticks, _) = collect_loop_events(&mut app_events);
+        assert_eq!(
+            child_ticks, 1,
+            "one-shot occurrence must dispatch one child tick"
         );
 
         // The child fails: fail-once disarms the one_shot (no pending retry)
@@ -1164,9 +1110,10 @@ mod tests {
         super::handle_tick(&mut app, thread_id, job.id.clone())
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-        assert!(
-            app_events.try_recv().is_err(),
-            "failed one_shot must never dispatch a second tick"
+        let (child_ticks, _) = collect_loop_events(&mut app_events);
+        assert_eq!(
+            child_ticks, 0,
+            "failed one_shot must never dispatch a second child tick"
         );
         Ok(())
     }
