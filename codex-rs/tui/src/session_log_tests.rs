@@ -1,7 +1,9 @@
 use super::*;
-use crate::app::loop_controller::summary::{
-    LoopManager, LoopScheduleKind, LoopTickOutcome, LoopTickSummary, NextRun,
-};
+use crate::app::loop_controller::summary::LoopManager;
+use crate::app::loop_controller::summary::LoopScheduleKind;
+use crate::app::loop_controller::summary::LoopTickOutcome;
+use crate::app::loop_controller::summary::LoopTickSummary;
+use crate::app::loop_controller::summary::NextRun;
 use crate::vl::VlEvent;
 use codex_protocol::ThreadId;
 use pretty_assertions::assert_eq;
