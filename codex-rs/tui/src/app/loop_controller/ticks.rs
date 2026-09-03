@@ -17,7 +17,8 @@ use codex_protocol::ThreadId;
 
 use crate::app::App;
 use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
-use crate::vivling::{BrainTarget, VivlingLoopTickRequest};
+use crate::vivling::BrainTarget;
+use crate::vivling::VivlingLoopTickRequest;
 use crate::vl::VlEvent;
 use crate::vl::loop_runtime::LoopJobPayload;
 
