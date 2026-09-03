@@ -5,7 +5,7 @@ use crate::model::{
 };
 
 impl StateRuntime {
-    /// R11 gates 1 and 6 — persist-before-emit with dedup. The INSERT OR
+    /// Persist-before-emit with dedup. The INSERT OR
     /// IGNORE over the persisted `event_id` is the verdict: `true` = first
     /// time seen, the caller may emit; `false` = duplicate, must not be
     /// emitted again.
@@ -217,7 +217,7 @@ mod tests {
         }
     }
 
-    // R11 gates 1+6 — the same event_id persists once: the second insert is
+    // The same event_id persists once: the second insert is
     // refused (false = already persisted, must not be emitted again), and a
     // distinct event_id persists normally.
     #[tokio::test]

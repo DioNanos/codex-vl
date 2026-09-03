@@ -1,5 +1,5 @@
 -- T6 m1: persisted loop tick summaries and notification pending rows.
--- R11 gates: persist-before-emit (rows land before any emit) and dedup on
+-- Guarantees: persist-before-emit (rows land before any emit) and dedup on
 -- the persisted event_id (INSERT OR IGNORE verdict). `pending` rows replay
 -- at bootstrap by the notification consumer (m2); retention is bounded there.
 -- job_id carries NO foreign key BY DESIGN: this table is an audit trail of

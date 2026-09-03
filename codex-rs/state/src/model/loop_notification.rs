@@ -14,7 +14,7 @@ pub const LOOP_NOTIFICATION_SUMMARY_RETENTION: i64 = 20;
 pub const LOOP_NOTIFICATION_PENDING_MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// A row of `vl_loop_notifications` (0936): the persisted-before-emit record
-/// of one loop tick summary (R11 gates 1 and 6). `event_id` is the dedup key;
+/// of one loop tick summary. `event_id` is the dedup key;
 /// `summary_json` is the fixed-format summary serialized by the TUI builder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopNotificationRecord {

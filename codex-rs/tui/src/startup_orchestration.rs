@@ -413,7 +413,7 @@ pub(super) async fn run_main_inner(
         .await??;
     // T6 m2 — start the loop summary worker with the process state handle:
     // it owns the bounded queue, drains it, and replays undelivered pending
-    // rows once per process start (R11 gates 2/3/6).
+    // rows once per process start.
     state_db
         .as_ref()
         .map(crate::app::loop_controller::start_loop_summary_worker);

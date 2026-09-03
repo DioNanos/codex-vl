@@ -86,7 +86,7 @@ fn parse_runner_model(raw: Option<String>) -> anyhow::Result<Option<String>> {
     .transpose()
 }
 
-/// T3 — RFC 3339 with a mandatory offset (decisione DAG): a naive datetime
+/// T3 — RFC 3339 with a mandatory offset: a naive datetime
 /// is rejected as `one_shot_requires_offset`, never silently assumed UTC.
 /// Returns epoch-ms UTC.
 fn parse_one_shot_ms(raw: Option<&str>) -> anyhow::Result<Option<i64>> {

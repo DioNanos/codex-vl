@@ -17,7 +17,7 @@ pub(super) const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
 pub(super) const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";
 pub(super) const LOOP_STATUS_BLOCKED_OWNER: &str = "blocked_owner";
 pub(super) const LOOP_STATUS_DELEGATED_VIVLING: &str = "delegated_vivling";
-/// FIX-J (6) — terminal status of a one-shot past its grace window (R5.3/R10):
+/// Terminal status of a one-shot past its grace window:
 /// persisted by the re-arm pass at bootstrap, agreed with FIX-H (same name
 /// in the common pre-schedule expiry check).
 pub(super) const LOOP_STATUS_EXPIRED: &str = "expired";

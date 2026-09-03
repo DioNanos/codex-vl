@@ -30,8 +30,7 @@ pub(super) struct SchedulePlan<'a> {
     pub one_shot_at_ms: Option<i64>,
 }
 
-/// Grace window for an expired, never-claimed one-shot (T3, decisione
-/// «B con grace window»): a rapid restart within 5 minutes still fires the
+/// Grace window for an expired, never-claimed one-shot: a rapid restart within 5 minutes still fires the
 /// tick; past the grace the occurrence is terminal `expired` (disarm, no
 /// late execution, T6 riepilogo).
 pub(super) const ONE_SHOT_GRACE_MS: i64 = 5 * 60 * 1000;

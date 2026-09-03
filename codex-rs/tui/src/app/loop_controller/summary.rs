@@ -9,7 +9,7 @@
 //! one-shot has no next instant; a suspension reason only exists when the
 //! delegation is actually suspended), not convenience defaults.
 //!
-//! R11 gates honoured here: `persist_before_emit` writes the row (or the
+//! Guarantees honoured here: `persist_before_emit` writes the row (or the
 //! notification pending) **before** any emit can happen, and `event_id` is
 //! the persisted dedup key. Emission itself (bounded queue, notifier worker,
 //! `ticks.rs` seam) lands in m2 — nothing here touches the tick path.
@@ -180,7 +180,7 @@ impl LoopTickSummary {
         }
     }
 
-    /// R11 gate 1 — persist-before-emit: `record_loop_notification` writes
+    /// Persist-before-emit: `record_loop_notification` writes
     /// the row (with the dedup verdict) before the caller is allowed to emit.
     /// `Ok(true)` = first persistence, emit is allowed; `Ok(false)` =
     /// duplicate event id, already persisted, never emit again.
@@ -243,7 +243,7 @@ struct PersistedSummary<'a> {
     finished_at_ms: i64,
 }
 
-/// R11 gate 1 — the pending flavor of `persist_before_emit`, valid only for
+/// The pending flavor of `persist_before_emit`, valid only for
 /// the events R3 admits; callers must check [`LoopTickSummary::pending_needed`]
 /// before reaching for it.
 pub(crate) fn pending_kind() -> &'static str {

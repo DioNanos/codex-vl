@@ -8,7 +8,7 @@
 //! dispatches at-most-once (T3), so a schedule pointer onto it is dead.
 //! Idempotency on repeated reloads comes from those skips: a job armed
 //! with a live (never-claimed) occurrence is left untouched. The pure
-//! scheduler recomputes an expired one-shot to `None` (R5.3/R10: terminal
+//! scheduler recomputes an expired one-shot to `None` (terminal
 //! expired, never resurrected via re-arm) and manually disabled jobs
 //! (`enabled = false`) are never touched (no implicit auto-start; the
 //! flag survives the disable). The hook writes only the 0930 runtime row
@@ -129,7 +129,7 @@ pub(super) async fn rearm_disarmed_jobs(
         // an expired one-shot recomputes to `None` and stays disarmed.
         let next_run_ms = next_run_at_ms(&plan, now);
         let Some(next_run_ms) = next_run_ms else {
-            // FIX-J (6) — a one-shot past its grace is terminal (R5.3/R10)
+            // A one-shot past its grace is terminal
             // but NOT silent at bootstrap: persist the terminal `expired`
             // status and the T6 summary + pending (R3: anomalous event).
             if descriptor.schedule_kind == "one_shot" {

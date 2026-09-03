@@ -1,7 +1,7 @@
 //! codex-vl loop_controller: T6 m2 — bounded queue, separate consumer and
 //! bootstrap replay for the persisted tick summaries.
 //!
-//! Seam contract (R11): the tick path only **persists** (m1 gate 1) and then
+//! Seam contract: the tick path only **persists** (the row lands before any emission) and then
 //! `try_send`s onto a fixed-capacity channel — the queue is transport only,
 //! a full queue drops the emission, never the tick, and no channel error
 //! ever reaches the tick. The consumer below is a distinct task: it drains
@@ -11,9 +11,9 @@
 //! the next bootstrap (once per start; the m1 `INSERT OR IGNORE` on
 //! `event_id` is the dedup verdict).
 //!
-//! The external notifier is **off by default** (declared Dev decision
-//! 21:57): `LoopNotifyChannel::from_config()` returns [`LoopNotifyChannel::Absent`]
-//! until the configuration key for the NexusCrew server name is decided —
+//! The external notifier is **off by default**: `LoopNotifyChannel::from_config()`
+//! returns [`LoopNotifyChannel::Absent`] until the configuration key for the
+//! external notifier is decided —
 //! the delivery seam is already there (`core/src/hook_mcp_executor.rs`
 //! `CoreHookMcpExecutor` on `codex_mcp::McpRuntime`; `codex-mcp` in
 //! `tui/Cargo.toml`), so wiring it is a one-variant extension of
@@ -34,7 +34,7 @@ use super::summary::LoopTickSummary;
 use super::summary::NextRun;
 use crate::app::App;
 
-/// Fixed queue capacity (R11 gate 2): bounded, never grows with the tick
+/// Fixed queue capacity: bounded, never grows with the tick
 /// count; overflow drops the emission and keeps the persisted row.
 pub(crate) const LOOP_SUMMARY_QUEUE_CAPACITY: usize = 32;
 
@@ -54,8 +54,7 @@ pub(crate) enum LoopNotifyChannel {
 
 impl LoopNotifyChannel {
     pub(crate) fn from_config() -> Self {
-        // Declared decision (Dev 21:57): the NexusCrew server-name
-        // configuration key is not chosen yet, so the channel ships off.
+        // The notifier configuration key is not chosen yet, so the channel ships off.
         LoopNotifyChannel::Absent
     }
 }
@@ -69,7 +68,7 @@ pub(crate) enum DerivedOutcome {
     OneShotExpired,
 }
 
-/// Persist-before-emit (R11 gate 1) + bounded enqueue (gate 2). Returns
+/// Persist-before-emit + bounded enqueue. Returns
 /// `true` when this is the first persistence of the event and the caller
 /// may emit it; `false` = duplicate `event_id` (already durable, never emit
 /// again). The pending row (anomalies + one-shots only) is written in the
@@ -340,7 +339,7 @@ pub(super) async fn persist_summary_with_outcome(
     Ok(first.then_some(summary))
 }
 
-/// R11 gate 3 — the separate consumer: replays undelivered pending rows once
+/// The separate consumer: replays undelivered pending rows once
 /// per start, then drains the queue. Delivery happens only through the
 /// (optional) external channel; absent channel = rows stay pending.
 pub(crate) async fn run_loop_summary_worker(
@@ -519,7 +518,7 @@ mod tests {
         assert_eq!(summary.duration_ms, 25);
     }
 
-    // R11 gate 2 — a full bounded queue drops the emission (Err) without
+    // A full bounded queue drops the emission (Err) without
     // panicking; the tick path ignores the result either way.
     #[tokio::test]
     async fn full_queue_drops_the_emission_without_panicking() {
