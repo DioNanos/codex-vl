@@ -555,7 +555,7 @@ mod tests {
         use std::time::Instant;
         let entry = VivlingLogEntry {
             kind: VivlingLogKind::Chat,
-            text: "ciao davide... tu il creatore. io nilo. *annuisce piano* perché mi hai chiamato così? c'è un motivo dietro al nome?".to_string(),
+            text: "hey... you're the maker. I'm the helper. *nods slowly* why did you call me that? is there a reason behind the name?".to_string(),
             ts: Instant::now(),
             vivling_id: None,
         };

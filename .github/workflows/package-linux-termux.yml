@@ -117,7 +117,7 @@ jobs:
       - name: Stage Linux x64 npm package
         run: |
           set -euo pipefail
-          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/linux-x64"
+          root="$HOME/.local/share/build-artifacts/codex-vl/${GITHUB_SHA}/linux-x64"
           vendor="$root/vendor/x86_64-unknown-linux-musl"
           out="$root/npm"
           rm -rf "$root"
@@ -145,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: codex-vl-linux-x64-npm-${{ env.RELEASE_VERSION }}
-          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
+          path: ~/.local/share/build-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
           if-no-files-found: error
 
   build-android-arm64:
@@ -251,7 +251,7 @@ jobs:
       - name: Stage Android arm64 npm package
         run: |
           set -euo pipefail
-          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/android-arm64"
+          root="$HOME/.local/share/build-artifacts/codex-vl/${GITHUB_SHA}/android-arm64"
           vendor="$root/vendor/aarch64-linux-android"
           out="$root/npm"
           rm -rf "$root"
@@ -293,5 +293,5 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: codex-vl-android-arm64-npm-${{ env.RELEASE_VERSION }}
-          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
+          path: ~/.local/share/build-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
           if-no-files-found: error

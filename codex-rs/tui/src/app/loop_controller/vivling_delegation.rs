@@ -1062,9 +1062,10 @@ mod strategy_tests {
 /// event can address the right Vivling even when the model returns
 /// an error.
 pub(super) fn run_expression(app: &mut App, request: crate::vivling::VivlingExpressionRequest) {
-    // codex-vl Step 12.C — gate singolo: un solo dispatch di espressione in
-    // volo. Se uno è già in corso, skip best-effort (nessun finished verrà
-    // emesso, quindi nessun clear pendente: begin e clear restano 1:1).
+    // codex-vl Step 12.C — single gate: only one expression dispatch in
+    // flight at a time. If one is already running, skip best-effort (no
+    // finished event will be emitted, so nothing stays pending: begin and
+    // clear stay 1:1).
     if !app
         .chat_widget
         .try_begin_vivling_expression(crate::vivling::ExpressionKind::Crt)
