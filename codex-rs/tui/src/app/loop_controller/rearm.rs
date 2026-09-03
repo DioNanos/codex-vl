@@ -229,13 +229,14 @@ mod tests {
     use codex_utils_absolute_path::test_support::PathExt;
     use tempfile::tempdir;
 
-    async fn runtime() -> anyhow::Result<std::sync::Arc<StateRuntime>> {
+    async fn runtime() -> anyhow::Result<(std::sync::Arc<StateRuntime>, tempfile::TempDir)> {
         let codex_home = tempdir()?;
-        StateRuntime::init(
+        let state_runtime = StateRuntime::init(
             SqliteConfig::new_for_testing(codex_home.path().abs()),
             "test-provider".to_string(),
         )
-        .await
+        .await?;
+        Ok((state_runtime, codex_home))
     }
 
     async fn create_job(
@@ -335,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn rearm_schedules_disarmed_interval_job_and_keeps_descriptor() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();
@@ -387,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn second_reload_does_not_rearm_an_armed_job() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();
@@ -431,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn flag_false_leaves_the_disarmed_job_untouched() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();
@@ -464,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn expired_one_shot_is_never_resurrected_by_rearm() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();
@@ -518,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn pending_tick_job_is_skipped_even_with_the_flag() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();
@@ -550,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn manually_disabled_job_is_not_rearmed() -> anyhow::Result<()> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
-        let state_runtime = runtime().await?;
+        let (state_runtime, _codex_home) = runtime().await?;
         app.state_db = Some(state_runtime.clone());
 
         let thread_id = ThreadId::new();

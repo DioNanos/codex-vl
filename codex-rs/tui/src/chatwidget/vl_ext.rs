@@ -12,6 +12,26 @@ use super::PARENT_OWNED_INPUT_MESSAGE;
 use crate::legacy_core::config::Config;
 
 impl ChatWidget {
+    /// Test-only fixture for loop-controller tests that need the real
+    /// Adult+brain+profile management gate. Keeping the setup here avoids
+    /// exposing `BottomPane` internals to sibling test modules.
+    #[cfg(test)]
+    pub(crate) fn prepare_vivling_management_gate_for_tests(&mut self) -> Result<String, String> {
+        let config = self.config.clone();
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::Hatch)?;
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::PromoteAdult)?;
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::Brain(true))?;
+        self.bottom_pane
+            .assign_vivling_brain_profile(&config, "vivling-spark".to_string())?;
+        self.bottom_pane
+            .active_vivling_id()
+            .map(str::to_string)
+            .ok_or_else(|| "test Vivling was not activated".to_string())
+    }
+
     /// Submit an Adult Vivling assist kickoff through the normal worker-turn
     /// pipeline without interpreting shell escapes.
     ///

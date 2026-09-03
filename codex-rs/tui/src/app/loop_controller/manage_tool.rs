@@ -140,7 +140,12 @@ mod tests {
         const ADD_ARGS: &str =
             r#"{"action":"add","label":"__LABEL__","interval":"5m","prompt":"check"}"#;
 
-        async fn app_with_state() -> anyhow::Result<(App, std::sync::Arc<StateRuntime>, ThreadId)> {
+        async fn app_with_state() -> anyhow::Result<(
+            App,
+            std::sync::Arc<StateRuntime>,
+            ThreadId,
+            tempfile::TempDir,
+        )> {
             let (mut app, _events, _ops) = make_test_app_with_channels().await;
             let codex_home = tempdir()?;
             let state_runtime = StateRuntime::init(
@@ -152,7 +157,7 @@ mod tests {
             let thread_id = ThreadId::new();
             app.primary_thread_id = Some(thread_id);
             app.active_thread_id = Some(thread_id);
-            Ok((app, state_runtime, thread_id))
+            Ok((app, state_runtime, thread_id, codex_home))
         }
 
         fn add_args(label: &str) -> serde_json::Value {
@@ -178,7 +183,7 @@ mod tests {
         // call goes through and the job is really created.
         #[tokio::test]
         async fn add_without_scope_creates_the_job() -> anyhow::Result<()> {
-            let (mut app, state_runtime, thread_id) = app_with_state().await?;
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
 
             let outcome = execute_dynamic_tool(&mut app, thread_id, add_args("unscoped")).await;
             assert!(
@@ -198,7 +203,7 @@ mod tests {
         // updates go through, disallowed adds are refused by scope.
         #[tokio::test]
         async fn single_scope_applies_the_allowlist() -> anyhow::Result<()> {
-            let (mut app, state_runtime, thread_id) = app_with_state().await?;
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
             create_unscoped_job(&mut app, thread_id, "scoped").await?;
             let job = state_runtime
                 .get_thread_loop_job_by_label(thread_id, "scoped")
@@ -206,6 +211,29 @@ mod tests {
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?
                 .expect("scoped job exists");
             app.register_managed_loop_scope(thread_id, &job.id, "scoped");
+            let vivling_id = app
+                .chat_widget
+                .prepare_vivling_management_gate_for_tests()
+                .map_err(|err| anyhow::anyhow!(err))?;
+            state_runtime
+                .upsert_loop_delegation(codex_state::LoopDelegationUpsertParams {
+                    thread_id,
+                    job_id: job.id.clone(),
+                    loop_label: job.label.clone(),
+                    vivling_id,
+                    strategy: codex_state::LoopDelegationStrategy::Manage,
+                    ticks_managed: 0,
+                    recent_results_json: r#"{"v":1,"entries":[]}"#.to_string(),
+                    last_plan_approved: Some(true),
+                    strategy_override: Some(codex_state::LoopDelegationStrategy::Manage),
+                    override_main: false,
+                    cooldown_until_ms: None,
+                    suspend_reason: None,
+                    created_at_ms: 1_700_000_000_000,
+                    updated_at_ms: 1_700_000_000_000,
+                })
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
             // Allowlisted update: prompt enrichment goes through (an interval
             // change would additionally require the T5 churn gate).
@@ -239,7 +267,7 @@ mod tests {
         // no job is created.
         #[tokio::test]
         async fn two_scopes_fail_closed() -> anyhow::Result<()> {
-            let (mut app, state_runtime, thread_id) = app_with_state().await?;
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
             create_unscoped_job(&mut app, thread_id, "one").await?;
             create_unscoped_job(&mut app, thread_id, "two").await?;
             let one = state_runtime
@@ -279,7 +307,7 @@ mod tests {
         // of executing with full agent permissions.
         #[tokio::test]
         async fn managed_tick_source_is_bound_to_the_exact_job() -> anyhow::Result<()> {
-            let (mut app, state_runtime, thread_id) = app_with_state().await?;
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
             create_unscoped_job(&mut app, thread_id, "owner").await?;
             create_unscoped_job(&mut app, thread_id, "bystander").await?;
             let owner = state_runtime
