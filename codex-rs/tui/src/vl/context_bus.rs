@@ -69,7 +69,7 @@ impl VivlingContextBus {
         Some(self.pending_suggestions.remove(pos))
     }
 
-    /// FASE5 5A — formatta lo snapshot worker (volatile) per il prompt del
+    /// Formatta lo snapshot worker (volatile) per il prompt del
     /// loop tick, così il Vivling vede l'attività worker recente. Legge tutti
     /// i campi di [`WorkerTurnSnapshot`]. None se non c'e' uno snapshot.
     pub(crate) fn worker_context_summary(&self) -> Option<String> {

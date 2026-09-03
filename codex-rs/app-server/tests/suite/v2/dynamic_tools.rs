@@ -612,7 +612,7 @@ async fn manage_loops_builtins_are_scoped_to_the_tui_client() -> Result<()> {
     Ok(())
 }
 
-/// codex-vl (T0b): the manage_loops builtin is granted by the explicit
+/// codex-vl: the manage_loops builtin is granted by the explicit
 /// `manageLoops` thread/start capability or, as the 0.151.x compatibility
 /// fallback, by the TUI identity — and by nothing else. Mutation-sensitive:
 /// flipping the decision predicate `client_requests_manage_loops_builtins`
@@ -640,7 +640,7 @@ async fn manage_loops_builtin_grant_follows_capability_or_tui_identity() -> Resu
     );
 
     // (b) codex-tui WITHOUT the capability → builtin present via the identity
-    // fallback (0.151.x compatibility cycle). T0b gate decision (B): if the
+    // fallback (0.151.x compatibility cycle). If the gate ever becomes
     // fallback is ever retired in favour of capability-only, flip these two
     // assertions to !present.
     let tui_no_capability_tools =
@@ -672,7 +672,7 @@ async fn manage_loops_builtin_grant_follows_capability_or_tui_identity() -> Resu
 /// Runs one thread/start + turn/start as the given app-server client and
 /// returns the `tools` array of the first request model sent to the mock
 /// provider. `capabilities` carries the thread/start `capabilities` field
-/// (None omits it entirely, which is what pre-T0b clients send).
+/// (None omits it entirely, which is what older clients send).
 async fn first_request_model_tools_with_client(
     client_name: &str,
     declare_codex_app_namespace: bool,

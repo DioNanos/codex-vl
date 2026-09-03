@@ -467,7 +467,7 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
 }
 
 /// codex-vl: single decision point for granting the fork-owned manage_loops
-/// builtins (T0b). The explicit `manageLoops` thread/start capability grants
+/// builtins. The explicit `manageLoops` thread/start capability grants
 /// the builtin to any client that can serve the DynamicToolCall; the TUI
 /// identity check is the compatibility fallback for the 0.151.x cycle (the
 /// TUI does not declare capabilities yet). Changing the grant policy is a
