@@ -7,8 +7,8 @@
 // "Fork identity and release safety" — ma la si fa a mente, ricostruendo
 // l'elenco dei motivi da cercare. Una lista scritta a mano copre cio' che
 // ricordi; un test copre cio' che c'e', e fallisce prima del publish invece
-// che dopo. Specchia e adatta il rationale del test published-tree-is-clean
-// di nexuscrew (tests/published-tree-is-clean.test.js).
+// che dopo. Il rationale specchia quello del gate dell'albero pubblicato:
+// un elenco di motivi vietati, applicato ai file che escono.
 //
 // Ogni voce vietata dice PERCHE' e' vietata: un elenco di stringhe senza
 // motivo si svuota di senso e prima o poi qualcuno ne toglie una per far
