@@ -531,7 +531,7 @@ pub(super) async fn handle_loop_tick_finished(
                         format!("malformed payload: {parse_err}"),
                         occurrence_ms,
                         super::summary::LoopTickOutcome::Failed,
-                        now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+                        started_ms,
                     )
                     .await
                     {
@@ -605,7 +605,7 @@ pub(super) async fn handle_loop_tick_finished(
                             format!("malformed action: {parse_err}"),
                             occurrence_ms,
                             super::summary::LoopTickOutcome::Failed,
-                            now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+                            started_ms,
                         )
                         .await
                         {
@@ -1212,6 +1212,29 @@ mod tests {
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         assert_eq!(summaries, 1, "exactly one failed summary for the tick");
+
+        // The summary must report a real duration (finished_at_ms - started_ms),
+        // not a small delta mistaken for an absolute instant: that bug reads
+        // as roughly the current epoch instant, i.e. a multi-decade duration.
+        let pending = _app_state(&app)
+            .list_pending_loop_notifications()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let summary_json = &pending
+            .iter()
+            .find(|row| row.job_id == job.id)
+            .expect("a pending row for this job")
+            .summary_json;
+        let parsed: serde_json::Value =
+            serde_json::from_str(summary_json).expect("summary_json must parse");
+        let duration_ms = parsed["duration_ms"]
+            .as_i64()
+            .expect("duration_ms must be present");
+        let expected_duration_ms = loop_now_ms() - 1_700_000_000_000;
+        assert!(
+            (duration_ms - expected_duration_ms).abs() < 5_000,
+            "duration_ms must reflect started_ms ({expected_duration_ms} +/- 5s), got {duration_ms}"
+        );
         Ok(())
     }
 
