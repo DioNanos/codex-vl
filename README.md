@@ -67,7 +67,7 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.151.0` line is based on the upstream Codex `rust-v0.151.0` stable
+The `0.152.1` line is based on the upstream Codex `rust-v0.152.1` stable
 release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
@@ -90,11 +90,11 @@ process variable explicitly by name when the server needs it; repeat the flag
 for multiple names:
 
 ```bash
-codex-vl mcp add nexuscrew \
-  --env-var NEXUSCREW_MCP_SESSION \
+codex-vl mcp add example-server \
+  --env-var EXAMPLE_MCP_SESSION \
   --env-var TMUX \
   --env-var TMUX_PANE \
-  -- nexuscrew mcp
+  -- example-server mcp
 ```
 
 The command stores only the variable names. Their values are read from the

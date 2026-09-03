@@ -122,11 +122,11 @@ mod tests {
     use super::loop_action_outcome_to_app_server_response;
 
     // manage_loops source resolution regression tests -----------------------
-    // The managed-scope regression: with `managed_loop_command_source` returning a bare
-    // `Option`, «no active scope» was rejected like «ambiguous» and the
-    // ordinary agent could no longer create loops. These tests pin the three
-    // explicit cases plus the fail-closed tick-completion resolver.
-    mod fix_g {
+    // The managed-scope regression: a bare `Option` collapsed «no active
+    // scope» and «ambiguous» into the same rejection, so the ordinary agent
+    // could no longer create loops. These tests pin the three explicit
+    // resolver cases plus the fail-closed tick-completion resolver.
+    mod tool_call_source_tests {
         use crate::app::tests::make_test_app_with_channels;
         use codex_state::SqliteConfig;
         use codex_state::StateRuntime;

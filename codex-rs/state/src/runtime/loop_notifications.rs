@@ -209,7 +209,7 @@ mod tests {
         LoopNotificationRecord {
             event_id: event_id.to_string(),
             thread_id: ThreadId::new(),
-            job_id: "job-t6".to_string(),
+            job_id: "job-notify".to_string(),
             label: "nightly".to_string(),
             kind,
             summary_json: format!(r#"{{"label":"nightly"}}"#),

@@ -254,7 +254,7 @@ impl VivlingState {
             }
             // Bookkeeping never distills — it already feeds the
             // loop_profile signals above, and distilling it produced the
-            // garbage topics (wait/verify/churn) found in the live audit.
+            // garbage topics (wait/verify/churn) observed on a long-lived state.
             if super::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
                 continue;
             }
