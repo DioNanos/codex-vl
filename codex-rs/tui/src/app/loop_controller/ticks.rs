@@ -300,6 +300,26 @@ pub(super) async fn process_submission(
             )
             .await
             .map_err(loop_state_error)?;
+        // An expired one-shot is a terminal outcome, not silence: the summary
+        // and its pending are persisted like every other finished tick. No
+        // owner resolution ran for a tick that never dispatched: the manager
+        // is the nominal main.
+        if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
+            app,
+            &state_runtime,
+            &job,
+            descriptor.as_ref(),
+            None,
+            super::summary::LoopManager::Main,
+            "expired".to_string(),
+            super::summary::LoopTickOutcome::OneShotExpired,
+            started_ms,
+        )
+        .await
+        {
+            app.app_event_tx
+                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+        }
         return Ok(());
     }
     let thread_owner = state_runtime
