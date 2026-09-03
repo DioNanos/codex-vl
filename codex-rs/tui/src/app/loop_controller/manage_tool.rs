@@ -143,13 +143,11 @@ mod tests {
         async fn app_with_state() -> anyhow::Result<(App, std::sync::Arc<StateRuntime>, ThreadId)> {
             let (mut app, _events, _ops) = make_test_app_with_channels().await;
             let codex_home = tempdir()?;
-            let state_runtime = std::sync::Arc::new(
-                StateRuntime::init(
-                    SqliteConfig::new_for_testing(codex_home.path().abs()),
-                    "test-provider".to_string(),
-                )
-                .await?,
-            );
+            let state_runtime = StateRuntime::init(
+                SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?;
             app.state_db = Some(state_runtime.clone());
             let thread_id = ThreadId::new();
             app.primary_thread_id = Some(thread_id);

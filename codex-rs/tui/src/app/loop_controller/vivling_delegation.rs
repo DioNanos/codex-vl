@@ -131,7 +131,7 @@ fn delegation_params(
 }
 
 pub(super) fn managed_action_gate_is_green(
-    app: &App,
+    app: &mut App,
     delegation: &codex_state::LoopDelegation,
 ) -> bool {
     strategy_allows_automatic_actions(delegation.strategy)
@@ -143,7 +143,7 @@ fn strategy_allows_automatic_actions(strategy: codex_state::LoopDelegationStrate
 }
 
 pub(super) fn management_gate_is_green(
-    app: &App,
+    app: &mut App,
     delegation: &codex_state::LoopDelegation,
 ) -> bool {
     app.chat_widget

@@ -160,6 +160,7 @@ mod tests {
             ticks_managed: 0,
             recent_results_json: "[]".to_string(),
             last_plan_approved: None,
+            strategy_override: None,
             override_main,
             cooldown_until_ms: None,
             suspend_reason: None,

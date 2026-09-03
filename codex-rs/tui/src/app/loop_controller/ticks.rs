@@ -1031,6 +1031,7 @@ mod tests {
             thread_id,
             job.id.clone(),
             Some(one_shot_at_ms),
+            now,
             Err("boom".to_string()),
         )
         .await

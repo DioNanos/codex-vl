@@ -27,11 +27,12 @@ use codex_state::LoopNotificationRecord;
 use tokio::sync::mpsc;
 
 use super::state::loop_now_ms;
-use super::summary::LoopManager;
+pub(super) use super::summary::LoopManager;
 use super::summary::LoopScheduleKind;
 use super::summary::LoopTickOutcome;
 use super::summary::LoopTickSummary;
 use super::summary::NextRun;
+use crate::app::App;
 
 /// Fixed queue capacity (R11 gate 2): bounded, never grows with the tick
 /// count; overflow drops the emission and keeps the persisted row.
@@ -452,6 +453,7 @@ mod tests {
     use super::enqueue_or_drop_result;
     use super::run_loop_summary_worker;
     use codex_protocol::ThreadId;
+    use codex_utils_absolute_path::test_support::PathExt;
     use tokio::sync::mpsc;
 
     fn job(
