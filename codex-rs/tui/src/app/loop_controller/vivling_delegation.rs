@@ -529,6 +529,7 @@ pub(super) async fn handle_loop_tick_finished(
                         None,
                         manager.clone(),
                         format!("malformed payload: {parse_err}"),
+                        occurrence_ms,
                         super::summary::LoopTickOutcome::Failed,
                         now.saturating_sub(job.last_run_ms.unwrap_or(now)),
                     )
@@ -602,6 +603,7 @@ pub(super) async fn handle_loop_tick_finished(
                             delegation.as_ref(),
                             manager.clone(),
                             format!("malformed action: {parse_err}"),
+                            occurrence_ms,
                             super::summary::LoopTickOutcome::Failed,
                             now.saturating_sub(job.last_run_ms.unwrap_or(now)),
                         )
@@ -1109,13 +1111,11 @@ mod tests {
     )> {
         let (mut app, _events, _ops) = make_test_app_with_channels().await;
         let codex_home = tempdir()?;
-        let state_runtime = std::sync::Arc::new(
-            StateRuntime::init(
-                SqliteConfig::new_for_testing(codex_home.path().abs()),
-                "test-provider".to_string(),
-            )
-            .await?,
-        );
+        let state_runtime = StateRuntime::init(
+            SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         app.state_db = Some(state_runtime.clone());
         let thread_id = ThreadId::new();
         app.primary_thread_id = Some(thread_id);
@@ -1156,7 +1156,7 @@ mod tests {
     // exiting the handler in silence.
     #[tokio::test]
     async fn malformed_status_reaches_the_runtime_update_and_the_summary() -> anyhow::Result<()> {
-        let (mut app, _events, _ops) = app_with_state().await?;
+        let (mut app, _state_runtime, _thread_id, _codex_home) = app_with_state().await?;
         let job = create_interval_job(
             &_app_state(&app),
             app.primary_thread_id.unwrap(),
@@ -1188,7 +1188,7 @@ mod tests {
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
-        let updated = state_runtime
+        let updated = _app_state(&app)
             .get_thread_loop_job_by_id(app.primary_thread_id.unwrap(), &job.id)
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?
@@ -1206,7 +1206,7 @@ mod tests {
             "the parse reason must reach the persisted row"
         );
 
-        let summaries = state_runtime
+        let summaries = _app_state(&app)
             .count_loop_notifications(&job.id, codex_state::LOOP_NOTIFICATION_KIND_SUMMARY)
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
@@ -1222,7 +1222,7 @@ mod tests {
     #[tokio::test]
     async fn finish_summary_reports_the_carried_resolution_not_the_thread_owner()
     -> anyhow::Result<()> {
-        let (mut app, _events, _ops) = app_with_state().await?;
+        let (mut app, _state_runtime, _thread_id, _codex_home) = app_with_state().await?;
         let job = create_interval_job(&_app_state(&app), app.primary_thread_id.unwrap(), "carried")
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;

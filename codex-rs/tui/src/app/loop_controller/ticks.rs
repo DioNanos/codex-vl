@@ -313,6 +313,7 @@ pub(super) async fn process_submission(
             None,
             super::summary::LoopManager::Main,
             "expired".to_string(),
+            Some(scheduled_at_ms),
             super::summary::LoopTickOutcome::OneShotExpired,
             started_ms,
         )

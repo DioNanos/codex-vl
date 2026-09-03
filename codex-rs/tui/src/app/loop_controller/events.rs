@@ -83,6 +83,7 @@ async fn expire_stale_one_shots(
                 None,
                 super::summary::LoopManager::Main,
                 "expired".to_string(),
+                Some(scheduled_at_ms),
                 super::summary::LoopTickOutcome::OneShotExpired,
                 now,
             )
@@ -167,13 +168,11 @@ mod tests {
     async fn expired_one_shot_produces_a_summary() -> anyhow::Result<()> {
         let (mut app, mut events, _ops) = make_test_app_with_channels().await;
         let codex_home = tempdir()?;
-        let state_runtime = std::sync::Arc::new(
-            StateRuntime::init(
-                SqliteConfig::new_for_testing(codex_home.path().abs()),
-                "test-provider".to_string(),
-            )
-            .await?,
-        );
+        let state_runtime = StateRuntime::init(
+            SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         app.state_db = Some(state_runtime.clone());
         let thread_id = ThreadId::new();
         app.primary_thread_id = Some(thread_id);
@@ -244,7 +243,7 @@ mod tests {
             {
                 assert!(matches!(
                     summary.outcome,
-                    super::super::notify::LoopTickOutcome::OneShotExpired
+                    super::super::summary::LoopTickOutcome::OneShotExpired
                 ));
                 saw_expired_summary = true;
             }
