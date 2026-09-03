@@ -618,7 +618,7 @@ pub(super) async fn process_submission(
                 prompt_text: payload.display_text(),
                 auto_remove_on_completion: job.auto_remove_on_completion,
                 prompt_context: format!(
-                    "This loop tick runs as an isolated child agent. Return only the structured loop result; do not ask for interactive approval.\nLoop goal: {}\nLoop prompt: {}",
+                    "This loop tick runs as a separate model call (no tools). Return only the structured loop result; do not ask for interactive approval.\nLoop goal: {}\nLoop prompt: {}",
                     job.goal_text.as_deref().unwrap_or("none"),
                     payload.display_text()
                 ),
