@@ -71,7 +71,8 @@ The `0.152.1` line is based on the upstream Codex `rust-v0.152.1` stable
 release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
-Being an upstream **stable**, it ships on the `latest` channel. The
+The upstream base of that line is a **stable** release, but the Codex VL
+build on it is an alpha (`-vl.1`) and ships on the `next` channel. The
 conservative `stable` tag remains on `0.144.5` until a later explicitly
 authorized promotion.
 
@@ -197,7 +198,7 @@ cargo build --release -p codex-cli --bin codex
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` binary (the `codex-vl-exec`
 command dispatches it via the `exec` subcommand). The
-npm `latest` publish includes Linux x64, Linux arm64 and Termux Android arm64
+npm package includes Linux x64, Linux arm64 and Termux Android arm64
 native packages plus the macOS arm64 source-build package.
 
 ## Roadmap
