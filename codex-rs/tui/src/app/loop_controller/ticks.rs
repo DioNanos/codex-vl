@@ -232,6 +232,40 @@ pub(super) async fn process_submission(
         );
         return Ok(());
     }
+    // A one-shot has exactly one persisted occurrence. Once that occurrence
+    // has completed (successfully or with a terminal failure), its runtime
+    // row is disarmed and must not be turned into a fresh dispatch merely
+    // because a later refresh calls this common submission path again. A
+    // missing key on an otherwise unprocessed one-shot is also fail-closed.
+    if is_one_shot && occurrence_ms.is_none() {
+        if job.last_status.is_none() {
+            state_runtime
+                .update_thread_loop_job_runtime(
+                    thread_id,
+                    &job.id,
+                    codex_state::ThreadLoopJobRuntimeUpdate {
+                        next_run_ms: None,
+                        last_run_ms: job.last_run_ms,
+                        last_status: Some(LOOP_STATUS_PENDING_OCCURRENCE_MISSING.to_string()),
+                        last_error: Some(
+                            "one-shot has no persisted occurrence key; dispatch refused"
+                                .to_string(),
+                        ),
+                        pending_tick: false,
+                        updated_at_ms: loop_now_ms(),
+                    },
+                )
+                .await
+                .map_err(loop_state_error)?;
+            app.record_vivling_loop_job(
+                "audit_rejected",
+                &job.label,
+                Some(&job),
+                super::types::LoopCommandSource::Agent,
+            );
+        }
+        return Ok(());
+    }
     if is_one_shot
         && let Some(scheduled_at_ms) = occurrence_ms
         && descriptor.as_ref().is_some_and(|descriptor| {
@@ -836,6 +870,7 @@ pub(super) async fn process_submission(
 mod tests {
     use super::LOOP_STATUS_PROGRESS;
     use super::execute_internal_payload;
+    use super::loop_now_ms;
     use super::process_submission;
     use crate::app::tests::make_test_app_with_channels;
     use crate::app::tests::test_thread_session;
@@ -886,6 +921,7 @@ mod tests {
         let cwd = app.config.cwd.to_path_buf();
         app.chat_widget
             .handle_thread_session(test_thread_session(thread_id, cwd));
+        while app_events.try_recv().is_ok() {}
         let now = 1_700_000_000_000i64;
         let job = state_runtime
             .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
@@ -974,7 +1010,8 @@ mod tests {
         let cwd = app.config.cwd.to_path_buf();
         app.chat_widget
             .handle_thread_session(test_thread_session(thread_id, cwd));
-        let now = 1_700_000_000_000i64;
+        while app_events.try_recv().is_ok() {}
+        let now = loop_now_ms();
         let one_shot_at_ms = now + 60_000; // future, inside the grace window
         let job = state_runtime
             .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
