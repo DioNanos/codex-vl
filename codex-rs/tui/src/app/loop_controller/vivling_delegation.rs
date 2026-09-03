@@ -1166,6 +1166,8 @@ mod tests {
             &mut app,
             app.primary_thread_id.unwrap(),
             job.id.clone(),
+            /*occurrence_ms*/ Some(1_700_000_000_000),
+            /*started_ms*/ 1_700_000_000_000,
             Ok(result),
         )
         .await
