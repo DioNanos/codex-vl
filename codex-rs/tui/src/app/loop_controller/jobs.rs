@@ -144,6 +144,12 @@ pub(super) async fn run_command_request(
     source: LoopCommandSource,
 ) -> color_eyre::Result<LoopActionOutcome> {
     if app.primary_thread_id != Some(thread_id) || app.active_thread_id != Some(thread_id) {
+        app.record_vivling_loop_job(
+            "audit_rejected",
+            managed_request_label(&request).unwrap_or("unknown"),
+            None,
+            source.clone(),
+        );
         return Ok(loop_action_failure(
             "guard",
             thread_id,
