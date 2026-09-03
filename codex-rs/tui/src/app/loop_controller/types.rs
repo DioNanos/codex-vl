@@ -21,7 +21,7 @@ pub(super) enum LoopCommandSource {
     Managed(LoopCommandScope),
 }
 
-/// FIX-G — the three caller-identity cases for an agent `manage_loops`
+/// the three caller-identity cases for an agent `manage_loops`
 /// DynamicToolCall, kept distinct in the type: collapsing «no scope» and
 /// «ambiguous» into one `Option::None` made T5 reject ordinary agent calls
 /// (`resolve_tool_call_source`). The managed-tick completion path uses a

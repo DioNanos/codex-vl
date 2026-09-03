@@ -645,7 +645,7 @@ pub(crate) struct App {
     /// FASE5 5A — volatile in-session context bus (worker snapshots +
     /// pending loop suggestions). Not persisted, not part of VivlingState.
     pub(crate) vivling_context_bus: crate::vl::context_bus::VivlingContextBus,
-    /// T5 — server-issued scopes for child-agent loop ticks.  A dynamic
+    /// server-issued scopes for child-agent loop ticks.  A dynamic
     /// manage call is accepted only when exactly one scope matches its
     /// originating primary thread; ambiguity fails closed.
     pub(crate) managed_loop_scopes: Vec<crate::vl::events::LoopCommandScope>,

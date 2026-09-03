@@ -172,7 +172,7 @@ pub(crate) fn derive_outcome(
     DerivedOutcome::Ok
 }
 
-/// FIX-J (7) — synchronous tick boundary: build the summary from the
+/// synchronous tick boundary: build the summary from the
 /// persisted post-tick row with the manager RESOLVED by the caller (the
 /// same `resolve_effective_owner` result that drove the tick), persist it
 /// (with the R3 pending) and emit the event. Errors are logged, never
@@ -307,7 +307,7 @@ pub(crate) async fn persist_and_queue_tick(
     Ok(first.then_some(summary))
 }
 
-/// FIX-J (3) — explicit-outcome variant for the completion path: the caller
+/// explicit-outcome variant for the completion path: the caller
 /// passes the post-tick snapshot and the ruled outcome BEFORE any destructive
 /// action (an `auto_remove` remove) can delete the job — persist-before-mutate.
 #[allow(clippy::too_many_arguments)]
@@ -416,7 +416,7 @@ async fn deliver_once(
     }
 }
 
-/// FIX-J (1) — starts (once per process) the bounded queue and the separate
+/// starts (once per process) the bounded queue and the separate
 /// consumer task at APP BOOTSTRAP (startup_orchestration, next to the log-db
 /// worker): the consumer replays undelivered pending rows once per start and
 /// then drains the queue. The tick seam reads the sender from the same
@@ -557,7 +557,7 @@ mod tests {
         }
     }
 
-    // FIX-J (1) — stitching test: a persisted pending row is picked up and
+    // stitching test: a persisted pending row is picked up and
     // processed by the worker itself (bootstrap replay), and a delivered row
     // leaves the pending set.
     #[tokio::test]

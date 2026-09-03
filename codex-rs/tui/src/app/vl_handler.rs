@@ -349,7 +349,7 @@ impl App {
                 );
             }
             VlEvent::LoopTickSummary { summary } => {
-                // T6 m2 — R3 level 1: the fixed-format summary reaches the UI
+                // R3 level 1: the fixed-format summary reaches the UI
                 // (history line) and the loop audit event, which IS the
                 // durable log (no dedicated session_log exists — see
                 // ricognizione 2026-09-02). The row was already durable when

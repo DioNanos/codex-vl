@@ -111,7 +111,7 @@ pub(super) async fn handle_reload(app: &mut App, thread_id: ThreadId) -> color_e
         super::ticks::process_submission(app, thread_id, pending_job).await?;
     }
 
-    // T4 — re-arm `rearm_on_boot` descriptors on the single loop-restore
+    // re-arm `rearm_on_boot` descriptors on the single loop-restore
     // path (idempotent: armed-with-live-occurrence jobs are left alone).
     super::rearm::rearm_disarmed_jobs(app, thread_id).await?;
 

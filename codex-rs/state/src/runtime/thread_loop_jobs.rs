@@ -477,7 +477,7 @@ mod tests {
         assert!(updated.pending_tick);
         assert_eq!(updated.last_status.as_deref(), Some("pending"));
 
-        // FIX-I — occurrence accounting (0934) is job-owned: a second job
+        // occurrence accounting (0934) is job-owned: a second job
         // with its own occurrence proves the cleanup removes only the
         // removed job's occurrences, not the whole table.
         runtime

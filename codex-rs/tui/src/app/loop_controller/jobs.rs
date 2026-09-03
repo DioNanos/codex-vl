@@ -259,7 +259,7 @@ pub(super) async fn run_command_request(
                 LoopCommandSource::Agent | LoopCommandSource::Managed(_) => "agent",
             }
             .to_string();
-            // T3 — the first run comes from the schedule descriptor values
+            // the first run comes from the schedule descriptor values
             // (interval | at | one_shot), computed by the pure scheduler.
             let next_run_ms = next_run_at_ms(
                 &super::state::SchedulePlan {
@@ -437,7 +437,7 @@ pub(super) async fn run_command_request(
             let enabled = enabled.unwrap_or(existing.enabled);
             let auto_remove_on_completion =
                 auto_remove_on_completion.unwrap_or(existing.auto_remove_on_completion);
-            // T3 — the schedule triplet is updated atomically: when
+            // the schedule triplet is updated atomically: when
             // `schedule_kind` is provided the triplet from the command wins
             // as a whole, otherwise the persisted one stays untouched.
             let (schedule_kind, schedule_at, one_shot_at_ms, tz) = if let Some(kind) = schedule_kind
@@ -570,7 +570,7 @@ pub(super) async fn run_command_request(
                 .map_err(loop_state_error)?
             {
                 let now = loop_now_ms();
-                // T3 — re-enable resumes from the schedule descriptor (`at`
+                // re-enable resumes from the schedule descriptor (`at`
                 // picks the next wall-clock occurrence; a one-shot past its
                 // instant stays disarmed: terminal expired).
                 let descriptor = state_runtime

@@ -131,7 +131,7 @@ pub(super) async fn rearm_disarmed_jobs(
         let Some(next_run_ms) = next_run_ms else {
             // A one-shot past its grace is terminal
             // but NOT silent at bootstrap: persist the terminal `expired`
-            // status and the T6 summary + pending (R3: anomalous event).
+            // status and the tick summary + pending row (an anomalous completion is recorded like any other).
             if descriptor.schedule_kind == "one_shot" {
                 state_runtime
                     .update_thread_loop_job_runtime(
@@ -462,7 +462,7 @@ mod tests {
         Ok(())
     }
 
-    // R5.3/R10 — an expired one-shot is terminal: re-arm recomputes the
+    // an expired one-shot is terminal: re-arm recomputes the
     // schedule to None and must never resurrect it. A one-shot inside its
     // grace window whose occurrence was already claimed is equally dead:
     // recomputing would yield the same instant, which loses the CAS, so the

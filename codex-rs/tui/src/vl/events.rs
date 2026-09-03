@@ -38,17 +38,17 @@ pub(crate) enum LoopCommandRequest {
         auto_remove_on_completion: Option<bool>,
         runner_kind: LoopRunnerKind,
         runner_model: Option<String>,
-        /// T3 — persisted on the descriptor (0933): "interval" | "at" |
+        /// persisted on the descriptor (0933): "interval" | "at" |
         /// "one_shot".
         schedule_kind: String,
-        /// T3 — "HH:MM" wall clock for `at`, interpreted in `tz`.
+        /// "HH:MM" wall clock for `at`, interpreted in `tz`.
         schedule_at: Option<String>,
-        /// T3 — epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// epoch-ms UTC, già validato da parsing (RFC 3339 con offset
         /// obbligatorio).
         one_shot_at_ms: Option<i64>,
-        /// T3 — IANA tz name for `at` (persisted, never a runtime Local).
+        /// IANA tz name for `at` (persisted, never a runtime Local).
         tz: Option<String>,
-        /// T4 — re-arm this loop at bootstrap (0933, default false).
+        /// re-arm this loop at bootstrap (0933, default false).
         rearm_on_boot: Option<bool>,
     },
     Update {
@@ -60,17 +60,17 @@ pub(crate) enum LoopCommandRequest {
         enabled: Option<bool>,
         runner_kind: Option<LoopRunnerKind>,
         runner_model: Option<Option<String>>,
-        /// T3 — `Some` when the schedule triplet is provided as a whole;
+        /// `Some` when the schedule triplet is provided as a whole;
         /// `None` leaves the persisted schedule untouched.
         schedule_kind: Option<String>,
-        /// T3 — see Add::schedule_at.
+        /// see Add::schedule_at.
         schedule_at: Option<String>,
-        /// T3 — epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// epoch-ms UTC, già validato da parsing (RFC 3339 con offset
         /// obbligatorio).
         one_shot_at_ms: Option<i64>,
-        /// T3 — see Add::tz.
+        /// see Add::tz.
         tz: Option<String>,
-        /// T4 — `Some` overrides the persisted `rearm_on_boot`; `None` keeps
+        /// `Some` overrides the persisted `rearm_on_boot`; `None` keeps
         /// it (0933, default false).
         rearm_on_boot: Option<bool>,
     },
@@ -213,7 +213,7 @@ pub(crate) enum VlEvent {
         active_loops: Vec<String>,
         blockers: Vec<String>,
     },
-    /// T6 — structured fixed-format summary of one finished loop tick
+    /// structured fixed-format summary of one finished loop tick
     /// (persist-before-emit: the row is already durable when this flies).
     /// The consumer (bounded queue + notifier worker) lands in m2.
     LoopTickSummary {

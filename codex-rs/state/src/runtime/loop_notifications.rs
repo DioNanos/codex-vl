@@ -32,7 +32,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         Ok(result.rows_affected() == 1)
     }
 
-    /// FIX-J (5) — atomic variant: the summary and its notification pending
+    /// atomic variant: the summary and its notification pending
     /// land in ONE transaction, so a failed pending write can never leave a
     /// persisted summary whose retry then dedups against and never recreates
     /// the pending. Same dedup verdict as `record_loop_notification`:
@@ -84,7 +84,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
             .execute(&mut *tx)
             .await?;
         }
-        // FIX-J (8) — real retention, same transaction as the insert:
+        // real retention, same transaction as the insert:
         // summaries keep the last N per job; pending rows older than the
         // configured age are dropped (canal-less runs do not accumulate).
         sqlx::query(
@@ -118,7 +118,7 @@ WHERE kind = 'pending' AND created_at_ms < ?
         Ok(true)
     }
 
-    /// FIX-J (8) — number of notification rows of a job for one kind; the
+    /// number of notification rows of a job for one kind; the
     /// retention test counts through it.
     pub async fn count_loop_notifications(
         &self,
@@ -170,7 +170,7 @@ ORDER BY created_at_ms ASC
     }
 
     /// Delivery receipt: a delivered pending row leaves the pending set
-    /// (R3 — replay at bootstrap only picks up undelivered rows).
+    /// (replay at bootstrap only picks up undelivered rows).
     pub async fn mark_loop_notification_delivered(&self, event_id: &str) -> anyhow::Result<bool> {
         let result = sqlx::query(
             r#"

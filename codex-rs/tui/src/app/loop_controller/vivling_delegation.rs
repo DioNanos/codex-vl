@@ -334,7 +334,7 @@ pub(super) async fn handle_loop_tick_finished(
     started_ms: i64,
     result: Result<VivlingLoopTickResult, String>,
 ) -> color_eyre::Result<()> {
-    // FIX-G — the tick completion path resolves ONLY the exact scope of the
+    // the tick completion path resolves ONLY the exact scope of the
     // finishing (thread_id, job_id), fail-closed: `None` (no scope, or a
     // scope of a different job) records `audit_rejected` and never falls
     // back to `Agent`.
@@ -460,7 +460,7 @@ pub(super) async fn handle_loop_tick_finished(
                 &job.created_by,
             );
             app.refresh_loop_jobs(thread_id).await?;
-            // FIX-J (3) — the failed tick is finished in-process (no remove on
+            // the failed tick is finished in-process (no remove on
             // this path, the job is alive): persist-before-emit summary.
             if let Some(job_after) = state_runtime
                 .get_thread_loop_job_by_id(thread_id, &job.id)
@@ -580,7 +580,7 @@ pub(super) async fn handle_loop_tick_finished(
                 .await
                 .map_err(loop_state_error)?;
 
-            // FIX-J (3) — persist-before-mutate: the summary (and the R3
+            // persist-before-mutate: the summary (and the R3
             // pending) is durable BEFORE the completion action can remove or
             // disable the job (auto_remove_on_completion defaults to true, so
             // DONE ticks typically remove it — the summary must not die with

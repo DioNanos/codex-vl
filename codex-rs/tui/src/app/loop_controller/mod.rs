@@ -72,7 +72,7 @@ use self::types::ManagedToolCallSource;
 // DynamicToolCall handling.
 pub(super) use self::parsing::is_manage_loops_dynamic_tool;
 
-/// T6 m2 — bootstrap hook for `startup_orchestration`: starts the bounded
+/// bootstrap hook for `startup_orchestration`: starts the bounded
 /// queue and the separate consumer task; the replay of undelivered pending
 /// rows runs inside it, once per process start.
 pub(crate) fn start_loop_summary_worker(state_db: &std::sync::Arc<codex_state::StateRuntime>) {
@@ -170,7 +170,7 @@ impl App {
             .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
     }
 
-    /// FIX-G — resolver for the agent `manage_loops` DynamicToolCall ONLY
+    /// resolver for the agent `manage_loops` DynamicToolCall ONLY
     /// (`manage_tool.rs`). The managed-tick completion path has its own,
     /// stricter resolver (`resolve_managed_tick_source`) that can never
     /// yield `Agent`.
@@ -191,7 +191,7 @@ impl App {
         ManagedToolCallSource::Single(LoopCommandSource::Managed(scope.clone()))
     }
 
-    /// FIX-G — resolver for the managed-tick completion path ONLY
+    /// resolver for the managed-tick completion path ONLY
     /// (`vivling_delegation.rs`): fail-closed and bound to the exact
     /// (thread_id, job_id) scope of the finishing tick. Never yields
     /// `Agent`: the caller executes the structured tick action on `Some`

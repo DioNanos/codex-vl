@@ -1,4 +1,4 @@
--- T6 m1: persisted loop tick summaries and notification pending rows.
+-- persisted loop tick summaries and notification pending rows.
 -- Guarantees: persist-before-emit (rows land before any emit) and dedup on
 -- the persisted event_id (INSERT OR IGNORE verdict). `pending` rows replay
 -- at bootstrap by the notification consumer (m2); retention is bounded there.

@@ -50,7 +50,7 @@ async fn execute_dynamic_tool(
 ) -> LoopActionOutcome {
     match parse_manage_loops_tool_request(arguments) {
         Ok(request) => {
-            // FIX-G — three explicit cases for the agent tool call: no
+            // three explicit cases for the agent tool call: no
             // active scope is an ordinary agent call (pre-T5 behaviour),
             // one scope binds the T5 allowlist, two or more are ambiguous
             // and fail closed. Never collapse these again.

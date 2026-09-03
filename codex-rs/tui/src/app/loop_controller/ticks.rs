@@ -233,7 +233,7 @@ pub(super) async fn process_submission(
         None,
     );
     let state_runtime = app.loop_state_runtime().await?;
-    // T3 — at-most-once dispatch: every path into submission (the timer and
+    // at-most-once dispatch: every path into submission (the timer and
     // the pending/restore path) claims the occurrence before owner resolution,
     // validation, or runner dispatch. Keeping the CAS here prevents a caller
     // that bypasses `handle_tick` from emitting a duplicate child event.
@@ -381,7 +381,7 @@ pub(super) async fn process_submission(
         "resolved loop owner"
     );
     let owner = owner_from_resolution(&resolution, thread_id, loop_now_ms());
-    // FIX-J (7) — the summary manager comes from the tick's own owner
+    // the summary manager comes from the tick's own owner
     // resolution (never re-derived after the fact).
     let manager = match &resolution.effective {
         crate::vl::delegated_loops::RequestedLoopOwner::Main => super::notify::LoopManager::Main,
@@ -392,7 +392,7 @@ pub(super) async fn process_submission(
     let manager_reason = resolution.reason.to_string();
     let now = loop_now_ms();
     let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
-    // T3 — the schedule descriptor is read once and drives every reschedule
+    // the schedule descriptor is read once and drives every reschedule
     // of this tick (internal payload, runner dispatch, and the terminal
     // update in handle_loop_tick_finished).
     let scheduled_next_run_ms = descriptor
@@ -473,7 +473,7 @@ pub(super) async fn process_submission(
                 .or(Some(job.prompt_text.as_str())),
             &job.created_by,
         );
-        // T6 m2 — the internal-payload tick is finished in-process.
+        // the internal-payload tick is finished in-process.
         super::notify::record_sync_tick_summary(
             app,
             &state_runtime,
@@ -511,7 +511,7 @@ pub(super) async fn process_submission(
             )
             .await
             .map_err(loop_state_error)?;
-        // T6 m2 — synchronous tick boundary: persist-before-emit summary
+        // synchronous tick boundary: persist-before-emit summary
         // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
         super::notify::record_sync_tick_summary(
             app,
@@ -556,7 +556,7 @@ pub(super) async fn process_submission(
                 )
                 .await
                 .map_err(loop_state_error)?;
-            // T6 m2 — synchronous tick boundary: persist-before-emit summary
+            // synchronous tick boundary: persist-before-emit summary
             // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
             super::notify::record_sync_tick_summary(
                 app,
@@ -589,7 +589,7 @@ pub(super) async fn process_submission(
                     )
                     .await
                     .map_err(loop_state_error)?;
-                // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                // synchronous tick boundary: persist-before-emit summary
                 // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
                 super::notify::record_sync_tick_summary(
                     app,
@@ -625,7 +625,7 @@ pub(super) async fn process_submission(
                         )
                         .await
                         .map_err(loop_state_error)?;
-                    // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                    // synchronous tick boundary: persist-before-emit summary
                     // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
                     super::notify::record_sync_tick_summary(
                         app,
@@ -759,7 +759,7 @@ pub(super) async fn process_submission(
                 )
                 .await
                 .map_err(loop_state_error)?;
-            // T6 m2 — synchronous tick boundary: persist-before-emit summary
+            // synchronous tick boundary: persist-before-emit summary
             // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
             super::notify::record_sync_tick_summary(
                 app,
@@ -849,7 +849,7 @@ pub(super) async fn process_submission(
                     )
                     .await
                     .map_err(loop_state_error)?;
-                // T6 m2 — synchronous tick boundary: persist-before-emit summary
+                // synchronous tick boundary: persist-before-emit summary
                 // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
                 super::notify::record_sync_tick_summary(
                     app,
@@ -924,7 +924,7 @@ pub(super) async fn process_submission(
         goal,
         &job.created_by,
     );
-    // T6 m2 — synchronous tick boundary: persist-before-emit summary
+    // synchronous tick boundary: persist-before-emit summary
     // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
     super::notify::record_sync_tick_summary(
         app,

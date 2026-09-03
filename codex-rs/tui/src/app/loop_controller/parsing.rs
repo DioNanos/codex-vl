@@ -86,7 +86,7 @@ fn parse_runner_model(raw: Option<String>) -> anyhow::Result<Option<String>> {
     .transpose()
 }
 
-/// T3 — RFC 3339 with a mandatory offset: a naive datetime
+/// RFC 3339 with a mandatory offset: a naive datetime
 /// is rejected as `one_shot_requires_offset`, never silently assumed UTC.
 /// Returns epoch-ms UTC.
 fn parse_one_shot_ms(raw: Option<&str>) -> anyhow::Result<Option<i64>> {
@@ -115,7 +115,7 @@ fn parse_one_shot_ms(raw: Option<&str>) -> anyhow::Result<Option<i64>> {
     }
 }
 
-/// T3 — schedule fields for `add` (default `interval`, validated as a
+/// schedule fields for `add` (default `interval`, validated as a
 /// triplet): returns (schedule_kind, schedule_at, one_shot_at_ms, tz).
 fn parse_schedule_fields(
     schedule_kind: Option<&str>,
@@ -182,7 +182,7 @@ fn parse_schedule_fields(
     Ok((kind, schedule_at, one_shot_at_ms, tz))
 }
 
-/// T3 — schedule fields for `update`: `None` leaves the schedule untouched;
+/// schedule fields for `update`: `None` leaves the schedule untouched;
 /// a non-`None` schedule revalidates the whole triplet in the same call.
 type UpdateSchedule = Option<(String, Option<String>, Option<i64>, Option<String>)>;
 

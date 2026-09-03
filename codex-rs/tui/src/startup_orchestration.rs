@@ -411,7 +411,7 @@ pub(super) async fn run_main_inner(
             &app_server_target,
         ))
         .await??;
-    // T6 m2 — start the loop summary worker with the process state handle:
+    // start the loop summary worker with the process state handle:
     // it owns the bounded queue, drains it, and replays undelivered pending
     // rows once per process start.
     state_db
