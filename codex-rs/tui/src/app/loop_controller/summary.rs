@@ -153,13 +153,22 @@ impl LoopTickSummary {
 
     /// Dedup key — when in doubt, duplicate; never lose: «in dubbio duplica, mai
     /// perdere». With the real occurrence key carried, the id is stable per
-    /// occurrence (a retried persist is the same event and the finish
-    /// instant does not matter). Without the key, the id is unique per tick
-    /// (`tick:{finished_at_ms}`): two different ticks of the same job are
-    /// NEVER the same event — a recurring descriptor is not an occurrence.
+    /// occurrence AND outcome (a retried persist with the same outcome is the
+    /// same event and the finish instant does not matter; a `SkippedBusy`
+    /// summary and the `Completed`-family summary of the same occurrence are
+    /// two different events, never collapsed into one). Without the key, the
+    /// id is unique per tick (`tick:{finished_at_ms}`): two different ticks of
+    /// the same job are NEVER the same event — a recurring descriptor is not
+    /// an occurrence.
     pub(crate) fn event_id(&self) -> String {
         match self.occurrence_ms {
-            Some(ms) => format!("{}:{}:occ:{}", self.job_id, self.schedule_kind.render(), ms),
+            Some(ms) => format!(
+                "{}:{}:occ:{}:{}",
+                self.job_id,
+                self.schedule_kind.render(),
+                ms,
+                self.outcome.render()
+            ),
             None => format!(
                 "{}:{}:tick:{}",
                 self.job_id,
@@ -384,6 +393,30 @@ mod tests {
             unkeyed.event_id(),
             unkeyed_later.event_id(),
             "two keyless ticks must remain two distinct events"
+        );
+    }
+
+    // A double timer persists a SkippedBusy summary, and the finishing
+    // child of the SAME occurrence persists its own summary right after:
+    // two different outcomes of one occurrence must never collapse into the
+    // same dedup id, or the notifier drops one («in dubbio duplica, mai
+    // perdere»). A retry with the same outcome stays the same event.
+    #[test]
+    fn event_id_distinguishes_outcomes_of_the_same_occurrence() {
+        let skipped = summary(LoopTickOutcome::SkippedBusy);
+        let completed = summary(LoopTickOutcome::Ok);
+        assert_ne!(
+            skipped.event_id(),
+            completed.event_id(),
+            "SkippedBusy and Completed of the same occurrence must be two distinct events"
+        );
+
+        let mut skipped_retried = skipped.clone();
+        skipped_retried.finished_at_ms += 4_000;
+        assert_eq!(
+            skipped.event_id(),
+            skipped_retried.event_id(),
+            "a retry with the same outcome must keep the same event id"
         );
     }
 
