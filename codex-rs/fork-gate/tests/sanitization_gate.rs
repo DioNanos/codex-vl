@@ -301,8 +301,8 @@ fn canonical_remote(url: &str) -> Option<String> {
     // se non c'e' nessun '/' prima del ':': un '/' prima del ':' significa che
     // il ':' sta nel path (forma locale o altro), non e' scp-like. Senza questo
     // controllo, "tmp/source@github.com:owner/repo" — '@' in un prefisso di
-    // path — si canonizzava come l'host atteso: la stessa decisione permissiva
-    // del ramo scheme, fatta in un altro modo.
+    // path — si canonizzava come l'host atteso: la stessa regola permissiva
+    // del ramo scheme, applicata in un altro modo.
     if let Some(c) = u.find(':') {
         let before = &u[..c];
         if !before.contains('/') {
