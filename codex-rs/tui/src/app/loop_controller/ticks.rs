@@ -985,8 +985,8 @@ mod tests {
         assert!(state_runtime.try_begin_loop_tick(&job.id, now + 1).await?);
 
         // A busy timer still emits exactly one SkippedBusy summary: the
-        // occurrence was evaluated, but this is not a child dispatch. Filter
-        // by event variant so T6's required summary does not look like a tick.
+        // occurrence was evaluated, but this is not a child dispatch. The
+        // loop summary is not a dispatch, so filter by event variant.
         process_submission(&mut app, thread_id, job.clone())
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;

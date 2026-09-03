@@ -554,20 +554,20 @@ async fn add_with_env_var_persists_name_only() -> Result<()> {
         .args([
             "mcp",
             "add",
-            "nexuscrew",
+            "example-server",
             "--env-var",
             "NEXUSCREW_MCP_SESSION",
             "--",
-            "nexuscrew",
+            "example-server",
             "mcp",
         ])
         .assert()
         .success()
-        .stdout(contains("Added global MCP server 'nexuscrew'."));
+        .stdout(contains("Added global MCP server 'example-server'."));
 
     let servers = load_global_mcp_servers(codex_home.path()).await?;
-    let nexuscrew = servers.get("nexuscrew").expect("server should exist");
-    match &nexuscrew.transport {
+    let example_server = servers.get("example-server").expect("server should exist");
+    match &example_server.transport {
         McpServerTransportConfig::Stdio {
             env, env_vars, cwd, ..
         } => {
