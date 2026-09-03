@@ -58,6 +58,12 @@ async fn execute_dynamic_tool(
                 ManagedToolCallSource::OrdinaryAgent => LoopCommandSource::Agent,
                 ManagedToolCallSource::Single(source) => source,
                 ManagedToolCallSource::Ambiguous => {
+                    app.record_vivling_loop_job(
+                        "audit_rejected",
+                        "<ambiguous>",
+                        None,
+                        LoopCommandSource::Agent,
+                    );
                     return loop_action_failure(
                         "scope",
                         thread_id,
@@ -298,6 +304,159 @@ mod tests {
                 .await
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
             assert!(three.is_none(), "the refused add must not create a job");
+            Ok(())
+        }
+
+        // (c2) Every Managed rejection must leave a record behind, not just
+        // fail in silence: a label naming no job, a completion-policy
+        // mismatch on Disable/Remove, and an ambiguous caller identity all
+        // go through the same recording helper.
+        #[tokio::test]
+        async fn every_managed_rejection_is_recorded() -> anyhow::Result<()> {
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
+            app.chat_widget
+                .prepare_vivling_management_gate_for_tests()
+                .map_err(|err| anyhow::anyhow!(err))?;
+
+            fn last_summary(app: &App) -> String {
+                app.chat_widget
+                    .vivling_for_tests()
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.work_memory.last())
+                    .map(|entry| entry.summary.clone())
+                    .unwrap_or_default()
+            }
+
+            fn memory_len(app: &App) -> usize {
+                app.chat_widget
+                    .vivling_for_tests()
+                    .state
+                    .as_ref()
+                    .map(|state| state.work_memory.len())
+                    .unwrap_or(0)
+            }
+
+            create_unscoped_job(&mut app, thread_id, "owner").await?;
+            let owner = state_runtime
+                .get_thread_loop_job_by_label(thread_id, "owner")
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?
+                .expect("owner job exists");
+
+            // A label that names no job in scope.
+            app.register_managed_loop_scope(thread_id, &owner.id, "owner");
+            let before = memory_len(&app);
+            let ghost = execute_dynamic_tool(
+                &mut app,
+                thread_id,
+                serde_json::json!({"action": "disable", "label": "ghost"}),
+            )
+            .await;
+            assert!(!ghost.success, "a label with no job must be refused");
+            assert!(
+                memory_len(&app) > before,
+                "the out-of-scope rejection must leave a rejection record"
+            );
+            assert!(
+                last_summary(&app).contains("audit_rejected"),
+                "expected the rejection to be recorded, got: {}",
+                last_summary(&app)
+            );
+            app.clear_managed_loop_scope(thread_id, &owner.id);
+
+            // Disable on a job whose completion policy requires remove
+            // (auto_remove_on_completion defaults to true).
+            app.register_managed_loop_scope(thread_id, &owner.id, "owner");
+            let before = memory_len(&app);
+            let wrong_disable = execute_dynamic_tool(
+                &mut app,
+                thread_id,
+                serde_json::json!({"action": "disable", "label": "owner"}),
+            )
+            .await;
+            assert!(
+                !wrong_disable.success,
+                "disable must be refused when the policy requires remove"
+            );
+            assert!(
+                memory_len(&app) > before,
+                "the disable-policy rejection must leave a rejection record"
+            );
+            assert!(
+                last_summary(&app).contains("audit_rejected"),
+                "expected the rejection to be recorded, got: {}",
+                last_summary(&app)
+            );
+            app.clear_managed_loop_scope(thread_id, &owner.id);
+
+            // Remove on a job whose completion policy requires disable.
+            let keep = execute_dynamic_tool(
+                &mut app,
+                thread_id,
+                serde_json::json!({
+                    "action": "add",
+                    "label": "keepme",
+                    "interval": "5m",
+                    "prompt": "check",
+                    "auto_remove_on_completion": false
+                }),
+            )
+            .await;
+            assert!(keep.success, "the setup add must succeed: {}", keep.message);
+            let keepme = state_runtime
+                .get_thread_loop_job_by_label(thread_id, "keepme")
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?
+                .expect("keepme job exists");
+            app.register_managed_loop_scope(thread_id, &keepme.id, "keepme");
+            let before = memory_len(&app);
+            let wrong_remove = execute_dynamic_tool(
+                &mut app,
+                thread_id,
+                serde_json::json!({"action": "remove", "label": "keepme"}),
+            )
+            .await;
+            assert!(
+                !wrong_remove.success,
+                "remove must be refused when the policy requires disable"
+            );
+            assert!(
+                memory_len(&app) > before,
+                "the remove-policy rejection must leave a rejection record"
+            );
+            assert!(
+                last_summary(&app).contains("audit_rejected"),
+                "expected the rejection to be recorded, got: {}",
+                last_summary(&app)
+            );
+            app.clear_managed_loop_scope(thread_id, &keepme.id);
+
+            // Ambiguous caller identity: two scopes active at once.
+            create_unscoped_job(&mut app, thread_id, "two").await?;
+            let two = state_runtime
+                .get_thread_loop_job_by_label(thread_id, "two")
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?
+                .expect("job two exists");
+            app.register_managed_loop_scope(thread_id, &owner.id, "owner");
+            app.register_managed_loop_scope(thread_id, &two.id, "two");
+            let before = memory_len(&app);
+            let ambiguous = execute_dynamic_tool(&mut app, thread_id, add_args("three")).await;
+            assert!(
+                !ambiguous.success,
+                "an ambiguous caller identity must fail closed"
+            );
+            assert!(
+                memory_len(&app) > before,
+                "the ambiguous rejection must leave a rejection record"
+            );
+            assert!(
+                last_summary(&app).contains("audit_rejected"),
+                "expected the rejection to be recorded, got: {}",
+                last_summary(&app)
+            );
+
             Ok(())
         }
 

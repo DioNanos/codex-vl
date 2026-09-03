@@ -170,6 +170,7 @@ pub(super) async fn run_command_request(
     let state_runtime = app.loop_state_runtime().await?;
     if let LoopCommandSource::Managed(scope) = &source {
         let Some(label) = managed_request_label(&request) else {
+            app.record_vivling_loop_job("audit_rejected", "<none>", None, source.clone());
             return Ok(loop_action_failure(
                 "scope",
                 thread_id,
@@ -181,6 +182,7 @@ pub(super) async fn run_command_request(
             .await
             .map_err(loop_state_error)?
         else {
+            app.record_vivling_loop_job("audit_rejected", label, None, source.clone());
             return Ok(loop_action_failure(
                 "scope",
                 thread_id,
@@ -196,6 +198,7 @@ pub(super) async fn run_command_request(
             ));
         }
         if matches!(&request, LoopCommandRequest::Disable { .. }) && job.auto_remove_on_completion {
+            app.record_vivling_loop_job("audit_rejected", label, Some(&job), source.clone());
             return Ok(loop_action_failure(
                 "scope",
                 thread_id,
@@ -203,6 +206,7 @@ pub(super) async fn run_command_request(
             ));
         }
         if matches!(&request, LoopCommandRequest::Remove { .. }) && !job.auto_remove_on_completion {
+            app.record_vivling_loop_job("audit_rejected", label, Some(&job), source.clone());
             return Ok(loop_action_failure(
                 "scope",
                 thread_id,

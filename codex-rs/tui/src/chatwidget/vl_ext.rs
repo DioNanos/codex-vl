@@ -32,6 +32,14 @@ impl ChatWidget {
             .ok_or_else(|| "test Vivling was not activated".to_string())
     }
 
+    /// Test-only forward: exposes the Vivling handle so loop-controller
+    /// tests can verify that a `record_vivling_loop_event` call actually
+    /// landed in `work_memory`, not just that it was invoked.
+    #[cfg(test)]
+    pub(crate) fn vivling_for_tests(&self) -> &crate::vivling::Vivling {
+        self.bottom_pane.vivling_for_tests()
+    }
+
     /// Submit an Adult Vivling assist kickoff through the normal worker-turn
     /// pipeline without interpreting shell escapes.
     ///
