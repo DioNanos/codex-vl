@@ -215,6 +215,33 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
             });
             logger.write_json_line(value);
         }
+        AppEvent::Vl(crate::vl::VlEvent::LoopTickSummary { summary }) => {
+            // Structured fields only: a tick summary carries no user or model
+            // text, so the full typed payload is safe to keep in the log.
+            let outcome = format!("{:?}", summary.outcome);
+            let next_run = match &summary.next_run {
+                crate::app::loop_controller::summary::NextRun::At(ms) => format!("at:{ms}"),
+                crate::app::loop_controller::summary::NextRun::Terminal(reason) => {
+                    format!("terminal:{reason}")
+                }
+            };
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "loop_tick_summary",
+                "job_id": summary.job_id,
+                "label": summary.label,
+                "outcome": outcome,
+                "duration_ms": summary.duration_ms,
+                "next_run": next_run,
+                "runner": summary.runner.as_str(),
+                "manager": format!("{:?}", summary.manager),
+                "manager_reason": summary.manager_reason,
+                "suspend_reason": summary.suspend_reason,
+                "occurrence_ms": summary.occurrence_ms,
+            });
+            logger.write_json_line(value);
+        }
         // Noise or control flow – record variant only
         other => {
             let variant: &'static str = other.into();
