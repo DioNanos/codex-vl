@@ -350,6 +350,18 @@ mod tests {
             .get_loop_descriptor(&job.id)
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        // FIX-J follow-up (semantica, risposta a Dev 05:43): il descrittore
+        // 0933 nasce CON il job — `create_or_replace_thread_loop_job` fa
+        // `INSERT INTO vl_loop_descriptors … ON CONFLICT DO NOTHING`
+        // (thread_loop_jobs.rs:152-160) e la DDL 0933 porta il default
+        // `rearm_on_boot = 0`. La precondizione giusta è quindi il DEFAULT
+        // spento, non l'assenza del descrittore.
+        assert!(
+            before
+                .as_ref()
+                .is_some_and(|descriptor| !descriptor.rearm_on_boot),
+            "the descriptor is born with the job: default rearm_on_boot off"
+        );
         set_rearm_flag(&state_runtime, &job.id, true, "interval", None, 1).await?;
         let flagged = state_runtime
             .get_loop_descriptor(&job.id)
@@ -376,10 +388,6 @@ mod tests {
             .map_err(|err| anyhow::anyhow!(err.to_string()))?
             .expect("descriptor still present");
         assert_eq!(after_descriptor, flagged);
-        assert!(
-            before.is_none(),
-            "descriptor must not exist before the flag is set"
-        );
         Ok(())
     }
 
