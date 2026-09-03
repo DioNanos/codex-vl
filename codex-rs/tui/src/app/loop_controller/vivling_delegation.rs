@@ -1170,9 +1170,10 @@ mod tests {
             loop_action: None,
             suggestion: None,
         };
+        let thread_id = app.primary_thread_id.unwrap();
         handle_loop_tick_finished(
             &mut app,
-            app.primary_thread_id.unwrap(),
+            thread_id,
             job.id.clone(),
             /*occurrence_ms*/ Some(1_700_000_000_000),
             /*started_ms*/ 1_700_000_000_000,
@@ -1233,9 +1234,10 @@ mod tests {
             loop_action: None,
             suggestion: None,
         };
+        let thread_id = app.primary_thread_id.unwrap();
         handle_loop_tick_finished(
             &mut app,
-            app.primary_thread_id.unwrap(),
+            thread_id,
             job.id.clone(),
             /*occurrence_ms*/ Some(1_700_000_000_000),
             /*started_ms*/ 1_700_000_000_000,

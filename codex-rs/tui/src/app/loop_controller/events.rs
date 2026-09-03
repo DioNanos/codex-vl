@@ -212,7 +212,7 @@ mod tests {
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
-        let jobs = vec![job];
+        let jobs = vec![job.clone()];
         expire_stale_one_shots(&mut app, &state_runtime, &jobs)
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
