@@ -293,6 +293,12 @@ def stage_sources(
         if readme_src.exists():
             shutil.copy2(readme_src, staging_dir / "README.md")
 
+        # Apache-2.0 requires the license text to accompany the distribution:
+        # stage it like the README so `npm pack` includes it in the tarball.
+        license_src = REPO_ROOT / "LICENSE"
+        if license_src.exists():
+            shutil.copy2(license_src, staging_dir / "LICENSE")
+
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in CODEX_PLATFORM_PACKAGES:
         platform_package = CODEX_PLATFORM_PACKAGES[package]
@@ -302,6 +308,12 @@ def stage_sources(
         readme_src = REPO_ROOT / "README.md"
         if readme_src.exists():
             shutil.copy2(readme_src, staging_dir / "README.md")
+
+        # Apache-2.0 requires the license text to accompany the distribution:
+        # stage it like the README so `npm pack` includes it in the tarball.
+        license_src = REPO_ROOT / "LICENSE"
+        if license_src.exists():
+            shutil.copy2(license_src, staging_dir / "LICENSE")
 
         with open(CODEX_CLI_ROOT / "package.json", "r", encoding="utf-8") as fh:
             codex_package_json = json.load(fh)

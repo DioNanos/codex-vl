@@ -25,8 +25,8 @@ pub const DISTILL_TRIGGER_CAPSULES: u64 = 8;
 
 /// Capsule kinds that are operational bookkeeping, not knowledge. They live
 /// in the rolling working memory (and feed `loop_profile` signals) but are
-/// excluded from BOTH the long-term MSA archive (ingest gate, live audit
-/// 2026-06-07 F1) and the distillation pipeline (F3: they produced garbage
+/// excluded from BOTH the long-term MSA archive (ingest gate) and the
+/// distillation pipeline (they produced garbage
 /// topics like "wait"/"verify" with compounding observation counters).
 pub const BOOKKEEPING_KINDS: &[&str] = &[
     "live_context",

@@ -786,7 +786,7 @@ mod tests {
             };
             state.work_memory.push(VivlingWorkMemoryEntry {
                 // `turn` (knowledge): bookkeeping kinds are gated out of the
-                // MSA archive (F1) and would never be recallable by design.
+                // MSA archive and would never be recallable by design.
                 kind: "turn".to_string(),
                 summary,
                 archetype: WorkArchetype::Operator,

@@ -257,6 +257,19 @@
       ],
       "type": "object"
     },
+    "ThreadClientCapabilities": {
+      "description": "codex-vl: client-declared capabilities for fork-owned dynamic tools (thread/start `capabilities` field). Requests the fork-owned builtins the hosting client can serve; the TUI identity check remains the compatibility fallback during the 0.151.x cycle.",
+      "properties": {
+        "manageLoops": {
+          "description": "Explicitly request the fork-owned `manage_loops` dynamic tool.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ThreadHistoryMode": {
       "enum": [
         "legacy",
@@ -327,6 +340,17 @@
         "string",
         "null"
       ]
+    },
+    "capabilities": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadClientCapabilities"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "codex-vl: client-declared capabilities for fork-owned dynamic tools on thread/start."
     },
     "config": {
       "additionalProperties": true,

@@ -25,7 +25,7 @@ validates the installed CLI and the AI-operated runtime surface.
 
 - `AI_GUIDED_TEST_SUITE.md`: reusable guide for future validating AIs.
 - `automated/2026-05-06_0.128.4_next_build_publish.md`: 0.128.4 build,
-  package, publish, and Forge push evidence.
+  package, publish, and repository synchronization evidence.
 - `automated/2026-05-07_0.128.5_merge_build_publish.md`: 0.128.5 upstream
   merge, Linux optimized build evidence, and remaining release gates.
 - `automated/2026-05-07_0.129.0_linux_post_install_suite.md`: 0.129.0 Linux

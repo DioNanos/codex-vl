@@ -38,6 +38,7 @@ use codex_context_fragments::to_annotated_content;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseUsageMetadata;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
@@ -118,7 +119,7 @@ pub(crate) async fn run_remote_compact_task(
         trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
-        collaboration_mode_kind: turn_context.mode,
+        collaboration_mode_kind: turn_context.mode(),
     });
     sess.send_event(&turn_context, start_event).await;
 
@@ -234,7 +235,7 @@ async fn run_remote_compact_task_inner_impl(
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
         turn_context.sub_id.as_str(),
         compaction_id.as_str(),
-        turn_context.model_info.slug.as_str(),
+        turn_context.model_info().slug.as_str(),
         turn_context.provider.info().name.as_str(),
     );
     let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
@@ -259,12 +260,14 @@ async fn run_remote_compact_task_inner_impl(
             if !should_retry_with_current_model(&error) {
                 return Err(error);
             }
+            sess.set_last_known_step_context(fallback_step_context)
+                .await;
             let fallback_turn_context = &fallback_step_context.turn;
             let fallback_compaction_trace =
                 sess.services.rollout_thread_trace.compaction_trace_context(
                     fallback_turn_context.sub_id.as_str(),
                     compaction_id.as_str(),
-                    fallback_turn_context.model_info.slug.as_str(),
+                    fallback_turn_context.model_info().slug.as_str(),
                     fallback_turn_context.provider.info().name.as_str(),
                 );
             let fallback_result = run_remote_compact_v2_attempt(
@@ -278,8 +281,8 @@ async fn run_remote_compact_task_inner_impl(
             .await;
             record_model_fallback(
                 &sess.services.session_telemetry,
-                turn_context.model_info.slug.as_str(),
-                fallback_turn_context.model_info.slug.as_str(),
+                turn_context.model_info().slug.as_str(),
+                fallback_turn_context.model_info().slug.as_str(),
                 compaction_metadata.reason(),
                 compaction_metadata.implementation(),
                 fallback_result.as_ref().err(),
@@ -361,15 +364,17 @@ struct RemoteCompactionV2Output {
     compaction_output: ResponseItem,
     response_id: String,
     token_usage: Option<TokenUsage>,
+    usage_metadata: Option<ResponseUsageMetadata>,
 }
 
 async fn run_remote_compaction_request_v2(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
 ) -> CodexResult<RemoteCompactionV2Output> {
+    let turn_context = &step_context.turn;
     let max_retries = turn_context
         .provider
         .info()
@@ -380,11 +385,11 @@ async fn run_remote_compaction_request_v2(
         let result = match client_session
             .stream(
                 prompt,
-                &turn_context.model_info,
+                turn_context.model_info(),
                 &turn_context.session_telemetry,
-                turn_context.reasoning_effort.clone(),
-                turn_context.reasoning_summary,
-                turn_context.config.service_tier.clone(),
+                turn_context.reasoning_effort().cloned(),
+                turn_context.reasoning_summary(),
+                step_context.settings.service_tier.clone(),
                 responses_metadata,
                 &InferenceTraceContext::disabled(),
             )
@@ -422,6 +427,7 @@ async fn collect_compaction_output(
     let mut saw_completed = false;
     let mut completed_response_id = None;
     let mut completed_token_usage = None;
+    let mut completed_usage_metadata = None;
     while let Some(event) = stream.next().await {
         match event? {
             ResponseEvent::OutputItemDone(item) => {
@@ -436,11 +442,13 @@ async fn collect_compaction_output(
             ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                usage_metadata,
                 ..
             } => {
                 saw_completed = true;
                 completed_response_id = Some(response_id);
                 completed_token_usage = token_usage;
+                completed_usage_metadata = usage_metadata;
                 break;
             }
             _ => {}
@@ -469,6 +477,7 @@ async fn collect_compaction_output(
         compaction_output,
         response_id,
         token_usage: completed_token_usage,
+        usage_metadata: completed_usage_metadata,
     })
 }
 
@@ -875,6 +884,7 @@ mod tests {
                     None,
                     Some(CodexHarnessMetadata {
                         client_authored: true,
+                        ..Default::default()
                     }),
                     Some(CodexHarnessMetadata::default()),
                     None,
@@ -898,6 +908,7 @@ mod tests {
                         item: client.clone(),
                         metadata: Some(CodexHarnessMetadata {
                             client_authored: true,
+                            ..Default::default()
                         }),
                     },
                 );
@@ -1161,6 +1172,9 @@ mod tests {
                     total_tokens: 123_498,
                     codex_rollout_budget_units: None,
                 }),
+                usage_metadata: Some(codex_protocol::ResponseUsageMetadata {
+                    amount: Some("0.125".to_string()),
+                }),
                 end_turn: Some(true),
             }),
         ]);
@@ -1169,6 +1183,12 @@ mod tests {
             .await
             .expect("compaction should be collected");
 
+        assert_eq!(
+            output.usage_metadata,
+            Some(codex_protocol::ResponseUsageMetadata {
+                amount: Some("0.125".to_string()),
+            }),
+        );
         assert_eq!(output.compaction_output, compaction);
         assert_eq!(output.response_id, "resp-compact");
         assert_eq!(

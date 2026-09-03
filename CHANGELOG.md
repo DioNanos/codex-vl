@@ -4,6 +4,46 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.152.1-vl.1 - Upstream rust-v0.152.1
+
+Update onto the upstream OpenAI Codex `rust-v0.152.1` stable release, published
+on the `next` channel. The full Codex VL workflow layer remains present across
+goal state, loop jobs, Vivling, the VL interface, remote control, app-server
+integration, and the fork-owned package and update channels. This entry also
+covers the 0.151.x line, which shipped without its own changelog entries.
+
+### Added
+
+- Scheduled jobs now end with a fixed-format summary instead of disappearing
+  silently. Ticks that time out, fail, or receive malformed payloads persist a
+  summary, and an expired one-shot leaves one at refresh. Every summary names
+  who actually handled the tick — the per-loop delegation when one governs it —
+  instead of re-deriving it from the thread owner after the fact.
+- Every declined automatic action leaves a record: unknown job labels,
+  completion-policy mismatches on disable/remove, ambiguous callers, and
+  active-thread guard rejections are all recorded instead of failing in
+  silence.
+- Two different outcomes of the same occurrence are kept as separate events
+  instead of overwriting each other; the session log stores the full typed
+  summary payload; and the notification store keeps the latest summaries per
+  job while dropping stale pending rows.
+- Loops can schedule on recurring intervals, daily wall-clock times in any
+  IANA timezone (daylight-saving safe), or one-shot RFC 3339 appointments.
+  Each occurrence fires at most once, and jobs can optionally re-arm on
+  restart.
+- Handing a single loop to the Vivling is explicit and auditable: a delegated
+  loop can observe, suggest, or manage, with automatic fallback to the main
+  thread when the Vivling is unavailable.
+- An external app-server client can explicitly request the fork-owned
+  `manage_loops` tool by declaring the `manageLoops` thread capability.
+- The npm main package now ships the Apache-2.0 license text and defaults its
+  publish tag to `next`.
+
+### Changed
+
+- The optional alternative tick runner is described for what it is everywhere:
+  a separate model call with no tools, not an autonomous agent.
+
 ## 0.150.2 - Restore embedded TUI loop routing
 
 ### Fixed
@@ -424,7 +464,7 @@ Based on the OpenAI Codex `rust-v0.130.0` release line.
 
 ## 0.128.3 - Local Linux rebuild
 
-- Rebuilds and reinstalls the local Linux package from the aligned Forge/GitHub base.
+- Rebuilds and reinstalls the local Linux package from the aligned release base.
 - Keeps the 0.128.2 packaging corrections while refreshing the installed CLI payload.
 
 ## 0.128.2 - Corrected npm packaging

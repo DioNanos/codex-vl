@@ -289,6 +289,7 @@ impl ChatWidget {
 
         let available_decisions = ev.effective_available_decisions();
         let request = ApprovalRequest::Exec(ExecApprovalRequest {
+            kind: ev.kind,
             thread_id: self.thread_id.unwrap_or_default(),
             thread_label: None,
             id: ev.effective_approval_id(),
@@ -376,6 +377,7 @@ impl ChatWidget {
                         .push_approval_request(request, &self.config.features);
                 }
                 McpServerElicitationRequest::OpenAiForm { .. }
+                | McpServerElicitationRequest::OpenAiElicitationForm { .. }
                 | McpServerElicitationRequest::Url { .. } => {
                     self.app_event_tx.resolve_elicitation(
                         thread_id,

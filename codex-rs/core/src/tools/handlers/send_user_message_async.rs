@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 
 const TOOL_NAME: &str = "send_user_message_async";
 
-pub struct SendUserMessageAsyncHandler;
+pub struct SendUserMessageAsyncHandler {
+    pub description: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,14 +39,16 @@ impl ToolExecutor<ToolInvocation> for SendUserMessageAsyncHandler {
         let properties = BTreeMap::from([(
             "message".to_string(),
             JsonSchema::string(Some(
-                "The concise question or update to send to the user.".to_string(),
+                "The concise question to send to the user.".to_string(),
             )),
         )]);
 
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_string(),
-            description: "Send a concise, user-visible acknowledgment, important update, or blocking question. Returns immediately; any reply arrives asynchronously as a new user message."
-                .to_string(),
+            description: self.description.clone().unwrap_or_else(|| {
+                "Send a concise message that needs the user's attention during ongoing work. The tool returns immediately without ending the turn or waiting for a reply; any reply arrives asynchronously as a new user message.\nOnly use this tool to ask for missing information, preferences, constraints, clarification, or approval. The message should be concise, easy to read and understand, and at the right level of abstraction that is appropriate for the user and task at hand."
+                    .to_string()
+            }),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(
@@ -56,7 +60,10 @@ impl ToolExecutor<ToolInvocation> for SendUserMessageAsyncHandler {
         })
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session,

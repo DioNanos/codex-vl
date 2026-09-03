@@ -7,15 +7,15 @@
 // "Fork identity and release safety" — ma la si fa a mente, ricostruendo
 // l'elenco dei motivi da cercare. Una lista scritta a mano copre cio' che
 // ricordi; un test copre cio' che c'e', e fallisce prima del publish invece
-// che dopo. Specchia e adatta il rationale del test published-tree-is-clean
-// di nexuscrew (tests/published-tree-is-clean.test.js).
+// che dopo. Il rationale specchia quello del gate dell'albero pubblicato:
+// un elenco di motivi vietati, applicato ai file che escono.
 //
 // Ogni voce vietata dice PERCHE' e' vietata: un elenco di stringhe senza
 // motivo si svuota di senso e prima o poi qualcuno ne toglie una per far
 // passare la suite. Un test ausiliario prova che i motivi MORDANO ancora,
 // su testo costruito apposta, e che NON mordano i casi legittimi (falsi
 // positivi). Un binario inatteso in un file di testo FA FALLIRE, non e'
-// saltato in silenzio (lezione del test nexuscrew, DEC3).
+// saltato in silenzio.
 //
 // Il gate e' ROSSO sul commit di base: le tre classi esistono. Non ripara
 // il codice, segnala. Le riparazioni le decide l'operatore.
@@ -301,8 +301,8 @@ fn canonical_remote(url: &str) -> Option<String> {
     // se non c'e' nessun '/' prima del ':': un '/' prima del ':' significa che
     // il ':' sta nel path (forma locale o altro), non e' scp-like. Senza questo
     // controllo, "tmp/source@github.com:owner/repo" — '@' in un prefisso di
-    // path — si canonizzava come l'host atteso: la stessa decisione permissiva
-    // del ramo scheme, fatta in un altro modo.
+    // path — si canonizzava come l'host atteso: la stessa regola permissiva
+    // del ramo scheme, applicata in un altro modo.
     if let Some(c) = u.find(':') {
         let before = &u[..c];
         if !before.contains('/') {
@@ -1628,7 +1628,7 @@ fn canonical_remote_concorda_con_git_sullautorita() {
 
 #[test]
 fn un_binario_inatteso_in_testo_fa_fallire_non_essere_saltato() {
-    // Lezione del test nexuscrew (DEC3): un binario non dichiarato NON deve
+    // Un binario non dichiarato NON deve
     // essere saltato in silenzio. Un NUL in un file di testo atteso produce
     // una colpa "binario da ispezionare", mai verde.
     let v = vec![Vietato {

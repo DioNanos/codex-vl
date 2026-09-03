@@ -1,6 +1,6 @@
 {
   "name": "@mmmbuto/codex-vl",
-  "version": "0.150.2",
+  "version": "0.152.1-vl.1",
   "license": "Apache-2.0",
   "bin": {
     "codex-vl": "bin/codex.js",
@@ -16,6 +16,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DioNanos/codex-vl.git"
+  },
+  "publishConfig": {
+    "tag": "next"
   },
   "description": "Optimized version of OpenAI Codex for side-by-side installs, loop-driven workflows, and Vivling companions",
   "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e"

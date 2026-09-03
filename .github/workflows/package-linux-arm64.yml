@@ -124,7 +124,7 @@ jobs:
       - name: Stage Linux arm64 npm package
         run: |
           set -euo pipefail
-          root="$HOME/.local/share/forgejo-artifacts/codex-vl/${GITHUB_SHA}/linux-arm64"
+          root="$HOME/.local/share/build-artifacts/codex-vl/${GITHUB_SHA}/linux-arm64"
           vendor="$root/vendor/aarch64-unknown-linux-musl"
           out="$root/npm"
           rm -rf "$root"
@@ -152,5 +152,5 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: codex-vl-linux-arm64-npm-${{ env.RELEASE_VERSION }}
-          path: ~/.local/share/forgejo-artifacts/codex-vl/${{ github.sha }}/linux-arm64/npm/*.tgz
+          path: ~/.local/share/build-artifacts/codex-vl/${{ github.sha }}/linux-arm64/npm/*.tgz
           if-no-files-found: error

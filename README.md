@@ -19,6 +19,25 @@ experimental workflow features:
 - `/mcp reload` to apply MCP server configuration changes without restarting
 - side-by-side npm packaging under `@mmmbuto/codex-vl`
 
+## What Codex VL Adds
+
+- **Supervised scheduled jobs.** `/loop` jobs keep a fixed-format summary of
+  every tick — including failed, skipped, and expired ones — naming who
+  actually handled each tick, so nothing disappears in silence.
+- **Extended scheduling.** Recurring intervals, daily wall-clock times in any
+  IANA timezone, or one-shot appointments; each occurrence fires at most once
+  and jobs can re-arm on restart.
+- **Optional Vivling delegation.** Hand a single loop to your Vivling to
+  observe, suggest, or manage it, with automatic fallback to the main thread.
+- **Remote control with explicit pairing.** `codex-vl remote-control
+  start|stop|pair` and `/remote-control` manage the daemon; pairing attaches
+  to a running daemon and refuses loudly when none is listening.
+- **Everything ships on the fork's own channel**, with no upstream installer
+  fallback (see Security).
+- **Run it on your phone.** The Android (Termux) package carries the same
+  native binary; pair the ChatGPT mobile app to a daemon running in Termux
+  with `remote-control start` + `remote-control pair`.
+
 ## Install
 
 Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
@@ -67,11 +86,12 @@ npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
 
 ## Release Channels
 
-The `0.150.1` line is based on the upstream Codex `rust-v0.150.1` stable
+The `0.152.1` line is based on the upstream Codex `rust-v0.152.1` stable
 release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
-Being an upstream **stable**, it ships on the `latest` channel. The
+The upstream base of that line is a **stable** release, but the Codex VL
+build on it is an alpha (`-vl.1`) and ships on the `next` channel. The
 conservative `stable` tag remains on `0.144.5` until a later explicitly
 authorized promotion.
 
@@ -90,11 +110,11 @@ process variable explicitly by name when the server needs it; repeat the flag
 for multiple names:
 
 ```bash
-codex-vl mcp add nexuscrew \
-  --env-var NEXUSCREW_MCP_SESSION \
+codex-vl mcp add example-server \
+  --env-var EXAMPLE_MCP_SESSION \
   --env-var TMUX \
   --env-var TMUX_PANE \
-  -- nexuscrew mcp
+  -- example-server mcp
 ```
 
 The command stores only the variable names. Their values are read from the
@@ -153,9 +173,10 @@ local fallback reply path.
 Checks and controls the Codex remote-control daemon without leaving the TUI.
 Supported subcommands are `status`, `start`, `stop`, `restart`, and `pair`.
 
-`pair` prints the code the ChatGPT mobile app asks for. It attaches to a daemon
-that is already listening and starts one only when none is, so pairing does not
-need a separate `start` first. `status` is the only read-only subcommand: it
+`pair` prints the code the ChatGPT mobile app asks for. It attaches to a
+daemon that is already listening and refuses with instructions when none is:
+run `codex-vl remote-control start` first. `status` is the only read-only
+subcommand: it
 probes the daemon without starting it. Client enrollment toggles are
 intentionally not implemented in this command.
 
@@ -197,7 +218,7 @@ cargo build --release -p codex-cli --bin codex
 For a local macOS install, build from source with Cargo, then point your local
 wrapper or npm prefix at the produced `codex` binary (the `codex-vl-exec`
 command dispatches it via the `exec` subcommand). The
-npm `latest` publish includes Linux x64, Linux arm64 and Termux Android arm64
+npm package includes Linux x64, Linux arm64 and Termux Android arm64
 native packages plus the macOS arm64 source-build package.
 
 ## Roadmap

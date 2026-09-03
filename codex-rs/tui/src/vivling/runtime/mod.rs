@@ -73,8 +73,6 @@ pub(crate) use codex_vivling_core::safety::backup_pre_migration;
 pub(crate) use codex_vivling_core::safety::write_atomic;
 pub(crate) use ratatui::buffer::Buffer;
 pub(crate) use ratatui::layout::Rect;
-pub(crate) use std::cell::Cell;
-pub(crate) use std::cell::RefCell;
 pub(crate) use std::fs;
 pub(crate) use std::io;
 pub(crate) use std::io::Write;
@@ -99,6 +97,50 @@ pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
 pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
+/// codex-vl — shadow state del wrapper. Step A: scritto a
+/// fianco dei campi legacy `Cell`/`RefCell` (che restano la fonte letta);
+/// la migrazione campo-per-campo lo rende l'unica fonte e appiattisce la
+/// `RefCell` (transitoria di questa fase). PRIVATO del modulo: il
+/// compilatore è il gate d'accesso, nessun commento a farlo rispettare.
+#[derive(Debug, Clone)]
+struct ShadowState {
+    lifecycle: VivlingLifecyclePhase,
+    expression_in_flight: Option<ExpressionKind>,
+    active_until: Option<Instant>,
+    active_started_at: Option<Instant>,
+    next_scheduled_frame_at: Option<Instant>,
+    animation_text: Option<String>,
+    animation_text_expires_at: Option<Instant>,
+    activity: Option<crate::vl::VivlingActivity>,
+    live_context: Option<VivlingLiveContext>,
+    crt_frame_target: crate::vl::crt::FrameTarget,
+    startup_dispatched: bool,
+    crt_first_dispatch_completed: bool,
+    session_chat_turns: u32,
+}
+
+impl ShadowState {
+    fn with_lifecycle(lifecycle: VivlingLifecyclePhase) -> Self {
+        Self {
+            lifecycle,
+            expression_in_flight: None,
+            active_until: None,
+            active_started_at: None,
+            next_scheduled_frame_at: None,
+            animation_text: None,
+            animation_text_expires_at: None,
+            activity: None,
+            live_context: None,
+            crt_frame_target: crate::vl::crt::FrameTarget::detect(
+                crate::vl::crt::PacingProbe::from_std_env(),
+            ),
+            startup_dispatched: false,
+            crt_first_dispatch_completed: false,
+            session_chat_turns: 0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Vivling {
     pub(crate) codex_home: Option<PathBuf>,
@@ -109,33 +151,28 @@ pub(crate) struct Vivling {
     pub(crate) animations_enabled: bool,
     /// Step 12.C — fase di dispatch. Sorgente di verità per il task-running
     /// (il flag legacy `task_running` è stato rimosso in questo step).
-    pub(crate) lifecycle: RefCell<VivlingLifecyclePhase>,
     /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
     /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
-    pub(crate) expression_in_flight: Cell<Option<ExpressionKind>>,
-    pub(crate) active_until: Cell<Option<Instant>>,
-    pub(crate) active_started_at: Cell<Option<Instant>>,
-    pub(crate) next_scheduled_frame_at: RefCell<Option<Instant>>,
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
-    pub(crate) animation_text: RefCell<Option<String>>,
-    pub(crate) animation_text_expires_at: Cell<Option<Instant>>,
-    pub(crate) activity: RefCell<Option<crate::vl::VivlingActivity>>,
-    pub(crate) live_context: RefCell<Option<VivlingLiveContext>>,
     pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
     /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
     /// when `configure()` is called with a new home.
     pub(crate) crt_config: crate::vl::crt::VivlingCrtConfig,
     /// Per-render transition snapshot generator. Mutated inside `render()`.
+    ///
+    /// codex-vl: NOTA DI PERIMETRO — è l'unica eccezione
+    /// residua al render read-only: `CrtAnimationLedger` (vl/crt, fuori dal
+    /// perimetro del refactoring) muta il proprio stato per-frame via interior
+    /// mutability, per design. La sua migrazione è tracciata come voce
+    /// separata a registro (post-treno).
     pub(crate) crt_animation_ledger: crate::vl::crt::CrtAnimationLedger,
     /// Frame pacing target detected from the runtime environment.
-    pub(crate) crt_frame_target: Cell<crate::vl::crt::FrameTarget>,
     /// Memory V2 Step 12.B.L — runtime-only flag set the first time a
     /// boot/load completes for this Vivling instance. Prevents `ensure_
     /// startup_dispatched()` from re-firing on subsequent `configure()`
     /// calls within the same session (e.g. `codex_home` toggles). Reset
     /// implicitly on process restart because the wrapper is rebuilt
     /// (see `unavailable()` and `Clone`).
-    pub(crate) startup_dispatched: Cell<bool>,
     /// codex-vl Step 14 Bug 1 fix — runtime gate that hides
     /// state-persistent CRT fallbacks (`proactive_next_phrase_at`,
     /// `recent_memory_phrase`, `last_work_summary_phrase`) until the
@@ -149,13 +186,13 @@ pub(crate) struct Vivling {
     /// does not freeze the CRT into safety-template-only mode forever).
     /// Reset implicitly on process restart because the wrapper is
     /// rebuilt (see `unavailable()` and `Clone`).
-    pub(crate) crt_first_dispatch_completed: Cell<bool>,
     /// Memory V2 Step 12.B.P — runtime-only counter of `/vl` chat
     /// turns observed in this session. Drives the one-shot Ctrl+J
     /// hint surfaced via `chat_widget.add_info_message` after a few
     /// turns when the user has never opened the dedicated panel.
-    /// Reset implicitly on process restart.
-    pub(crate) session_chat_turns: Cell<u32>,
+    /// codex-vl — shadow state (privato: v. `ShadowState`).
+    /// Unica fonte di verità mutabile: il compilatore è il gate.
+    shadow: ShadowState,
 }
 
 impl Clone for Vivling {
@@ -170,22 +207,10 @@ impl Clone for Vivling {
             active_vivling_id: self.active_vivling_id.clone(),
             frame_requester: self.frame_requester.clone(),
             animations_enabled: self.animations_enabled,
-            lifecycle: RefCell::new(self.lifecycle.borrow().clone()),
-            expression_in_flight: self.expression_in_flight.clone(),
-            active_until: self.active_until.clone(),
-            active_started_at: self.active_started_at.clone(),
-            next_scheduled_frame_at: self.next_scheduled_frame_at.clone(),
-            animation_text: self.animation_text.clone(),
-            animation_text_expires_at: self.animation_text_expires_at.clone(),
-            activity: self.activity.clone(),
-            live_context: self.live_context.clone(),
             msa: self.msa.clone(),
             crt_config: self.crt_config.clone(),
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
-            crt_frame_target: self.crt_frame_target.clone(),
-            startup_dispatched: self.startup_dispatched.clone(),
-            crt_first_dispatch_completed: self.crt_first_dispatch_completed.clone(),
-            session_chat_turns: self.session_chat_turns.clone(),
+            shadow: self.shadow.clone(),
         }
     }
 }

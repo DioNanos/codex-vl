@@ -9,6 +9,7 @@ use crate::context::DeveloperInstructions;
 use crate::context::ManagedDeveloperInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
+use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tools::handlers::multi_agents_common::build_agent_resume_config;
 use codex_context_fragments::set_annotated_content;
@@ -18,7 +19,7 @@ use codex_protocol::intersect_effective_permission_profiles;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_utils_path_uri::PathUri;
 
-const AGENT_NAMES: &str = include_str!("../agent_names.txt");
+const AGENT_NAMES: &str = include_str!("../../../assets/agent/agent_names.txt");
 
 struct SpawnAgentThreadInheritance {
     environments: Option<TurnEnvironmentSnapshot>,
@@ -414,6 +415,7 @@ impl AgentControl {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
         }
+        config.service_tier = self.root_service_tier();
         if let Some(model) = stored_model {
             config.model = Some(model);
         }
@@ -455,10 +457,10 @@ impl AgentControl {
                     let owner_environment = parent_environments
                         .turn_environments()
                         .find(|environment| {
-                            environment.selection.environment_id == *environment_id
-                                && environment.cwd() == &selection.cwd
-                                && environment.workspace_roots()
-                                    == selection.workspace_roots.as_slice()
+                            let parent_selection = &environment.selection;
+                            parent_selection.environment_id == selection.environment_id
+                                && parent_selection.cwd == selection.cwd
+                                && parent_selection.workspace_roots == selection.workspace_roots
                         })
                         .ok_or_else(|| {
                             invalid_environment("no longer matches a ready parent environment")
@@ -493,8 +495,8 @@ impl AgentControl {
                     let cwd = selection.cwd.to_abs_path().map_err(|_| {
                         invalid_environment("working directory is not a local absolute path")
                     })?;
-                    let roots = selection
-                        .workspace_roots
+                    let roots = owner_environment
+                        .workspace_roots()
                         .iter()
                         .map(PathUri::to_abs_path)
                         .collect::<Result<Vec<_>, _>>()
@@ -742,15 +744,16 @@ impl AgentControl {
         )
         .await;
 
+        let start_options = TurnStartOptions {
+            parent_turn_id: options.parent_turn_id,
+            root_turn_id: options.root_turn_id,
+            cyber_access_program: options.cyber_access_program,
+            ..Default::default()
+        };
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(
-                    new_thread.thread_id,
-                    input,
-                    options.parent_turn_id,
-                    options.root_turn_id,
-                )
-                .await?;
+                self.send_input(new_thread.thread_id, input, start_options)
+                    .await?;
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(
@@ -758,8 +761,7 @@ impl AgentControl {
                     &state,
                     communication,
                     context,
-                    options.parent_turn_id,
-                    options.root_turn_id,
+                    start_options,
                 )
                 .await?;
             }
@@ -880,8 +882,11 @@ impl AgentControl {
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
             if multi_agent_version == MultiAgentVersion::V2 {
                 let parent_config = parent_thread.session.get_config().await;
-                let parent_usage_hints =
-                    resolve_usage_hints(&parent_config.multi_agent_v2, /*catalog*/ None);
+                let parent_usage_hints = resolve_usage_hints(
+                    &parent_config.multi_agent_v2,
+                    /*catalog*/ None,
+                    !parent_config.update_plan_enabled,
+                );
                 [parent_usage_hints.root, parent_usage_hints.subagent]
                     .into_iter()
                     .flatten()
@@ -928,9 +933,12 @@ impl AgentControl {
                     let ContentItem::InputText { text } = content_item.content_mut() else {
                         return true;
                     };
-                    if ManagedDeveloperInstructions::matches_text(text) {
+                    if ManagedDeveloperInstructions::matches_text(text)
+                        || PersistentModeState::matches_text(text)
+                    {
                         // If the child will rebuild its initial context, drop the inherited
-                        // managed instructions; startup will add the current requirements once.
+                        // instructions; startup will add the current requirements and effort
+                        // instructions once.
                         return preserve_reference_context_item;
                     }
                     let (
@@ -1036,7 +1044,12 @@ impl AgentControl {
                 .as_ref()
                 .map(|hints| hints.subagent.clone())
                 .unwrap_or_else(|| {
-                    resolve_usage_hints(&config.multi_agent_v2, /*catalog*/ None).subagent
+                    resolve_usage_hints(
+                        &config.multi_agent_v2,
+                        /*catalog*/ None,
+                        !config.update_plan_enabled,
+                    )
+                    .subagent
                 })
         {
             let subagent_usage_hint_message = ContextualUserFragment::into(subagent_usage_hint);

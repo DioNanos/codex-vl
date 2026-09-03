@@ -12,6 +12,34 @@ use super::PARENT_OWNED_INPUT_MESSAGE;
 use crate::legacy_core::config::Config;
 
 impl ChatWidget {
+    /// Test-only fixture for loop-controller tests that need the real
+    /// Adult+brain+profile management gate. Keeping the setup here avoids
+    /// exposing `BottomPane` internals to sibling test modules.
+    #[cfg(test)]
+    pub(crate) fn prepare_vivling_management_gate_for_tests(&mut self) -> Result<String, String> {
+        let config = self.config.clone();
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::Hatch)?;
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::PromoteAdult)?;
+        self.bottom_pane
+            .run_vivling_command(&config, crate::vivling::VivlingAction::Brain(true))?;
+        self.bottom_pane
+            .assign_vivling_brain_profile(&config, "vivling-spark".to_string())?;
+        self.bottom_pane
+            .active_vivling_id()
+            .map(str::to_string)
+            .ok_or_else(|| "test Vivling was not activated".to_string())
+    }
+
+    /// Test-only forward: exposes the Vivling handle so loop-controller
+    /// tests can verify that a `record_vivling_loop_event` call actually
+    /// landed in `work_memory`, not just that it was invoked.
+    #[cfg(test)]
+    pub(crate) fn vivling_for_tests(&self) -> &crate::vivling::Vivling {
+        self.bottom_pane.vivling_for_tests()
+    }
+
     /// Submit an Adult Vivling assist kickoff through the normal worker-turn
     /// pipeline without interpreting shell escapes.
     ///
@@ -95,13 +123,13 @@ impl ChatWidget {
     /// codex-vl Step 12.C — gate singolo: un solo dispatch di espressione
     /// in volo. Inoltra al `BottomPane`/wrapper; `false` se uno è già in corso.
     pub(crate) fn try_begin_vivling_expression(
-        &self,
+        &mut self,
         kind: crate::vivling::ExpressionKind,
     ) -> bool {
         self.bottom_pane.try_begin_vivling_expression(kind)
     }
 
-    /// FASE5 5A — dati di gating suggestion del Vivling attivo.
+    /// Dati di gating suggestion del Vivling attivo.
     pub(crate) fn vivling_suggestion_gate(
         &mut self,
         config: &Config,
@@ -161,6 +189,24 @@ impl ChatWidget {
         config: &Config,
     ) -> Result<(String, String), String> {
         self.bottom_pane.active_vivling_loop_owner_identity(config)
+    }
+
+    pub(crate) fn vivling_loop_owner_readiness(
+        &mut self,
+        config: &Config,
+        owner_vivling_id: &str,
+    ) -> crate::vl::delegated_loops::VivlingReadiness {
+        self.bottom_pane
+            .vivling_loop_owner_readiness(config, owner_vivling_id)
+    }
+
+    pub(crate) fn vivling_loop_management_gate_inputs(
+        &mut self,
+        config: &Config,
+        owner_vivling_id: &str,
+    ) -> Result<(bool, bool, bool, u8, &'static str), String> {
+        self.bottom_pane
+            .vivling_loop_management_gate_inputs(config, owner_vivling_id)
     }
 
     pub(crate) fn prepare_vivling_loop_tick(

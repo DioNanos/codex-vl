@@ -7,14 +7,24 @@ use super::types::LoopActionOutcome;
 use crate::vl::loop_runtime::LoopJobPayload;
 
 pub(super) const LOOP_STATUS_SUBMITTED: &str = "submitted";
+pub(super) const LOOP_STATUS_RUNNER_DISPATCHED: &str = "runner_dispatched";
+pub(super) const LOOP_STATUS_SKIPPED_BUSY: &str = "skipped_busy";
+pub(super) const LOOP_STATUS_INVALID_RUNNER_MODEL: &str = "invalid_runner_model";
+pub(super) const LOOP_STATUS_NEEDS_APPROVAL: &str = "needs_approval";
+pub(super) const LOOP_STATUS_TIMEOUT: &str = "timeout";
 pub(super) const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
 pub(super) const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
 pub(super) const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";
 pub(super) const LOOP_STATUS_BLOCKED_OWNER: &str = "blocked_owner";
 pub(super) const LOOP_STATUS_DELEGATED_VIVLING: &str = "delegated_vivling";
+/// Terminal status of a one-shot past its grace window:
+/// persisted by the re-arm pass at bootstrap, matching the status name used
+/// in the common pre-schedule expiry check).
+pub(super) const LOOP_STATUS_EXPIRED: &str = "expired";
 pub(super) const LOOP_STATUS_PROGRESS: &str = "progress";
 pub(super) const LOOP_STATUS_BLOCKED: &str = "blocked";
 pub(super) const LOOP_STATUS_DONE: &str = "done";
+pub(super) const LOOP_STATUS_PENDING_OCCURRENCE_MISSING: &str = "pending_occurrence_missing";
 pub(super) const LOOP_STATUS_DISABLED: &str = "disabled";
 pub(super) const LOOP_STATUS_REMOVED: &str = "removed";
 

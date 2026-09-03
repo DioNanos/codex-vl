@@ -4,7 +4,7 @@ assertion_line: 1225
 expression: rendered
 ---
 ╭──────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.150.1 -> 9.9.9                │
+│ ✨ Update available! 0.151.0 -> 9.9.9                │
 │ Run pnpm add -g @mmmbuto/codex-vl to update.         │
 │                                                      │
 │ See full release notes:                              │

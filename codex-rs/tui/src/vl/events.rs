@@ -6,6 +6,7 @@
 
 use codex_protocol::ThreadId;
 
+use super::delegated_loops::EffectiveLoopOwner;
 use super::sidebar::VivlingLogKind;
 use super::suggestions::VivlingLoopSuggestion;
 use crate::vivling::VivlingAssistRequest;
@@ -15,6 +16,17 @@ use crate::vivling::VivlingExpressionRequest;
 use crate::vivling::VivlingExpressionResult;
 use crate::vivling::VivlingLoopTickRequest;
 use crate::vivling::VivlingLoopTickResult;
+use codex_state::LoopRunnerKind;
+
+/// Server-issued identity for one in-flight managed loop tick. It is
+/// deliberately separate from caller-supplied tool arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoopCommandScope {
+    pub(crate) instance_id: String,
+    pub(crate) thread_id: ThreadId,
+    pub(crate) job_id: String,
+    pub(crate) label: String,
+}
 
 /// User-facing request for one of the `/loop ...` subcommands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +37,20 @@ pub(crate) enum LoopCommandRequest {
         prompt_text: String,
         goal_text: Option<String>,
         auto_remove_on_completion: Option<bool>,
+        runner_kind: LoopRunnerKind,
+        runner_model: Option<String>,
+        /// persisted on the descriptor (0933): "interval" | "at" |
+        /// "one_shot".
+        schedule_kind: String,
+        /// "HH:MM" wall clock for `at`, interpreted in `tz`.
+        schedule_at: Option<String>,
+        /// epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// obbligatorio).
+        one_shot_at_ms: Option<i64>,
+        /// IANA tz name for `at` (persisted, never a runtime Local).
+        tz: Option<String>,
+        /// re-arm this loop at bootstrap (0933, default false).
+        rearm_on_boot: Option<bool>,
     },
     Update {
         label: String,
@@ -33,6 +59,21 @@ pub(crate) enum LoopCommandRequest {
         goal_text: Option<Option<String>>,
         auto_remove_on_completion: Option<bool>,
         enabled: Option<bool>,
+        runner_kind: Option<LoopRunnerKind>,
+        runner_model: Option<Option<String>>,
+        /// `Some` when the schedule triplet is provided as a whole;
+        /// `None` leaves the persisted schedule untouched.
+        schedule_kind: Option<String>,
+        /// see Add::schedule_at.
+        schedule_at: Option<String>,
+        /// epoch-ms UTC, già validato da parsing (RFC 3339 con offset
+        /// obbligatorio).
+        one_shot_at_ms: Option<i64>,
+        /// see Add::tz.
+        tz: Option<String>,
+        /// `Some` overrides the persisted `rearm_on_boot`; `None` keeps
+        /// it (0933, default false).
+        rearm_on_boot: Option<bool>,
     },
     List,
     Show {
@@ -50,14 +91,28 @@ pub(crate) enum LoopCommandRequest {
     Trigger {
         label: String,
     },
+    Delegate {
+        label: String,
+        owner_kind: String,
+    },
+    Undelegate {
+        label: String,
+    },
+    Delegation {
+        label: Option<String>,
+    },
+    SetStrategy {
+        label: String,
+        strategy: String,
+    },
     OwnerShow,
     OwnerSetMain,
     OwnerSetVivling,
-    /// FASE5 5A — apply a pending suggestion by id (user-confirmed via `/loop apply`).
+    /// Apply a pending suggestion by id (user-confirmed via `/loop apply`).
     Apply {
         suggestion_id: String,
     },
-    /// FASE5 5A — dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
+    /// Dismiss a pending suggestion by id (user-confirmed via `/loop dismiss`).
     Dismiss {
         suggestion_id: String,
     },
@@ -102,13 +157,28 @@ pub(crate) enum VlEvent {
     RunVivlingLoopTick {
         thread_id: ThreadId,
         job_id: String,
+        /// The claimed occurrence key carried through the async boundary.
+        occurrence_ms: Option<i64>,
+        /// Wall-clock timestamp captured immediately before dispatch.
+        started_ms: i64,
         request: VivlingLoopTickRequest,
+        /// Explicit runner model for child-agent ticks; `None` preserves the
+        /// legacy Vivling/session model path.
+        runner_model: Option<String>,
+        /// The owner attribution resolved at dispatch time, carried so the
+        /// completion path reports it instead of re-deriving it from the
+        /// thread owner.
+        resolution: EffectiveLoopOwner,
     },
     /// Result of a Vivling-managed loop tick.
     VivlingLoopTickFinished {
         thread_id: ThreadId,
         job_id: String,
+        occurrence_ms: Option<i64>,
+        started_ms: i64,
         result: Result<VivlingLoopTickResult, String>,
+        /// The same resolved attribution carried at dispatch time.
+        resolution: EffectiveLoopOwner,
     },
     /// Memory V2 Step 12.B.D.2 — start a background Expression LLM
     /// dispatch (CRT live phrase + proactive). The request must
@@ -133,21 +203,27 @@ pub(crate) enum VlEvent {
         text: String,
         vivling_id: Option<String>,
     },
-    /// FASE5 5A — a gated loop suggestion is ready to surface to the user.
+    /// A gated loop suggestion is ready to surface to the user.
     /// Stored in the in-session context bus; the user applies it with
     /// `/loop apply <id>` or discards it with `/loop dismiss <id>`. No
     /// automatic action is ever taken from this event alone.
     SuggestionReady { suggestion: VivlingLoopSuggestion },
-    /// FASE5 5A — user confirmed `/loop apply <id>`: map the suggestion to
+    /// User confirmed `/loop apply <id>`: map the suggestion to
     /// a safe LoopCommandRequest and route it (only non-destructive kinds).
     ApplyLoopSuggestion { suggestion_id: String },
-    /// FASE5 5A — user confirmed `/loop dismiss <id>`: drop the suggestion.
+    /// User confirmed `/loop dismiss <id>`: drop the suggestion.
     DismissLoopSuggestion { suggestion_id: String },
-    /// FASE5 5A — worker turn snapshot for the volatile context bus.
+    /// Worker turn snapshot for the volatile context bus.
     /// `blockers` only ever carries explicit signals (never invented).
     ContextBusTurn {
         summary: String,
         active_loops: Vec<String>,
         blockers: Vec<String>,
+    },
+    /// structured fixed-format summary of one finished loop tick
+    /// (persist-before-emit: the row is already durable when this flies).
+    /// The consumer (bounded queue + notifier worker) lands in m2.
+    LoopTickSummary {
+        summary: crate::app::loop_controller::summary::LoopTickSummary,
     },
 }

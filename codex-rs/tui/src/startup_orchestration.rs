@@ -411,6 +411,12 @@ pub(super) async fn run_main_inner(
             &app_server_target,
         ))
         .await??;
+    // start the loop summary worker with the process state handle:
+    // it owns the bounded queue, drains it, and replays undelivered pending
+    // rows once per process start.
+    state_db
+        .as_ref()
+        .map(crate::app::loop_controller::start_loop_summary_worker);
     let config_toml_log_dir_configured = config
         .config_layer_stack
         .effective_config()

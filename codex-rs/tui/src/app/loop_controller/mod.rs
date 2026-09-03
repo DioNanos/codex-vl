@@ -46,6 +46,9 @@ mod types;
 mod events;
 mod jobs;
 mod manage_tool;
+mod notify;
+mod rearm;
+pub(crate) mod summary;
 mod ticks;
 mod vivling_delegation;
 
@@ -60,12 +63,21 @@ use crate::vl::events::LoopCommandRequest;
 
 use self::formatting::canonical_last_status;
 use self::formatting::loop_runtime_state;
+use self::types::LoopCommandScope;
 use self::types::LoopCommandSource;
+use self::types::ManagedToolCallSource;
 
 // codex-vl: re-exported for the app-server event router, which must route
 // `manage_loops` dynamic tool calls to this module before the upstream
 // DynamicToolCall handling.
 pub(super) use self::parsing::is_manage_loops_dynamic_tool;
+
+/// bootstrap hook for `startup_orchestration`: starts the bounded
+/// queue and the separate consumer task; the replay of undelivered pending
+/// rows runs inside it, once per process start.
+pub(crate) fn start_loop_summary_worker(state_db: &std::sync::Arc<codex_state::StateRuntime>) {
+    notify::start_worker(state_db);
+}
 
 impl App {
     fn record_vivling_loop_job(
@@ -81,9 +93,11 @@ impl App {
         let goal = job.and_then(|job| job.goal_text.as_deref());
         self.chat_widget.record_vivling_loop_event(
             VivlingLoopEventKind::Config,
-            match source {
+            match &source {
                 LoopCommandSource::User => VivlingLoopEventSource::User,
-                LoopCommandSource::Agent => VivlingLoopEventSource::Agent,
+                LoopCommandSource::Agent | LoopCommandSource::Managed(_) => {
+                    VivlingLoopEventSource::Agent
+                }
             },
             action,
             label,
@@ -125,6 +139,72 @@ impl App {
                 "loop jobs are unavailable because the process state database is not initialized"
             )
         })
+    }
+
+    pub(super) fn register_managed_loop_scope(
+        &mut self,
+        thread_id: ThreadId,
+        job_id: &str,
+        label: &str,
+    ) -> LoopCommandScope {
+        self.managed_loop_scopes
+            .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
+        let scope = LoopCommandScope {
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            thread_id,
+            job_id: job_id.to_string(),
+            label: label.to_string(),
+        };
+        self.managed_loop_scopes.push(scope.clone());
+        tracing::debug!(
+            target: "codex_vl::loop_management",
+            instance_id = %scope.instance_id,
+            job_id,
+            "issued managed loop command scope"
+        );
+        scope
+    }
+
+    pub(super) fn clear_managed_loop_scope(&mut self, thread_id: ThreadId, job_id: &str) {
+        self.managed_loop_scopes
+            .retain(|scope| scope.thread_id != thread_id || scope.job_id != job_id);
+    }
+
+    /// resolver for the agent `manage_loops` DynamicToolCall ONLY
+    /// (`manage_tool.rs`). The managed-tick completion path has its own,
+    /// stricter resolver (`resolve_managed_tick_source`) that can never
+    /// yield `Agent`.
+    pub(super) fn resolve_tool_call_source(&self, thread_id: ThreadId) -> ManagedToolCallSource {
+        let mut scopes = self
+            .managed_loop_scopes
+            .iter()
+            .filter(|scope| scope.thread_id == thread_id);
+        let Some(scope) = scopes.next() else {
+            // No active scope: an ordinary agent call (pre-governance behaviour).
+            return ManagedToolCallSource::OrdinaryAgent;
+        };
+        if scopes.next().is_some() {
+            // More than one child tick on a thread has no unambiguous caller
+            // identity in DynamicToolCallParams. Reject it rather than guessing.
+            return ManagedToolCallSource::Ambiguous;
+        }
+        ManagedToolCallSource::Single(LoopCommandSource::Managed(scope.clone()))
+    }
+
+    /// resolver for the managed-tick completion path ONLY
+    /// (`vivling_delegation.rs`): fail-closed and bound to the exact
+    /// (thread_id, job_id) scope of the finishing tick. Never yields
+    /// `Agent`: the caller executes the structured tick action on `Some`
+    /// or records `audit_rejected` on `None`.
+    pub(super) fn resolve_managed_tick_source(
+        &self,
+        thread_id: ThreadId,
+        job_id: &str,
+    ) -> Option<LoopCommandSource> {
+        self.managed_loop_scopes
+            .iter()
+            .find(|scope| scope.thread_id == thread_id && scope.job_id == job_id)
+            .map(|scope| LoopCommandSource::Managed(scope.clone()))
     }
 
     pub(super) async fn refresh_loop_jobs(
@@ -177,9 +257,21 @@ impl App {
         &mut self,
         thread_id: ThreadId,
         job_id: String,
+        occurrence_ms: Option<i64>,
+        started_ms: i64,
         result: Result<crate::vivling::VivlingLoopTickResult, String>,
+        resolution: crate::vl::delegated_loops::EffectiveLoopOwner,
     ) -> color_eyre::Result<()> {
-        vivling_delegation::handle_loop_tick_finished(self, thread_id, job_id, result).await
+        vivling_delegation::handle_loop_tick_finished(
+            self,
+            thread_id,
+            job_id,
+            occurrence_ms,
+            started_ms,
+            result,
+            resolution,
+        )
+        .await
     }
 
     pub(super) async fn resolve_manage_loops_app_server_request(
@@ -205,9 +297,22 @@ impl App {
         &mut self,
         thread_id: ThreadId,
         job_id: String,
+        occurrence_ms: Option<i64>,
+        started_ms: i64,
         request: crate::vivling::VivlingLoopTickRequest,
+        runner_model: Option<String>,
+        resolution: crate::vl::delegated_loops::EffectiveLoopOwner,
     ) {
-        vivling_delegation::run_loop_tick(self, thread_id, job_id, request);
+        vivling_delegation::run_loop_tick(
+            self,
+            thread_id,
+            job_id,
+            occurrence_ms,
+            started_ms,
+            request,
+            runner_model,
+            resolution,
+        );
     }
 
     /// Memory V2 Step 12.B.D.2 — dispatch a Vivling Expression LLM

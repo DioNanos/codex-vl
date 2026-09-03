@@ -24,6 +24,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use test_case::test_case;
 use uuid::Uuid;
 
 macro_rules! object {
@@ -157,6 +158,8 @@ async fn record_initial_history_ignores_security_risk_scores() {
     let user_item = user_message("visible user input");
     let security_risk = SecurityRiskScore {
         scores: BTreeMap::from([("credential_access".to_string(), 0.92)]),
+        call_id: None,
+        action: None,
         sampled_at: None,
     };
 
@@ -179,8 +182,16 @@ async fn record_initial_history_ignores_security_risk_scores() {
     );
 }
 
+#[derive(Clone, Copy)]
+enum BaselineTurnInput {
+    UserMessage,
+    RemovedByFork,
+}
+
+#[test_case(BaselineTurnInput::UserMessage; "user turn")]
+#[test_case(BaselineTurnInput::RemovedByFork; "fork removed the task message")]
 #[tokio::test]
-async fn record_initial_history_restores_world_state_baseline() {
+async fn record_initial_history_restores_world_state_baseline(input: BaselineTurnInput) {
     let (session, turn_context) = make_session_and_context().await;
     let turn_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
@@ -198,8 +209,19 @@ async fn record_initial_history_restores_world_state_baseline() {
     world_state_items.push(RolloutItem::WorldState(WorldStateItem::full(
         world_state.snapshot().into_object(),
     )));
+    let context_item = turn_context.to_turn_context_item();
+    let rollout_items = match input {
+        BaselineTurnInput::UserMessage => {
+            completed_user_turn_rollout(context_item.clone(), world_state_items)
+        }
+        BaselineTurnInput::RemovedByFork => {
+            world_state_items.push(RolloutItem::TurnContext(context_item.clone()));
+            world_state_items
+        }
+    };
+    // Exercise the persisted representation, not just an in-memory fork.
     let rollout_items =
-        completed_user_turn_rollout(turn_context.to_turn_context_item(), world_state_items);
+        serde_json::from_value(serde_json::to_value(rollout_items).unwrap()).unwrap();
 
     session
         .record_initial_history(InitialHistory::Resumed(ResumedHistory {
@@ -208,6 +230,20 @@ async fn record_initial_history_restores_world_state_baseline() {
             rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
         }))
         .await;
+    assert_eq!(
+        (
+            session.previous_turn_settings().await,
+            serde_json::to_value(session.reference_context_item().await).unwrap(),
+        ),
+        (
+            Some(PreviousTurnSettings {
+                model: context_item.model.clone(),
+                comp_hash: context_item.comp_hash.clone(),
+                realtime_active: context_item.realtime_active,
+            }),
+            serde_json::to_value(Some(context_item)).unwrap(),
+        )
+    );
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
     session
         .record_context_updates_and_set_reference_context_item(&step_context)
@@ -241,12 +277,13 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let rollout_items = vec![RolloutItem::TurnContext(previous_context_item)];
@@ -289,12 +326,13 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: Some("comp-hash-a".to_string()),
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let turn_id = previous_context_item
@@ -464,7 +502,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
     assert_eq!(
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -565,7 +603,7 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_inc
     assert_eq!(
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -670,6 +708,11 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
             },
         )),
         RolloutItem::ResponseItem(standalone_assistant.into()),
+        RolloutItem::WorldState(WorldStateItem::full(object!({}))),
+        RolloutItem::TurnContext(TurnContextItem {
+            turn_id: Some(standalone_turn_id.clone()),
+            ..first_context_item.clone()
+        }),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id: standalone_turn_id,
@@ -697,7 +740,7 @@ async fn reconstruct_history_rollback_skips_non_user_turns_for_history_and_metad
     assert_eq!(
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -802,7 +845,7 @@ async fn reconstruct_history_rollback_counts_inter_agent_assistant_turns() {
     assert_eq!(
         reconstructed.previous_turn_settings,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -1036,7 +1079,7 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
     assert_eq!(
         session.previous_turn_settings().await,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -1049,11 +1092,42 @@ async fn record_initial_history_resumed_rollback_drops_incomplete_user_turn_comp
     );
 }
 
+#[derive(Clone, Copy)]
+enum MissingContextBaseline {
+    BareTurnContext,
+    WorldStatePatch,
+    CompactedSnapshot,
+}
+
+#[test_case(MissingContextBaseline::BareTurnContext; "bare turn context")]
+#[test_case(MissingContextBaseline::WorldStatePatch; "patch without a full snapshot")]
+#[test_case(MissingContextBaseline::CompactedSnapshot; "full snapshot before compaction")]
 #[tokio::test]
-async fn record_initial_history_resumed_bare_turn_context_does_not_seed_reference_context_item() {
+async fn record_initial_history_requires_surviving_full_snapshot_without_user_turn(
+    baseline: MissingContextBaseline,
+) {
     let (session, turn_context) = make_session_and_context().await;
-    let previous_context_item = turn_context.to_turn_context_item();
-    let rollout_items = vec![RolloutItem::TurnContext(previous_context_item.clone())];
+    let mut rollout_items = match baseline {
+        MissingContextBaseline::BareTurnContext => Vec::new(),
+        MissingContextBaseline::WorldStatePatch => {
+            vec![RolloutItem::WorldState(WorldStateItem::patch(object!({})))]
+        }
+        MissingContextBaseline::CompactedSnapshot => vec![
+            RolloutItem::WorldState(WorldStateItem::full(object!({}))),
+            RolloutItem::Compacted(CompactedItem {
+                message: String::new(),
+                replacement_history: Some(Vec::new()),
+                mcp_resource_origins: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
+                window_id: None,
+            }),
+        ],
+    };
+    rollout_items.push(RolloutItem::TurnContext(
+        turn_context.to_turn_context_item(),
+    ));
 
     session
         .record_initial_history(InitialHistory::Resumed(ResumedHistory {
@@ -1360,12 +1434,13 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1451,12 +1526,13 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
             file_system_sandbox_policy: None,
             model: previous_model.to_string(),
             comp_hash: None,
-            personality: turn_context.personality,
+            personality: turn_context.personality(),
             collaboration_mode: Some(turn_context.collaboration_mode()),
             multi_agent_version: None,
             multi_agent_mode: None,
             realtime_active: Some(turn_context.realtime_active),
-            effort: turn_context.reasoning_effort.clone(),
+            cyber_access_program: None,
+            effort: turn_context.reasoning_effort().cloned(),
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         }))
         .expect("serialize expected reference context item")
@@ -1484,12 +1560,13 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1616,12 +1693,13 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
         file_system_sandbox_policy: None,
         model: current_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
 
@@ -1744,12 +1822,13 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item
@@ -1882,7 +1961,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_preserves_turn_
     assert_eq!(
         session.previous_turn_settings().await,
         Some(PreviousTurnSettings {
-            model: turn_context.model_info.slug.clone(),
+            model: turn_context.model_info().slug.clone(),
             comp_hash: None,
             realtime_active: Some(turn_context.realtime_active),
         })
@@ -1916,12 +1995,13 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
         file_system_sandbox_policy: None,
         model: previous_model.to_string(),
         comp_hash: None,
-        personality: turn_context.personality,
+        personality: turn_context.personality(),
         collaboration_mode: Some(turn_context.collaboration_mode()),
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(turn_context.realtime_active),
-        effort: turn_context.reasoning_effort.clone(),
+        cyber_access_program: None,
+        effort: turn_context.reasoning_effort().cloned(),
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let previous_turn_id = previous_context_item

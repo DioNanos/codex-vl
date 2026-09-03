@@ -7,6 +7,8 @@ use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadClientCapabilities;
+use codex_app_server_protocol::ThreadHistoryMode as ApiThreadHistoryMode;
 use codex_app_server_protocol::ThreadRevertParams;
 use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadRevertedNotification;
@@ -16,6 +18,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
+use codex_protocol::SanitizedGitUrl;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
@@ -23,6 +26,7 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSource;
 use codex_thread_store::PersistContext;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
@@ -30,6 +34,8 @@ pub(super) const THREAD_LIST_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
+const PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.";
+const PAGINATED_THREAD_READ_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.";
 
 async fn stage_pending_project_metadata(
     thread_manager: &ThreadManager,
@@ -444,7 +450,14 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
                 "prompt": {"type": "string", "description": "Prompt text to auto-submit on each loop tick. Required for add, optional for update."},
                 "goal": {"type": ["string", "null"], "description": "Optional short statement of what the loop is trying to monitor or complete. Use null in update to clear it."},
                 "enabled": {"type": "boolean", "description": "Optional enabled state for update."},
-                "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."}
+                "auto_remove_on_completion": {"type": "boolean", "description": "Whether the loop should remove itself once its goal is complete. Defaults to true on add, optional on update."},
+                "runner": {"type": "string", "enum": ["main", "child_agent"], "description": "Runner for each tick; defaults to main."},
+                "runner_model": {"type": "string", "description": "Provider-catalog model slug for child_agent ticks."},
+                "schedule_kind": {"type": "string", "enum": ["interval", "at", "one_shot"], "description": "codex-vl schedule kind; defaults to interval. Applies on add, or on update as a whole triplet."},
+                "schedule_at": {"type": "string", "description": "codex-vl: HH:MM wall clock for schedule_kind=at, interpreted in `tz` (IANA). Required for at."},
+                "one_shot": {"type": "string", "description": "codex-vl: RFC 3339 timestamp with a mandatory offset (e.g. 2026-10-25T02:30:00+02:00) for schedule_kind=one_shot. Required for one_shot."},
+                "tz": {"type": "string", "description": "codex-vl: IANA tz name (e.g. Europe/Rome) used for schedule_kind=at. Required for at."},
+                "rearm_on_boot": {"type": "boolean", "description": "codex-vl: re-arm this loop automatically at app bootstrap. Defaults to false; manually disabled loops stay disabled."}
             },
             "required": ["action"],
             "additionalProperties": false
@@ -453,13 +466,28 @@ fn manage_loops_dynamic_function_spec() -> DynamicToolFunctionSpec {
     }
 }
 
+/// codex-vl: single decision point for granting the fork-owned manage_loops
+/// builtins. The explicit `manageLoops` thread/start capability grants
+/// the builtin to any client that can serve the DynamicToolCall; the TUI
+/// identity check is the compatibility fallback for the 0.151.x cycle (the
+/// TUI does not declare capabilities yet). Changing the grant policy is a
+/// one-line edit here; the suite `dynamic_tools.rs` pins all three outcomes.
+fn client_requests_manage_loops_builtins(
+    app_server_client_name: Option<&str>,
+    capabilities: Option<&ThreadClientCapabilities>,
+) -> bool {
+    capabilities.is_some_and(|caps| caps.manage_loops.unwrap_or(false))
+        || app_server_client_name == Some(CODEX_TUI_CLIENT_NAME)
+}
+
 /// Replace any client-supplied built-in manage_loops dynamic tools with the
 /// fork-owned builtins (flat + `codex_app` namespaced), so app-server dynamic
 /// tool resolution always routes manage_loops back to the TUI loop controller.
 /// Preserve other tools already supplied under the `codex_app` namespace.
 ///
-/// Only invoked for the TUI client (see the `thread/start` call site): generic
-/// app-server clients keep their declared dynamic tools untouched.
+/// Only invoked for clients that request the builtin (see
+/// `client_requests_manage_loops_builtins` and the `thread/start` call site):
+/// other app-server clients keep their declared dynamic tools untouched.
 fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
     tools.retain(|tool| {
         !matches!(
@@ -506,6 +534,31 @@ fn with_builtin_dynamic_tools(mut tools: Vec<DynamicToolSpec>) -> Vec<DynamicToo
         }));
     }
     tools
+}
+
+/// Adds the TUI-only fork builtins except for upstream's bounded system
+/// request. The latter is an ephemeral `Feature("system")` thread used by
+/// temporary structured requests such as recap generation, which explicitly
+/// requires a zero-tool schema.
+fn dynamic_tools_for_thread_start(
+    app_server_client_name: Option<&str>,
+    capabilities: Option<&ThreadClientCapabilities>,
+    ephemeral: bool,
+    thread_source: Option<&ThreadSource>,
+    dynamic_tools: Vec<DynamicToolSpec>,
+) -> Vec<DynamicToolSpec> {
+    let is_temporary_structured_system_request = ephemeral
+        && matches!(
+            thread_source,
+            Some(ThreadSource::Feature(feature)) if feature == "system"
+        );
+    if client_requests_manage_loops_builtins(app_server_client_name, capabilities)
+        && !is_temporary_structured_system_request
+    {
+        with_builtin_dynamic_tools(dynamic_tools)
+    } else {
+        dynamic_tools
+    }
 }
 
 #[derive(Clone)]
@@ -873,20 +926,23 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<&str>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         if app_server_client_name != Some(CODEX_TUI_CLIENT_NAME) {
-            self.send_thread_rollback_deprecation_notice(request_id.connection_id)
-                .await;
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                THREAD_ROLLBACK_DEPRECATION_SUMMARY,
+            )
+            .await;
         }
         self.thread_rollback_inner(request_id, params)
             .await
             .map(|()| None)
     }
 
-    async fn send_thread_rollback_deprecation_notice(&self, connection_id: ConnectionId) {
+    async fn send_deprecation_notice(&self, connection_id: ConnectionId, summary: &str) {
         self.outgoing
             .send_server_notification_to_connections(
                 &[connection_id],
                 ServerNotification::DeprecationNotice(DeprecationNoticeNotification {
-                    summary: THREAD_ROLLBACK_DEPRECATION_SUMMARY.to_string(),
+                    summary: summary.to_string(),
                     details: None,
                 }),
             )
@@ -931,11 +987,24 @@ impl ThreadRequestProcessor {
 
     pub(crate) async fn thread_read(
         &self,
+        request_id: &ConnectionRequestId,
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_read_response_inner(params)
-            .await
-            .map(|response| Some(response.into()))
+        let include_turns = params.include_turns;
+        let response = self.thread_read_response_inner(params).await?;
+        if include_turns
+            && matches!(
+                response.thread.history_mode,
+                ApiThreadHistoryMode::Paginated
+            )
+        {
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                PAGINATED_THREAD_READ_DEPRECATION_SUMMARY,
+            )
+            .await;
+        }
+        Ok(Some(response.into()))
     }
 
     pub(crate) async fn thread_turns_list(
@@ -1204,6 +1273,7 @@ impl ThreadRequestProcessor {
             history_mode,
             session_start_source,
             thread_source,
+            capabilities,
             project_id,
             environments,
         } = params;
@@ -1287,6 +1357,7 @@ impl ThreadRequestProcessor {
                 config,
                 typesafe_overrides,
                 dynamic_tools,
+                capabilities,
                 selected_capability_roots.unwrap_or_default(),
                 history_mode.map(Into::into),
                 session_start_source,
@@ -1366,6 +1437,7 @@ impl ThreadRequestProcessor {
         config_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         dynamic_tools: Option<Vec<DynamicToolSpec>>,
+        capabilities: Option<ThreadClientCapabilities>,
         selected_capability_roots: Vec<SelectedCapabilityRoot>,
         history_mode: Option<ThreadHistoryMode>,
         session_start_source: Option<codex_app_server_protocol::ThreadStartSource>,
@@ -1470,17 +1542,20 @@ impl ThreadRequestProcessor {
                 .thread_manager
                 .default_environment_selections(&config.cwd, &config.workspace_roots)
         });
-        // codex-vl: the fork-owned manage_loops builtins are scoped to the TUI
-        // client, the only one with the loop controller that serves the
-        // DynamicToolCall. Generic app-server clients keep their declared
+        // codex-vl: the fork-owned manage_loops builtins are granted to
+        // clients that explicitly request them (thread/start `capabilities`
+        // with `manageLoops`) or, as the 0.151.x compatibility fallback, to
+        // the TUI client — the only one with the loop controller that serves
+        // the DynamicToolCall. Other app-server clients keep their declared
         // dynamic tools untouched (same identity-based scoping as
         // `thread_rollback` above).
-        let dynamic_tools = dynamic_tools.unwrap_or_default();
-        let dynamic_tools = if app_server_client_name.as_deref() == Some(CODEX_TUI_CLIENT_NAME) {
-            with_builtin_dynamic_tools(dynamic_tools)
-        } else {
-            dynamic_tools
-        };
+        let dynamic_tools = dynamic_tools_for_thread_start(
+            app_server_client_name.as_deref(),
+            capabilities.as_ref(),
+            config.ephemeral,
+            thread_source.as_ref(),
+            dynamic_tools.unwrap_or_default(),
+        );
         if !dynamic_tools.is_empty() {
             validate_dynamic_tools(&dynamic_tools).map_err(invalid_request)?;
         }
@@ -1492,6 +1567,10 @@ impl ThreadRequestProcessor {
                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
             })
             .sum();
+        let history_mode = history_mode.or_else(|| {
+            (!config.ephemeral && thread_store.supports_paginated_history_lists())
+                .then_some(ThreadHistoryMode::Paginated)
+        });
         let mut thread_extension_init = ExtensionDataInit::new();
         if !selected_capability_roots.is_empty() {
             thread_extension_init.insert(selected_capability_roots);
@@ -1974,16 +2053,25 @@ impl ThreadRequestProcessor {
                         return Err(invalid_request("gitInfo must include at least one field"));
                     }
 
+                    let origin_url =
+                        Self::normalize_thread_metadata_git_field(origin_url, "gitInfo.originUrl")?;
+                    let origin_url = match origin_url {
+                        Some(Some(origin_url)) => {
+                            Some(Some(SanitizedGitUrl::try_from(origin_url).map_err(
+                                |_| invalid_request("gitInfo.originUrl must be a valid Git remote"),
+                            )?))
+                        }
+                        Some(None) => Some(None),
+                        None => None,
+                    };
+
                     Ok(StoreGitInfoPatch {
                         sha: Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?,
                         branch: Self::normalize_thread_metadata_git_field(
                             branch,
                             "gitInfo.branch",
                         )?,
-                        origin_url: Self::normalize_thread_metadata_git_field(
-                            origin_url,
-                            "gitInfo.originUrl",
-                        )?,
+                        origin_url,
                     })
                 },
             )
@@ -2489,11 +2577,25 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadShellCommandParams,
     ) -> Result<ThreadShellCommandResponse, JSONRPCErrorError> {
-        let ThreadShellCommandParams { thread_id, command } = params;
+        let ThreadShellCommandParams {
+            thread_id,
+            command,
+            timeout_ms,
+        } = params;
         let command = command.trim().to_string();
         if command.is_empty() {
             return Err(invalid_request("command must not be empty"));
         }
+
+        let timeout_ms = timeout_ms
+            .map(|timeout_ms| {
+                u64::try_from(timeout_ms).map_err(|_| {
+                    invalid_params(format!(
+                        "thread/shellCommand timeoutMs must be non-negative, got {timeout_ms}"
+                    ))
+                })
+            })
+            .transpose()?;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
@@ -2512,7 +2614,10 @@ impl ThreadRequestProcessor {
         self.submit_core_op(
             request_id,
             thread.as_ref(),
-            Op::RunUserShellCommand { command },
+            Op::RunUserShellCommand {
+                command,
+                timeout_ms,
+            },
         )
         .await
         .map_err(|err| internal_error(format!("failed to start shell command: {err}")))?;
@@ -3732,6 +3837,13 @@ impl ThreadRequestProcessor {
             matches!(thread.history_mode, ThreadHistoryMode::Paginated).then_some(thread.thread_id)
         });
         let paginated_resume = paginated_thread_id.is_some();
+        if paginated_resume && include_turns {
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+            )
+            .await;
+        }
 
         // Parent-owned V2 children must resume through their owner, not caller configuration.
         if let InitialHistory::Resumed(resumed_history) = &thread_history
@@ -3778,7 +3890,21 @@ impl ThreadRequestProcessor {
             };
         }
 
-        let history_cwd = thread_history.session_cwd();
+        // Copied or referenced history can contain another thread's settings. Only snapshots
+        // explicitly owned by this thread can override its startup cwd.
+        let history_cwd = if let InitialHistory::Resumed(resumed) = &thread_history {
+            resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                    if event.thread_id == Some(resumed.conversation_id) =>
+                {
+                    Some(event.thread_settings.cwd.to_path_buf())
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let history_cwd = history_cwd.or_else(|| thread_history.session_cwd());
         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
@@ -4240,6 +4366,13 @@ impl ThreadRequestProcessor {
             let redact_resume_payloads =
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());
             let include_turns = !params.exclude_turns;
+            if paginated_resume && include_turns {
+                self.send_deprecation_notice(
+                    request_id.connection_id,
+                    PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+                )
+                .await;
+            }
             let needs_history =
                 !paginated_resume && (include_turns || params.initial_turns_page.is_some());
             if needs_history {
@@ -4755,6 +4888,13 @@ impl ThreadRequestProcessor {
             return Err(invalid_request(
                 "ephemeral paginated thread/fork requires `excludeTurns: true`",
             ));
+        }
+        if paginated_source && include_turns {
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+            )
+            .await;
         }
         let source_thread_id = source_thread.thread_id;
         let source_thread_name = source_thread
@@ -5711,6 +5851,7 @@ fn stored_turn_to_api_turn(
         StoredTurnStatus::InProgress => TurnStatus::InProgress,
     };
     let error = turn.error.map(|error| TurnError {
+        misalignment: None,
         message: error.message,
         codex_error_info: error.codex_error_info,
         additional_details: error.additional_details,
@@ -5892,7 +6033,7 @@ pub(crate) fn thread_from_stored_thread(
     let git_info = thread.git_info.map(|info| ApiGitInfo {
         sha: info.commit_hash.map(|sha| sha.0),
         branch: info.branch,
-        origin_url: info.repository_url,
+        origin_url: info.repository_url.map(String::from),
     });
     let cwd = AbsolutePathBuf::relative_to_current_dir(path_utils::normalize_for_native_workdir(
         thread.cwd,
@@ -5968,7 +6109,7 @@ fn summary_from_stored_thread(
     let git_info = thread.git_info.map(|git| ConversationGitInfo {
         sha: git.commit_hash.map(|sha| sha.0),
         branch: git.branch,
-        origin_url: git.repository_url,
+        origin_url: git.repository_url.map(String::from),
     });
     ConversationSummary {
         conversation_id: thread.thread_id,
@@ -6068,7 +6209,7 @@ fn summary_from_thread_metadata(metadata: &ThreadMetadata) -> ConversationSummar
         metadata.agent_role.clone(),
         metadata.git_sha.clone(),
         metadata.git_branch.clone(),
-        metadata.git_origin_url.clone(),
+        metadata.git_origin_url.clone().map(String::from),
     )
 }
 

@@ -33,7 +33,7 @@ pub(super) fn configured_vivling(home: &Path) -> Vivling {
     // which only opens the REAL store (MsaConfig default → production
     // ~/.local/state) when `msa` is still None. Without this every test run
     // leaked empty `vivling::<uuid>` collections into the live storage
-    // (live audit 2026-06-07, finding F4).
+    // (a real leak, not hypothetical).
     vivling.msa = Some(std::sync::Arc::new(VivlingMsa::open_for_tests(
         &home.join("msa-test-storage"),
     )));
