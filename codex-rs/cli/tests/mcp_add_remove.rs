@@ -550,13 +550,13 @@ async fn add_with_env_var_persists_name_only() -> Result<()> {
     // persist only the name and never copy the value into the config file.
     let mut add_cmd = codex_command(codex_home.path())?;
     add_cmd
-        .env("NEXUSCREW_MCP_SESSION", "super-secret-value-do-not-persist")
+        .env("EXAMPLE_MCP_SESSION", "super-secret-value-do-not-persist")
         .args([
             "mcp",
             "add",
             "example-server",
             "--env-var",
-            "NEXUSCREW_MCP_SESSION",
+            "EXAMPLE_MCP_SESSION",
             "--",
             "example-server",
             "mcp",
@@ -571,7 +571,7 @@ async fn add_with_env_var_persists_name_only() -> Result<()> {
         McpServerTransportConfig::Stdio {
             env, env_vars, cwd, ..
         } => {
-            assert_eq!(env_vars, &vec!["NEXUSCREW_MCP_SESSION".into()]);
+            assert_eq!(env_vars, &vec!["EXAMPLE_MCP_SESSION".into()]);
             assert!(env.is_none(), "no literal env map should be written");
             assert!(cwd.is_none());
         }
@@ -580,7 +580,7 @@ async fn add_with_env_var_persists_name_only() -> Result<()> {
 
     // The value must never reach the config file: only the name is stored.
     let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
-    assert!(config.contains("NEXUSCREW_MCP_SESSION"));
+    assert!(config.contains("EXAMPLE_MCP_SESSION"));
     assert!(
         !config.contains("super-secret-value-do-not-persist"),
         "env value leaked into config file"
