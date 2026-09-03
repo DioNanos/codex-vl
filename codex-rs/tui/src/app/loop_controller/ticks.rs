@@ -664,7 +664,7 @@ pub(super) async fn process_submission(
             provider = %app.config.model_provider_id,
             model = %runner_model.as_deref().unwrap_or("<missing>"),
             label = %job.label,
-            "dispatching child-agent loop tick"
+            "dispatching loop tick as a separate model call (no tools)"
         );
         state_runtime
             .update_thread_loop_job_runtime(
