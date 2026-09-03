@@ -43,7 +43,31 @@ impl AppEventSender {
     }
 
     /// codex-vl: dispatch a vl-specific event through the upstream event bus.
+    #[track_caller]
     pub(crate) fn send_vl(&self, event: crate::vl::VlEvent) {
+        #[cfg(test)]
+        {
+            let caller = std::panic::Location::caller();
+            match &event {
+                crate::vl::VlEvent::RunVivlingLoopTick {
+                    job_id,
+                    occurrence_ms,
+                    ..
+                } => eprintln!(
+                    "VL-TRACE-2ND-TICK emitter=AppEventSender::send_vl caller={}:{} kind=RunVivlingLoopTick job_id={job_id} occurrence_ms={occurrence_ms:?}",
+                    caller.file(),
+                    caller.line(),
+                ),
+                crate::vl::VlEvent::LoopTickSummary { summary } => eprintln!(
+                    "VL-TRACE-2ND-TICK emitter=AppEventSender::send_vl caller={}:{} kind=LoopTickSummary job_id={} occurrence_ms={:?}",
+                    caller.file(),
+                    caller.line(),
+                    summary.job_id,
+                    summary.occurrence_ms,
+                ),
+                _ => {}
+            }
+        }
         self.send(AppEvent::Vl(event));
     }
 
