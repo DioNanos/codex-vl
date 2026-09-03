@@ -11,7 +11,6 @@ use super::sidebar::VivlingLogKind;
 use super::suggestions::VivlingLoopSuggestion;
 use crate::vivling::VivlingAssistRequest;
 use crate::vivling::VivlingBrainProfileRequest;
-use crate::vivling::VivlingBrainProfileRequest;
 use crate::vivling::VivlingBrainRequestKind;
 use crate::vivling::VivlingExpressionRequest;
 use crate::vivling::VivlingExpressionResult;
