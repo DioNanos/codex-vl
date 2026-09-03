@@ -284,6 +284,7 @@ impl App {
                 started_ms,
                 request,
                 runner_model,
+                resolution,
             } => {
                 self.run_vivling_loop_tick(
                     thread_id,
@@ -292,6 +293,7 @@ impl App {
                     started_ms,
                     request,
                     runner_model,
+                    resolution,
                 );
             }
             VlEvent::VivlingLoopTickFinished {
@@ -300,6 +302,7 @@ impl App {
                 occurrence_ms,
                 started_ms,
                 result,
+                resolution,
             } => {
                 self.handle_vivling_loop_tick_finished(
                     thread_id,
@@ -307,6 +310,7 @@ impl App {
                     occurrence_ms,
                     started_ms,
                     result,
+                    resolution,
                 )
                 .await?;
             }

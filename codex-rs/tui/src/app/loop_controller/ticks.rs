@@ -687,6 +687,7 @@ pub(super) async fn process_submission(
             started_ms,
             request,
             runner_model,
+            resolution: resolution.clone(),
         });
         app.record_vivling_loop_runtime(
             &job.label,
@@ -770,6 +771,7 @@ pub(super) async fn process_submission(
                     started_ms,
                     request,
                     runner_model: None,
+                    resolution: resolution.clone(),
                 });
                 app.record_vivling_loop_runtime(
                     &job.label,
@@ -1109,6 +1111,13 @@ mod tests {
             Some(one_shot_at_ms),
             now,
             Err("boom".to_string()),
+            crate::vl::delegated_loops::EffectiveLoopOwner {
+                requested: crate::vl::delegated_loops::RequestedLoopOwner::Main,
+                effective: crate::vl::delegated_loops::RequestedLoopOwner::Main,
+                source: crate::vl::delegated_loops::LoopOwnerSource::ThreadOwner,
+                readiness: crate::vl::delegated_loops::VivlingReadiness::NotRequested,
+                reason: "not_delegated",
+            },
         )
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;

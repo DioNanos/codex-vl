@@ -333,6 +333,7 @@ pub(super) async fn handle_loop_tick_finished(
     occurrence_ms: Option<i64>,
     started_ms: i64,
     result: Result<VivlingLoopTickResult, String>,
+    resolution: crate::vl::delegated_loops::EffectiveLoopOwner,
 ) -> color_eyre::Result<()> {
     // the tick completion path resolves ONLY the exact scope of the
     // finishing (thread_id, job_id), fail-closed: `None` (no scope, or a
@@ -366,21 +367,25 @@ pub(super) async fn handle_loop_tick_finished(
             .await
             .map_err(loop_state_error)?;
     }
-    let owner = state_runtime
-        .get_thread_loop_owner(thread_id)
-        .await
-        .map_err(loop_state_error)?;
-    let owner_vivling_id = owner.owner_vivling_id.clone();
-    let (manager, manager_reason) = match owner.owner_kind.as_str() {
-        codex_state::THREAD_LOOP_OWNER_KIND_VIVLING => (
-            super::summary::LoopManager::Vivling,
-            "delegated".to_string(),
-        ),
-        _ => (
-            super::summary::LoopManager::Main,
-            "not_delegated".to_string(),
-        ),
+    // The resolved attribution travels from the dispatch path: the summary
+    // reports the owner decided at tick time, not a thread-owner re-derivation.
+    let owner_vivling_id = match &resolution.effective {
+        crate::vl::delegated_loops::RequestedLoopOwner::Vivling { vivling_id } => {
+            Some(vivling_id.clone())
+        }
+        crate::vl::delegated_loops::RequestedLoopOwner::Main => None,
     };
+    let (manager, manager_reason) = (
+        match resolution.effective {
+            crate::vl::delegated_loops::RequestedLoopOwner::Vivling { .. } => {
+                super::summary::LoopManager::Vivling
+            }
+            crate::vl::delegated_loops::RequestedLoopOwner::Main => {
+                super::summary::LoopManager::Main
+            }
+        },
+        resolution.reason.to_string(),
+    );
     let now = loop_now_ms();
 
     match result {
@@ -662,8 +667,8 @@ pub(super) async fn handle_loop_tick_finished(
             // pending) is durable BEFORE the completion action can remove or
             // disable the job (auto_remove_on_completion defaults to true, so
             // DONE ticks typically remove it — the summary must not die with
-            // the job). Manager derived from the resolved owner: refining it
-            // with the carried resolution is a registered future refinement.
+            // the job). Manager taken from the carried resolution, exactly as
+            // resolved at dispatch time.
             let summary_outcome = if status == LOOP_STATUS_BLOCKED {
                 super::summary::LoopTickOutcome::Failed
             } else {
@@ -890,6 +895,7 @@ pub(super) fn run_loop_tick(
     started_ms: i64,
     request: crate::vivling::VivlingLoopTickRequest,
     runner_model: Option<String>,
+    resolution: crate::vl::delegated_loops::EffectiveLoopOwner,
 ) {
     let app_event_tx = app.app_event_tx.clone();
     let model = runner_model.unwrap_or_else(|| {
@@ -917,6 +923,7 @@ pub(super) fn run_loop_tick(
             occurrence_ms,
             started_ms,
             result,
+            resolution,
         });
     });
 }
@@ -1169,6 +1176,13 @@ mod tests {
             /*occurrence_ms*/ Some(1_700_000_000_000),
             /*started_ms*/ 1_700_000_000_000,
             Ok(result),
+            crate::vl::delegated_loops::EffectiveLoopOwner {
+                requested: crate::vl::delegated_loops::RequestedLoopOwner::Main,
+                effective: crate::vl::delegated_loops::RequestedLoopOwner::Main,
+                source: crate::vl::delegated_loops::LoopOwnerSource::ThreadOwner,
+                readiness: crate::vl::delegated_loops::VivlingReadiness::NotRequested,
+                reason: "not_delegated",
+            },
         )
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;

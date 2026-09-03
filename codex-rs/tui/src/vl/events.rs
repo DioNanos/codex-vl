@@ -6,9 +6,11 @@
 
 use codex_protocol::ThreadId;
 
+use super::delegated_loops::EffectiveLoopOwner;
 use super::sidebar::VivlingLogKind;
 use super::suggestions::VivlingLoopSuggestion;
 use crate::vivling::VivlingAssistRequest;
+use crate::vivling::VivlingBrainProfileRequest;
 use crate::vivling::VivlingBrainProfileRequest;
 use crate::vivling::VivlingBrainRequestKind;
 use crate::vivling::VivlingExpressionRequest;
@@ -164,6 +166,10 @@ pub(crate) enum VlEvent {
         /// Explicit runner model for child-agent ticks; `None` preserves the
         /// legacy Vivling/session model path.
         runner_model: Option<String>,
+        /// The owner attribution resolved at dispatch time, carried so the
+        /// completion path reports it instead of re-deriving it from the
+        /// thread owner.
+        resolution: EffectiveLoopOwner,
     },
     /// Result of a Vivling-managed loop tick.
     VivlingLoopTickFinished {
@@ -172,6 +178,8 @@ pub(crate) enum VlEvent {
         occurrence_ms: Option<i64>,
         started_ms: i64,
         result: Result<VivlingLoopTickResult, String>,
+        /// The same resolved attribution carried at dispatch time.
+        resolution: EffectiveLoopOwner,
     },
     /// Memory V2 Step 12.B.D.2 — start a background Expression LLM
     /// dispatch (CRT live phrase + proactive). The request must
