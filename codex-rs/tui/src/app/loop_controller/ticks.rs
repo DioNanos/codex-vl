@@ -45,6 +45,34 @@ use crate::vl::delegated_loops::VivlingReadiness;
 use crate::vl::delegated_loops::owner_from_resolution;
 use crate::vl::delegated_loops::resolve_effective_owner;
 
+#[cfg(test)]
+fn trace_second_tick(
+    emitter: &str,
+    branch: &str,
+    job_id: &str,
+    occurrence_ms: Option<i64>,
+    pending_tick: Option<bool>,
+    claimed: Option<bool>,
+    began: Option<bool>,
+) {
+    eprintln!(
+        "VL-TRACE-2ND-TICK emitter={emitter} branch={branch} job_id={job_id} occurrence_ms={occurrence_ms:?} pending_tick={pending_tick:?} claimed={claimed:?} began={began:?}"
+    );
+}
+
+#[cfg(not(test))]
+#[allow(clippy::too_many_arguments)]
+fn trace_second_tick(
+    _emitter: &str,
+    _branch: &str,
+    _job_id: &str,
+    _occurrence_ms: Option<i64>,
+    _pending_tick: Option<bool>,
+    _claimed: Option<bool>,
+    _began: Option<bool>,
+) {
+}
+
 fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
     match outcome {
         LoopPromptSubmissionOutcome::Submitted => Some(LOOP_STATUS_SUBMITTED),
@@ -155,11 +183,20 @@ async fn claim_occurrence_for_dispatch(
         return Ok(false);
     };
 
-    if state_runtime
+    let claimed = state_runtime
         .claim_loop_occurrence(&job.id, occurrence_ms, loop_now_ms())
         .await
-        .map_err(loop_state_error)?
-    {
+        .map_err(loop_state_error)?;
+    trace_second_tick(
+        "claim_occurrence_for_dispatch",
+        "claim",
+        &job.id,
+        Some(occurrence_ms),
+        Some(job.pending_tick),
+        Some(claimed),
+        None,
+    );
+    if claimed {
         return Ok(true);
     }
 
@@ -186,6 +223,15 @@ pub(super) async fn process_submission(
     thread_id: ThreadId,
     job: codex_state::ThreadLoopJob,
 ) -> color_eyre::Result<()> {
+    trace_second_tick(
+        "process_submission",
+        "entry",
+        &job.id,
+        job.next_run_ms,
+        Some(job.pending_tick),
+        None,
+        None,
+    );
     let state_runtime = app.loop_state_runtime().await?;
     // T3 — at-most-once dispatch: every path into submission (the timer and
     // the pending/restore path) claims the occurrence before owner resolution,
@@ -481,11 +527,20 @@ pub(super) async fn process_submission(
     }
 
     if runner_kind == codex_state::LoopRunnerKind::ChildAgent {
-        if !state_runtime
+        let began = state_runtime
             .try_begin_loop_tick(&job.id, now)
             .await
-            .map_err(loop_state_error)?
-        {
+            .map_err(loop_state_error)?;
+        trace_second_tick(
+            "try_begin_loop_tick",
+            "child_agent",
+            &job.id,
+            occurrence_ms,
+            Some(job.pending_tick),
+            None,
+            Some(began),
+        );
+        if !began {
             state_runtime
                 .update_thread_loop_job_runtime(
                     thread_id,
@@ -660,6 +715,15 @@ pub(super) async fn process_submission(
             .await
             .map_err(loop_state_error)?;
         app.register_managed_loop_scope(thread_id, &job.id, &job.label);
+        trace_second_tick(
+            "ticks::process_submission",
+            "child_agent",
+            &job.id,
+            occurrence_ms,
+            Some(job.pending_tick),
+            None,
+            Some(true),
+        );
         app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
             thread_id,
             job_id: job.id.clone(),
@@ -743,6 +807,15 @@ pub(super) async fn process_submission(
                     .await
                     .map_err(loop_state_error)?;
                 app.register_managed_loop_scope(thread_id, &job.id, &job.label);
+                trace_second_tick(
+                    "ticks::process_submission",
+                    "vivling",
+                    &job.id,
+                    occurrence_ms,
+                    Some(job.pending_tick),
+                    None,
+                    Some(true),
+                );
                 app.app_event_tx.send_vl(VlEvent::RunVivlingLoopTick {
                     thread_id,
                     job_id: job.id.clone(),
