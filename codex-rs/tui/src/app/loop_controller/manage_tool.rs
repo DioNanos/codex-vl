@@ -121,7 +121,7 @@ mod tests {
     use super::super::formatting::sample_job;
     use super::loop_action_outcome_to_app_server_response;
 
-    // FIX-G regression tests -------------------------------------------------
+    // manage_loops source resolution regression tests -----------------------
     // The T5 regression: with `managed_loop_command_source` returning a bare
     // `Option`, «no active scope» was rejected like «ambiguous» and the
     // ordinary agent could no longer create loops. These tests pin the three

@@ -585,7 +585,7 @@ pub(super) async fn handle_loop_tick_finished(
             // disable the job (auto_remove_on_completion defaults to true, so
             // DONE ticks typically remove it — the summary must not die with
             // the job). Manager derived from the resolved owner: refining it
-            // with the carried resolution lands with FIX-H transport.
+            // with the carried resolution is a registered future refinement.
             let summary_outcome = if status == LOOP_STATUS_BLOCKED {
                 super::summary::LoopTickOutcome::Failed
             } else {

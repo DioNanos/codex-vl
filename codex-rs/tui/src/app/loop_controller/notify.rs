@@ -1,4 +1,4 @@
-//! codex-vl loop_controller: T6 m2 — bounded queue, separate consumer and
+//! codex-vl loop_controller: bounded queue, separate consumer and
 //! bootstrap replay for the persisted tick summaries.
 //!
 //! Seam contract: the tick path only **persists** (the row lands before any emission) and then
@@ -44,8 +44,8 @@ static LOOP_SUMMARY_TX: OnceLock<mpsc::Sender<LoopTickSummary>> = OnceLock::new(
 /// (off by default, normal state — not an error).
 pub(crate) enum LoopNotifyChannel {
     Absent,
-    /// Test-only sink: the delivery is observable in-process (FIX-J 1
-    /// stitching test). Never constructed outside tests.
+    /// Test-only sink: lets the stitching test observe the delivery in-process.
+    /// Never constructed outside tests.
     #[cfg(test)]
     TestSink(std::sync::Arc<std::sync::atomic::AtomicBool>),
     #[cfg(test)]
@@ -72,7 +72,8 @@ pub(crate) enum DerivedOutcome {
 /// `true` when this is the first persistence of the event and the caller
 /// may emit it; `false` = duplicate `event_id` (already durable, never emit
 /// again). The pending row (anomalies + one-shots only) is written in the
-/// SAME transaction as the summary — FIX-J (5): a failed pending write can
+/// SAME transaction as the summary — a failed pending write must never
+/// leave the summary without its pending row; a failed write can
 /// never leave a durable summary whose retry would dedup and never recreate
 /// the pending.
 pub(crate) async fn persist_and_queue(
@@ -210,8 +211,8 @@ pub(super) async fn record_sync_tick_summary(
     }
 }
 
-/// Build the typed summary from the persisted post-tick row. FIX-J (7): the
-/// manager (and its reason) arrive RESOLVED from the tick path — the summary
+/// Build the typed summary from the persisted post-tick row. The manager
+/// (and its reason) arrive RESOLVED from the tick path — the summary
 /// never re-derives ownership from the delegation row, which would report
 /// `vivling` even when the readiness fallback handed the tick to main.
 #[allow(clippy::too_many_arguments)]
@@ -271,7 +272,7 @@ pub(crate) fn build_tick_summary(
 /// One-shot helper for the tick seams: persist the summary (and its pending
 /// when R3 admits it), then enqueue. Returns whether the summary is the
 /// first persisted instance (and only then the caller emits the event).
-/// FIX-J (7): the manager comes RESOLVED from the tick path (`manager`,
+/// The manager comes RESOLVED from the tick path (`manager`,
 /// `manager_reason`) — the summary never re-derives ownership.
 pub(crate) async fn persist_and_queue_tick(
     app: &mut App,

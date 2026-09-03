@@ -512,7 +512,7 @@ pub(super) async fn process_submission(
             .await
             .map_err(loop_state_error)?;
         // synchronous tick boundary: persist-before-emit summary
-        // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+        // with the RESOLVED manager. Errors never fail the tick.
         super::notify::record_sync_tick_summary(
             app,
             &state_runtime,
@@ -557,7 +557,7 @@ pub(super) async fn process_submission(
                 .await
                 .map_err(loop_state_error)?;
             // synchronous tick boundary: persist-before-emit summary
-            // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+            // with the RESOLVED manager. Errors never fail the tick.
             super::notify::record_sync_tick_summary(
                 app,
                 &state_runtime,
@@ -590,7 +590,7 @@ pub(super) async fn process_submission(
                     .await
                     .map_err(loop_state_error)?;
                 // synchronous tick boundary: persist-before-emit summary
-                // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                // with the RESOLVED manager. Errors never fail the tick.
                 super::notify::record_sync_tick_summary(
                     app,
                     &state_runtime,
@@ -626,7 +626,7 @@ pub(super) async fn process_submission(
                         .await
                         .map_err(loop_state_error)?;
                     // synchronous tick boundary: persist-before-emit summary
-                    // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                    // with the RESOLVED manager. Errors never fail the tick.
                     super::notify::record_sync_tick_summary(
                         app,
                         &state_runtime,
@@ -760,7 +760,7 @@ pub(super) async fn process_submission(
                 .await
                 .map_err(loop_state_error)?;
             // synchronous tick boundary: persist-before-emit summary
-            // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+            // with the RESOLVED manager. Errors never fail the tick.
             super::notify::record_sync_tick_summary(
                 app,
                 &state_runtime,
@@ -850,7 +850,7 @@ pub(super) async fn process_submission(
                     .await
                     .map_err(loop_state_error)?;
                 // synchronous tick boundary: persist-before-emit summary
-                // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+                // with the RESOLVED manager. Errors never fail the tick.
                 super::notify::record_sync_tick_summary(
                     app,
                     &state_runtime,
@@ -925,7 +925,7 @@ pub(super) async fn process_submission(
         &job.created_by,
     );
     // synchronous tick boundary: persist-before-emit summary
-    // with the RESOLVED manager (FIX-J 7). Errors never fail the tick.
+    // with the RESOLVED manager. Errors never fail the tick.
     super::notify::record_sync_tick_summary(
         app,
         &state_runtime,

@@ -18,7 +18,7 @@ pub(super) const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";
 pub(super) const LOOP_STATUS_BLOCKED_OWNER: &str = "blocked_owner";
 pub(super) const LOOP_STATUS_DELEGATED_VIVLING: &str = "delegated_vivling";
 /// Terminal status of a one-shot past its grace window:
-/// persisted by the re-arm pass at bootstrap, agreed with FIX-H (same name
+/// persisted by the re-arm pass at bootstrap, matching the status name used
 /// in the common pre-schedule expiry check).
 pub(super) const LOOP_STATUS_EXPIRED: &str = "expired";
 pub(super) const LOOP_STATUS_PROGRESS: &str = "progress";

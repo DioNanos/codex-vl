@@ -1,4 +1,4 @@
-//! codex-vl loop_controller: T6 m1 — pure builder of the fixed-format loop
+//! codex-vl loop_controller: pure builder of the fixed-format loop
 //! tick summary (`loop · label · esito · durata · prossimo run · runner`),
 //! plus manager and runner with their respective reasons (matrice T2).
 //!
@@ -151,7 +151,7 @@ impl LoopTickSummary {
         rendered
     }
 
-    /// Dedup key — FIX-J (4) as revised (Dev 00:50): «in dubbio duplica, mai
+    /// Dedup key — when in doubt, duplicate; never lose: «in dubbio duplica, mai
     /// perdere». With the real occurrence key carried, the id is stable per
     /// occurrence (a retried persist is the same event and the finish
     /// instant does not matter). Without the key, the id is unique per tick
@@ -353,7 +353,7 @@ mod tests {
         assert!(summary(LoopTickOutcome::OneShotExpired).pending_needed());
     }
 
-    // FIX-J (4) as revised — with the occurrence key the id is stable per
+    // With the occurrence key the id is stable per
     // occurrence (a retried persist or a later finish instant is the SAME
     // event); without the key, ids stay unique per tick («in dubbio duplica,
     // mai perdere»).
