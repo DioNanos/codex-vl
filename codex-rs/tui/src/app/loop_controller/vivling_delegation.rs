@@ -1213,6 +1213,67 @@ mod tests {
         Ok(())
     }
 
+    // The completion path reports the carried resolved attribution, not a
+    // thread-owner re-derivation: with a per-loop delegation governing the
+    // tick while the thread owner stays `main`, the summary names the
+    // delegating path. Under the old thread-owner re-derivation the same
+    // summary said `main (not_delegated)` — red before the transport.
+    #[tokio::test]
+    async fn finish_summary_reports_the_carried_resolution_not_the_thread_owner()
+    -> anyhow::Result<()> {
+        let (mut app, _events, _ops) = app_with_state().await?;
+        let job = create_interval_job(&_app_state(&app), app.primary_thread_id.unwrap(), "carried")
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+        let result = crate::vivling::VivlingLoopTickResult {
+            status: "blocked".to_string(),
+            message: "delegated tick failed".to_string(),
+            loop_action: None,
+            suggestion: None,
+        };
+        handle_loop_tick_finished(
+            &mut app,
+            app.primary_thread_id.unwrap(),
+            job.id.clone(),
+            /*occurrence_ms*/ Some(1_700_000_000_000),
+            /*started_ms*/ 1_700_000_000_000,
+            Ok(result),
+            crate::vl::delegated_loops::EffectiveLoopOwner {
+                requested: crate::vl::delegated_loops::RequestedLoopOwner::Vivling {
+                    vivling_id: "vivling-1".to_string(),
+                },
+                effective: crate::vl::delegated_loops::RequestedLoopOwner::Vivling {
+                    vivling_id: "vivling-1".to_string(),
+                },
+                source: crate::vl::delegated_loops::LoopOwnerSource::Delegation,
+                readiness: crate::vl::delegated_loops::VivlingReadiness::Runnable,
+                reason: "delegated",
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+        let pending = _app_state(&app)
+            .list_pending_loop_notifications()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert_eq!(
+            pending.len(),
+            1,
+            "anomalous completion keeps its pending row"
+        );
+        assert!(
+            pending[0].summary_json.contains("\"manager\":\"vivling\""),
+            "the carried resolution must reach the persisted summary"
+        );
+        assert!(
+            pending[0].summary_json.contains("delegated"),
+            "the carried resolution reason must reach the persisted summary"
+        );
+        Ok(())
+    }
+
     fn _app_state(app: &App) -> &std::sync::Arc<codex_state::StateRuntime> {
         app.state_db.as_ref().expect("state handle in test")
     }
