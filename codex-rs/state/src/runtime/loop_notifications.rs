@@ -1,5 +1,8 @@
 use super::*;
-use crate::model::{LOOP_NOTIFICATION_KIND_PENDING, LoopNotificationRecord};
+use crate::model::{
+    LOOP_NOTIFICATION_KIND_PENDING, LOOP_NOTIFICATION_PENDING_MAX_AGE_MS,
+    LOOP_NOTIFICATION_SUMMARY_RETENTION, LoopNotificationRecord,
+};
 
 impl StateRuntime {
     /// R11 gates 1 and 6 — persist-before-emit with dedup. The INSERT OR
@@ -132,7 +135,7 @@ WHERE job_id = ? AND kind = ?
         .bind(kind)
         .fetch_optional(self.pool.as_ref())
         .await?;
-        Ok(row.map(|(count)| count).unwrap_or(0))
+        Ok(row.map(|(count,)| count).unwrap_or(0))
     }
 
     /// Pending notification rows, oldest first: the m2 consumer replays them
