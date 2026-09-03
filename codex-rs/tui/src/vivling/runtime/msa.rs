@@ -181,7 +181,7 @@ impl VivlingMsa {
                 .get("kind")
                 .and_then(|value| value.as_str())
                 .unwrap_or("?");
-            // Serving-side gate twin of the ingest gate (F1): archives
+            // Serving-side gate twin of the ingest gate: archives
             // indexed BEFORE the gate shipped still hold bookkeeping docs —
             // never serve them, on any install, without requiring a rebuild.
             if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&kind) {
