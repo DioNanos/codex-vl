@@ -192,9 +192,9 @@ impl MsaIndex {
     }
 
     /// Past this many searchable segments a successful write triggers an
-    /// explicit, synchronous merge (F2, vivling live audit 2026-06-07: a
-    /// commit-per-capsule workload accumulated 4027 segments for 4233 docs,
-    /// opening ~4k segment readers per recall). Explicit by design: the
+    /// explicit, synchronous merge (a commit-per-capsule workload had
+    /// accumulated 4027 segments for 4233 docs, opening ~4k segment readers
+    /// per recall). Explicit by design: the
     /// native LogMergePolicy merges asynchronously at uncontrolled moments;
     /// here the merge runs only inside our own write path. Best-effort — a
     /// failure leaves the index correct, just fragmented. Mirrors the
