@@ -51,6 +51,8 @@ pub use loop_metrics::loop_management_strategy;
 pub use loop_metrics::parse_recent_results;
 pub use loop_notification::LOOP_NOTIFICATION_KIND_PENDING;
 pub use loop_notification::LOOP_NOTIFICATION_KIND_SUMMARY;
+pub use loop_notification::LOOP_NOTIFICATION_PENDING_MAX_AGE_MS;
+pub use loop_notification::LOOP_NOTIFICATION_SUMMARY_RETENTION;
 pub use loop_notification::LoopNotificationRecord;
 pub use loop_occurrence::LoopOccurrence;
 pub use memories::Phase2JobClaimOutcome;
