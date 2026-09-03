@@ -606,7 +606,7 @@ fn record_turn_completed_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_turn_completed should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // Compaction: when distillation fires it CONSUMES the distilled
     // window, so a saturated memory legitimately shrinks well below the
     // cap. The invariant is the ceiling, not equality.
     assert!(
@@ -710,7 +710,7 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_loop_event should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // Compaction: when distillation fires it CONSUMES the distilled
     // window, so a saturated memory legitimately shrinks well below the
     // cap. The invariant is the ceiling, not equality.
     assert!(
@@ -727,7 +727,7 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
             .contains("msa-saturated")
     );
 
-    // Gate F1: even under eviction pressure, bookkeeping must not be
+    // Gate: even under eviction pressure, bookkeeping must not be
     // flushed into MSA. The eviction-survival guarantee belongs to
     // KNOWLEDGE capsules: a completed turn must land in the archive
     // even when work_memory is saturated.

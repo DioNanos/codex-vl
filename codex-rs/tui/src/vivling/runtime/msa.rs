@@ -257,7 +257,7 @@ impl VivlingMsa {
         // long-term MSA archive — 78% of a 6-week-old vivling's index was
         // this noise, crowding knowledge out of recall_section. Denylist
         // (not allowlist) so future knowledge kinds flow by default. This
-        // single choke point also gates the setup backfill (F7) and the
+        // single choke point also gates the setup backfill and the
         // lineage echo path.
         if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
             return;

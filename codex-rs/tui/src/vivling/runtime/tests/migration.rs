@@ -645,7 +645,7 @@ fn roster_with_only_missing_entries_loads_empty_without_deleting_directory() {
     assert!(healed.active_vivling_id.is_none());
 }
 
-/// Pre-F3 states carry distilled garbage: bookkeeping-kind summaries
+/// Legacy states carry distilled garbage: bookkeeping-kind summaries
 /// (wait/verify/churn topics) and counters compounded by re-distillation
 /// (measured: observations ~100k). Loading such a state must
 /// drop the former and clamp the latter — idempotently.
