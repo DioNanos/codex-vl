@@ -671,7 +671,7 @@ fn record_loop_event_indexes_into_msa() {
         "work_memory should grow after record_loop_event (before={before}, after={after})"
     );
 
-    // Ingest gate (live audit 2026-06-07, F1): loop bookkeeping stays in the
+    // Ingest gate: loop bookkeeping stays in the
     // local working memory but must NOT reach the long-term MSA archive.
     assert_msa_collection_has_no_tantivy_shard(msa_storage.path(), &vivling_id);
 }

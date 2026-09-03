@@ -252,7 +252,7 @@ impl VivlingMsa {
     ) {
         use msa_core::enrich;
 
-        // Ingest gate (live audit 2026-06-07, F1): operational bookkeeping
+        // Ingest gate: operational bookkeeping
         // stays in the local working memory but is NOT indexed into the
         // long-term MSA archive — 78% of a 6-week-old vivling's index was
         // this noise, crowding knowledge out of recall_section. Denylist

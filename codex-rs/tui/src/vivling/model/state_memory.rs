@@ -201,8 +201,7 @@ impl VivlingState {
         }
     }
 
-    /// Idempotent hygiene for states written BEFORE the F3 fixes
-    /// (live audit 2026-06-07): drops distilled summaries of bookkeeping
+    /// Idempotent hygiene for states written before these hygiene passes: drops distilled summaries of bookkeeping
     /// kinds (garbage topics like wait/verify/churn) and clamps the counters
     /// that compounded under re-distillation (observations near 100k on a
     /// 6-week vivling; inflated total_weight made them permanently sticky in
