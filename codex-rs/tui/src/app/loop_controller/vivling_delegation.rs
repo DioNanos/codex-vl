@@ -495,8 +495,47 @@ pub(super) async fn handle_loop_tick_finished(
                 );
             }
 
-            let status = parse_vivling_loop_status(&result.status)
-                .map_err(|err| color_eyre::eyre::eyre!(err))?;
+            let status = match parse_vivling_loop_status(&result.status) {
+                Ok(status) => status,
+                Err(parse_err) => {
+                    // A malformed payload is still an outcome: the runtime row
+                    // records the error and a failed summary is persisted
+                    // before the handler returns in silence.
+                    state_runtime
+                        .update_thread_loop_job_runtime(
+                            thread_id,
+                            &job.id,
+                            codex_state::ThreadLoopJobRuntimeUpdate {
+                                next_run_ms: None,
+                                last_run_ms: job.last_run_ms,
+                                last_status: Some(LOOP_STATUS_BLOCKED.to_string()),
+                                last_error: Some(parse_err.to_string()),
+                                pending_tick: false,
+                                updated_at_ms: now,
+                            },
+                        )
+                        .await
+                        .map_err(loop_state_error)?;
+                    if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
+                        app,
+                        &state_runtime,
+                        &job,
+                        descriptor.as_ref(),
+                        None,
+                        manager.clone(),
+                        format!("malformed payload: {parse_err}"),
+                        super::summary::LoopTickOutcome::Failed,
+                        now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+                    )
+                    .await
+                    {
+                        app.app_event_tx
+                            .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+                    }
+                    app.refresh_loop_jobs(thread_id).await?;
+                    return Ok(());
+                }
+            };
             let delegation = state_runtime
                 .get_loop_delegation(thread_id, &job.id)
                 .await
@@ -529,8 +568,47 @@ pub(super) async fn handle_loop_tick_finished(
                     .as_ref()
                     .is_some_and(|delegation| managed_action_gate_is_green(app, delegation))
             {
-                tick_action_request(thread_id, &job, status, &result)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+                match tick_action_request(thread_id, &job, status, &result) {
+                    Ok(request) => request,
+                    Err(parse_err) => {
+                        // A malformed action payload is still an outcome: the
+                        // runtime row records the error and a failed summary
+                        // is persisted before the handler returns in silence.
+                        state_runtime
+                            .update_thread_loop_job_runtime(
+                                thread_id,
+                                &job.id,
+                                codex_state::ThreadLoopJobRuntimeUpdate {
+                                    next_run_ms: None,
+                                    last_run_ms: job.last_run_ms,
+                                    last_status: Some(LOOP_STATUS_BLOCKED.to_string()),
+                                    last_error: Some(parse_err.to_string()),
+                                    pending_tick: false,
+                                    updated_at_ms: now,
+                                },
+                            )
+                            .await
+                            .map_err(loop_state_error)?;
+                        if let Ok(Some(summary)) = super::notify::persist_summary_with_outcome(
+                            app,
+                            &state_runtime,
+                            &job,
+                            descriptor.as_ref(),
+                            delegation.as_ref(),
+                            manager.clone(),
+                            format!("malformed action: {parse_err}"),
+                            super::summary::LoopTickOutcome::Failed,
+                            now.saturating_sub(job.last_run_ms.unwrap_or(now)),
+                        )
+                        .await
+                        {
+                            app.app_event_tx
+                                .send_vl(crate::vl::VlEvent::LoopTickSummary { summary });
+                        }
+                        app.refresh_loop_jobs(thread_id).await?;
+                        return Ok(());
+                    }
+                }
             } else {
                 None
             };
@@ -1002,4 +1080,124 @@ pub(super) fn run_expression(app: &mut App, request: crate::vivling::VivlingExpr
         .await;
         app_event_tx.send_vl(VlEvent::VivlingExpressionFinished { vivling_id, result });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::make_test_app_with_channels;
+    use crate::app::tests::test_thread_session;
+    use codex_state::SqliteConfig;
+    use codex_state::StateRuntime;
+    use codex_state::ThreadLoopJobCreateParams;
+    use codex_utils_absolute_path::test_support::PathExt;
+    use tempfile::tempdir;
+
+    async fn app_with_state() -> anyhow::Result<(
+        App,
+        std::sync::Arc<StateRuntime>,
+        ThreadId,
+        tempfile::TempDir,
+    )> {
+        let (mut app, _events, _ops) = make_test_app_with_channels().await;
+        let codex_home = tempdir()?;
+        let state_runtime = std::sync::Arc::new(
+            StateRuntime::init(
+                SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?,
+        );
+        app.state_db = Some(state_runtime.clone());
+        let thread_id = ThreadId::new();
+        app.primary_thread_id = Some(thread_id);
+        app.active_thread_id = Some(thread_id);
+        let cwd = app.config.cwd.to_path_buf();
+        app.chat_widget
+            .handle_thread_session(test_thread_session(thread_id, cwd));
+        Ok((app, state_runtime, thread_id, codex_home))
+    }
+
+    async fn create_interval_job(
+        state_runtime: &StateRuntime,
+        thread_id: ThreadId,
+        label: &str,
+    ) -> anyhow::Result<codex_state::ThreadLoopJob> {
+        state_runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: format!("job-{label}"),
+                thread_id,
+                label: label.to_string(),
+                prompt_text: "tick".to_string(),
+                goal_text: Some("malformed payload test".to_string()),
+                interval_seconds: 60,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: false,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(1_700_000_000_000),
+                created_at_ms: 1_700_000_000_000,
+                updated_at_ms: 1_700_000_000_000,
+            })
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))
+    }
+
+    // A malformed status payload is still an outcome: the runtime row is
+    // updated with the error and a failed summary is persisted, instead of
+    // exiting the handler in silence.
+    #[tokio::test]
+    async fn malformed_status_reaches_the_runtime_update_and_the_summary() -> anyhow::Result<()> {
+        let (mut app, _events, _ops) = app_with_state().await?;
+        let job = create_interval_job(
+            &_app_state(&app),
+            app.primary_thread_id.unwrap(),
+            "malformed",
+        )
+        .await?;
+
+        let result = crate::vivling::VivlingLoopTickResult {
+            status: "banana".to_string(),
+            message: "garbled reply".to_string(),
+            loop_action: None,
+            suggestion: None,
+        };
+        handle_loop_tick_finished(
+            &mut app,
+            app.primary_thread_id.unwrap(),
+            job.id.clone(),
+            Ok(result),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+        let updated = state_runtime
+            .get_thread_loop_job_by_id(app.primary_thread_id.unwrap(), &job.id)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?
+            .expect("job still present");
+        assert_eq!(
+            updated.last_status.as_deref(),
+            Some("blocked"),
+            "the malformed payload must land on the persisted row"
+        );
+        assert!(
+            updated
+                .last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("unsupported status")),
+            "the parse reason must reach the persisted row"
+        );
+
+        let summaries = state_runtime
+            .count_loop_notifications(&job.id, codex_state::LOOP_NOTIFICATION_KIND_SUMMARY)
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        assert_eq!(summaries, 1, "exactly one failed summary for the tick");
+        Ok(())
+    }
+
+    fn _app_state(app: &App) -> &std::sync::Arc<codex_state::StateRuntime> {
+        app.state_db.as_ref().expect("state handle in test")
+    }
 }
