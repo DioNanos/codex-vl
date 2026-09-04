@@ -73,6 +73,7 @@ fn agent_message_item(message: &str) -> RolloutItem {
         phase: None,
         memory_citation: None,
         delivery: None,
+        questions: None,
     }))
 }
 
@@ -656,6 +657,7 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         ))])
         .await?;
@@ -911,6 +913,7 @@ async fn persist_reports_filesystem_error_and_retries_buffered_items() -> std::i
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             },
         ))])
         .await?;
@@ -963,6 +966,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
             phase: None,
             memory_citation: None,
             delivery: None,
+            questions: None,
         },
     ))]);
 
@@ -1550,6 +1554,8 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         agent_nickname: None,
         agent_role: None,
         model_provider: None,
+        model: None,
+        reasoning_effort: None,
         cli_version: None,
         created_at: None,
         recency_at: Some("2025-01-03T15:59:00.000Z".to_string()),
@@ -1579,6 +1585,8 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         agent_nickname: Some("state-agent".to_string()),
         agent_role: Some("state-role".to_string()),
         model_provider: Some("state-provider".to_string()),
+        model: None,
+        reasoning_effort: None,
         cli_version: Some("state-version".to_string()),
         created_at: Some("2025-01-03T16:00:00Z".to_string()),
         recency_at: Some("2025-01-03T16:00:30.001Z".to_string()),
@@ -1724,6 +1732,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
         ordinal: None,
         item: RolloutItem::TurnContext(TurnContextItem {
             turn_id: Some("turn-1".to_string()),
+            root_turn_id: None,
             cwd: serde_json::from_value(serde_json::json!(&latest_cwd))
                 .expect("absolute latest cwd"),
             workspace_roots: None,

@@ -2142,6 +2142,8 @@ impl ThreadRequestProcessor {
         );
         if let Ok(loaded_thread) = self.thread_manager.get_thread(thread_uuid).await {
             thread.session_id = loaded_thread.session_configured().session_id.to_string();
+            let config_snapshot = loaded_thread.config_snapshot().await;
+            apply_live_model_settings(&mut thread, &config_snapshot);
         }
         self.attach_thread_name(thread_uuid, &mut thread).await;
         thread.status = resolve_thread_status(
@@ -3132,6 +3134,7 @@ impl ThreadRequestProcessor {
         } else {
             fallback_thread
         };
+        apply_live_model_settings(&mut thread, &config_snapshot);
         self.apply_thread_read_store_fields(thread_id, &mut thread, include_turns, loaded_thread)
             .await?;
         Ok(thread)
@@ -4430,6 +4433,7 @@ impl ThreadRequestProcessor {
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
+            apply_live_model_settings(&mut thread_summary, &config_snapshot);
             thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
                 existing_thread.multi_agent_version(),
                 &config_snapshot.session_source,
@@ -4794,6 +4798,7 @@ impl ThreadRequestProcessor {
             )),
         };
         let mut thread = thread?;
+        apply_live_model_settings(&mut thread, &config_snapshot);
         thread.can_accept_direct_input = Some(can_accept_direct_input);
         thread.id = thread_id.to_string();
         thread.session_id = session_id;
@@ -5291,6 +5296,7 @@ impl ThreadRequestProcessor {
         ));
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = config_snapshot.thread_source.clone().map(Into::into);
+        apply_live_model_settings(&mut thread, &config_snapshot);
         if thread.path.is_none() {
             thread.project_id = inherited_project_id.clone();
         }
@@ -6077,6 +6083,8 @@ pub(crate) fn thread_from_stored_thread(
         } else {
             thread.model_provider
         },
+        model: thread.model,
+        reasoning_effort: thread.reasoning_effort,
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
         recency_at: Some(thread.recency_at.timestamp()),
@@ -6248,6 +6256,8 @@ fn build_thread_from_snapshot(
         project_id: None,
         history_mode: config_snapshot.history_mode.into(),
         model_provider: config_snapshot.model_provider_id.clone(),
+        model: Some(config_snapshot.model.clone()),
+        reasoning_effort: config_snapshot.reasoning_effort.clone(),
         created_at: now,
         updated_at: now,
         recency_at: Some(now),

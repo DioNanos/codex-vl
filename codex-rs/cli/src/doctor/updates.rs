@@ -435,6 +435,7 @@ fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
         InstallMethod::Npm => "npm install -g @mmmbuto/codex-vl",
         InstallMethod::Bun => "bun install -g @mmmbuto/codex-vl",
+        InstallMethod::VitePlus => "vp install -g @mmmbuto/codex-vl",
         InstallMethod::Pnpm => "pnpm add -g @mmmbuto/codex-vl",
         InstallMethod::Brew => "npm install -g @mmmbuto/codex-vl",
         InstallMethod::Standalone { .. } => "standalone installer",
@@ -447,6 +448,7 @@ fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
         InstallMethod::Brew => fetch_homebrew_cask_version(),
         InstallMethod::Npm
         | InstallMethod::Bun
+        | InstallMethod::VitePlus
         | InstallMethod::Pnpm
         | InstallMethod::Standalone { .. }
         | InstallMethod::Other => fetch_latest_github_release_version(),

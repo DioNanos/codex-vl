@@ -22,6 +22,8 @@ pub enum UpdateAction {
     NpmGlobalLatest,
     /// Update via `bun install -g @mmmbuto/codex-vl`.
     BunGlobalLatest,
+    /// Update via `vp install -g @mmmbuto/codex-vl`.
+    VitePlusGlobalLatest,
     /// codex-vl fork: redirects to `pnpm add -g @mmmbuto/codex-vl`
     /// so pnpm installs stay on the fork package, not upstream codex.
     PnpmGlobalLatest,
@@ -45,6 +47,7 @@ impl UpdateAction {
         match &context.method {
             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
             InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
+            InstallMethod::VitePlus => Some(UpdateAction::VitePlusGlobalLatest),
             InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
             InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
             InstallMethod::Standalone { platform, .. } => Some(match platform {
@@ -66,6 +69,7 @@ impl UpdateAction {
             | UpdateAction::StandaloneUnix
             | UpdateAction::StandaloneWindows => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@mmmbuto/codex-vl"]),
+            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@mmmbuto/codex-vl"]),
             // codex-vl fork: the fork ships no Homebrew cask, so `brew upgrade
             // --cask codex` would pull the UPSTREAM openai cask and silently
