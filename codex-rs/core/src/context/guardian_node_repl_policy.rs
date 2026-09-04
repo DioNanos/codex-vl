@@ -40,3 +40,23 @@ impl ContextualUserFragment for GuardianNodeReplPolicy {
         self.policy.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guardian_node_repl_policy_rejects_oversized_values() {
+        let oversized = "x".repeat(8 * 1024 + 1);
+        let messages: ModelMessages = serde_json::from_value(serde_json::json!({
+            "auto_review": { "node_repl_policy": oversized }
+        }))
+        .expect("model messages should deserialize");
+
+        let policy = GuardianNodeReplPolicy::from_model_messages(Some(&messages));
+        assert!(
+            policy.body().len() <= 8 * 1024,
+            "node REPL policy must be rejected above the 8 KiB cap"
+        );
+    }
+}

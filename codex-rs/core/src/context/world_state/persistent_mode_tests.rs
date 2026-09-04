@@ -88,3 +88,18 @@ fn retained_persistent_instructions_are_replaced_or_retired_without_a_snapshot()
         );
     }
 }
+
+#[test]
+fn persistent_instructions_reject_oversized_values() {
+    let oversized = "x".repeat(8 * 1024 + 1);
+    let state = PersistentModeState::new(
+        Some(&ReasoningEffort::Persistent),
+        Some(&oversized),
+        /*send_user_message_async_available*/ false,
+    );
+
+    assert!(
+        state.body().len() <= 8 * 1024,
+        "persistent instructions must be rejected above the 8 KiB cap"
+    );
+}
