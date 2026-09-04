@@ -23,6 +23,7 @@ use serde::de::DeserializeOwned;
 use serde::de::Error;
 use strum_macros::Display;
 use strum_macros::EnumIter;
+use thiserror::Error as ThisError;
 use tracing::warn;
 use ts_rs::TS;
 
@@ -43,6 +44,35 @@ const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 /// Backend model-catalog specialty identifying cybersecurity-focused models.
 pub const MODEL_SPECIALTY_CYBER: &str = "cyber";
 pub const SPEED_TIER_FAST: &str = "fast";
+pub const MODEL_MESSAGE_TEXT_MAX_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, ThisError, Clone, PartialEq, Eq)]
+#[error(
+    "model `{model_slug}` field `{field}` is {actual_bytes} bytes; maximum is {max_bytes} bytes"
+)]
+pub struct ModelMessageTextTooLong {
+    pub field: &'static str,
+    pub model_slug: String,
+    pub actual_bytes: usize,
+    pub max_bytes: usize,
+}
+
+pub fn validate_model_message_text(
+    model_slug: &str,
+    field: &'static str,
+    text: &str,
+) -> Result<(), ModelMessageTextTooLong> {
+    let actual_bytes = text.len();
+    if actual_bytes > MODEL_MESSAGE_TEXT_MAX_BYTES {
+        return Err(ModelMessageTextTooLong {
+            field,
+            model_slug: model_slug.to_string(),
+            actual_bytes,
+            max_bytes: MODEL_MESSAGE_TEXT_MAX_BYTES,
+        });
+    }
+    Ok(())
+}
 
 /// See https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning
 #[derive(Debug, Default, Clone, PartialEq, Eq, TS, Hash)]
@@ -482,6 +512,23 @@ pub struct ModelInfo {
     /// Reasoning effort used for multi-agent work when the user selects Ultra.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_reasoning_effort: Option<ReasoningEffort>,
+}
+
+pub fn validate_model_messages(model: &ModelInfo) -> Result<(), ModelMessageTextTooLong> {
+    let Some(messages) = model.model_messages.as_ref() else {
+        return Ok(());
+    };
+    if let Some(text) = messages.persistent_instructions.as_deref() {
+        validate_model_message_text(&model.slug, "persistent_instructions", text)?;
+    }
+    if let Some(text) = messages
+        .auto_review
+        .as_ref()
+        .and_then(|messages| messages.node_repl_policy.as_deref())
+    {
+        validate_model_message_text(&model.slug, "node_repl_policy", text)?;
+    }
+    Ok(())
 }
 
 impl ModelInfo {
@@ -1041,6 +1088,66 @@ mod tests {
                 guardian_v2: None,
             }
         );
+    }
+
+    #[test]
+    fn model_message_text_cap_accepts_none_empty_and_exact_limit() {
+        assert!(validate_model_messages(&test_model(None)).is_ok());
+        let empty = ModelMessages {
+            persistent_instructions: Some(String::new()),
+            tools: None,
+            instructions_template: Some("template".to_string()),
+            instructions_variables: None,
+            approvals: None,
+            collaboration_modes: None,
+            auto_review: Some(AutoReviewMessages {
+                policy: None,
+                policy_template: None,
+                node_repl_policy: Some(String::new()),
+                rejection_instructions: None,
+                timeout_instructions: None,
+            }),
+            permissions: None,
+            multi_agent: None,
+            token_budget: None,
+            guardian_v2: None,
+            confirmation_policies: None,
+        };
+        assert!(validate_model_messages(&test_model(Some(empty))).is_ok());
+        let exact = ModelMessages {
+            persistent_instructions: Some("x".repeat(MODEL_MESSAGE_TEXT_MAX_BYTES)),
+            tools: None,
+            instructions_template: Some("template".to_string()),
+            instructions_variables: None,
+            approvals: None,
+            collaboration_modes: None,
+            auto_review: None,
+            permissions: None,
+            multi_agent: None,
+            token_budget: None,
+            guardian_v2: None,
+            confirmation_policies: None,
+        };
+        assert!(validate_model_messages(&test_model(Some(exact))).is_ok());
+    }
+
+    #[test]
+    fn model_message_text_cap_reports_field_slug_size_and_no_content() {
+        let secret = "secret-content";
+        let error = validate_model_message_text(
+            "test-model",
+            "persistent_instructions",
+            &format!("{}{}", "x".repeat(MODEL_MESSAGE_TEXT_MAX_BYTES), secret),
+        )
+        .expect_err("oversized model message must fail");
+        assert_eq!(error.field, "persistent_instructions");
+        assert_eq!(error.model_slug, "test-model");
+        assert_eq!(
+            error.actual_bytes,
+            MODEL_MESSAGE_TEXT_MAX_BYTES + secret.len()
+        );
+        assert_eq!(error.max_bytes, MODEL_MESSAGE_TEXT_MAX_BYTES);
+        assert!(!error.to_string().contains(secret));
     }
 
     #[test]

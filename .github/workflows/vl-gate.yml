@@ -177,3 +177,21 @@ jobs:
           cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | tee vl-gate-absent-socket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-absent-socket.out
           grep -F 'absent_socket_keeps_fleet_tui_embedded ... ok' vl-gate-absent-socket.out
+           cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit 2>&1 | tee termux-gate-model-message-caps.out
+           grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-model-message-caps.out
+           grep -F 'persistent_instructions_reject_oversized_values ... ok' termux-gate-model-message-caps.out
+           grep -F 'persistent_instructions_preserve_empty_none_and_exact_limit ... ok' termux-gate-model-message-caps.out
+           grep -F 'persistent_instructions_validate_after_placeholder_rendering ... ok' termux-gate-model-message-caps.out
+           grep -F 'guardian_node_repl_policy_rejects_oversized_values ... ok' termux-gate-model-message-caps.out
+           grep -F 'guardian_node_repl_policy_accepts_none_empty_and_exact_limit ... ok' termux-gate-model-message-caps.out
+      - name: Test model message caps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit 2>&1 | tee vl-gate-model-message-caps.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-message-caps.out
+          grep -F 'persistent_instructions_reject_oversized_values ... ok' vl-gate-model-message-caps.out
+          grep -F 'persistent_instructions_preserve_empty_none_and_exact_limit ... ok' vl-gate-model-message-caps.out
+          grep -F 'persistent_instructions_validate_after_placeholder_rendering ... ok' vl-gate-model-message-caps.out
+          grep -F 'guardian_node_repl_policy_rejects_oversized_values ... ok' vl-gate-model-message-caps.out
+          grep -F 'guardian_node_repl_policy_accepts_none_empty_and_exact_limit ... ok' vl-gate-model-message-caps.out
