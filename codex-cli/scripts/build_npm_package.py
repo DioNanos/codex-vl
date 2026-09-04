@@ -316,6 +316,11 @@ def stage_sources(
         if readme_src.exists():
             shutil.copy2(readme_src, staging_dir / "README.md")
 
+        license_src = REPO_ROOT / "LICENSE"
+        if not license_src.is_file():
+            raise RuntimeError(f"Required license file not found: {license_src}")
+        shutil.copy2(license_src, staging_dir / "LICENSE")
+
         with open(CODEX_CLI_ROOT / "package.json", "r", encoding="utf-8") as fh:
             codex_package_json = json.load(fh)
 
@@ -325,13 +330,13 @@ def stage_sources(
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
-            "files": ["vendor"],
+            "files": ["vendor", "LICENSE"],
             "repository": codex_package_json.get("repository"),
         }
 
         if package == "codex-darwin-arm64":
             stage_darwin_source_build_payload(staging_dir)
-            package_json["files"] = ["codex-rs", "scripts", "vendor"]
+            package_json["files"] = ["codex-rs", "scripts", "vendor", "LICENSE"]
             package_json["scripts"] = {"postinstall": "node scripts/postinstall_darwin_build.js"}
 
         engines = codex_package_json.get("engines")
