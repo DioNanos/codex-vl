@@ -131,11 +131,18 @@ fn fork_identity_public_install_surfaces_are_fork_owned() {
 #[test]
 fn fork_identity_daemon_managed_install_is_install_context_aware() {
     const SOURCE: &str = include_str!("../../app-server-daemon/src/managed_install.rs");
-    assert!(
-        SOURCE.contains("InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm"),
-        "managed_install.rs must branch npm/bun/pnpm installs away from the \
-         standalone managed path.",
-    );
+    for method in [
+        "InstallMethod::Npm",
+        "InstallMethod::Bun",
+        "InstallMethod::VitePlus",
+        "InstallMethod::Pnpm",
+    ] {
+        assert!(
+            SOURCE.contains(method),
+            "managed_install.rs must branch {method} installs away from the \
+             standalone managed path.",
+        );
+    }
     assert!(
         SOURCE.contains("CODEX_SELF_EXE"),
         "managed_install.rs must prefer CODEX_SELF_EXE for npm/bun \

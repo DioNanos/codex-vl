@@ -71,9 +71,10 @@ async fn install_latest_standalone_is_disabled_in_fork() {
 }
 
 #[test]
-fn reexec_managed_updater_short_circuits_for_npm_and_bun() {
+fn reexec_managed_updater_short_circuits_for_package_shims() {
     let missing = std::path::Path::new("/definitely/not/a/codex-vl-binary");
 
     reexec_managed_updater(missing, &ctx(InstallMethod::Npm)).expect("npm short-circuits");
     reexec_managed_updater(missing, &ctx(InstallMethod::Bun)).expect("bun short-circuits");
+    reexec_managed_updater(missing, &ctx(InstallMethod::VitePlus)).expect("vite+ short-circuits");
 }
