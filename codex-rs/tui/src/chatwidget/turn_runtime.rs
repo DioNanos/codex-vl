@@ -16,6 +16,37 @@ fn is_safety_access_block_message(message: &str) -> bool {
 }
 
 impl ChatWidget {
+    /// Reconcile UI state that can outlive a terminal turn event.
+    ///
+    /// The caller applies the user-facing follow-up separately because interrupted input is
+    /// restored, while errors may submit a queued follow-up. A disconnected or closed session
+    /// cannot consume queued input, so that caller also requests that it be discarded.
+    pub(crate) fn reconcile_terminal_turn(&mut self, discard_pending_input: bool) {
+        self.finalize_turn();
+        if discard_pending_input {
+            self.input_queue.clear();
+            self.refresh_pending_input_preview();
+        }
+    }
+
+    /// Apply a raw core abort when no `TurnComplete` follows it.
+    pub(super) fn handle_turn_aborted_event(
+        &mut self,
+        event: codex_protocol::protocol::TurnAbortedEvent,
+    ) {
+        let reason = match event.reason {
+            codex_protocol::protocol::TurnAbortReason::BudgetLimited => {
+                TurnAbortReason::BudgetLimited
+            }
+            codex_protocol::protocol::TurnAbortReason::Interrupted
+            | codex_protocol::protocol::TurnAbortReason::Replaced
+            | codex_protocol::protocol::TurnAbortReason::ReviewEnded => {
+                TurnAbortReason::Interrupted
+            }
+        };
+        self.on_interrupted_turn(reason);
+    }
+
     fn clear_guardian_review_status(&mut self) {
         self.status_state.pending_guardian_review_status.clear();
         if self.status_state.current_status.is_guardian_review() {
@@ -375,7 +406,7 @@ impl ChatWidget {
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
 
         let message = if message.trim().is_empty() {
             "Codex is currently experiencing high load.".to_string()
@@ -391,7 +422,7 @@ impl ChatWidget {
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
         self.add_to_history(history_cell::new_error_event(message));
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
@@ -413,7 +444,7 @@ impl ChatWidget {
 
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
         let plan_type = if self.has_chatgpt_account {
             self.plan_type
         } else {
@@ -505,7 +536,7 @@ impl ChatWidget {
             })
         {
             self.input_queue.submit_pending_steers_after_interrupt = false;
-            self.finalize_turn();
+            self.reconcile_terminal_turn(/*discard_pending_input*/ false);
             self.add_to_history(history_cell::new_safety_access_block_event());
             self.request_redraw();
             self.maybe_send_next_queued_input();

@@ -1514,6 +1514,8 @@ impl App {
         if !disconnected {
             self.active_thread_rx = Some(rx);
         } else {
+            self.chat_widget
+                .reconcile_terminal_turn(/*discard_pending_input*/ true);
             self.clear_active_thread().await;
         }
 

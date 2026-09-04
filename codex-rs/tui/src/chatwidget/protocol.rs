@@ -211,6 +211,7 @@ impl ChatWidget {
                 );
             }
             ServerNotification::ThreadClosed(_) => {
+                self.reconcile_terminal_turn(/*discard_pending_input*/ true);
                 if !from_replay {
                     self.on_shutdown_complete();
                 }
@@ -339,7 +340,7 @@ impl ChatWidget {
                     }
                 } else {
                     self.last_non_retry_error = None;
-                    self.finalize_turn();
+                    self.reconcile_terminal_turn(/*discard_pending_input*/ false);
                     self.request_redraw();
                     self.maybe_send_next_queued_input();
                 }

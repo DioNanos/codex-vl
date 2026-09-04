@@ -82,6 +82,8 @@ impl App {
                     return;
                 }
                 tracing::warn!("app-server event stream disconnected: {message}");
+                self.chat_widget
+                    .reconcile_terminal_turn(/*discard_pending_input*/ true);
                 self.chat_widget.add_error_message(message.clone());
                 self.app_event_tx.send(AppEvent::FatalExitRequest(message));
             }
