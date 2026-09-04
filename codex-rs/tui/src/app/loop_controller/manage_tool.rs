@@ -205,6 +205,39 @@ mod tests {
             Ok(())
         }
 
+        // A resumed app must not retain the in-flight managed-tick identity
+        // from before the thread was rebuilt. The restored job remains visible
+        // to ordinary manage_loops calls, including show.
+        #[tokio::test]
+        async fn resumed_job_show_is_not_rejected_by_a_stale_scope() -> anyhow::Result<()> {
+            let (mut app, state_runtime, thread_id, _codex_home) = app_with_state().await?;
+            create_unscoped_job(&mut app, thread_id, "resumed").await?;
+            let job = state_runtime
+                .get_thread_loop_job_by_label(thread_id, "resumed")
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?
+                .expect("resumed job exists");
+            app.register_managed_loop_scope(thread_id, &job.id, "resumed");
+
+            // This is the in-memory part of resume's thread reconstruction.
+            app.reset_thread_event_state();
+            app.primary_thread_id = Some(thread_id);
+            app.active_thread_id = Some(thread_id);
+
+            let shown = execute_dynamic_tool(
+                &mut app,
+                thread_id,
+                serde_json::json!({"action":"show","label":"resumed"}),
+            )
+            .await;
+            assert!(
+                shown.success,
+                "show after resume must not inherit the stale managed scope: {}",
+                shown.message
+            );
+            Ok(())
+        }
+
         // (b) With exactly one scope the managed-tick allowlist governs: allowed
         // updates go through, disallowed adds are refused by scope.
         #[tokio::test]

@@ -1085,10 +1085,15 @@ pub(super) async fn run_command_request(
             )
         }
         LoopCommandRequest::OwnerSetVivling => {
-            let (vivling_id, vivling_name): (String, String) = app
+            let (vivling_id, vivling_name): (String, String) = match app
                 .chat_widget
                 .active_vivling_loop_owner_identity(&app.config)
-                .map_err(|err| color_eyre::eyre::eyre!(err))?;
+            {
+                Ok(identity) => identity,
+                Err(message) => {
+                    return Ok(loop_action_failure("owner", thread_id, message));
+                }
+            };
             let owner = state_runtime
                 .set_thread_loop_owner(codex_state::ThreadLoopOwner {
                     thread_id,

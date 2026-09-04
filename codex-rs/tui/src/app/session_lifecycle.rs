@@ -708,6 +708,10 @@ impl App {
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
+        // Managed scopes identify one in-flight tick, not a persisted job.
+        // They must not leak across resume/thread reconstruction; the next
+        // dispatched tick issues a fresh scope for the restored thread.
+        self.managed_loop_scopes.clear();
         self.pending_startup_thread_start = false;
         self.chat_widget.set_pending_thread_approvals(Vec::new());
         self.sync_active_agent_label();
