@@ -25,6 +25,7 @@ Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-speci
   turn reconciliation removes phantom “Working” state and stale queued input.
 - Esc interrupts a running task even when a long tool hides the status row, and
   `/loop` usage now lists delegate, strategy, delegation, and owner commands.
+- Termux: the npm launcher now fixes its own shebang on install, so `codex-vl` starts without `termux-exec` tricks.
 
 ## 0.150.2 - Restore embedded TUI loop routing
 

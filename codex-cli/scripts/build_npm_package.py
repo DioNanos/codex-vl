@@ -286,6 +286,12 @@ def stage_sources(
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
+        scripts_dir = staging_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(
+            CODEX_CLI_ROOT / "scripts" / "postinstall.js",
+            scripts_dir / "postinstall.js",
+        )
         rg_manifest = CODEX_CLI_ROOT / "bin" / "rg"
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
@@ -360,7 +366,11 @@ def stage_sources(
         package_json["version"] = version
 
     if package == "codex":
-        package_json["files"] = ["bin/codex.js"]
+        package_json["files"] = [
+            "bin/codex.js",
+            "bin/codex-exec.js",
+            "scripts/postinstall.js",
+        ]
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
                 f"npm:{CODEX_NPM_NAME}@"
