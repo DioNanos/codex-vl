@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { existsSync as defaultExistsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,11 +10,35 @@ const DEFAULT_BIN_DIR = path.resolve(
 );
 const LAUNCHERS = ["codex.js", "codex-exec.js"];
 const DEFAULT_SHEBANG = "#!/usr/bin/env node";
+const TERMUX_ROOT = "/data/data/com.termux";
 
 function isTermux(env, platform) {
   return Boolean(env.TERMUX_VERSION)
     || env.PREFIX === DEFAULT_TERMUX_PREFIX
     || platform === "android";
+}
+
+function validatedTermuxPrefix(rawPrefix, warn) {
+  if (!rawPrefix) {
+    return DEFAULT_TERMUX_PREFIX;
+  }
+
+  const normalized = typeof rawPrefix === "string"
+    ? path.posix.normalize(rawPrefix)
+    : "";
+  const hasParentSegment = typeof rawPrefix === "string"
+    && rawPrefix.split("/").includes("..");
+  const isAllowed = typeof rawPrefix === "string"
+    && path.posix.isAbsolute(rawPrefix)
+    && !hasParentSegment
+    && (normalized === TERMUX_ROOT || normalized.startsWith(`${TERMUX_ROOT}/`));
+
+  if (!isAllowed) {
+    warn("Warning: invalid Termux PREFIX; using the default Termux prefix.");
+    return DEFAULT_TERMUX_PREFIX;
+  }
+
+  return normalized;
 }
 
 async function fixLauncherShebang(filePath, prefix, warn) {
@@ -43,12 +67,24 @@ export async function runPostinstall({
   env = process.env,
   platform = process.platform,
   warn = console.warn,
+  existsSync = defaultExistsSync,
 } = {}) {
   if (!isTermux(env, platform)) {
     return;
   }
 
-  const prefix = env.PREFIX || DEFAULT_TERMUX_PREFIX;
+  const prefix = validatedTermuxPrefix(env.PREFIX, warn);
+  const envPath = path.posix.join(prefix, "bin", "env");
+  try {
+    if (!existsSync(envPath)) {
+      warn(`Warning: ${envPath} does not exist; launcher shebangs were left unchanged.`);
+      return;
+    }
+  } catch (error) {
+    warn(`Warning: unable to check ${envPath}; launcher shebangs were left unchanged: ${error.message}`);
+    return;
+  }
+
   for (const launcher of LAUNCHERS) {
     await fixLauncherShebang(path.join(binDir, launcher), prefix, warn);
   }

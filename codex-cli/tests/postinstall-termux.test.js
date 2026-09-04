@@ -34,7 +34,7 @@ function createFixture(t) {
 
 test("Termux postinstall rewrites both launcher shebangs and is idempotent", async (t) => {
   const fixture = createFixture(t);
-  const prefix = path.join(fixture.root, "termux-prefix");
+  const prefix = "/data/data/com.termux/files/usr";
   const originals = new Map(
     launcherNames.map((name) => [
       name,
@@ -46,6 +46,7 @@ test("Termux postinstall rewrites both launcher shebangs and is idempotent", asy
     binDir: fixture.binDir,
     env: { PREFIX: prefix, TERMUX_VERSION: "test" },
     platform: "linux",
+    existsSync: () => true,
   });
 
   const expectedShebang = `#!${prefix}/bin/env node`;
@@ -67,11 +68,83 @@ test("Termux postinstall rewrites both launcher shebangs and is idempotent", asy
     binDir: fixture.binDir,
     env: { PREFIX: prefix, TERMUX_VERSION: "test" },
     platform: "linux",
+    existsSync: () => true,
   });
   for (const name of launcherNames) {
     assert.equal(
       readFileSync(path.join(fixture.binDir, name), "utf8"),
       rewritten.get(name),
+    );
+  }
+});
+
+test("invalid Termux PREFIX values never enter the launcher shebang", async (t) => {
+  const invalidPrefixes = [
+    "relative-prefix",
+    "/tmp/x",
+    "/data/data/com.termux/files/usr/../attacker",
+  ];
+
+  for (const prefix of invalidPrefixes) {
+    const fixture = createFixture(t);
+    await runPostinstall({
+      binDir: fixture.binDir,
+      env: { PREFIX: prefix, TERMUX_VERSION: "test" },
+      platform: "linux",
+      existsSync: () => true,
+    });
+
+    for (const name of launcherNames) {
+      const shebang = readFileSync(path.join(fixture.binDir, name), "utf8")
+        .split("\n", 1)[0];
+      assert.ok(
+        shebang === "#!/usr/bin/env node"
+          || shebang === "#!/data/data/com.termux/files/usr/bin/env node",
+        `unexpected shebang for PREFIX=${prefix}: ${shebang}`,
+      );
+      assert.equal(shebang.includes(prefix), false);
+    }
+  }
+});
+
+test("Termux without PREFIX uses the validated default prefix", async (t) => {
+  const fixture = createFixture(t);
+
+  await runPostinstall({
+    binDir: fixture.binDir,
+    env: { TERMUX_VERSION: "test" },
+    platform: "linux",
+    existsSync: () => true,
+  });
+
+  for (const name of launcherNames) {
+    assert.equal(
+      readFileSync(path.join(fixture.binDir, name), "utf8").split("\n", 1)[0],
+      "#!/data/data/com.termux/files/usr/bin/env node",
+    );
+  }
+});
+
+test("missing Termux env executable leaves launcher files unchanged", async (t) => {
+  const fixture = createFixture(t);
+  const before = new Map(
+    launcherNames.map((name) => [
+      name,
+      readFileSync(path.join(fixture.binDir, name), "utf8"),
+    ]),
+  );
+
+  await runPostinstall({
+    binDir: fixture.binDir,
+    env: { PREFIX: "/data/data/com.termux/files/usr", TERMUX_VERSION: "test" },
+    platform: "linux",
+    existsSync: () => false,
+  });
+
+  for (const name of launcherNames) {
+    assert.equal(
+      readFileSync(path.join(fixture.binDir, name), "utf8"),
+      before.get(name),
     );
   }
 });
