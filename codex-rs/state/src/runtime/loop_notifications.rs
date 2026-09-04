@@ -1,8 +1,8 @@
 use super::*;
-use crate::model::{
-    LOOP_NOTIFICATION_KIND_PENDING, LOOP_NOTIFICATION_PENDING_MAX_AGE_MS,
-    LOOP_NOTIFICATION_SUMMARY_RETENTION, LoopNotificationRecord,
-};
+use crate::model::LOOP_NOTIFICATION_KIND_PENDING;
+use crate::model::LOOP_NOTIFICATION_PENDING_MAX_AGE_MS;
+use crate::model::LOOP_NOTIFICATION_SUMMARY_RETENTION;
+use crate::model::LoopNotificationRecord;
 
 impl StateRuntime {
     /// Persist-before-emit with dedup. The INSERT OR

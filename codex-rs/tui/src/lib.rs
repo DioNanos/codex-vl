@@ -228,9 +228,9 @@ mod updates;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
 mod version;
+mod vim_search;
 mod vivling;
 mod vl;
-mod vim_search;
 mod width;
 #[cfg(any(target_os = "windows", test))]
 mod windows_sandbox;
