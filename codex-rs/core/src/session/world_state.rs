@@ -214,7 +214,7 @@ impl Session {
                         .iter()
                         .any(|tool| tool == "send_user_message_async");
             let persistent_mode = PersistentModeState::new(
-                &step_context.settings.model_info().slug,
+                &step_context.settings.model_info.slug,
                 step_context.settings.effective_reasoning_effort().as_ref(),
                 step_context
                     .settings
