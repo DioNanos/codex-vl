@@ -1,7 +1,7 @@
-//! Crate ausiliario del gate di sanificazione pre-publish per codex-vl.
+//! Sanitization gate for a Rust fork with upstream history.
 //!
-//! Non contiene codice di runtime: esiste solo per ospitare i test di
-//! integrazione in `tests/`, che verificano che l'albero tracciato e la
-//! storia del fork non portino tracce da sanificare prima di una
-//! pubblicazione. Specchia il rationale del test `published-tree-is-clean`
-//! di nexuscrew, adattandolo a un fork Rust con storia upstream.
+//! No runtime code: this crate exists only to host the integration tests
+//! in `tests/`, which verify that the tracked tree and the fork history
+//! carry no traces that would require sanitization before a publication.
+//! The rationale mirrors the upstream `published-tree-is-clean` test,
+//! adapted to a Rust fork with upstream history.

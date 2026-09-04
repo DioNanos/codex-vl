@@ -76,6 +76,23 @@ fn managed_codex_bin_resolves_to_self_exe_when_bun() {
 }
 
 #[test]
+fn managed_codex_bin_resolves_to_self_exe_when_vite_plus() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("codex-vl-vite-plus");
+    std::fs::write(&bin, b"binary").expect("write binary");
+
+    with_self_exe(&bin, || {
+        let resolved = resolve_managed_codex_bin_for_install_context(
+            &ctx(InstallMethod::VitePlus),
+            temp.path(),
+        )
+        .expect("resolve");
+
+        assert_eq!(resolved, std::fs::canonicalize(&bin).expect("canonicalize"));
+    });
+}
+
+#[test]
 fn managed_codex_bin_ignores_missing_self_exe_for_npm() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing = temp.path().join("missing-codex-vl");

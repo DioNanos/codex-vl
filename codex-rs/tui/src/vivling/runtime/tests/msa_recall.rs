@@ -193,7 +193,7 @@ fn rich_capsule_never_indexes_secrets() {
     assert!(!hits.is_empty());
 }
 
-/// Ingest gate (live audit 2026-06-07, F1): bookkeeping kinds must NOT reach
+/// Ingest gate: bookkeeping kinds must NOT reach
 /// the MSA archive — a 6-week-old vivling's index was 78% loop noise. Turn
 /// capsules keep flowing; the recall section never serves bookkeeping.
 #[test]

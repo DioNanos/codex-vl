@@ -201,8 +201,7 @@ impl VivlingState {
         }
     }
 
-    /// Idempotent hygiene for states written BEFORE the F3 fixes
-    /// (live audit 2026-06-07): drops distilled summaries of bookkeeping
+    /// Idempotent hygiene for states written before these hygiene passes: drops distilled summaries of bookkeeping
     /// kinds (garbage topics like wait/verify/churn) and clamps the counters
     /// that compounded under re-distillation (observations near 100k on a
     /// 6-week vivling; inflated total_weight made them permanently sticky in
@@ -228,7 +227,7 @@ impl VivlingState {
     }
 
     pub(crate) fn distill_memory(&mut self) {
-        // F3: reset at ENTRY so the trigger re-arms even on the early-return
+        // Reset at ENTRY so the trigger re-arms even on the early-return
         // paths below — otherwise, past the threshold, every new capsule
         // re-enters distillation.
         self.capsules_since_distill = 0;
@@ -253,9 +252,9 @@ impl VivlingState {
             if capsule.kind == super::lineage::LINEAGE_PARENT_SUMMARY_KIND {
                 continue;
             }
-            // F3: bookkeeping never distills — it already feeds the
+            // Bookkeeping never distills — it already feeds the
             // loop_profile signals above, and distilling it produced the
-            // garbage topics (wait/verify/churn) found in the live audit.
+            // garbage topics (wait/verify/churn) observed on a long-lived state.
             if super::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
                 continue;
             }
@@ -324,7 +323,7 @@ impl VivlingState {
             self.distilled_summaries
                 .truncate(MAX_DISTILLED_MEMORY_ENTRIES);
         }
-        // F3: CONSUME the distilled window. Before this, the same historical
+        // CONSUME the distilled window. Before this, the same historical
         // capsules were re-distilled on every pass and their observations /
         // total_weight compounded into the merge at every trigger (live
         // audit: observation counters near 100k on a 6-week vivling).

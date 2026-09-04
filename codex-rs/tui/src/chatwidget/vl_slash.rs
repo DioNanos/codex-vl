@@ -29,7 +29,7 @@ pub(super) fn dispatch_mcp_reload(cw: &mut ChatWidget) {
     cw.app_event_tx.send_vl(VlEvent::McpReload { thread_id });
 }
 
-pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
+pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop apply <id> | /loop dismiss <id> | /loop delegate <label> <main|vivling> | /loop undelegate <label> | /loop strategy <label> <observe|suggest|manage|auto> | /loop delegation [label] | /loop owner [main|vivling]";
 
 const VIVLING_ALIAS_USAGE: &str = "Usage: /vl <message>";
 const VIVLING_ASSIST_ALIAS_USAGE: &str = "Usage: /vla <task>";
@@ -55,6 +55,29 @@ pub(super) fn dispatch_loop_with_args(cw: &mut ChatWidget, trimmed: &str) {
 
 /// `/vivling [args]` — full Vivling action dispatch.
 pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
+    if let Some(rest) = args.trim().strip_prefix("loop-strategy") {
+        let mut parts = rest.split_whitespace();
+        let (Some(label), Some(strategy), None) = (parts.next(), parts.next(), parts.next()) else {
+            cw.add_error_message(
+                "Usage: /vivling loop-strategy <label> <observe|suggest|manage|auto>".to_string(),
+            );
+            return;
+        };
+        let Some(thread_id) = cw.thread_id else {
+            cw.add_error_message(
+                "'/vivling loop-strategy' is unavailable before the session starts.".to_string(),
+            );
+            return;
+        };
+        cw.app_event_tx.send_vl(VlEvent::LoopCommand {
+            thread_id,
+            request: LoopCommandRequest::SetStrategy {
+                label: label.to_string(),
+                strategy: strategy.to_string(),
+            },
+        });
+        return;
+    }
     cw.sync_vivling_live_context();
     let outcome = VivlingAction::parse(args)
         .and_then(|action| cw.bottom_pane.run_vivling_command(&cw.config, action));
@@ -195,12 +218,26 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "rm" => Some(LoopCommandRequest::Remove {
             label: parts.next()?.to_string(),
         }),
-        // FASE5 5A — `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
+        // `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
         "apply" => Some(LoopCommandRequest::Apply {
             suggestion_id: parts.next()?.to_string(),
         }),
         "dismiss" => Some(LoopCommandRequest::Dismiss {
             suggestion_id: parts.next()?.to_string(),
+        }),
+        "delegate" => Some(LoopCommandRequest::Delegate {
+            label: parts.next()?.to_string(),
+            owner_kind: parts.next()?.to_string(),
+        }),
+        "undelegate" => Some(LoopCommandRequest::Undelegate {
+            label: parts.next()?.to_string(),
+        }),
+        "strategy" => Some(LoopCommandRequest::SetStrategy {
+            label: parts.next()?.to_string(),
+            strategy: parts.next()?.to_string(),
+        }),
+        "delegation" => Some(LoopCommandRequest::Delegation {
+            label: parts.next().map(str::to_string),
         }),
         "owner" => match parts.next() {
             None => Some(LoopCommandRequest::OwnerShow),
@@ -222,6 +259,13 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
                 prompt_text,
                 goal_text: None,
                 auto_remove_on_completion: None,
+                runner_kind: codex_state::LoopRunnerKind::Main,
+                runner_model: None,
+                schedule_kind: "interval".to_string(),
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
+                rearm_on_boot: None,
             })
         }
         _ => None,
@@ -314,6 +358,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_loop_command_recognizes_delegation_subcommands() {
+        assert!(matches!(
+            parse_loop_command("delegate forge vivling"),
+            Some(LoopCommandRequest::Delegate { label, owner_kind })
+                if label == "forge" && owner_kind == "vivling"
+        ));
+        assert!(matches!(
+            parse_loop_command("undelegate forge"),
+            Some(LoopCommandRequest::Undelegate { label }) if label == "forge"
+        ));
+        assert!(matches!(
+            parse_loop_command("strategy forge suggest"),
+            Some(LoopCommandRequest::SetStrategy { label, strategy })
+                if label == "forge" && strategy == "suggest"
+        ));
+    }
+
+    #[test]
     fn parse_loop_command_add_validates_interval_and_prompt() {
         let req = parse_loop_command("add nightly 30s do a thing").expect("add parses");
         match req {
@@ -323,6 +385,7 @@ mod tests {
                 prompt_text,
                 goal_text,
                 auto_remove_on_completion,
+                ..
             } => {
                 assert_eq!(label, "nightly");
                 assert_eq!(interval_seconds, 30);

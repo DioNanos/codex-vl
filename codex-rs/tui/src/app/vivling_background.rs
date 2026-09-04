@@ -20,6 +20,7 @@ use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_vivling_core::redaction::redact_secrets;
 use tokio_stream::StreamExt;
 use tracing::debug;
 use tracing::info;
@@ -211,8 +212,84 @@ Omit `suggestion` (or null) when you have no high-confidence advice; never inven
     if trimmed.is_empty() {
         return Err("Vivling loop tick returned no output.".to_string());
     }
-    serde_json::from_str(trimmed)
-        .map_err(|err| format!("Vivling loop tick returned invalid JSON: {err}"))
+    parse_loop_tick_reply(trimmed)
+}
+
+fn parse_loop_tick_reply(raw: &str) -> Result<VivlingLoopTickResult, String> {
+    let stripped = crate::vivling::runtime::expression::strip_markdown_fence(raw);
+    let candidate = crate::vivling::runtime::expression::first_json_object(stripped.trim())
+        .ok_or_else(|| {
+            format!(
+                "Vivling loop tick reply did not contain a JSON object; response prefix: {}",
+                response_prefix(raw)
+            )
+        })?;
+    serde_json::from_str(candidate).map_err(|err| {
+        format!(
+            "Vivling loop tick reply contained invalid JSON: {err}; response prefix: {}",
+            response_prefix(raw)
+        )
+    })
+}
+
+fn response_prefix(raw: &str) -> String {
+    let redacted = redact_secrets(raw);
+    let mut prefix: String = redacted.chars().take(80).collect();
+    if redacted.chars().count() > 80 {
+        prefix.push('…');
+    }
+    prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_loop_tick_reply;
+
+    const JSON: &str = r#"{"status":"progress","message":"still working"}"#;
+
+    #[test]
+    fn loop_tick_reply_accepts_plain_json() {
+        let parsed = parse_loop_tick_reply(JSON).expect("plain JSON should parse");
+        assert_eq!(parsed.status, "progress");
+        assert_eq!(parsed.message, "still working");
+    }
+
+    #[test]
+    fn loop_tick_reply_accepts_json_markdown_fence() {
+        let parsed = parse_loop_tick_reply(&format!("```json\n{JSON}\n```"))
+            .expect("fenced JSON should parse");
+        assert_eq!(parsed.status, "progress");
+    }
+
+    #[test]
+    fn loop_tick_reply_accepts_json_after_preamble() {
+        let parsed = parse_loop_tick_reply(&format!("I checked the loop.\n{JSON}"))
+            .expect("JSON after prose should parse");
+        assert_eq!(parsed.message, "still working");
+    }
+
+    #[test]
+    fn loop_tick_reply_reports_clear_error_and_redacted_prefix_without_json() {
+        let raw = "The model could not produce a structured result; no JSON was returned.";
+        let error = parse_loop_tick_reply(raw).expect_err("text without JSON must fail");
+        assert!(error.contains("did not contain a JSON object"), "{error}");
+        assert!(error.contains("response prefix"), "{error}");
+        assert!(error.contains("The model could not produce"), "{error}");
+        assert!(
+            error.chars().count() > 80,
+            "diagnostic should carry a bounded prefix"
+        );
+    }
+
+    #[test]
+    fn loop_tick_reply_redacts_secrets_in_error_prefix() {
+        let raw = "provider failed token=ghp_1234567890123456789012345678901234567890";
+        let error = parse_loop_tick_reply(raw).expect_err("secret-only text must fail");
+        assert!(
+            !error.contains("ghp_1234567890123456789012345678901234567890"),
+            "{error}"
+        );
+    }
 }
 
 /// Memory V2 Step 12.B.D.2 — async runner for the Expression channel

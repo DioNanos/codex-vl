@@ -114,6 +114,13 @@ pub(crate) fn map_to_command(
                 goal_text: None,
                 auto_remove_on_completion: None,
                 enabled: None,
+                runner_kind: None,
+                runner_model: None,
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
+                rearm_on_boot: None,
             })
         }
         VivlingSuggestionKind::RefinePrompt => {
@@ -128,6 +135,13 @@ pub(crate) fn map_to_command(
                 goal_text: None,
                 auto_remove_on_completion: None,
                 enabled: None,
+                runner_kind: None,
+                runner_model: None,
+                schedule_kind: None,
+                schedule_at: None,
+                one_shot_at_ms: None,
+                tz: None,
+                rearm_on_boot: None,
             })
         }
         VivlingSuggestionKind::Disable => Some(LoopCommandRequest::Disable { label }),

@@ -16,6 +16,37 @@ fn is_safety_access_block_message(message: &str) -> bool {
 }
 
 impl ChatWidget {
+    /// Reconcile UI state that can outlive a terminal turn event.
+    ///
+    /// The caller applies the user-facing follow-up separately because interrupted input is
+    /// restored, while errors may submit a queued follow-up. A disconnected or closed session
+    /// cannot consume queued input, so that caller also requests that it be discarded.
+    pub(crate) fn reconcile_terminal_turn(&mut self, discard_pending_input: bool) {
+        self.finalize_turn();
+        if discard_pending_input {
+            self.input_queue.clear();
+            self.refresh_pending_input_preview();
+        }
+    }
+
+    /// Apply a raw core abort when no `TurnComplete` follows it.
+    pub(super) fn handle_turn_aborted_event(
+        &mut self,
+        event: codex_protocol::protocol::TurnAbortedEvent,
+    ) {
+        let reason = match event.reason {
+            codex_protocol::protocol::TurnAbortReason::BudgetLimited => {
+                TurnAbortReason::BudgetLimited
+            }
+            codex_protocol::protocol::TurnAbortReason::Interrupted
+            | codex_protocol::protocol::TurnAbortReason::Replaced
+            | codex_protocol::protocol::TurnAbortReason::ReviewEnded => {
+                TurnAbortReason::Interrupted
+            }
+        };
+        self.on_interrupted_turn(reason);
+    }
+
     fn clear_guardian_review_status(&mut self) {
         self.status_state.pending_guardian_review_status.clear();
         if self.status_state.current_status.is_guardian_review() {
@@ -82,6 +113,7 @@ impl ChatWidget {
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
+        self.bottom_pane.reset_status_timer(Duration::ZERO);
         self.status_state.retry_status_header = None;
         self.clear_active_hook_cell();
         self.status_state.pending_status_indicator_restore = false;
@@ -159,7 +191,6 @@ impl ChatWidget {
             self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
         self.flush_unified_exec_wait_streak();
-        self.flush_completed_command_activity();
         if !from_replay {
             self.collect_runtime_metrics_delta();
             let runtime_metrics =
@@ -173,8 +204,8 @@ impl ChatWidget {
                         .map(|duration_ms| duration_ms / 1_000)
                         .or_else(|| {
                             self.bottom_pane
-                                .status_widget()
-                                .map(crate::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds)
+                                .status_elapsed()
+                                .map(|elapsed| elapsed.as_secs())
                         })
                 } else {
                     None
@@ -375,7 +406,7 @@ impl ChatWidget {
 
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
 
         let message = if message.trim().is_empty() {
             "Codex is currently experiencing high load.".to_string()
@@ -391,7 +422,7 @@ impl ChatWidget {
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
         self.add_to_history(history_cell::new_error_event(message));
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
@@ -413,7 +444,7 @@ impl ChatWidget {
 
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.finalize_turn();
+        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
         let plan_type = if self.has_chatgpt_account {
             self.plan_type
         } else {
@@ -427,6 +458,8 @@ impl ChatWidget {
     }
 
     pub(super) fn on_rate_limit_error(&mut self, error_kind: RateLimitErrorKind, message: String) {
+        // on_error can drain queued input, before the asynchronous recovery read completes.
+        self.input_queue.rate_limit_recovery_pending = self.has_chatgpt_account;
         let usage_limit_error = matches!(error_kind, RateLimitErrorKind::UsageLimit);
         let rate_limit_reached_type = self.codex_rate_limit_reached_type.map(|kind| {
             if usage_limit_error {
@@ -443,31 +476,38 @@ impl ChatWidget {
                 kind
             }
         });
+        if self.codex_rate_limit_reached_type != rate_limit_reached_type {
+            self.clear_backend_banner();
+        }
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
-        match rate_limit_reached_type {
-            Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
-                self.on_error(
+        // Keep owner remediation in history even when the optional backend banner is unavailable.
+        let (message, nudge) = match rate_limit_reached_type {
+            Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => (
                     "You're out of credits. Your workspace is out of credits. Add credits to continue using Codex."
                         .to_string(),
-                );
-            }
-            Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => {
-                self.on_error(
+                    None,
+            ),
+            Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => (
                     "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex."
                         .to_string(),
-                );
-            }
-            Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted) => {
-                self.on_error(message);
-                self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::Credits);
-            }
-            Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) => {
-                self.on_error(message);
-                self.open_workspace_owner_nudge_prompt(AddCreditsNudgeCreditType::UsageLimit);
-            }
-            Some(RateLimitReachedType::RateLimitReached) | None => {
-                self.on_error(message);
-            }
+                    None,
+            ),
+            Some(RateLimitReachedType::WorkspaceMemberCreditsDepleted) =>
+                (message, Some(AddCreditsNudgeCreditType::Credits)),
+            Some(RateLimitReachedType::WorkspaceMemberUsageLimitReached) =>
+                (message, Some(AddCreditsNudgeCreditType::UsageLimit)),
+            Some(RateLimitReachedType::RateLimitReached) | None => (message, None),
+        };
+        self.on_error(message);
+        if !self.has_applicable_backend_banner()
+            && let Some(credit_type) = nudge
+        {
+            self.open_workspace_owner_nudge_prompt(credit_type);
+        }
+        if self.has_chatgpt_account {
+            self.app_event_tx.send(AppEvent::RefreshRateLimits {
+                origin: crate::app_event::RateLimitRefreshOrigin::Recovery,
+            });
         }
     }
 
@@ -496,7 +536,7 @@ impl ChatWidget {
             })
         {
             self.input_queue.submit_pending_steers_after_interrupt = false;
-            self.finalize_turn();
+            self.reconcile_terminal_turn(/*discard_pending_input*/ false);
             self.add_to_history(history_cell::new_safety_access_block_event());
             self.request_redraw();
             self.maybe_send_next_queued_input();

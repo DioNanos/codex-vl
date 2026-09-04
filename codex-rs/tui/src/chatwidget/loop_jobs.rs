@@ -75,7 +75,7 @@ impl ChatWidget {
         // case. Wired here so the freshly-updated work memory has a
         // chance to feed the next CRT phrase + proactive message.
         self.maybe_trigger_vivling_expression_refresh();
-        // FASE5 5A — snapshot del context bus volatile (§5.1). active_loops
+        // Snapshot del context bus volatile (§5.1). active_loops
         // dalle label dei job correnti; blockers mai inventati (vuoto qui:
         // in 5A non c'e un segnale strutturato di blocker dal worker turn).
         let active_loops: Vec<String> = self
@@ -275,4 +275,65 @@ pub(crate) enum LoopPromptSubmissionOutcome {
     BlockedSideConversation,
     BlockedReviewMode,
     BlockedUserTurn,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_command::AppCommand as Op;
+    use crate::chatwidget::tests::helpers::make_chatwidget_manual;
+    use crate::chatwidget::tests::helpers::next_submit_op;
+    use codex_app_server_protocol::UserInput;
+    use codex_protocol::ThreadId;
+
+    fn test_job(thread_id: ThreadId, next_run_ms: Option<i64>) -> codex_state::ThreadLoopJob {
+        codex_state::ThreadLoopJob {
+            id: "job-main".to_string(),
+            thread_id,
+            label: "main-loop".to_string(),
+            prompt_text: "check the main thread".to_string(),
+            goal_text: Some("keep the main turn alive".to_string()),
+            interval_seconds: 300,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: true,
+            created_by: "agent".to_string(),
+            next_run_ms,
+            last_run_ms: None,
+            last_status: None,
+            last_error: None,
+            pending_tick: false,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn main_runner_schedules_and_submits_a_main_turn() {
+        let (mut widget, _events, mut ops) = make_chatwidget_manual(None).await;
+        let thread_id = ThreadId::new();
+        widget.thread_id = Some(thread_id);
+        widget.replace_loop_jobs(thread_id, vec![test_job(thread_id, Some(i64::MAX))]);
+        assert!(widget.loop_jobs["job-main"].task.is_some());
+
+        let owner = codex_state::ThreadLoopOwner {
+            thread_id,
+            owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
+            owner_vivling_id: None,
+            updated_at_ms: 1,
+        };
+        assert_eq!(
+            widget.submit_loop_prompt(&test_job(thread_id, None), &owner),
+            LoopPromptSubmissionOutcome::Submitted
+        );
+        let Op::UserTurn { items, .. } = next_submit_op(&mut ops) else {
+            panic!("runner=main must submit a main user turn");
+        };
+        assert!(items.iter().any(|item| {
+            matches!(
+                item,
+                UserInput::Text { text, .. } if text.contains("\nowner: main")
+            )
+        }));
+    }
 }

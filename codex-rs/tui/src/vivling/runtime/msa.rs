@@ -181,7 +181,7 @@ impl VivlingMsa {
                 .get("kind")
                 .and_then(|value| value.as_str())
                 .unwrap_or("?");
-            // Serving-side gate twin of the ingest gate (F1): archives
+            // Serving-side gate twin of the ingest gate: archives
             // indexed BEFORE the gate shipped still hold bookkeeping docs —
             // never serve them, on any install, without requiring a rebuild.
             if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&kind) {
@@ -252,12 +252,12 @@ impl VivlingMsa {
     ) {
         use msa_core::enrich;
 
-        // Ingest gate (live audit 2026-06-07, F1): operational bookkeeping
+        // Ingest gate: operational bookkeeping
         // stays in the local working memory but is NOT indexed into the
         // long-term MSA archive — 78% of a 6-week-old vivling's index was
         // this noise, crowding knowledge out of recall_section. Denylist
         // (not allowlist) so future knowledge kinds flow by default. This
-        // single choke point also gates the setup backfill (F7) and the
+        // single choke point also gates the setup backfill and the
         // lineage echo path.
         if crate::vivling::model::constants::BOOKKEEPING_KINDS.contains(&capsule.kind.as_str()) {
             return;

@@ -4,17 +4,49 @@ const VIVLING_STRIP_HEIGHT: u16 = 3;
 const VIVLING_STRIP_MIN_WIDTH: u16 = 12;
 
 impl Vivling {
-    pub(crate) fn mark_recent_activity(&self, tail: Duration) {
+    pub(crate) fn mark_recent_activity(&mut self, tail: Duration) {
         let now = Instant::now();
         if !self.is_active_at(now) {
-            self.active_started_at.set(Some(now));
+            self.shadow.active_started_at = Some(now);
         }
         let deadline = now + tail;
-        let current = self.active_until.get();
-        if current.is_none_or(|existing| existing < deadline) {
-            self.active_until.set(Some(deadline));
+        if self
+            .shadow
+            .active_until
+            .is_none_or(|existing| existing < deadline)
+        {
+            self.shadow.active_until = Some(deadline);
         }
         self.request_frame();
+    }
+
+    /// codex-vl — per-frame maintenance estratta dal render
+    /// (che è `&self` per il trait `Renderable`): expiry del testo
+    /// animato e frame pacing. Chiamata dal lifecycle hook `&mut` del
+    /// BottomPane (`vl_lifecycle_tick`).
+    ///
+    /// Il render resta read-only SALVO `CrtAnimationLedger` (per-frame per
+    /// design, fuori dal perimetro del refactoring — v. la nota sul campo in mod.rs).
+    pub(crate) fn tick(&mut self, now: Instant) {
+        let shadow = &mut self.shadow;
+        if shadow
+            .animation_text_expires_at
+            .is_some_and(|deadline| deadline <= now)
+        {
+            shadow.animation_text = None;
+            shadow.animation_text_expires_at = None;
+        }
+        if !self.animations_enabled {
+            shadow.next_scheduled_frame_at = None;
+        } else if shadow
+            .next_scheduled_frame_at
+            .is_none_or(|deadline| deadline <= now)
+        {
+            shadow.next_scheduled_frame_at = Some(now + ACTIVE_FOOTER_FRAME_INTERVAL);
+            if let Some(frame_requester) = &self.frame_requester {
+                frame_requester.schedule_frame_in(ACTIVE_FOOTER_FRAME_INTERVAL);
+            }
+        }
     }
 
     pub(crate) fn request_frame(&self) {
@@ -26,15 +58,14 @@ impl Vivling {
     pub(crate) fn is_active_at(&self, now: Instant) -> bool {
         self.is_task_running()
             || self
+                .shadow
                 .active_until
-                .get()
                 .is_some_and(|deadline| deadline > now)
     }
 
     pub(crate) fn current_sprite(&self, state: &VivlingState, now: Instant) -> String {
         let species = species_for_id(&state.species);
         if !self.animations_enabled {
-            *self.next_scheduled_frame_at.borrow_mut() = None;
             return match state.stage() {
                 Stage::Baby => species.ascii_baby.clone(),
                 Stage::Juvenile => species.ascii_juvenile.clone(),
@@ -43,25 +74,15 @@ impl Vivling {
         }
 
         let frames = active_footer_sprites_for_species(species, state.stage());
-        let started = self.active_started_at.get().unwrap_or_else(|| {
-            self.active_started_at.set(Some(now));
-            now
-        });
+        // codex-vl: read-only (salvo CrtAnimationLedger, v. nota di
+        // perimetro su Vivling::crt_animation_ledger) — lazy-init e frame
+        // pacing sono passati al `tick` (&mut), chiamato dal lifecycle hook
+        // del BottomPane.
+        let started = self.shadow.active_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let frame_idx =
             (((elapsed.as_millis() / ACTIVE_FOOTER_FRAME_INTERVAL.as_millis()) as usize) + 1)
                 % frames.len();
-        let next_deadline = now + ACTIVE_FOOTER_FRAME_INTERVAL;
-        let should_schedule = self
-            .next_scheduled_frame_at
-            .borrow()
-            .is_none_or(|deadline| deadline <= now);
-        if should_schedule {
-            if let Some(frame_requester) = &self.frame_requester {
-                frame_requester.schedule_frame_in(ACTIVE_FOOTER_FRAME_INTERVAL);
-            }
-            *self.next_scheduled_frame_at.borrow_mut() = Some(next_deadline);
-        }
         frames[frame_idx].clone()
     }
 
@@ -75,7 +96,7 @@ impl Vivling {
     }
 
     fn crt_elapsed_ms(&self, now: Instant) -> u64 {
-        let started = self.active_started_at.get().unwrap_or(now);
+        let started = self.shadow.active_started_at.unwrap_or(now);
         now.saturating_duration_since(started).as_millis() as u64
     }
 }
@@ -90,13 +111,13 @@ impl Renderable for Vivling {
         }
         let now = Instant::now();
         let sprite = self.current_sprite(state, now);
-        let live_context = self.live_context.borrow();
+        let live_context = self.shadow.live_context.clone();
         // codex-vl Step 14 Bug 1 fix — pending = no Expression dispatch
         // has resolved yet in this TUI session. Hides state-persistent
         // CRT fallbacks (proactive/recent/last_work_summary) so the new
         // session never starts by surfacing the previous session's last
         // assistant turn.
-        let bootstrap_pending = !self.crt_first_dispatch_completed.get();
+        let bootstrap_pending = !self.shadow.crt_first_dispatch_completed;
         let insight =
             super::crt_insight::compute_insight(state, live_context.as_ref(), bootstrap_pending);
         let animation_text = self.current_animation_text_at(now);
@@ -109,7 +130,7 @@ impl Renderable for Vivling {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .or(animation_phrase);
-        let activity = *self.activity.borrow();
+        let activity = self.activity();
         let tui_task_running = self.is_task_running();
         // codex-vl Step 14 Bug 2 fix — short label rendered in the CRT
         // speech panel when the director selects Alert for a non-busy
@@ -131,7 +152,7 @@ impl Renderable for Vivling {
         let mut transitions = self.crt_animation_ledger.phases(now);
         if !self.animations_enabled
             || !self.crt_config.transitions
-            || !self.crt_frame_target.get().schedules_frames()
+            || !self.shadow.crt_frame_target.schedules_frames()
         {
             transitions.mode_fade = 1.0;
             transitions.message_reveal_chars = usize::MAX;
@@ -198,7 +219,7 @@ impl Vivling {
         if !self.animations_enabled || !self.crt_config.any_animation_active() {
             return;
         }
-        let target = self.crt_frame_target.get();
+        let target = self.shadow.crt_frame_target;
         if !target.schedules_frames() {
             return;
         }

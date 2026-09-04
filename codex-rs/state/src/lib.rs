@@ -20,17 +20,49 @@ mod sqlite;
 mod telemetry;
 
 pub use model::CreatedProject;
+pub use model::LOOP_DELEGATION_STRATEGY_MANAGE;
+pub use model::LOOP_DELEGATION_STRATEGY_OBSERVE;
+pub use model::LOOP_DELEGATION_STRATEGY_SUGGEST;
+pub use model::LOOP_MANAGE_BOND;
+pub use model::LOOP_MANAGE_BOND_SUGGEST;
+pub use model::LOOP_MANAGE_CLEAN_RATIO;
+pub use model::LOOP_MANAGE_CLEAN_STREAK;
+pub use model::LOOP_MANAGE_COOLDOWN_MS;
+pub use model::LOOP_MANAGE_SUGGEST_TICKS;
+pub use model::LOOP_MANAGE_TICKS;
+pub use model::LOOP_METRICS_WINDOW;
+pub use model::LOOP_NOTIFICATION_KIND_PENDING;
+pub use model::LOOP_NOTIFICATION_KIND_SUMMARY;
+pub use model::LOOP_RUNNER_KIND_CHILD_AGENT;
+pub use model::LOOP_RUNNER_KIND_MAIN;
 pub use model::LogEntry;
 pub use model::LogQuery;
 pub use model::LogRow;
+pub use model::LoopDelegation;
+pub use model::LoopDelegationStrategy;
+pub use model::LoopDelegationUpsertParams;
+pub use model::LoopDescriptor;
+pub use model::LoopDescriptorUpsertParams;
+pub use model::LoopMetrics;
+pub use model::LoopNotificationRecord;
+pub use model::LoopOccurrence;
+pub use model::LoopResultEntry;
+pub use model::LoopRunnerKind;
+pub use model::ParsedRecentLoopResults;
 pub use model::Phase2JobClaimOutcome;
 pub use model::Project;
 pub use model::ProjectRoot;
+pub use model::ProjectSortKey;
 pub use model::ProjectsPage;
 pub use model::QueuedUserSubmissionRecord;
+pub use model::RecentLoopResults;
 pub use model::RolloutMigrationCursor;
 pub use model::RolloutMigrationSkippedRollout;
 pub use model::RolloutMigrationState;
+pub use model::can_resume_after_suspension;
+pub use model::has_consecutive_blocked;
+pub use model::loop_management_strategy;
+pub use model::parse_recent_results;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 pub use sqlite::SqliteConfig;
@@ -84,9 +116,11 @@ pub use runtime::GoalAccountingMode;
 pub use runtime::GoalAccountingOutcome;
 pub use runtime::GoalStore;
 pub use runtime::GoalUpdate;
+pub use runtime::LoopNotificationPendingRow;
 pub use runtime::MemoryStore;
 pub use runtime::RemoteControlEnrollmentRecord;
 pub use runtime::RuntimeDbBackup;
+pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
 pub use runtime::backup_runtime_db_for_fresh_start;
@@ -137,3 +171,15 @@ pub const DB_INIT_METRIC: &str = "codex.sqlite.init.count";
 pub const DB_INIT_DURATION_METRIC: &str = "codex.sqlite.init.duration_ms";
 /// Rollout fallback attempts. Tags: [caller, reason]
 pub const DB_FALLBACK_METRIC: &str = "codex.sqlite.fallback.count";
+/// SQLite log batch write attempts. Tags: [status, error]
+pub const LOG_WRITE_METRIC: &str = "codex.sqlite.logs.write.count";
+/// SQLite log batch write latency. Tags: [status, error]
+pub const LOG_WRITE_DURATION_METRIC: &str = "codex.sqlite.logs.write.duration_ms";
+/// Estimated bytes in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_BYTES_METRIC: &str = "codex.sqlite.logs.write.bytes";
+/// Number of entries in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_ENTRIES_METRIC: &str = "codex.sqlite.logs.write.entries";
+/// Largest estimated entry size in each SQLite log batch. Tags: [status, error]
+pub const LOG_WRITE_MAX_ENTRY_BYTES_METRIC: &str = "codex.sqlite.logs.write.max_entry_bytes";
+/// SQLite log entries discarded before they can be queued. Tags: [reason]
+pub const LOG_QUEUE_DROPPED_METRIC: &str = "codex.sqlite.logs.queue.dropped";

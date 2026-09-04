@@ -222,6 +222,64 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn manage_loops_schema_exposes_closed_runner_fields() {
+        let spec = manage_loops_dynamic_function_spec();
+        let properties = spec
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("manage_loops schema properties");
+        assert_eq!(properties["runner"]["enum"], json!(["main", "child_agent"]));
+        assert_eq!(properties["runner_model"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn normal_tui_thread_without_declared_tools_receives_builtins() {
+        let tools = dynamic_tools_for_thread_start(
+            Some(CODEX_TUI_CLIENT_NAME),
+            None,
+            /*ephemeral*/ false,
+            Some(&codex_protocol::protocol::ThreadSource::User),
+            vec![],
+        );
+
+        assert!(tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolSpec::Function(function)
+                    if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+            )
+        }));
+        assert!(tools.iter().any(|tool| {
+            matches!(
+                tool,
+                DynamicToolSpec::Namespace(namespace)
+                    if namespace.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAMESPACE
+                        && namespace.tools.iter().any(|tool| matches!(
+                            tool,
+                            DynamicToolNamespaceTool::Function(function)
+                                if function.name == MANAGE_LOOPS_DYNAMIC_TOOL_NAME
+                        ))
+            )
+        }));
+    }
+
+    #[test]
+    fn temporary_system_tui_thread_without_declared_tools_remains_tool_free() {
+        let tools = dynamic_tools_for_thread_start(
+            Some(CODEX_TUI_CLIENT_NAME),
+            None,
+            /*ephemeral*/ true,
+            Some(&codex_protocol::protocol::ThreadSource::Feature(
+                "system".to_string(),
+            )),
+            vec![],
+        );
+
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn validate_dynamic_tools_rejects_unsupported_input_schema() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
@@ -739,6 +797,7 @@ mod thread_processor_behavior_tests {
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
+            full_access: false,
             active_permission_profile: None,
             environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),

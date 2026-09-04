@@ -93,7 +93,7 @@ pub(crate) async fn run_action(action: RemoteControlAction) -> String {
             if stop_output.status.is_some_and(|code| code != 0) {
                 return format_single_output(RemoteControlAction::Restart, stop_output);
             }
-            // F1 (0.134.0-alpha.3): wait for the daemon to fully release the
+            // Wait for the daemon to fully release the
             // socket and lock before issuing the follow-up `start`. Without
             // this gate the new daemon races the in-progress shutdown and
             // either fails to acquire the socket lock or silently spawns a

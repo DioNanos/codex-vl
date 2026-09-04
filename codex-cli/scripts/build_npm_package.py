@@ -101,9 +101,10 @@ COMPONENT_DEST_DIR: dict[str, str] = {
     "rg": "path",
 }
 
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build or stage the Codex CLI npm package.")
+    parser = argparse.ArgumentParser(
+        description="Build or stage the Codex CLI npm package."
+    )
     parser.add_argument(
         "--package",
         choices=PACKAGE_CHOICES,
@@ -116,9 +117,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--release-version",
-        help=(
-            "Version to stage for npm release."
-        ),
+        help=("Version to stage for npm release."),
     )
     parser.add_argument(
         "--staging-dir",
@@ -172,7 +171,9 @@ def main() -> int:
     release_version = args.release_version
     if release_version:
         if version and version != release_version:
-            raise RuntimeError("--version and --release-version must match when both are provided.")
+            raise RuntimeError(
+                "--version and --release-version must match when both are provided."
+            )
         version = release_version
 
     if not version:
@@ -285,6 +286,12 @@ def stage_sources(
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
+        scripts_dir = staging_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(
+            CODEX_CLI_ROOT / "scripts" / "postinstall.js",
+            scripts_dir / "postinstall.js",
+        )
         rg_manifest = CODEX_CLI_ROOT / "bin" / "rg"
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
@@ -292,6 +299,12 @@ def stage_sources(
         readme_src = REPO_ROOT / "README.md"
         if readme_src.exists():
             shutil.copy2(readme_src, staging_dir / "README.md")
+
+        # Apache-2.0 requires the license text to accompany the distribution:
+        # stage it like the README so `npm pack` includes it in the tarball.
+        license_src = REPO_ROOT / "LICENSE"
+        if license_src.exists():
+            shutil.copy2(license_src, staging_dir / "LICENSE")
 
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in CODEX_PLATFORM_PACKAGES:
@@ -303,6 +316,11 @@ def stage_sources(
         if readme_src.exists():
             shutil.copy2(readme_src, staging_dir / "README.md")
 
+        license_src = REPO_ROOT / "LICENSE"
+        if not license_src.is_file():
+            raise RuntimeError(f"Required license file not found: {license_src}")
+        shutil.copy2(license_src, staging_dir / "LICENSE")
+
         with open(CODEX_CLI_ROOT / "package.json", "r", encoding="utf-8") as fh:
             codex_package_json = json.load(fh)
 
@@ -312,13 +330,13 @@ def stage_sources(
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
-            "files": ["vendor"],
+            "files": ["vendor", "LICENSE"],
             "repository": codex_package_json.get("repository"),
         }
 
         if package == "codex-darwin-arm64":
             stage_darwin_source_build_payload(staging_dir)
-            package_json["files"] = ["codex-rs", "scripts", "vendor"]
+            package_json["files"] = ["codex-rs", "scripts", "vendor", "LICENSE"]
             package_json["scripts"] = {"postinstall": "node scripts/postinstall_darwin_build.js"}
 
         engines = codex_package_json.get("engines")
@@ -331,7 +349,9 @@ def stage_sources(
     elif package == "codex-responses-api-proxy":
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
-        launcher_src = RESPONSES_API_PROXY_NPM_ROOT / "bin" / "codex-responses-api-proxy.js"
+        launcher_src = (
+            RESPONSES_API_PROXY_NPM_ROOT / "bin" / "codex-responses-api-proxy.js"
+        )
         shutil.copy2(launcher_src, bin_dir / "codex-responses-api-proxy.js")
 
         readme_src = RESPONSES_API_PROXY_NPM_ROOT / "README.md"
@@ -351,7 +371,11 @@ def stage_sources(
         package_json["version"] = version
 
     if package == "codex":
-        package_json["files"] = ["bin/codex.js"]
+        package_json["files"] = [
+            "bin/codex.js",
+            "bin/codex-exec.js",
+            "scripts/postinstall.js",
+        ]
         package_json["optionalDependencies"] = {
             CODEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
                 f"npm:{CODEX_NPM_NAME}@"
@@ -502,7 +526,10 @@ def copy_native_binaries(
         missing_targets = sorted(target_filter - copied_targets)
         if missing_targets:
             missing_list = ", ".join(missing_targets)
-            raise RuntimeError(f"Missing target directories in vendor source: {missing_list}")
+            raise RuntimeError(
+                f"Missing target directories in vendor source: {missing_list}"
+            )
+
 
 def assert_tarball_contains_native_payload(tarball_path: Path, package: str) -> None:
     """Prove the produced tarball really carries the required binaries.

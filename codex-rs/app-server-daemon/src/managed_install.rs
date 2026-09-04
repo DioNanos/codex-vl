@@ -53,9 +53,11 @@ pub(crate) fn resolve_managed_codex_bin_for_install_context(
     // path because a homebrew cask explicitly ships its own
     // standalone-compatible layout.
     match install_context.method {
-        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm | InstallMethod::Other => {
-            managed_package_current_exe()
-        }
+        InstallMethod::Npm
+        | InstallMethod::Bun
+        | InstallMethod::VitePlus
+        | InstallMethod::Pnpm
+        | InstallMethod::Other => managed_package_current_exe(),
         InstallMethod::Standalone { .. } | InstallMethod::Brew => Ok(managed_codex_bin(codex_home)),
     }
 }

@@ -4,6 +4,29 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.153.2-vl.1 - Upstream rust-v0.153.2
+
+### Upstream
+
+- Rebases Codex VL on OpenAI Codex `rust-v0.153.2`, including the GPT-6-Astra
+  model catalog and the latest public model-tier updates.
+- Hooks activity is visible in the TUI, with Vim undo/redo and app-server
+  reconnect improvements for longer-running sessions.
+- App-server adds asynchronous user-input requests and richer thread metadata,
+  while `[tui].disable_paste_burst` and experimental context management expand configuration control.
+
+### Codex VL fixes
+
+- Loop and Vivling slash commands keep the TUI alive when a user precondition
+  fails, including owner or delegation requests with the brain switched off.
+- `manage_loops` retains access to its jobs after resume, and loop ticks accept
+  fenced or prefixed JSON replies from any provider.
+- The expression planner no longer floods the log database, while terminal
+  turn reconciliation removes phantom “Working” state and stale queued input.
+- Esc interrupts a running task even when a long tool hides the status row, and
+  `/loop` usage now lists delegate, strategy, delegation, and owner commands.
+- Termux: the npm launcher now fixes its own shebang on install, so `codex-vl` starts without `termux-exec` tricks.
+
 ## 0.150.2 - Restore embedded TUI loop routing
 
 ### Fixed

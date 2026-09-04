@@ -40,13 +40,21 @@ fn load_vivling_skills(roster_dir: &Path, vivling_id: &str) -> Vec<VivlingSkill>
     }
 }
 
+/// codex-vl — prima causa di non-runnability (log per-tick / gate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VivlingReadinessReason {
+    WrapperUnavailable,
+    NotAdult,
+    BrainDisabled,
+}
+
 impl Vivling {
     pub(crate) fn prepare_assist_request(
         &mut self,
         task: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: load the planner-written skills sidecar
         // (Step 8.B output) BEFORE composing the prompt. Best-effort —
         // missing/malformed sidecar yields an empty list.
@@ -107,7 +115,7 @@ impl Vivling {
         text: &str,
     ) -> Result<VivlingAssistRequest, String> {
         self.ensure_hatched()?;
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: same best-effort sidecar load as assist.
         let roster_dir = self.roster_dir();
         let skills = match (roster_dir.as_ref(), self.state.as_ref()) {
@@ -161,20 +169,106 @@ impl Vivling {
         })
     }
 
-    pub(crate) fn active_loop_owner_identity(&mut self) -> Result<(String, String), String> {
-        self.ensure_hatched()?;
-        let state = self.state.as_mut().expect("state checked");
-        state.apply_decay(Utc::now());
+    /// codex-vl — readiness eseguibile del Vivling, definizione unica
+    /// condivisa (delegation resolver, Manage gate, runtime foundation): fase wrapper
+    /// disponibile (non Unavailable) + stato Adult + brain abilitato.
+    /// `Ok(())` = runnable; `Err(reason)` porta la prima causa, per il log
+    /// per-tick e per i messaggi dei gate (i call-site mantengono i loro
+    /// testi originali).
+    pub(crate) fn vivling_runnable(
+        &self,
+        state: &VivlingState,
+    ) -> Result<(), VivlingReadinessReason> {
+        Self::vivling_runnable_from(&self.shadow.lifecycle, state)
+    }
+
+    /// Variante statica per i call-site che tengono `&mut self.state` e non
+    /// possono rideclinare `&self` (owner identity): la fase si clona prima
+    /// del mut-borrow.
+    pub(crate) fn vivling_runnable_from(
+        lifecycle: &VivlingLifecyclePhase,
+        state: &VivlingState,
+    ) -> Result<(), VivlingReadinessReason> {
+        if matches!(lifecycle, VivlingLifecyclePhase::Unavailable) {
+            return Err(VivlingReadinessReason::WrapperUnavailable);
+        }
         if state.stage() != Stage::Adult {
-            return Err("Vivling loop ownership unlocks only at level 60.".to_string());
+            return Err(VivlingReadinessReason::NotAdult);
         }
         if !state.brain_enabled {
-            return Err("Enable the Vivling brain first with `/vivling brain on`.".to_string());
+            return Err(VivlingReadinessReason::BrainDisabled);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn active_loop_owner_identity(&mut self) -> Result<(String, String), String> {
+        self.ensure_hatched()?;
+        let phase = self.shadow.lifecycle.clone();
+        let state = self.state.as_mut().expect("state checked");
+        state.apply_decay(Utc::now());
+        if let Err(reason) = Self::vivling_runnable_from(&phase, state) {
+            return Err(match reason {
+                VivlingReadinessReason::WrapperUnavailable => {
+                    "Vivling runtime is not available.".to_string()
+                }
+                VivlingReadinessReason::NotAdult => {
+                    "Vivling loop ownership unlocks only at level 60.".to_string()
+                }
+                VivlingReadinessReason::BrainDisabled => {
+                    "Enable the Vivling brain first with `/vivling brain on`.".to_string()
+                }
+            });
         }
         // Memory V2 §8.1 (P0.2): a missing `brain_profile` no longer
         // blocks loop ownership. The dispatcher will fall back to
         // SessionDefault and read `config.model` at run time.
         Ok((state.vivling_id.clone(), state.name.clone()))
+    }
+
+    /// Shared readiness probe for a persisted loop delegation. The resolver
+    /// receives this result and remains pure; it never inspects wrapper state.
+    pub(crate) fn loop_owner_readiness(
+        &mut self,
+        owner_vivling_id: &str,
+    ) -> crate::vl::delegated_loops::VivlingReadiness {
+        let phase = self.shadow.lifecycle.clone();
+        let state = match self.load_state_for_id(owner_vivling_id) {
+            Ok(Some(state)) => state,
+            Ok(None) | Err(_) => {
+                return crate::vl::delegated_loops::VivlingReadiness::WrapperUnavailable;
+            }
+        };
+        match Self::vivling_runnable_from(&phase, &state) {
+            Ok(()) => crate::vl::delegated_loops::VivlingReadiness::Runnable,
+            Err(VivlingReadinessReason::WrapperUnavailable) => {
+                crate::vl::delegated_loops::VivlingReadiness::WrapperUnavailable
+            }
+            Err(VivlingReadinessReason::NotAdult) => {
+                crate::vl::delegated_loops::VivlingReadiness::NotAdult
+            }
+            Err(VivlingReadinessReason::BrainDisabled) => {
+                crate::vl::delegated_loops::VivlingReadiness::BrainDisabled
+            }
+        }
+    }
+
+    /// Managed-tick gate inputs, read from the same persisted state as the suggestion
+    /// gate. No second source of bond or lifecycle truth is introduced.
+    pub(crate) fn loop_management_gate_inputs(
+        &self,
+        owner_vivling_id: &str,
+    ) -> Result<(bool, bool, bool, u8, &'static str), String> {
+        let state = self
+            .load_state_for_id(owner_vivling_id)
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| format!("Vivling owner `{owner_vivling_id}` is missing on disk."))?;
+        Ok((
+            state.stage() == Stage::Adult,
+            state.brain_enabled,
+            state.brain_profile.is_some(),
+            state.bond.value,
+            self.shadow.lifecycle.kind_label(),
+        ))
     }
 
     pub(crate) fn prepare_loop_tick_request(
@@ -186,14 +280,18 @@ impl Vivling {
             .load_state_for_id(owner_vivling_id)
             .map_err(|err| err.to_string())?
             .ok_or_else(|| format!("Vivling owner `{owner_vivling_id}` is missing on disk."))?;
-        if state.stage() != Stage::Adult {
-            return Err(format!("Vivling owner `{}` is not adult yet.", state.name));
-        }
-        if !state.brain_enabled {
-            return Err(format!(
-                "Vivling owner `{}` has brain disabled.",
-                state.name
-            ));
+        if let Err(reason) = self.vivling_runnable(&state) {
+            return Err(match reason {
+                VivlingReadinessReason::WrapperUnavailable => {
+                    "Vivling runtime is not available.".to_string()
+                }
+                VivlingReadinessReason::NotAdult => {
+                    format!("Vivling owner `{}` is not adult yet.", state.name)
+                }
+                VivlingReadinessReason::BrainDisabled => {
+                    format!("Vivling owner `{}` has brain disabled.", state.name)
+                }
+            });
         }
         // Memory V2 §8.1 (P0.2): inheritance rule. SessionDefault when
         // no profile is pinned; the dispatcher resolves to `config.model`.
@@ -204,7 +302,7 @@ impl Vivling {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&job.prompt_text)
             .to_string();
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         // Memory V2 Step 9.A: load owner's skills sidecar (best-effort).
         let skills = self
             .roster_dir()
@@ -322,21 +420,17 @@ impl Vivling {
 
     pub(crate) fn record_loop_event(&mut self, event: VivlingLoopEvent) -> Result<(), String> {
         let live_summary = self
+            .shadow
             .live_context
-            .borrow()
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
-        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
+        let mut new_capsules: Vec<VivlingWorkMemoryEntry> = Vec::new();
         self.update_existing(|state| {
-            new_capsules
-                .borrow_mut()
-                .extend(state.record_loop_event(&event));
+            new_capsules.extend(state.record_loop_event(&event));
             if let Some(summary) = live_summary.as_deref() {
-                new_capsules
-                    .borrow_mut()
-                    .extend(state.record_live_context_summary(summary));
+                new_capsules.extend(state.record_live_context_summary(summary));
             }
             let proactive = proactive::evaluate_after_loop_event(state, Utc::now());
             if let Some(msg) = proactive.message {
@@ -349,7 +443,7 @@ impl Vivling {
         })
         .map(|_| {
             if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
-                for capsule in new_capsules.borrow().iter() {
+                for capsule in new_capsules.iter() {
                     msa.index_capsule(id, capsule);
                 }
             }
@@ -365,21 +459,17 @@ impl Vivling {
 
     pub(crate) fn record_turn_completed(&mut self, summary: Option<&str>) -> Result<(), String> {
         let live_summary = self
+            .shadow
             .live_context
-            .borrow()
             .as_ref()
             .and_then(VivlingLiveContext::memory_summary);
         let msa = self.msa.clone();
         let vivling_id = self.state.as_ref().map(|state| state.vivling_id.clone());
-        let new_capsules: RefCell<Vec<VivlingWorkMemoryEntry>> = RefCell::new(Vec::new());
+        let mut new_capsules: Vec<VivlingWorkMemoryEntry> = Vec::new();
         self.update_existing(|state| {
-            new_capsules
-                .borrow_mut()
-                .extend(state.record_turn_completed(summary));
+            new_capsules.extend(state.record_turn_completed(summary));
             if let Some(summary) = live_summary.as_deref() {
-                new_capsules
-                    .borrow_mut()
-                    .extend(state.record_live_context_summary(summary));
+                new_capsules.extend(state.record_live_context_summary(summary));
             }
             let proactive = proactive::evaluate_after_turn(state, Utc::now());
             if let Some(msg) = proactive.message {
@@ -392,7 +482,7 @@ impl Vivling {
         })
         .map(|_| {
             if let (Some(msa), Some(id)) = (msa.as_deref(), vivling_id.as_deref()) {
-                for capsule in new_capsules.borrow().iter() {
+                for capsule in new_capsules.iter() {
                     // "Capsule ricche": the full pre-truncate turn summary is
                     // only alive here — the adapter gates (turn-kind, low-signal)
                     // and sanitizes. Index artifact only: capsule/state keep the
@@ -500,7 +590,7 @@ impl Vivling {
         // this TUI session has resolved (success). Flip the gate that
         // hides state-persistent CRT fallbacks; from now on the chain
         // falls back through `last_work_summary` etc. like before.
-        self.crt_first_dispatch_completed.set(true);
+        self.shadow.crt_first_dispatch_completed = true;
         if self.active_vivling_id.as_deref() == Some(vivling_id)
             && let Some(state) = self.state.as_mut()
         {
@@ -536,7 +626,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -554,7 +644,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_expression_refresh_forced(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -573,7 +663,7 @@ impl Vivling {
     /// pre-flight cache-fresh skip is preserved so a still-fresh
     /// phrase from the previous session keeps being shown.
     ///
-    /// Idempotency contract: the `startup_dispatched: Cell<bool>` flag
+    /// Idempotency contract: the `startup_dispatched` shadow flag
     /// is set UNCONDITIONALLY before the dispatch attempt, so a
     /// failure (planner refused, dedup, budget exhausted, save_state
     /// error) does not cause a retry storm on the next frame. The
@@ -587,7 +677,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_bootstrap_expression(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        if self.startup_dispatched.get() {
+        if self.shadow.startup_dispatched {
             return None;
         }
         if self.state.is_none() {
@@ -595,8 +685,8 @@ impl Vivling {
         }
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
-        self.startup_dispatched.set(true);
-        let live_snapshot = self.live_context.borrow().clone();
+        self.shadow.startup_dispatched = true;
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -616,7 +706,7 @@ impl Vivling {
     pub(crate) fn try_dispatch_loop_expression_refresh(
         &mut self,
     ) -> Option<super::expression::VivlingExpressionRequest> {
-        let live_snapshot = self.live_context.borrow().clone();
+        let live_snapshot = self.shadow.live_context.clone();
         let state = self.state.as_mut()?;
         let now = Utc::now();
         let focus_hint = super::expression::build_focus_hint(state, live_snapshot.as_ref());
@@ -643,7 +733,7 @@ impl Vivling {
         // the success path: a stalled / failed dispatch must not
         // freeze the CRT into safety-template-only mode forever, so
         // unlock the persistent fallbacks once any attempt completes.
-        self.crt_first_dispatch_completed.set(true);
+        self.shadow.crt_first_dispatch_completed = true;
         let mut state = self
             .load_state_for_id(vivling_id)
             .map_err(|err| err.to_string())?

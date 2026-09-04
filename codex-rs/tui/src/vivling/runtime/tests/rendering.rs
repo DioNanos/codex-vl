@@ -19,6 +19,13 @@ fn footer_pose_animates_while_visible_and_idle() {
     vivling.state = Some(seeded_state());
     vivling.configure_runtime(FrameRequester::test_dummy(), true);
 
+    // codex-vl: il clock della pose parte dal percorso di produzione
+    // (set_task_running → mark_recent_activity); il render è read-only
+    // (salvo CrtAnimationLedger, v. nota di perimetro) e non inizializza
+    // più `active_started_at` al primo draw.
+    vivling.set_task_running(true);
+    vivling.set_task_running(false);
+
     let state = vivling.visible_state().expect("hatched state");
     let start = Instant::now();
     let first = vivling.current_sprite(state, start);
@@ -65,7 +72,7 @@ fn render_keeps_vivling_line_shape() {
 #[test]
 fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
     let temp = TempDir::new().expect("tempdir");
-    let vivling = hatched_vivling(temp.path());
+    let mut vivling = hatched_vivling(temp.path());
     let original = vivling
         .state
         .as_ref()
@@ -80,13 +87,13 @@ fn animation_text_remains_volatile_and_never_updates_saved_last_message() {
     let reloaded = configured_vivling(temp.path());
     let state = reloaded.state.as_ref().expect("reloaded state");
     assert_eq!(state.last_message.as_deref(), Some(original.as_str()));
-    assert!(reloaded.animation_text.borrow().is_none());
+    assert!(reloaded.shadow.animation_text.is_none());
 }
 
 #[test]
 fn animation_text_expires_without_touching_saved_last_message() {
     let temp = TempDir::new().expect("tempdir");
-    let vivling = hatched_vivling(temp.path());
+    let mut vivling = hatched_vivling(temp.path());
     let original = vivling
         .state
         .as_ref()
@@ -105,7 +112,11 @@ fn animation_text_expires_without_touching_saved_last_message() {
             .current_animation_text_at(now + ANIMATION_TEXT_TTL)
             .is_none()
     );
-    assert!(vivling.animation_text.borrow().is_none());
+    // codex-vl: il render è read-only (salvo CrtAnimationLedger, v.
+    // nota di perimetro) — la pulizia dell'expiry vive in Vivling::tick,
+    // quindi il test la guida col percorso di produzione.
+    vivling.tick(now + ANIMATION_TEXT_TTL);
+    assert!(vivling.shadow.animation_text.is_none());
     assert_eq!(
         vivling
             .state

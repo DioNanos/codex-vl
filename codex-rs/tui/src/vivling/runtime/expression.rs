@@ -28,6 +28,10 @@
 //!    [`record_expression_result`] so a malformed/leaky reply cannot
 //!    poison the cache.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
@@ -58,6 +62,35 @@ use crate::vivling::model::VivlingState;
 /// safety margin under the visual budget while letting localized
 /// phrases land complete.
 const EXPRESSION_CRT_MAX: usize = 42;
+
+const EXPRESSION_SKIP_TRACE_INTERVAL: Duration = Duration::seconds(60);
+
+static LAST_SKIP_TRACE_AT: LazyLock<Mutex<HashMap<(String, &'static str), DateTime<Utc>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn should_emit_skip_trace(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    last.is_none_or(|last| now.signed_duration_since(last) >= EXPRESSION_SKIP_TRACE_INTERVAL)
+}
+
+fn trace_skip_if_due(vivling_id: &str, reason: &'static str, now: DateTime<Utc>) {
+    let key = (vivling_id.to_string(), reason);
+    let should_emit = {
+        let mut last_trace_at = LAST_SKIP_TRACE_AT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let last = last_trace_at.get(&key).copied();
+        if should_emit_skip_trace(last, now) {
+            last_trace_at.insert(key, now);
+            true
+        } else {
+            false
+        }
+    };
+    if should_emit {
+        trace!(vivling_id = %vivling_id, reason, "expression plan skipped");
+    }
+}
+
 /// Maximum chars for the proactive message (longer than CRT — used
 /// in the chat surface, not the footer).
 const EXPRESSION_PROACTIVE_MAX: usize = 160;
@@ -328,10 +361,9 @@ pub(crate) fn try_plan_and_reserve_expression(
     // muted the channel. Saves a serialization + planner pass per
     // turn for Vivlings the user opted out of.
     if state.crt_brain_mode == VivlingExpressionMode::Off {
-        // F.3 — `trace!` (not `debug!`) because this short-circuits
-        // many times per second on muted Vivlings; the user only
-        // needs it when explicitly tracing the CRT path.
-        trace!(vivling_id = %state.vivling_id, "expression plan skipped: mode=Off");
+        // F.3 — retain the trace for explicit diagnostics, but rate-limit
+        // the frame-rate caller so logs do not become the workload.
+        trace_skip_if_due(&state.vivling_id, "mode=Off", now);
         return None;
     }
     // Memory V2 Step 12.B.H: high-frequency callers (the per-frame
@@ -343,11 +375,7 @@ pub(crate) fn try_plan_and_reserve_expression(
     if let Some(prev) = state.last_llm_dispatch_at
         && now.signed_duration_since(prev).num_seconds() < LLM_EXPRESSION_THROTTLE_SECONDS
     {
-        trace!(
-            vivling_id = %state.vivling_id,
-            elapsed_s = now.signed_duration_since(prev).num_seconds(),
-            "expression plan skipped: 60s throttle window open",
-        );
+        trace_skip_if_due(&state.vivling_id, "60s throttle window open", now);
         return None;
     }
     // Memory V2 Step 12.B.I (operator smoke test 2026-05-22 evidenza
@@ -367,10 +395,7 @@ pub(crate) fn try_plan_and_reserve_expression(
         && cached.prompt_hash.is_some()
         && cached.ttl_expires_at.map(|exp| exp > now).unwrap_or(false)
     {
-        trace!(
-            vivling_id = %state.vivling_id,
-            "expression plan skipped: cache still fresh",
-        );
+        trace_skip_if_due(&state.vivling_id, "cache still fresh", now);
         return None;
     }
     let body = serde_json::to_string(state).ok()?;
@@ -716,7 +741,7 @@ pub(crate) fn parse_expression_reply(
     Ok((payload.crt_phrase, payload.proactive))
 }
 
-fn strip_markdown_fence(raw: &str) -> &str {
+pub(crate) fn strip_markdown_fence(raw: &str) -> &str {
     let mut s = raw.trim();
     for prefix in ["```json", "```JSON", "```"] {
         if let Some(rest) = s.strip_prefix(prefix) {
@@ -730,7 +755,7 @@ fn strip_markdown_fence(raw: &str) -> &str {
     s
 }
 
-fn first_json_object(s: &str) -> Option<&str> {
+pub(crate) fn first_json_object(s: &str) -> Option<&str> {
     let start = s.find('{')?;
     let bytes = s.as_bytes();
     let mut depth = 0i32;
@@ -1461,6 +1486,20 @@ mod tests {
             s.daily_llm_throttle_skips, 0,
             "pre-flight must not bill throttle skip"
         );
+    }
+
+    #[test]
+    fn expression_skip_trace_rate_allows_first_and_sixty_second_calls_only() {
+        let first = t("2026-05-21T10:00:00Z");
+        assert!(should_emit_skip_trace(None, first));
+        assert!(!should_emit_skip_trace(
+            Some(first),
+            t("2026-05-21T10:00:59Z")
+        ));
+        assert!(should_emit_skip_trace(
+            Some(first),
+            t("2026-05-21T10:01:00Z")
+        ));
     }
 
     #[test]

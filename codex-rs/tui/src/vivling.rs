@@ -3,7 +3,7 @@ mod bond;
 mod model;
 #[path = "vivling/registry/mod.rs"]
 mod registry;
-mod runtime;
+pub(crate) mod runtime;
 #[path = "vivling/zed.rs"]
 mod zed;
 

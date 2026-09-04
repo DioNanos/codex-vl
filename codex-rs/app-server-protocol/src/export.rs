@@ -54,6 +54,7 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "ThreadBackgroundTerminal",
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
+    "TurnSettingsUpdateStatus",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -2401,6 +2402,36 @@ mod tests {
             .context("derive schema root from schema/typescript/index.ts")?
             .to_path_buf();
         Ok(schema_root)
+    }
+
+    // codex-vl: the committed JSON schema is hand-maintained between cargo
+    // regenerations. This pin fails loudly if a regeneration or a manual edit
+    // drops the thread capabilities surface.
+    #[test]
+    fn committed_json_schema_keeps_thread_client_capabilities() -> Result<()> {
+        let schema_path = schema_root()?.join("json/v2/ThreadStartParams.json");
+        let raw = fs::read_to_string(&schema_path)
+            .with_context(|| format!("read {}", schema_path.display()))?;
+        let schema: serde_json::Value = serde_json::from_str(&raw)?;
+
+        let capabilities_ref = schema
+            .pointer("/properties/capabilities/anyOf/0/$ref")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        assert_eq!(
+            capabilities_ref, "#/definitions/ThreadClientCapabilities",
+            "ThreadStartParams lost the capabilities property in the committed JSON schema"
+        );
+
+        let manage_loops = schema
+            .pointer("/definitions/ThreadClientCapabilities/properties/manageLoops/type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        assert_eq!(
+            manage_loops, "boolean",
+            "ThreadClientCapabilities lost the manageLoops flag in the committed JSON schema"
+        );
+        Ok(())
     }
 
     #[test]

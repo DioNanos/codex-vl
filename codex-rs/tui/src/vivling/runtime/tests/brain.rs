@@ -606,7 +606,7 @@ fn record_turn_completed_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_turn_completed should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // Compaction: when distillation fires it CONSUMES the distilled
     // window, so a saturated memory legitimately shrinks well below the
     // cap. The invariant is the ceiling, not equality.
     assert!(
@@ -671,7 +671,7 @@ fn record_loop_event_indexes_into_msa() {
         "work_memory should grow after record_loop_event (before={before}, after={after})"
     );
 
-    // Ingest gate (live audit 2026-06-07, F1): loop bookkeeping stays in the
+    // Ingest gate: loop bookkeeping stays in the
     // local working memory but must NOT reach the long-term MSA archive.
     assert_msa_collection_has_no_tantivy_shard(msa_storage.path(), &vivling_id);
 }
@@ -710,7 +710,7 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
         .expect("record_loop_event should succeed");
 
     let state = vivling.state.as_ref().expect("state");
-    // F3 compaction: when distillation fires it CONSUMES the distilled
+    // Compaction: when distillation fires it CONSUMES the distilled
     // window, so a saturated memory legitimately shrinks well below the
     // cap. The invariant is the ceiling, not equality.
     assert!(
@@ -727,7 +727,7 @@ fn record_loop_event_indexes_into_msa_when_work_memory_saturated() {
             .contains("msa-saturated")
     );
 
-    // Gate F1: even under eviction pressure, bookkeeping must not be
+    // Gate: even under eviction pressure, bookkeeping must not be
     // flushed into MSA. The eviction-survival guarantee belongs to
     // KNOWLEDGE capsules: a completed turn must land in the archive
     // even when work_memory is saturated.
@@ -1272,7 +1272,7 @@ fn bootstrap_dispatches_on_first_load() {
         state.work_memory = saturated_memory_entries();
     }
     assert!(
-        !vivling.startup_dispatched.get(),
+        !vivling.shadow.startup_dispatched,
         "fresh wrapper starts with flag=false"
     );
     let request = vivling
@@ -1280,7 +1280,7 @@ fn bootstrap_dispatches_on_first_load() {
         .expect("first bootstrap dispatch must produce a request");
     assert!(request.bootstrap, "bootstrap request must carry the flag");
     assert!(
-        vivling.startup_dispatched.get(),
+        vivling.shadow.startup_dispatched,
         "flag must be set after dispatch"
     );
 }
@@ -1327,7 +1327,7 @@ fn bootstrap_respects_cache_fresh_skip() {
         "fresh cache must short-circuit bootstrap dispatch"
     );
     assert!(
-        vivling.startup_dispatched.get(),
+        vivling.shadow.startup_dispatched,
         "flag still flips so next frame is a no-op"
     );
 }
@@ -1348,7 +1348,7 @@ fn bootstrap_failure_marks_dispatched_true_to_prevent_loop() {
     let request = vivling.try_dispatch_bootstrap_expression();
     assert!(request.is_none(), "Off mode must refuse the bootstrap");
     assert!(
-        vivling.startup_dispatched.get(),
+        vivling.shadow.startup_dispatched,
         "flag must flip on refusal too — no retry on next frame"
     );
 }

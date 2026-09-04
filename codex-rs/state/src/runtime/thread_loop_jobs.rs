@@ -109,7 +109,6 @@ INSERT INTO vl_thread_loop_jobs (
     updated_at_ms
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
 ON CONFLICT(thread_id, label) DO UPDATE SET
-    id = excluded.id,
     prompt_text = excluded.prompt_text,
     goal_text = excluded.goal_text,
     interval_seconds = excluded.interval_seconds,
@@ -142,9 +141,24 @@ ON CONFLICT(thread_id, label) DO UPDATE SET
         .execute(self.pool.as_ref())
         .await?;
 
-        self.get_thread_loop_job_by_label(thread_id, &label)
+        let job = self
+            .get_thread_loop_job_by_label(thread_id, &label)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("loop job disappeared after upsert"))
+            .ok_or_else(|| anyhow::anyhow!("loop job disappeared after upsert"))?;
+        // Every persisted loop has one descriptor. Preserve an existing
+        // descriptor when replacing the job by label.
+        sqlx::query(
+            r#"
+INSERT INTO vl_loop_descriptors (job_id, updated_at_ms)
+VALUES (?, ?)
+ON CONFLICT(job_id) DO NOTHING
+            "#,
+        )
+        .bind(&job.id)
+        .bind(updated_at_ms)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(job)
     }
 
     pub async fn list_thread_loop_jobs(
@@ -309,6 +323,50 @@ WHERE thread_id = ? AND label = ?
         Ok(result.rows_affected() > 0)
     }
 
+    /// Remove a loop and its loop-owned children as one SQLite transaction.
+    /// The explicit deletes keep cleanup atomic even when a connection has
+    /// foreign-key enforcement disabled; the migration FK remains a second
+    /// integrity boundary. Occurrence rows (0934) are deleted explicitly too:
+    /// they are children of the job, so a removal must leave no orphan
+    /// occurrence behind regardless of FK enforcement.
+    pub async fn delete_thread_loop_job_with_dependents(
+        &self,
+        thread_id: ThreadId,
+        label: &str,
+    ) -> anyhow::Result<bool> {
+        let mut transaction = self.pool.begin().await?;
+        let job_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM vl_thread_loop_jobs WHERE thread_id = ? AND label = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(label)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(job_id) = job_id else {
+            return Ok(false);
+        };
+        sqlx::query("DELETE FROM vl_loop_delegations WHERE thread_id = ? AND job_id = ?")
+            .bind(thread_id.to_string())
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM vl_loop_occurrences WHERE job_id = ?")
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM vl_loop_descriptors WHERE job_id = ?")
+            .bind(&job_id)
+            .execute(&mut *transaction)
+            .await?;
+        let result = sqlx::query("DELETE FROM vl_thread_loop_jobs WHERE thread_id = ? AND id = ?")
+            .bind(thread_id.to_string())
+            .bind(job_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn update_thread_loop_job_runtime(
         &self,
         thread_id: ThreadId,
@@ -419,8 +477,46 @@ mod tests {
         assert!(updated.pending_tick);
         assert_eq!(updated.last_status.as_deref(), Some("pending"));
 
-        assert!(runtime.delete_thread_loop_job(thread_id, "ci").await?);
-        assert!(runtime.list_thread_loop_jobs(thread_id).await?.is_empty());
+        // occurrence accounting (0934) is job-owned: a second job
+        // with its own occurrence proves the cleanup removes only the
+        // removed job's occurrences, not the whole table.
+        runtime
+            .claim_loop_occurrence("job-1", now + 300_000, now + 3)
+            .await?;
+        runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-2".to_string(),
+                thread_id,
+                label: "other".to_string(),
+                prompt_text: "check other".to_string(),
+                goal_text: None,
+                interval_seconds: 300,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(now + 300_000),
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .await?;
+        runtime
+            .claim_loop_occurrence("job-2", now + 300_000, now + 3)
+            .await?;
+
+        assert!(
+            runtime
+                .delete_thread_loop_job_with_dependents(thread_id, "ci")
+                .await?
+        );
+        let remaining = runtime.list_thread_loop_jobs(thread_id).await?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "job-2");
+        assert!(runtime.get_loop_descriptor("job-1").await?.is_none());
+        // No orphan occurrence rows may survive for the removed job, while
+        // the other job's occurrence stays untouched.
+        assert!(runtime.list_loop_occurrences("job-1").await?.is_empty());
+        assert_eq!(runtime.list_loop_occurrences("job-2").await?.len(), 1);
         Ok(())
     }
 
@@ -486,7 +582,7 @@ mod tests {
             })
             .await?;
 
-        assert_eq!(replaced.id, "job-2");
+        assert_eq!(replaced.id, "job-1");
         assert_eq!(replaced.prompt_text, "check ci again");
         assert_eq!(replaced.goal_text.as_deref(), Some("monitor ci again"));
         assert_eq!(replaced.interval_seconds, 600);
@@ -499,6 +595,47 @@ mod tests {
         assert!(!replaced.pending_tick);
         assert_eq!(replaced.created_at_ms, now + 10);
         assert_eq!(replaced.updated_at_ms, now + 10);
+        let descriptor = runtime
+            .get_loop_descriptor("job-1")
+            .await?
+            .expect("replace should preserve the descriptor key");
+        assert_eq!(descriptor.job_id, "job-1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn loop_tick_claim_is_atomic_and_reusable_after_finish() -> anyhow::Result<()> {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
+        let thread_id = ThreadId::new();
+        runtime
+            .create_or_replace_thread_loop_job(ThreadLoopJobCreateParams {
+                id: "job-atomic".to_string(),
+                thread_id,
+                label: "atomic".to_string(),
+                prompt_text: "tick".to_string(),
+                goal_text: None,
+                interval_seconds: 30,
+                enabled: true,
+                run_policy: "queue_one".to_string(),
+                auto_remove_on_completion: true,
+                created_by: "agent".to_string(),
+                next_run_ms: Some(1_000),
+                created_at_ms: 1_000,
+                updated_at_ms: 1_000,
+            })
+            .await?;
+
+        assert!(runtime.try_begin_loop_tick("job-atomic", 2_000).await?);
+        assert!(!runtime.try_begin_loop_tick("job-atomic", 2_001).await?);
+        assert!(runtime.finish_loop_tick("job-atomic", 2_002).await?);
+        assert!(runtime.try_begin_loop_tick("job-atomic", 2_003).await?);
+        assert!(runtime.finish_loop_tick("job-atomic", 2_004).await?);
+        assert!(!runtime.finish_loop_tick("job-atomic", 2_005).await?);
         Ok(())
     }
 }

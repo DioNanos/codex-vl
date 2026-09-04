@@ -1,3 +1,5 @@
+> This is the codex-vl fork. Fork-specific issues and pull requests go to [DioNanos/codex-vl](https://github.com/DioNanos/codex-vl/issues); the rest of this document is upstream and describes the original `openai/codex` project.
+
 ## Contributing
 
 We welcome community contributions through the [openai/codex issue tracker](https://github.com/openai/codex/issues). Bug reports, root-cause analyses, and feature requests help us understand what matters most and improve Codex.

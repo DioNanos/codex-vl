@@ -8,6 +8,7 @@
 
 pub(crate) mod context_bus;
 pub(crate) mod crt;
+pub(crate) mod delegated_loops;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod loop_runtime;

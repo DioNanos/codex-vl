@@ -1,6 +1,6 @@
-//! FASE 5 Release 5A — context bus volatile (§5.1). Stato in-sessione, NON
-//! persistito, NON memoria. Sintetizza il contesto del worker per il Vivling
-//! senza fondere le memorie. Regole di troncamento dure.
+//! Volatile context bus for the worker's in-session state. It is NOT
+//! persisted and NOT memory: it summarizes worker context for the Vivling
+//! without mixing the two. Strict truncation rules.
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -69,7 +69,7 @@ impl VivlingContextBus {
         Some(self.pending_suggestions.remove(pos))
     }
 
-    /// FASE5 5A — formatta lo snapshot worker (volatile) per il prompt del
+    /// Formatta lo snapshot worker (volatile) per il prompt del
     /// loop tick, così il Vivling vede l'attività worker recente. Legge tutti
     /// i campi di [`WorkerTurnSnapshot`]. None se non c'e' uno snapshot.
     pub(crate) fn worker_context_summary(&self) -> Option<String> {
@@ -138,13 +138,13 @@ mod tests {
         assert!(bus.pending_suggestions.is_empty());
     }
 
-    /// SAFETY 5A (DoD, OBBLIGATORIO): una suggestion nel bus NON produce
-    /// alcuna azione finche non viene esplicitamente estratta con
-    /// `take_suggestion` (path `/loop apply`). `SuggestionReady` ->
-    /// `push_suggestion` NON genera comandi. `/loop dismiss` estrae senza
-    /// mappare. Solo il path apply chiama `map_to_command`.
+    /// A suggestion sitting in the bus produces NO action until it is
+    /// explicitly taken via `take_suggestion` (the `/loop apply` path).
+    /// `SuggestionReady` -> `push_suggestion` emits no commands; `/loop
+    /// dismiss` takes it without mapping. Only the apply path calls
+    /// `map_to_command`.
     #[test]
-    fn fase5_5a_no_autonomy_suggestion_pending_until_explicit_apply() {
+    fn no_autonomy_suggestion_pending_until_explicit_apply() {
         let mut bus = VivlingContextBus::default();
         // SuggestionReady equivalente: suggestion nel bus, NESSUN comando.
         bus.push_suggestion(sugg("a", "build", VivlingSuggestionKind::Disable));

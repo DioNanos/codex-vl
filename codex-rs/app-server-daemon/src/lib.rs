@@ -823,12 +823,12 @@ impl Daemon {
 }
 
 fn auto_update_enabled_for_install_context(install_context: &InstallContext) -> bool {
-    // codex-vl fork-safe managed updates: keep auto-update disabled for npm
-    // and bun shims (codex-vl ships via @mmmbuto/codex-vl); the upstream
+    // codex-vl fork-safe managed updates: keep auto-update disabled for the
+    // package shims (codex-vl ships via @mmmbuto/codex-vl); the upstream
     // InstallContext refactor moves the method into a nested field.
     !matches!(
         install_context.method,
-        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::VitePlus | InstallMethod::Pnpm
     )
 }
 
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_auto_update_is_disabled_for_npm_and_bun() {
+    fn bootstrap_auto_update_is_disabled_for_package_shims() {
         // codex-vl fork-safe managed updates regression guard. After the
         // upstream `InstallContext` refactor (struct + `InstallMethod`),
         // npm and bun shims must still be auto-update-disabled so the
@@ -1115,6 +1115,9 @@ mod tests {
         )));
         assert!(!auto_update_enabled_for_install_context(&ctx(
             InstallMethod::Bun
+        )));
+        assert!(!auto_update_enabled_for_install_context(&ctx(
+            InstallMethod::VitePlus
         )));
         assert!(!auto_update_enabled_for_install_context(&ctx(
             InstallMethod::Pnpm

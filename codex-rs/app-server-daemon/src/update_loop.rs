@@ -144,7 +144,7 @@ pub(crate) fn reexec_managed_updater(
     // codex-vl: post-merge InstallContext is a struct; check via method.
     if matches!(
         install_context.method,
-        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::Pnpm
+        InstallMethod::Npm | InstallMethod::Bun | InstallMethod::VitePlus | InstallMethod::Pnpm
     ) {
         return Ok(());
     }

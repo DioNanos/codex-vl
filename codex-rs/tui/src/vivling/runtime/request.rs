@@ -95,13 +95,13 @@ pub(crate) struct VivlingLoopTickResult {
     pub(crate) message: String,
     #[serde(default)]
     pub(crate) loop_action: Option<VivlingLoopTickAction>,
-    /// FASE5 5A — optional NON-automatic loop suggestion (gated, user-applied).
+    /// Optional NON-automatic loop suggestion (gated, user-applied).
     /// Distinct from `loop_action` (auto channel on the owned loop).
     #[serde(default)]
     pub(crate) suggestion: Option<RawLoopSuggestion>,
 }
 
-/// FASE5 5A — raw suggestion prodotta dall'LLM nel loop tick. `id`/`created_at`
+/// Raw suggestion prodotta dall'LLM nel loop tick. `id`/`created_at`
 /// li mette il runtime (non l'LLM). Canale NO-AUTO: applicata solo via `/loop apply`.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct RawLoopSuggestion {

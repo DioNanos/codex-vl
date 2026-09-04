@@ -1,0 +1,11 @@
+---
+source: tui/src/history_cell/tests.rs
+expression: rendered
+---
+╭──────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.0.0 -> 9.9.9                   │
+│ Run vp install -g @mmmbuto/codex-vl to update.       │
+│                                                      │
+│ See full release notes:                              │
+│ https://github.com/DioNanos/codex-vl/releases/latest │
+╰──────────────────────────────────────────────────────╯

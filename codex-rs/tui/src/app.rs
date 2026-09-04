@@ -190,8 +190,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::select;
@@ -208,28 +206,35 @@ mod agent_navigation;
 mod agent_picker;
 mod agent_status_feed;
 mod agents_overview;
+mod agents_overview_threads;
 mod agents_overview_view;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
+mod backend_banner_fallback;
 mod background_requests;
 mod config_persistence;
 mod connector_mentions;
 mod event_dispatch;
+mod exit_summary;
 mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
-mod loop_controller;
+pub(crate) mod loop_controller;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod rate_limit_refresh;
+mod recap;
+mod reconnect;
 mod replay_filter;
 mod resize_reflow;
+mod resume_config;
 mod safety_buffering;
 mod session_lifecycle;
 mod side;
@@ -425,7 +430,8 @@ const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
     pub thread_id: Option<ThreadId>,
-    pub resume_hint: Option<String>,
+    pub resume_hint: Option<ResumableThread>,
+    pub disconnect_info: Option<DisconnectInfo>,
     pub update_action: Option<UpdateAction>,
     pub exit_reason: ExitReason,
 }
@@ -436,11 +442,15 @@ impl AppExitInfo {
             token_usage: TokenUsage::default(),
             thread_id: None,
             resume_hint: None,
+            disconnect_info: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(message.into()),
         }
     }
 }
+
+pub use exit_summary::DisconnectInfo;
+pub use exit_summary::ResumableThread;
 
 #[derive(Debug)]
 pub(crate) enum AppRunControl {
@@ -451,6 +461,10 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
+    Archived(ThreadId),
+    TurnInterrupted,
+    /// The current thread was deleted, rather than disconnected.
+    ThreadRemoved,
     Fatal(String),
 }
 
@@ -471,12 +485,6 @@ fn session_summary(
         usage_line,
         resume_hint,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ResumableThread {
-    thread_id: ThreadId,
-    thread_name: Option<String>,
 }
 
 fn resumable_thread(
@@ -543,7 +551,7 @@ pub(crate) struct App {
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,
     cloud_config_bundle: CloudConfigBundleLoader,
-    runtime_approval_policy_override: Option<AskForApproval>,
+    runtime_approval_policy_override: Option<RuntimeApprovalPolicyOverride>,
     runtime_permission_profile_override: Option<RuntimePermissionProfileOverride>,
 
     pub(crate) file_search: FileSearchManager,
@@ -565,8 +573,8 @@ pub(crate) struct App {
     pub(crate) keymap: RuntimeKeymap,
     pub(crate) key_chord_matcher: KeyChordMatcher,
 
-    /// Controls the animation thread that sends CommitTick events.
-    pub(crate) commit_anim_running: Arc<AtomicBool>,
+    /// The foreground loop owns stream pacing; stopped animations have no timer.
+    pub(crate) commit_animation: Option<tokio::time::Interval>,
     // Shared across ChatWidget instances so invalid status-line config warnings only emit once.
     status_line_invalid_items_warned: Arc<AtomicBool>,
     // Shared across ChatWidget instances so invalid terminal-title config warnings only emit once.
@@ -585,6 +593,7 @@ pub(crate) struct App {
     feedback_audience: FeedbackAudience,
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
+    reconnect: reconnect::ReconnectState,
     /// Set when the user confirms an update; propagated on exit.
     pub(crate) pending_update_action: Option<UpdateAction>,
 
@@ -624,6 +633,7 @@ pub(crate) struct App {
     startup_pending_protected_request: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
     rate_limit_hard_stop_generation: u64,
+    rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.
@@ -631,9 +641,14 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
-    /// FASE5 5A — volatile in-session context bus (worker snapshots +
+    /// Volatile in-session context bus (worker snapshots +
     /// pending loop suggestions). Not persisted, not part of VivlingState.
     pub(crate) vivling_context_bus: crate::vl::context_bus::VivlingContextBus,
+    /// server-issued scopes for child-agent loop ticks.  A dynamic
+    /// manage call is accepted only when exactly one scope matches its
+    /// originating primary thread; ambiguity fails closed.
+    pub(crate) managed_loop_scopes: Vec<crate::vl::events::LoopCommandScope>,
+    recap: recap::RecapState,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -641,6 +656,35 @@ struct RuntimePermissionProfileOverride {
     permission_profile: PermissionProfile,
     active_permission_profile: Option<ActivePermissionProfile>,
     network: Option<crate::legacy_core::config::NetworkProxySpec>,
+    approvals_reviewer: ApprovalsReviewer,
+    turn_override: RuntimePermissionProfileTurnOverride,
+}
+
+/// Separates user choices from settings inherited when attaching to another task.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RuntimeApprovalPolicyOverride {
+    Explicit(AskForApproval),
+    Restored(AskForApproval),
+}
+
+impl RuntimeApprovalPolicyOverride {
+    fn policy(self) -> AskForApproval {
+        match self {
+            Self::Explicit(policy) | Self::Restored(policy) => policy,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimePolicyOverrideScope {
+    All,
+    ExplicitOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimePermissionProfileTurnOverride {
+    Preserve,
+    LegacySandbox,
 }
 
 impl RuntimePermissionProfileOverride {
@@ -649,7 +693,31 @@ impl RuntimePermissionProfileOverride {
             permission_profile: config.permissions.permission_profile().clone(),
             active_permission_profile: config.permissions.active_permission_profile(),
             network: config.permissions.network.clone(),
+            approvals_reviewer: config.approvals_reviewer,
+            turn_override: RuntimePermissionProfileTurnOverride::LegacySandbox,
         }
+    }
+
+    fn from_restored_config(config: &Config) -> Self {
+        Self {
+            turn_override: RuntimePermissionProfileTurnOverride::Preserve,
+            ..Self::from_config(config)
+        }
+    }
+
+    fn matches_config(&self, config: &Config) -> bool {
+        self.permission_profile == *config.permissions.permission_profile()
+            && self.active_permission_profile == config.permissions.active_permission_profile()
+            && self.network == config.permissions.network
+            && self.approvals_reviewer == config.approvals_reviewer
+    }
+
+    fn turn_permission_profile(&self) -> Option<&PermissionProfile> {
+        matches!(
+            self.turn_override,
+            RuntimePermissionProfileTurnOverride::LegacySandbox
+        )
+        .then_some(&self.permission_profile)
     }
 }
 
@@ -754,8 +822,23 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        if self.reconnect.offline
+            && let TuiEvent::Key(key) = &event
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && let KeyCode::Char(character) = key.code
+            && (character.eq_ignore_ascii_case(&'c')
+                || (character.eq_ignore_ascii_case(&'d')
+                    && self.chat_widget.composer_is_empty()
+                    && self.chat_widget.no_modal_or_popup_active()))
+        {
+            return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+        }
         let screen_size = tui.screen_size_for_event(&event)?;
-        if !matches!(&event, TuiEvent::Key(_) | TuiEvent::Paste(_)) {
+        if !matches!(
+            &event,
+            TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
+        ) {
             self.expire_pending_key_chord();
             self.handle_draw_pre_render(tui, screen_size)?;
         }
@@ -768,6 +851,34 @@ impl App {
         } else {
             event
         };
+
+        if self.reconnect.offline
+            && let TuiEvent::Key(key) = &event
+        {
+            if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
+                self.chat_widget.handle_disconnected_view_key(*key);
+            } else {
+                self.chat_widget.handle_disconnected_key(*key);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+
+        match &event {
+            TuiEvent::FocusLost => {
+                let now = Instant::now();
+                let thread_id = self.current_displayed_thread_id();
+
+                self.recap.note_focus_lost(now);
+
+                if let Some(thread_id) = thread_id {
+                    self.schedule_recap_check(thread_id, now);
+                }
+            }
+            TuiEvent::FocusGained => {
+                self.recap.note_focus_gained();
+            }
+            _ => {}
+        }
 
         if self.overlay.is_some() {
             let _ = self
@@ -786,8 +897,17 @@ impl App {
                     // [iTerm2]: https://github.com/gnachman/iTerm2/blob/5d0c0d9f68523cbd0494dad5422998964a2ecd8d/sources/iTermPasteHelper.m#L206-L216
                     let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
                     self.chat_widget.handle_paste(pasted);
+                    if self.reconnect.offline
+                        && self.reconnect.presentation
+                            == reconnect::ReconnectPresentation::Conversation
+                    {
+                        self.chat_widget.handle_disconnected_key(KeyEvent::new(
+                            KeyCode::Null,
+                            KeyModifiers::NONE,
+                        ));
+                    }
                 }
-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) => {
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                     if self.backtrack_render_pending {
                         self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
                         self.backtrack_render_pending = false;
@@ -840,6 +960,7 @@ impl App {
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
+                TuiEvent::FocusLost => {}
             }
         }
         Ok(AppRunControl::Continue)

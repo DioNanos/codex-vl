@@ -233,6 +233,8 @@ fn next_goal_draft(
 
 mod app_server;
 mod approval_requests;
+#[path = "tests/backend_banners_tests.rs"]
+mod backend_banners_tests;
 mod composer_submission;
 #[path = "tests/config_errors_tests.rs"]
 mod config_errors;
@@ -252,6 +254,8 @@ mod plan_mode;
 #[path = "tests/plugin_catalog_tests.rs"]
 mod plugin_catalog;
 mod popups_and_settings;
+#[path = "tests/rate_limit_recovery_tests.rs"]
+mod rate_limit_recovery_tests;
 mod review_mode;
 mod side;
 mod slash_commands;
@@ -259,6 +263,7 @@ mod status_and_layout;
 mod status_command_tests;
 mod status_surface_previews;
 mod terminal_title;
+mod turn_runtime;
 mod usage;
 
 pub(crate) use helpers::make_chatwidget_manual_with_sender;

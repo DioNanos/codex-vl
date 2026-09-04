@@ -17,4 +17,5 @@ mod schema_v10;
 mod schema_v9;
 mod spawn_narration;
 mod spawn_origin;
+mod wiring;
 mod zed;

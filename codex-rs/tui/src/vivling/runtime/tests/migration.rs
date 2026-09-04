@@ -645,9 +645,9 @@ fn roster_with_only_missing_entries_loads_empty_without_deleting_directory() {
     assert!(healed.active_vivling_id.is_none());
 }
 
-/// Pre-F3 states carry distilled garbage: bookkeeping-kind summaries
+/// Legacy states carry distilled garbage: bookkeeping-kind summaries
 /// (wait/verify/churn topics) and counters compounded by re-distillation
-/// (live audit 2026-06-07: observations ~100k). Loading such a state must
+/// (measured: observations ~100k). Loading such a state must
 /// drop the former and clamp the latter — idempotently.
 #[test]
 fn normalize_drops_bookkeeping_distillates_and_clamps_counters() {

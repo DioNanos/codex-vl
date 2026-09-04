@@ -58,6 +58,10 @@ mod backfill;
 mod external_agent_config_imports;
 mod goals;
 mod logs;
+mod loop_delegations;
+mod loop_descriptors;
+mod loop_notifications;
+mod loop_occurrences;
 mod memories;
 mod projects;
 mod queued_items;
@@ -79,6 +83,7 @@ pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
+pub use loop_notifications::LoopNotificationPendingRow;
 pub use memories::MemoryStore;
 pub use queued_items::SqliteQueueStore;
 pub use recovery::RuntimeDbBackup;
@@ -776,22 +781,75 @@ pub fn thread_history_db_path(codex_home: &Path) -> PathBuf {
     codex_home.join(THREAD_HISTORY_DB_FILENAME)
 }
 
+/// Integrity-check rows, including those emitted before interruption.
+#[derive(Debug, Eq, PartialEq)]
+pub enum SqliteIntegrityCheck {
+    Complete(Vec<String>),
+    TimedOut(Vec<String>),
+}
+
 /// Run SQLite's built-in integrity check against an existing database file.
 pub async fn sqlite_integrity_check(
     sqlite: &SqliteConfig,
     path: &Path,
-) -> anyhow::Result<Vec<String>> {
-    let pool = sqlite.open_read_only_pool(path).await?;
-    let rows = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
-        .fetch_all(&pool)
+    deadline: Option<Instant>,
+) -> anyhow::Result<SqliteIntegrityCheck> {
+    let pool = sqlite
+        .open_read_only_pool(
+            path,
+            deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
+        )
         .await?;
+    let mut connection = pool.acquire().await?;
+    if let Some(deadline) = deadline {
+        // Lock waits do not invoke the progress handler; share the remaining budget.
+        QueryBuilder::<Sqlite>::new("PRAGMA busy_timeout = ")
+            .push(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .build()
+            .execute(&mut *connection)
+            .await?;
+        // Interrupt SQLite itself: dropping a timed-out future leaves its worker scanning.
+        connection
+            .lock_handle()
+            .await?
+            .set_progress_handler(/*num_ops*/ 1_000, move || Instant::now() < deadline);
+    }
+    let mut rows = Vec::<String>::new();
+    // Keep corruption rows even when a later step interrupts the scan.
+    let result = sqlx::query::<Sqlite>("PRAGMA integrity_check")
+        .try_map(|row| {
+            rows.push(row.try_get(/*index*/ 0)?);
+            Ok(())
+        })
+        .fetch_all(&mut *connection)
+        .await;
+    drop(connection);
     pool.close().await;
-    Ok(rows)
+    match result {
+        Ok(_) => Ok(SqliteIntegrityCheck::Complete(rows)),
+        Err(sqlx::Error::Database(error))
+            if deadline.is_some()
+                && error.code().is_some_and(|code| {
+                    matches!(
+                        code.parse::<i32>().ok().map(|code| code & 0xff),
+                        Some(libsqlite3_sys::SQLITE_INTERRUPT | libsqlite3_sys::SQLITE_BUSY)
+                    )
+                }) =>
+        {
+            Ok(SqliteIntegrityCheck::TimedOut(rows))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::SqliteConnectOptions;
+    use super::SqliteIntegrityCheck;
     use super::SqliteJournalMode;
     use super::SqliteRuntimeMode;
     use super::StateRuntime;
@@ -814,6 +872,8 @@ mod tests {
     use std::path::Path;
     use std::sync::Mutex;
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use std::time::Instant;
 
     #[derive(Default)]
     struct TestTelemetry {
@@ -858,6 +918,8 @@ mod tests {
             _tags: &[(&str, &str)],
         ) {
         }
+
+        fn histogram(&self, _name: &str, _value: i64, _tags: &[(&str, &str)]) {}
     }
 
     fn tags_to_map(tags: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -874,7 +936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_integrity_check_reports_ok_for_valid_db() {
+    async fn sqlite_integrity_check_can_be_interrupted_and_retried() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
             .await
@@ -885,17 +947,78 @@ mod tests {
             .open_read_write_pool(&path)
             .await
             .expect("open sqlite db");
-        sqlx::query("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+        sqlx::query("CREATE TABLE sample (id INTEGER PRIMARY KEY, value INTEGER, other INTEGER)")
             .execute(&pool)
             .await
             .expect("create sample table");
+        sqlx::query("CREATE UNIQUE INDEX sample_value ON sample(value)")
+            .execute(&pool)
+            .await
+            .expect("create sample index");
+        sqlx::query(
+            "WITH RECURSIVE rows(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 2048) INSERT INTO sample SELECT id, id, CASE WHEN id = 1 THEN 0 ELSE id END FROM rows",
+        )
+        .execute(&pool)
+        .await
+        .expect("populate enough rows to invoke the progress handler");
         pool.close().await;
 
-        let result = sqlite_integrity_check(&sqlite, &path)
+        assert_eq!(
+            sqlite_integrity_check(&sqlite, &path, Some(Instant::now()))
+                .await
+                .expect("interrupt integrity check"),
+            SqliteIntegrityCheck::TimedOut(Vec::new()),
+        );
+
+        let result = sqlite_integrity_check(&sqlite, &path, /*deadline*/ None)
             .await
             .expect("integrity check should run");
 
-        assert_eq!(result, vec!["ok".to_string()]);
+        assert_eq!(
+            result,
+            SqliteIntegrityCheck::Complete(vec!["ok".to_string()])
+        );
+
+        let pool = sqlite
+            .open_read_write_pool(&path)
+            .await
+            .expect("reopen sqlite db");
+        let mut connection = pool.acquire().await.expect("acquire writer");
+        // WAL readers do not wait on this writer, so use a rollback journal.
+        sqlx::query("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE")
+            .execute(&mut *connection)
+            .await
+            .expect("hold an exclusive lock");
+        let started = Instant::now();
+        let result =
+            sqlite_integrity_check(&sqlite, &path, Some(started + Duration::from_millis(50)))
+                .await
+                .expect("interrupt lock wait");
+        let elapsed = started.elapsed();
+        sqlx::query("ROLLBACK")
+            .execute(&mut *connection)
+            .await
+            .expect("release lock");
+        assert_eq!(result, SqliteIntegrityCheck::TimedOut(Vec::new()));
+        assert!(elapsed < Duration::from_secs(1), "lock wait: {elapsed:?}");
+
+        // Misdescribe one index entry so SQLite emits an error before its first progress callback.
+        sqlx::query(
+            "PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql='CREATE UNIQUE INDEX sample_value ON sample(other)' WHERE name='sample_value'; PRAGMA writable_schema=OFF",
+        )
+        .execute(&mut *connection)
+        .await
+        .expect("introduce an index mismatch");
+        drop(connection);
+        pool.close().await;
+        assert_eq!(
+            sqlite_integrity_check(&sqlite, &path, Some(Instant::now()))
+                .await
+                .expect("retain corruption before interruption"),
+            SqliteIntegrityCheck::TimedOut(vec![
+                "row 1 missing from index sample_value".to_string()
+            ]),
+        );
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
@@ -1151,7 +1274,12 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
             .filter(|migration| migration.description.as_ref().starts_with("vl "))
             .map(|migration| migration.version)
             .collect::<BTreeSet<_>>();
-        assert_eq!(vl_versions, BTreeSet::from([930_i64, 931_i64]));
+        assert_eq!(
+            vl_versions,
+            BTreeSet::from([
+                930_i64, 931_i64, 932_i64, 933_i64, 934_i64, 935_i64, 936_i64, 937_i64
+            ])
+        );
 
         let descriptions = migrations
             .iter()
@@ -1168,6 +1296,10 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
         assert_eq!(
             descriptions.get(&29).map(String::as_str),
             Some("thread goals")
+        );
+        assert_eq!(
+            descriptions.get(&937).map(String::as_str),
+            Some("vl loop strategy override")
         );
     }
     #[tokio::test]

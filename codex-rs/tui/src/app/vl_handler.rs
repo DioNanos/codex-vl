@@ -280,17 +280,39 @@ impl App {
             VlEvent::RunVivlingLoopTick {
                 thread_id,
                 job_id,
+                occurrence_ms,
+                started_ms,
                 request,
+                runner_model,
+                resolution,
             } => {
-                self.run_vivling_loop_tick(thread_id, job_id, request);
+                self.run_vivling_loop_tick(
+                    thread_id,
+                    job_id,
+                    occurrence_ms,
+                    started_ms,
+                    request,
+                    runner_model,
+                    resolution,
+                );
             }
             VlEvent::VivlingLoopTickFinished {
                 thread_id,
                 job_id,
+                occurrence_ms,
+                started_ms,
                 result,
+                resolution,
             } => {
-                self.handle_vivling_loop_tick_finished(thread_id, job_id, result)
-                    .await?;
+                self.handle_vivling_loop_tick_finished(
+                    thread_id,
+                    job_id,
+                    occurrence_ms,
+                    started_ms,
+                    result,
+                    resolution,
+                )
+                .await?;
             }
             VlEvent::RunVivlingExpression { request } => {
                 self.run_vivling_expression(request);
@@ -330,6 +352,24 @@ impl App {
                     chrono::Utc::now(),
                 );
             }
+            VlEvent::LoopTickSummary { summary } => {
+                // The fixed-format summary reaches the UI
+                // (history line) and the loop audit event, which IS the
+                // durable log (no dedicated session_log exists — see
+                // ricognizione 2026-09-02). The row was already durable when
+                // the event flew (persist-before-emit).
+                self.chat_widget
+                    .add_info_message(summary.render(), /*hint*/ None);
+                self.chat_widget.record_vivling_loop_event(
+                    crate::vivling::VivlingLoopEventKind::Runtime,
+                    crate::vivling::VivlingLoopEventSource::Agent,
+                    "summary",
+                    &summary.label,
+                    Some("scheduled"),
+                    Some("summary"),
+                    None,
+                );
+            }
             VlEvent::SidebarPushMessage {
                 kind,
                 text,
@@ -342,7 +382,7 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
-    /// FASE5 5A — applica una suggestion confermata dall'utente (`/loop apply`).
+    /// Applica una suggestion confermata dall'utente (`/loop apply`).
     /// Mappa la suggestion in un LoopCommandRequest non-distruttivo e lo
     /// instrada come un normale comando loop. I kind senza azione automatica
     /// (Unblock/Split) o le proposal invalida producono solo un messaggio:

@@ -123,6 +123,20 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
     log_inbound_app_event_with(&LOGGER, event);
 }
 
+/// Keep the session-log format even though ticks no longer use the app-event queue.
+pub(crate) fn log_commit_tick() {
+    if !LOGGER.is_enabled() {
+        return;
+    }
+    let value = json!({
+        "ts": now_ts(),
+        "dir": "to_tui",
+        "kind": "app_event",
+        "variant": "CommitTick",
+    });
+    LOGGER.write_json_line(value);
+}
+
 fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
     // Log only if enabled
     if !logger.is_enabled() {
@@ -198,6 +212,37 @@ fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
                 "request_id": request_id,
                 "pet_id": pet_id,
                 "ok": result.is_ok(),
+            });
+            logger.write_json_line(value);
+        }
+        AppEvent::Vl(crate::vl::VlEvent::LoopTickSummary { summary }) => {
+            // Structured fields only: a tick summary carries no user or model
+            // text, so the full typed payload is safe to keep in the log.
+            let outcome = format!("{:?}", summary.outcome);
+            let next_run = match &summary.next_run {
+                crate::app::loop_controller::summary::NextRun::At(ms) => format!("at:{ms}"),
+                crate::app::loop_controller::summary::NextRun::Terminal(reason) => {
+                    format!("terminal:{reason}")
+                }
+            };
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "loop_tick_summary",
+                "thread_id": summary.thread_id,
+                "job_id": summary.job_id,
+                "label": summary.label,
+                "schedule_kind": format!("{:?}", summary.schedule_kind),
+                "outcome": outcome,
+                "duration_ms": summary.duration_ms,
+                "next_run": next_run,
+                "runner": summary.runner.as_str(),
+                "runner_reason": summary.runner_reason,
+                "manager": format!("{:?}", summary.manager),
+                "manager_reason": summary.manager_reason,
+                "suspend_reason": summary.suspend_reason,
+                "occurrence_ms": summary.occurrence_ms,
+                "finished_at_ms": summary.finished_at_ms,
             });
             logger.write_json_line(value);
         }

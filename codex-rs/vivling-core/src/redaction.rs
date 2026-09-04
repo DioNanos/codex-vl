@@ -286,8 +286,8 @@ mod tests {
 
     #[test]
     fn email_local_part_redacted_domain_preserved() {
-        let out = redact_secrets("contact davide@mmmbuto.com for details");
-        assert_eq!(out, "contact [REDACTED:EMAIL]@mmmbuto.com for details");
+        let out = redact_secrets("contact someone@example.com for details");
+        assert_eq!(out, "contact [REDACTED:EMAIL]@example.com for details");
     }
 
     #[test]

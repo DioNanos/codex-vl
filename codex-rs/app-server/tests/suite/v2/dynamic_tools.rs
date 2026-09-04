@@ -22,6 +22,7 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadClientCapabilities;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -585,7 +586,8 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
 async fn manage_loops_builtins_are_scoped_to_the_tui_client() -> Result<()> {
     // Generic client: the declared namespace stays exactly as declared; no
     // fork-owned builtin appears flat or inside the codex_app namespace.
-    let generic_tools = first_request_model_tools_with_client(DEFAULT_CLIENT_NAME, true).await?;
+    let generic_tools =
+        first_request_model_tools_with_client(DEFAULT_CLIENT_NAME, true, None).await?;
     assert!(
         !flat_manage_loops_present(&generic_tools),
         "generic client received the flat manage_loops builtin: the TUI scoping guard was removed"
@@ -598,7 +600,7 @@ async fn manage_loops_builtins_are_scoped_to_the_tui_client() -> Result<()> {
     // TUI client: thread/start without dynamic tools still carries both
     // fork-owned manage_loops builtins (routing back to the TUI loop
     // controller).
-    let tui_tools = first_request_model_tools_with_client("codex-tui", false).await?;
+    let tui_tools = first_request_model_tools_with_client("codex-tui", false, None).await?;
     assert!(
         flat_manage_loops_present(&tui_tools),
         "TUI client did not receive the flat manage_loops builtin"
@@ -610,12 +612,71 @@ async fn manage_loops_builtins_are_scoped_to_the_tui_client() -> Result<()> {
     Ok(())
 }
 
+/// codex-vl: the manage_loops builtin is granted by the explicit
+/// `manageLoops` thread/start capability or, as the 0.151.x compatibility
+/// fallback, by the TUI identity — and by nothing else. Mutation-sensitive:
+/// flipping the decision predicate `client_requests_manage_loops_builtins`
+/// (capability arm, identity arm, or making it unconditional) breaks at
+/// least one of the three cases below.
+#[tokio::test]
+async fn manage_loops_builtin_grant_follows_capability_or_tui_identity() -> Result<()> {
+    // (a) Generic client WITH the explicit capability → builtin present,
+    // both flat and inside the codex_app namespace.
+    let capable_tools = first_request_model_tools_with_client(
+        DEFAULT_CLIENT_NAME,
+        true,
+        Some(ThreadClientCapabilities {
+            manage_loops: Some(true),
+        }),
+    )
+    .await?;
+    assert!(
+        flat_manage_loops_present(&capable_tools),
+        "explicit manageLoops capability did not grant the flat manage_loops builtin"
+    );
+    assert!(
+        namespace_manage_loops_present(&capable_tools, "codex_app"),
+        "explicit manageLoops capability did not grant the codex_app namespaced manage_loops builtin"
+    );
+
+    // (b) codex-tui WITHOUT the capability → builtin present via the identity
+    // fallback (0.151.x compatibility cycle). If the gate ever becomes
+    // fallback is ever retired in favour of capability-only, flip these two
+    // assertions to !present.
+    let tui_no_capability_tools =
+        first_request_model_tools_with_client("codex-tui", false, None).await?;
+    assert!(
+        flat_manage_loops_present(&tui_no_capability_tools),
+        "codex-tui identity fallback did not grant the flat manage_loops builtin"
+    );
+    assert!(
+        namespace_manage_loops_present(&tui_no_capability_tools, "codex_app"),
+        "codex-tui identity fallback did not grant the codex_app namespaced manage_loops builtin"
+    );
+
+    // (c) Generic client WITHOUT the capability → absent, unchanged from the
+    // identity-only era (also pinned by the scoping test above).
+    let generic_no_capability_tools =
+        first_request_model_tools_with_client(DEFAULT_CLIENT_NAME, true, None).await?;
+    assert!(
+        !flat_manage_loops_present(&generic_no_capability_tools),
+        "generic client without the capability received the flat manage_loops builtin"
+    );
+    assert!(
+        !namespace_manage_loops_present(&generic_no_capability_tools, "codex_app"),
+        "generic client without the capability received the codex_app namespaced manage_loops builtin"
+    );
+    Ok(())
+}
+
 /// Runs one thread/start + turn/start as the given app-server client and
 /// returns the `tools` array of the first request model sent to the mock
-/// provider.
+/// provider. `capabilities` carries the thread/start `capabilities` field
+/// (None omits it entirely, which is what older clients send).
 async fn first_request_model_tools_with_client(
     client_name: &str,
     declare_codex_app_namespace: bool,
+    capabilities: Option<ThreadClientCapabilities>,
 ) -> Result<Value> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
@@ -654,6 +715,7 @@ async fn first_request_model_tools_with_client(
     let thread_req = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             dynamic_tools,
+            capabilities,
             ..Default::default()
         })
         .await?;
