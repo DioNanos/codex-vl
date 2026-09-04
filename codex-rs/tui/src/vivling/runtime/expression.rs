@@ -716,7 +716,7 @@ pub(crate) fn parse_expression_reply(
     Ok((payload.crt_phrase, payload.proactive))
 }
 
-fn strip_markdown_fence(raw: &str) -> &str {
+pub(crate) fn strip_markdown_fence(raw: &str) -> &str {
     let mut s = raw.trim();
     for prefix in ["```json", "```JSON", "```"] {
         if let Some(rest) = s.strip_prefix(prefix) {
@@ -730,7 +730,7 @@ fn strip_markdown_fence(raw: &str) -> &str {
     s
 }
 
-fn first_json_object(s: &str) -> Option<&str> {
+pub(crate) fn first_json_object(s: &str) -> Option<&str> {
     let start = s.find('{')?;
     let bytes = s.as_bytes();
     let mut depth = 0i32;
