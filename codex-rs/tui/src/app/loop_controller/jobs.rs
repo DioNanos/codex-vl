@@ -256,8 +256,9 @@ pub(super) async fn run_command_request(
             tz,
             rearm_on_boot,
         } => {
-            validate_runner_model(&app, runner_kind, runner_model.as_deref())
-                .map_err(loop_state_error)?;
+            if let Err(err) = validate_runner_model(&app, runner_kind, runner_model.as_deref()) {
+                return Ok(loop_action_failure("add", thread_id, err.to_string()));
+            }
             let now = loop_now_ms();
             let goal_text = goal_text
                 .map(|value| value.trim().to_string())
@@ -373,8 +374,9 @@ pub(super) async fn run_command_request(
                     .and_then(|descriptor| descriptor.runner_model.clone()),
             };
             let descriptor = existing_descriptor;
-            validate_runner_model(&app, runner_kind, runner_model.as_deref())
-                .map_err(loop_state_error)?;
+            if let Err(err) = validate_runner_model(&app, runner_kind, runner_model.as_deref()) {
+                return Ok(loop_action_failure("update", thread_id, err.to_string()));
+            }
             if let LoopCommandSource::Managed(_scope) = &source {
                 if let Some(requested_interval) = interval_seconds
                     && requested_interval <= existing.interval_seconds
@@ -788,9 +790,15 @@ pub(super) async fn run_command_request(
                 .await
                 .map_err(loop_state_error)?;
             let (vivling_id, vivling_name) = if owner_kind == "vivling" {
-                app.chat_widget
+                match app
+                    .chat_widget
                     .active_vivling_loop_owner_identity(&app.config)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+                {
+                    Ok(identity) => identity,
+                    Err(message) => {
+                        return Ok(loop_action_failure("delegate", thread_id, message));
+                    }
+                }
             } else if let Some(existing) = existing.as_ref() {
                 (existing.vivling_id.clone(), "persisted Vivling".to_string())
             } else if let Some(vivling_id) = state_runtime
@@ -801,9 +809,15 @@ pub(super) async fn run_command_request(
             {
                 (vivling_id, "thread owner Vivling".to_string())
             } else {
-                app.chat_widget
+                match app
+                    .chat_widget
                     .active_vivling_loop_owner_identity(&app.config)
-                    .map_err(|err| color_eyre::eyre::eyre!(err))?
+                {
+                    Ok(identity) => identity,
+                    Err(message) => {
+                        return Ok(loop_action_failure("delegate", thread_id, message));
+                    }
+                }
             };
             let now = loop_now_ms();
             let saved = state_runtime

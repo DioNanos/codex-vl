@@ -155,3 +155,85 @@ async fn loop_owner_brain_on_during_turn_remains_a_positive_control() -> anyhow:
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> anyhow::Result<()> {
+    let (mut app, mut events, thread_id, _codex_home) = app_for_loop_owner_slash_test().await?;
+    app.chat_widget
+        .prepare_vivling_adult_for_tests()
+        .map_err(|err| anyhow::anyhow!(err))?;
+    app.state_db
+        .as_ref()
+        .expect("test state database")
+        .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
+            id: "job-delegate-brain-off".to_string(),
+            thread_id,
+            label: "x".to_string(),
+            prompt_text: "check x".to_string(),
+            goal_text: Some("check x".to_string()),
+            interval_seconds: 60,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: true,
+            created_by: "user".to_string(),
+            next_run_ms: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        })
+        .await?;
+
+    let outcome = super::jobs::run_command_request(
+        &mut app,
+        thread_id,
+        LoopCommandRequest::Delegate {
+            label: "x".to_string(),
+            owner_kind: "vivling".to_string(),
+        },
+        super::types::LoopCommandSource::User,
+    )
+    .await?;
+    assert!(!outcome.success);
+    assert!(
+        outcome
+            .message
+            .contains("Enable the Vivling brain first with `/vivling brain on`")
+    );
+
+    let control = app
+        .handle_vl_event(VlEvent::LoopCommand {
+            thread_id,
+            request: LoopCommandRequest::Delegate {
+                label: "x".to_string(),
+                owner_kind: "vivling".to_string(),
+            },
+        })
+        .await?;
+
+    assert!(matches!(control, AppRunControl::Continue));
+    assert!(app.chat_widget.is_agent_turn_running());
+    let cell = events
+        .try_recv()
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let AppEvent::InsertHistoryCell(cell) = cell else {
+        anyhow::bail!("expected the Delegate brain error history cell, got {cell:?}");
+    };
+    let text = history_cell_text(&cell);
+    assert!(
+        text.contains("Enable the Vivling brain first with `/vivling brain on`"),
+        "expected the brain-off guidance, got: {text}"
+    );
+    assert!(
+        !text.contains("turn_aborted"),
+        "the Delegate precondition error must not abort the active turn: {text}"
+    );
+    assert!(
+        app.state_db
+            .as_ref()
+            .expect("test state database")
+            .get_loop_delegation(thread_id, "job-delegate-brain-off")
+            .await?
+            .is_none(),
+        "brain-off Delegate must not persist a delegation"
+    );
+    Ok(())
+}

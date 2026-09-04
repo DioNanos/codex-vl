@@ -29,7 +29,7 @@ pub(super) fn dispatch_mcp_reload(cw: &mut ChatWidget) {
     cw.app_event_tx.send_vl(VlEvent::McpReload { thread_id });
 }
 
-pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop owner [main|vivling]";
+pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop apply <id> | /loop dismiss <id> | /loop delegate <label> <main|vivling> | /loop undelegate <label> | /loop strategy <label> <observe|suggest|manage|auto> | /loop delegation [label] | /loop owner [main|vivling]";
 
 const VIVLING_ALIAS_USAGE: &str = "Usage: /vl <message>";
 const VIVLING_ASSIST_ALIAS_USAGE: &str = "Usage: /vla <task>";
