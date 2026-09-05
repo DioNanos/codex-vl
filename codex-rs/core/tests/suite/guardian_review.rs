@@ -1692,13 +1692,15 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let placeholder = "{{ approval_request_channel }}";
-    let rendered_oversized = format!(
+    let source_oversized_after_render = format!(
         "{}{}",
         "x".repeat(8 * 1024 - placeholder.len()),
         placeholder
     );
-    let rendered_len = rendered_oversized.len();
-    assert!(rendered_len > 8 * 1024);
+    assert_eq!(source_oversized_after_render.len(), 8 * 1024);
+    let expected_rendered = source_oversized_after_render.len() - placeholder.len()
+        + " via functions.send_user_message_async".len();
+    assert!(expected_rendered > 8 * 1024);
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.4", move |model| {
             model
@@ -1708,7 +1710,7 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
                 .model_messages
                 .as_mut()
                 .expect("model messages")
-                .persistent_instructions = Some(rendered_oversized);
+                .persistent_instructions = Some(source_oversized_after_render);
         })
         .with_config(|config| {
             config.model_reasoning_effort = Some(ReasoningEffort::Persistent);
@@ -1749,7 +1751,7 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
             "rendered persistent cap diagnostic missing {expected}: {error_message}"
         );
     }
-    assert!(error_message.contains(&rendered_len.to_string()));
+    assert!(error_message.contains(&expected_rendered.to_string()));
     assert!(error_message.contains("invalid persistent model instructions"));
     assert!(
         server
