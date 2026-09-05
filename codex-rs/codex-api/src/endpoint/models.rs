@@ -69,12 +69,7 @@ impl<T: HttpTransport> ModelsClient<T> {
             .map(ToString::to_string);
 
         let ModelsResponse { models } = serde_json::from_slice::<ModelsResponse>(&resp.body)
-            .map_err(|e| {
-                ApiError::Stream(format!(
-                    "failed to decode models response: {e}; body: {}",
-                    String::from_utf8_lossy(&resp.body)
-                ))
-            })?;
+            .map_err(|e| ApiError::Stream(format!("failed to decode models response: {e}")))?;
         validate_model_infos(&models).map_err(|error| {
             ApiError::Stream(format!("invalid model message in models response: {error}"))
         })?;
