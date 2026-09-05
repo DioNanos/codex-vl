@@ -1151,6 +1151,16 @@ mod tests {
     }
 
     #[test]
+    fn model_message_text_cap_counts_utf8_bytes_without_truncating() {
+        let text = format!("{}é", "x".repeat(MODEL_MESSAGE_TEXT_MAX_BYTES - 1));
+        let error = validate_model_message_text("utf8-model", "persistent_instructions", &text)
+            .expect_err("8193 UTF-8 bytes must be rejected");
+        assert_eq!(error.actual_bytes, MODEL_MESSAGE_TEXT_MAX_BYTES + 1);
+        assert_eq!(error.max_bytes, MODEL_MESSAGE_TEXT_MAX_BYTES);
+        assert_eq!(text.len(), MODEL_MESSAGE_TEXT_MAX_BYTES + 1);
+    }
+
+    #[test]
     fn send_user_message_async_description_preserves_missing_null_and_empty_values() {
         for (value, expected) in [
             (serde_json::json!({}), None),

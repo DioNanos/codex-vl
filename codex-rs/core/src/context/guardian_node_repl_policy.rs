@@ -71,7 +71,12 @@ mod tests {
 
     #[test]
     fn guardian_node_repl_policy_accepts_none_empty_and_exact_limit() {
-        assert!(GuardianNodeReplPolicy::from_model_messages("test-model", None).is_ok());
+        assert_eq!(
+            GuardianNodeReplPolicy::from_model_messages("test-model", None)
+                .expect("missing policy should use the built-in")
+                .body(),
+            include_str!("../../assets/guardian/node_repl_policy.md")
+        );
 
         let empty: ModelMessages = serde_json::from_value(serde_json::json!({
             "auto_review": { "node_repl_policy": "" }
