@@ -1,5 +1,8 @@
+use codex_app_server_client::RemoteAppServerEndpoint;
 use codex_tui::identity_gate_test_support::app_server_target_kind;
+use codex_tui::identity_gate_test_support::embedded_fallback_diagnostic;
 use codex_tui::identity_gate_test_support::maybe_probe_default_daemon_socket;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serial_test::serial;
 use tempfile::TempDir;
 
@@ -58,11 +61,10 @@ async fn unverified_fleet_identity_keeps_shared_daemon_embedded() -> anyhow::Res
     );
     let default_daemon = maybe_probe_default_daemon_socket(codex_home.path()).await;
     let kind = app_server_target_kind(
-        /*explicit_socket*/ None,
+        /*explicit_endpoint*/ None,
         default_daemon.as_deref(),
         /*can_reuse_implicit_local_daemon*/ true,
         /*workload_identity_selected*/ false,
-        /*has_fleet_identity*/ true,
     )?;
 
     assert_eq!(default_daemon.as_deref(), Some(socket_path.as_path()));
@@ -79,18 +81,43 @@ async fn unverified_fleet_identity_rejects_explicit_shared_endpoint() -> anyhow:
     let codex_home = TempDir::new()?;
     let (socket_path, _listener) = bind_default_daemon_socket(&codex_home).await?;
     let _identity = EnvGuard::set("cell-B");
-    let kind = app_server_target_kind(
-        Some(socket_path.as_path()),
+    let error = app_server_target_kind(
+        Some(RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::from_absolute_path(socket_path.as_path())?,
+        }),
         /*default_socket*/ None,
         /*can_reuse_implicit_local_daemon*/ false,
         /*workload_identity_selected*/ false,
-        /*has_fleet_identity*/ true,
-    )?;
+    )
+    .expect_err("an explicit endpoint must not fall back to local execution");
 
-    assert!(matches!(
-        kind,
-        codex_tui::identity_gate_test_support::TargetKind::Embedded
-    ));
+    assert_eq!(
+        error.to_string(),
+        "explicit app-server endpoint has no verified Fleet identity"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity()
+-> anyhow::Result<()> {
+    let _identity = EnvGuard::set("cell-B");
+    let error = app_server_target_kind(
+        Some(RemoteAppServerEndpoint::WebSocket {
+            websocket_url: "wss://remote.example.test:443/".to_string(),
+            auth_token: None,
+        }),
+        /*default_socket*/ None,
+        /*can_reuse_implicit_local_daemon*/ false,
+        /*workload_identity_selected*/ true,
+    )
+    .expect_err("an explicit endpoint must not fall back to local execution");
+
+    assert_eq!(
+        error.to_string(),
+        "explicit app-server endpoint has no verified Fleet identity"
+    );
     Ok(())
 }
 
@@ -103,11 +130,10 @@ async fn tui_without_fleet_identity_attaches_to_live_shared_daemon() -> anyhow::
     assert_eq!(std::env::var_os("NEXUSCREW_MCP_SESSION"), None);
     let default_daemon = maybe_probe_default_daemon_socket(codex_home.path()).await;
     let kind = app_server_target_kind(
-        /*explicit_socket*/ None,
+        /*explicit_endpoint*/ None,
         default_daemon.as_deref(),
         /*can_reuse_implicit_local_daemon*/ true,
         /*workload_identity_selected*/ false,
-        /*has_fleet_identity*/ false,
     )?;
 
     assert!(matches!(
@@ -120,10 +146,10 @@ async fn tui_without_fleet_identity_attaches_to_live_shared_daemon() -> anyhow::
 #[tokio::test]
 async fn absent_socket_keeps_fleet_tui_embedded() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
+    let _identity = EnvGuard::set("cell-B");
     let kind = app_server_target_kind(
-        /*explicit_socket*/ None, /*default_socket*/ None,
+        /*explicit_endpoint*/ None, /*default_socket*/ None,
         /*can_reuse_implicit_local_daemon*/ true, /*workload_identity_selected*/ false,
-        /*has_fleet_identity*/ true,
     )?;
 
     assert!(matches!(
@@ -131,4 +157,12 @@ async fn absent_socket_keeps_fleet_tui_embedded() -> anyhow::Result<()> {
         codex_tui::identity_gate_test_support::TargetKind::Embedded
     ));
     Ok(())
+}
+
+#[test]
+fn embedded_fallback_explains_why_the_local_server_is_used() {
+    assert_eq!(
+        embedded_fallback_diagnostic(),
+        "No verified Fleet identity for the shared app-server; using an embedded app-server."
+    );
 }

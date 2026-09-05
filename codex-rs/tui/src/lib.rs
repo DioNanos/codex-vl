@@ -873,6 +873,9 @@ pub(crate) fn has_nexuscrew_mcp_session() -> bool {
     std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
 }
 
+const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
+    "No verified Fleet identity for the shared app-server; using an embedded app-server.";
+
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
@@ -915,16 +918,15 @@ pub mod identity_gate_test_support {
     use std::path::Path;
     use std::path::PathBuf;
 
-    pub const FLEET_IDENTITY_ENV: &str = "NEXUSCREW_MCP_SESSION";
-
+    #[derive(Debug, PartialEq, Eq)]
     pub enum TargetKind {
         Embedded,
         LocalDaemon,
         Remote,
     }
 
-    pub fn has_fleet_identity() -> bool {
-        std::env::var_os(FLEET_IDENTITY_ENV).is_some_and(|value| !value.is_empty())
+    pub fn embedded_fallback_diagnostic() -> &'static str {
+        super::FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC
     }
 
     fn kind_for_target(target: &AppServerTarget) -> TargetKind {
@@ -936,27 +938,21 @@ pub mod identity_gate_test_support {
     }
 
     pub fn app_server_target_kind(
-        explicit_socket: Option<&Path>,
+        explicit_endpoint: Option<RemoteAppServerEndpoint>,
         default_socket: Option<&Path>,
         can_reuse_implicit_local_daemon: bool,
         workload_identity_selected: bool,
-        has_fleet_identity: bool,
     ) -> std::io::Result<TargetKind> {
-        let explicit_remote_endpoint =
-            explicit_socket.map(|socket_path| RemoteAppServerEndpoint::UnixSocket {
-                socket_path: AbsolutePathBuf::from_absolute_path(socket_path)
-                    .expect("test socket path must be absolute"),
-            });
         let default_daemon_socket = default_socket.map(|socket_path| {
             AbsolutePathBuf::from_absolute_path(socket_path)
                 .expect("test socket path must be absolute")
         });
         let target = super::app_server_target_for_launch(
-            explicit_remote_endpoint,
+            explicit_endpoint,
             default_daemon_socket,
             can_reuse_implicit_local_daemon,
             workload_identity_selected,
-            has_fleet_identity,
+            super::has_nexuscrew_mcp_session(),
         )?;
         Ok(kind_for_target(&target))
     }
