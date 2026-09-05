@@ -1589,9 +1589,20 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     let tool_output = requests
         .iter()
         .find_map(|request| {
-            request
-                .custom_tool_call_output_content_and_success(call_id)
-                .and_then(|(content, _)| content)
+            request.input().into_iter().find_map(|item| {
+                let is_matching_output = item.get("type").and_then(Value::as_str)
+                    == Some("custom_tool_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id);
+                if !is_matching_output {
+                    return None;
+                }
+                item.get("output").map(|output| {
+                    output
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| output.to_string())
+                })
+            })
         })
         .expect("the real approval caller must return a rejected tool result");
     for expected in ["node_repl_policy", "gpt-5.6-luna", "8193", "8192"] {
