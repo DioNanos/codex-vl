@@ -1476,6 +1476,8 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     let server = start_mock_server().await;
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
     let execution_marker = "guardian-node-repl-executed";
+    let call_log = tempfile::NamedTempFile::new()?;
+    let call_log_path = call_log.path().to_owned();
     let oversized_policy = "x".repeat(8 * 1024 + 1);
     let oversized_policy_for_model = oversized_policy.clone();
     let mut builder = test_codex()
@@ -1506,7 +1508,8 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
                 "default_tools_approval_mode": "prompt",
                 "env": {
                     "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
-                    "MCP_TEST_NODE_REPL_EXECUTION_MARKER": execution_marker
+                    "MCP_TEST_NODE_REPL_EXECUTION_MARKER": execution_marker,
+                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path.to_string_lossy()
                 }
             }))
             .expect("valid REPL MCP test server");
@@ -1620,6 +1623,110 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     assert!(tool_output.contains("rejected"));
     assert!(!tool_output.contains(&oversized_policy));
     assert!(!tool_output.contains(execution_marker));
+    assert!(
+        fs::read_to_string(&call_log_path)?.trim().is_empty(),
+        "Guardian-denied MCP tool must not reach the stdio server"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_approved_node_repl_policy_records_server_call() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Guardian approval actions require host-native paths"
+    );
+
+    let server = start_mock_server().await;
+    let mcp_server_bin = remote_aware_stdio_server_bin()?;
+    let call_log = tempfile::NamedTempFile::new()?;
+    let call_log_path = call_log.path().to_owned();
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.6-luna", |model| {
+            model
+                .model_messages
+                .as_mut()
+                .expect("reviewer model messages")
+                .auto_review = Some(AutoReviewMessages {
+                policy: None,
+                policy_template: None,
+                node_repl_policy: Some("bounded guardian policy".to_string()),
+                rejection_instructions: None,
+                timeout_instructions: None,
+            });
+        })
+        .with_model_info_override("gpt-5.4", |model| {
+            model.node_repl_auto_review_required = true;
+            model.auto_review_model_override = Some("gpt-5.6-luna".to_string());
+        })
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            let repl: McpServerConfig = serde_json::from_value(json!({
+                "command": mcp_server_bin,
+                "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
+                "default_tools_approval_mode": "prompt",
+                "env": {
+                    "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
+                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path.to_string_lossy()
+                }
+            }))
+            .expect("valid REPL MCP test server");
+            config
+                .mcp_servers
+                .set([(String::from("repl"), repl)].into_iter().collect())
+                .expect("configure REPL MCP test server");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    wait_for_mcp_server(&test.codex, "repl").await?;
+
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-approved-guardian"),
+                ev_function_call_with_namespace(
+                    "exec-call-approved-guardian",
+                    "mcp__repl",
+                    "js",
+                    r#"{"code":"nodeRepl.empty()"}"#,
+                ),
+                ev_completed("resp-parent-approved-guardian"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-guardian-approved-guardian"),
+                ev_assistant_message("msg-guardian-approved-guardian", r#"{"outcome":"allow"}"#),
+                ev_completed("resp-guardian-approved-guardian"),
+            ]),
+            sse(vec![ev_completed("resp-parent-approved-complete")]),
+        ],
+    )
+    .await;
+
+    test.submit_text_turn("run the approved REPL tool").await?;
+
+    let lines = fs::read_to_string(&call_log_path)?
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines.len(),
+        1,
+        "approved MCP tool must reach the stdio server"
+    );
+    assert!(
+        lines[0].contains("js"),
+        "server call probe must identify js: {lines:?}"
+    );
+    assert!(
+        responses.requests().iter().any(
+            |request| request.body_json()["client_metadata"]["x-openai-subagent"] == "guardian"
+        ),
+        "approved call must have a Guardian review"
+    );
     Ok(())
 }
 
