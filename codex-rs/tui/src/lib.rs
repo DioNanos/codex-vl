@@ -33,6 +33,7 @@ use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
 pub use codex_app_server_client::RemoteAppServerEndpoint;
+use codex_app_server_client::VerifiedIdentityProof;
 use codex_app_server_protocol::Account as AppServerAccount;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::GetAccountResponse;
@@ -442,15 +443,27 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
 async fn connect_remote_app_server(
     endpoint: RemoteAppServerEndpoint,
 ) -> color_eyre::Result<AppServerClient> {
-    let app_server = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint,
-        client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(),
-        channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
+    connect_remote_app_server_with_identity(endpoint, None).await
+}
+
+/// Remote B attach is only available to callers carrying authority-verified
+/// proof; the ordinary TUI path remains the D-compatible unbound fallback.
+pub(crate) async fn connect_remote_app_server_with_identity(
+    endpoint: RemoteAppServerEndpoint,
+    proof: Option<VerifiedIdentityProof>,
+) -> color_eyre::Result<AppServerClient> {
+    let app_server = RemoteAppServerClient::connect_with_verified_identity(
+        RemoteAppServerConnectArgs {
+            endpoint,
+            client_name: "codex-tui".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        },
+        proof,
+    )
     .await
     .wrap_err("failed to connect to remote app server")?;
     Ok(AppServerClient::Remote(app_server))
@@ -876,6 +889,22 @@ pub(crate) fn has_nexuscrew_mcp_session() -> bool {
 const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
     "No verified Fleet identity for the shared app-server; using an embedded app-server.";
 
+const IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC: &str =
+    "app-server endpoint requires verified identity binding; refusing unbound attach";
+
+fn require_verified_identity_for_endpoint(
+    endpoint_requires_identity: bool,
+    has_verified_identity: bool,
+) -> std::io::Result<()> {
+    if endpoint_requires_identity && !has_verified_identity {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC,
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::print_stderr)]
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
@@ -936,6 +965,20 @@ pub mod identity_gate_test_support {
 
     pub fn embedded_fallback_diagnostic() -> &'static str {
         super::FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC
+    }
+
+    pub fn require_verified_identity_for_endpoint(
+        endpoint_requires_identity: bool,
+        has_verified_identity: bool,
+    ) -> std::io::Result<()> {
+        super::require_verified_identity_for_endpoint(
+            endpoint_requires_identity,
+            has_verified_identity,
+        )
+    }
+
+    pub fn identity_required_endpoint_diagnostic() -> &'static str {
+        super::IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC
     }
 
     fn kind_for_target(target: &AppServerTarget) -> TargetKind {
