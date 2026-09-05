@@ -1697,6 +1697,8 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
         "x".repeat(8 * 1024 - placeholder.len()),
         placeholder
     );
+    let rendered_len = rendered_oversized.len();
+    assert!(rendered_len > 8 * 1024);
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.4", move |model| {
             model
@@ -1741,12 +1743,13 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
         !error_message.is_empty(),
         "Session must emit a fatal rendered persistent error"
     );
-    for expected in ["persistent_instructions", "gpt-5.4", "8193", "8192"] {
+    for expected in ["persistent_instructions", "gpt-5.4", "8192"] {
         assert!(
             error_message.contains(expected),
             "rendered persistent cap diagnostic missing {expected}: {error_message}"
         );
     }
+    assert!(error_message.contains(&rendered_len.to_string()));
     assert!(error_message.contains("invalid persistent model instructions"));
     assert!(
         server
