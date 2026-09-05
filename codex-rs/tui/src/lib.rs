@@ -876,6 +876,7 @@ pub(crate) fn has_nexuscrew_mcp_session() -> bool {
 const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
     "No verified Fleet identity for the shared app-server; using an embedded app-server.";
 
+#[allow(clippy::print_stderr)]
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
@@ -883,10 +884,18 @@ fn app_server_target_for_launch(
     workload_identity_selected: bool,
     has_fleet_identity: bool,
 ) -> std::io::Result<AppServerTarget> {
-    if has_fleet_identity && (explicit_remote_endpoint.is_some() || default_daemon_socket.is_some())
-    {
-        tracing::warn!("shared app-server without verified cell identity: running embedded");
-        return Ok(AppServerTarget::Embedded);
+    if has_fleet_identity {
+        if explicit_remote_endpoint.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "explicit app-server endpoint has no verified Fleet identity",
+            ));
+        }
+        if default_daemon_socket.is_some() {
+            eprintln!("{FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC}");
+            tracing::warn!("shared app-server without verified cell identity: running embedded");
+            return Ok(AppServerTarget::Embedded);
+        }
     }
     if workload_identity_selected {
         if explicit_remote_endpoint.is_some() {

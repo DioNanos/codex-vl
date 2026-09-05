@@ -22,6 +22,10 @@ doctest = false
 identity-gate-test = []
 legacy_tui_tests = []
 
+[[test]]
+name = "attach_identity_gate"
+required-features = ["identity-gate-test"]
+
 [lints]
 workspace = true
 
