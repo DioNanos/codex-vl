@@ -16,6 +16,10 @@ path = "src/bin/notify_capture.rs"
 name = "exec-server"
 path = "src/bin/exec_server.rs"
 
+[[bin]]
+name = "d174-daemon-shim"
+path = "src/bin/d174_daemon_shim.rs"
+
 [lib]
 name = "codex_app_server"
 path = "src/lib.rs"
@@ -34,6 +38,7 @@ axum = { workspace = true, default-features = false, features = [
     "ws",
 ] }
 codex-analytics = { workspace = true }
+codex-app-server-daemon = { workspace = true }
 codex-agent-extension = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-aws-auth = { workspace = true }

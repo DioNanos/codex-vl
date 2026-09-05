@@ -5,6 +5,9 @@ use codex_app_server_protocol::{
 };
 use uuid::Uuid;
 
+#[cfg(debug_assertions)]
+use std::io::Write;
+
 use crate::outgoing_message::ConnectionId;
 
 /// Per-connection identity handshake state. Authority verification is injected
@@ -21,7 +24,7 @@ impl ConnectionIdentityState {
         self.required = required;
         if required && self.challenge.is_none() {
             let issued_at = Utc::now();
-            self.challenge = Some(IdentityChallenge {
+            let challenge = IdentityChallenge {
                 version: IDENTITY_SCHEMA_VERSION.to_string(),
                 connection_id: connection_id.0.to_string(),
                 daemon_boot_id: Uuid::now_v7().to_string(),
@@ -30,7 +33,18 @@ impl ConnectionIdentityState {
                 issued_at: issued_at.to_rfc3339_opts(SecondsFormat::Secs, true),
                 expires_at: (issued_at + chrono::Duration::seconds(15))
                     .to_rfc3339_opts(SecondsFormat::Secs, true),
-            });
+            };
+            #[cfg(debug_assertions)]
+            if let Ok(path) = std::env::var("D174_IDENTITY_CHALLENGE_FILE")
+                && let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                && let Ok(line) = serde_json::to_string(&challenge)
+            {
+                let _ = writeln!(file, "{line}");
+            }
+            self.challenge = Some(challenge);
         }
     }
 
