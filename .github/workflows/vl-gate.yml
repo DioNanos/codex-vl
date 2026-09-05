@@ -139,27 +139,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate attach_identity_gate::unverified_fleet_identity_keeps_shared_daemon_embedded -- --exact 2>&1 | tee vl-gate-fleet-identity.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_keeps_shared_daemon_embedded -- --exact 2>&1 | tee vl-gate-fleet-identity.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-identity.out
-          grep -F 'attach_identity_gate::unverified_fleet_identity_keeps_shared_daemon_embedded ... ok' vl-gate-fleet-identity.out
+          grep -F 'unverified_fleet_identity_keeps_shared_daemon_embedded ... ok' vl-gate-fleet-identity.out
       - name: Fleet identity rejects explicit shared endpoint
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate attach_identity_gate::unverified_fleet_identity_rejects_explicit_shared_endpoint -- --exact 2>&1 | tee vl-gate-fleet-explicit.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_shared_endpoint -- --exact 2>&1 | tee vl-gate-fleet-explicit.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-explicit.out
-          grep -F 'attach_identity_gate::unverified_fleet_identity_rejects_explicit_shared_endpoint ... ok' vl-gate-fleet-explicit.out
+          grep -F 'unverified_fleet_identity_rejects_explicit_shared_endpoint ... ok' vl-gate-fleet-explicit.out
       - name: No Fleet identity attaches as today
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate attach_identity_gate::tui_without_fleet_identity_attaches_to_live_shared_daemon -- --exact 2>&1 | tee vl-gate-no-fleet.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate tui_without_fleet_identity_attaches_to_live_shared_daemon -- --exact 2>&1 | tee vl-gate-no-fleet.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-no-fleet.out
-          grep -F 'attach_identity_gate::tui_without_fleet_identity_attaches_to_live_shared_daemon ... ok' vl-gate-no-fleet.out
+          grep -F 'tui_without_fleet_identity_attaches_to_live_shared_daemon ... ok' vl-gate-no-fleet.out
       - name: Missing socket stays embedded
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate attach_identity_gate::absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | tee vl-gate-absent-socket.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | tee vl-gate-absent-socket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-absent-socket.out
-          grep -F 'attach_identity_gate::absent_socket_keeps_fleet_tui_embedded ... ok' vl-gate-absent-socket.out
+          grep -F 'absent_socket_keeps_fleet_tui_embedded ... ok' vl-gate-absent-socket.out
