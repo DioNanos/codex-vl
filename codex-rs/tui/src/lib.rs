@@ -903,6 +903,7 @@ pub mod identity_gate_test_support {
     use super::RemoteAppServerEndpoint;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
 
     pub const FLEET_IDENTITY_ENV: &str = "NEXUSCREW_MCP_SESSION";
 
