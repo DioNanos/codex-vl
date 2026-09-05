@@ -2652,6 +2652,141 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl EnvGuard {
+        fn set(value: &str) -> Self {
+            let key = "NEXUSCREW_MCP_SESSION";
+            let old = std::env::var_os(key);
+            // SAFETY: these tests use `serial` and mutate only the fork-specific
+            // identity key that production tests do not read concurrently.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove() -> Self {
+            let key = "NEXUSCREW_MCP_SESSION";
+            let old = std::env::var_os(key);
+            // SAFETY: these tests use `serial` and mutate only the fork-specific
+            // identity key that production tests do not read concurrently.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(old) = self.old.take() {
+                // SAFETY: see `EnvGuard::set`.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: see `EnvGuard::set`.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    async fn bind_default_daemon_socket(
+        codex_home: &TempDir,
+    ) -> color_eyre::Result<(AbsolutePathBuf, tokio::net::UnixListener)> {
+        let socket_path =
+            codex_app_server_client::app_server_control_socket_path(codex_home.path())?;
+        std::fs::create_dir_all(socket_path.as_path().parent().expect("socket parent"))?;
+        let listener = tokio::net::UnixListener::bind(socket_path.as_path())?;
+        Ok((socket_path, listener))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn unverified_fleet_identity_keeps_shared_daemon_embedded() -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let (socket_path, _listener) = bind_default_daemon_socket(&codex_home).await?;
+        let _identity = EnvGuard::set("cell-B");
+        assert_eq!(
+            std::env::var_os("NEXUSCREW_MCP_SESSION").as_deref(),
+            Some(std::ffi::OsStr::new("cell-B"))
+        );
+        let default_daemon = maybe_probe_default_daemon_socket(codex_home.path()).await?;
+        let target = app_server_target_for_launch(
+            /*explicit_remote_endpoint*/ None,
+            default_daemon,
+            /*can_reuse_implicit_local_daemon*/ true,
+            /*workload_identity_selected*/ false,
+        )?;
+
+        assert_eq!(default_daemon, Some(socket_path));
+        assert_eq!(target, AppServerTarget::Embedded);
+        assert_eq!(target.thread_params_mode(), ThreadParamsMode::Embedded);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn unverified_fleet_identity_rejects_explicit_shared_endpoint() -> color_eyre::Result<()>
+    {
+        let explicit_endpoint = RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::relative_to_current_dir("explicit.sock")?,
+        };
+        let _identity = EnvGuard::set("cell-B");
+        let target = app_server_target_for_launch(
+            Some(explicit_endpoint.clone()),
+            /*default_daemon_socket*/ None,
+            /*can_reuse_implicit_local_daemon*/ false,
+            /*workload_identity_selected*/ false,
+        )?;
+
+        assert_eq!(target, AppServerTarget::Embedded);
+        assert_eq!(target.thread_params_mode(), ThreadParamsMode::Embedded);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial]
+    async fn tui_without_fleet_identity_attaches_to_live_shared_daemon() -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let (socket_path, _listener) = bind_default_daemon_socket(&codex_home).await?;
+        let _identity = EnvGuard::remove();
+        assert_eq!(std::env::var_os("NEXUSCREW_MCP_SESSION"), None);
+        let default_daemon = maybe_probe_default_daemon_socket(codex_home.path()).await?;
+        let target = app_server_target_for_launch(
+            /*explicit_remote_endpoint*/ None,
+            default_daemon,
+            /*can_reuse_implicit_local_daemon*/ true,
+            /*workload_identity_selected*/ false,
+        )?;
+
+        assert_eq!(
+            target,
+            AppServerTarget::LocalDaemon {
+                endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn absent_socket_keeps_fleet_tui_embedded() -> color_eyre::Result<()> {
+        let codex_home = TempDir::new()?;
+        let target = app_server_target_for_launch(
+            /*explicit_remote_endpoint*/ None, /*default_daemon_socket*/ None,
+            /*can_reuse_implicit_local_daemon*/ true,
+            /*workload_identity_selected*/ false,
+        )?;
+
+        assert_eq!(target, AppServerTarget::Embedded);
+        Ok(())
+    }
+
     #[test]
     fn app_server_target_for_launch_uses_local_daemon_for_default_socket() -> color_eyre::Result<()>
     {
