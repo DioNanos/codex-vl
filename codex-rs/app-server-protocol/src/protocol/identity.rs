@@ -206,6 +206,43 @@ pub struct IdentityClaims {
     pub live_host: Option<IdentityLiveHost>,
 }
 
+impl IdentityClaims {
+    pub fn validate(&self) -> Result<(), IdentityErrorCode> {
+        for value in [
+            &self.issuer_owner,
+            &self.audience,
+            &self.owner_instance_id,
+            &self.cell_id,
+            &self.tmux_session,
+            &self.incarnation_id,
+            &self.launch_epoch,
+            &self.daemon_boot_id,
+            &self.connection_id,
+            &self.binding_id,
+            &self.nonce,
+        ] {
+            if value.trim().is_empty() {
+                return Err(IdentityErrorCode::ContextMissing);
+            }
+        }
+        if self.scopes.is_empty() || self.scopes.len() > 32 {
+            return Err(IdentityErrorCode::InvalidScopes);
+        }
+        if !valid_timestamp(&self.issued_at)
+            || !valid_timestamp(&self.not_before)
+            || !valid_timestamp(&self.expires_at)
+            || self.not_before > self.expires_at
+            || self.expires_at <= self.issued_at
+        {
+            return Err(IdentityErrorCode::InvalidTime);
+        }
+        if self.origin == IdentityOrigin::RemoteLive && self.live_host.is_none() {
+            return Err(IdentityErrorCode::ContextMissing);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityProof {
@@ -397,5 +434,23 @@ mod tests {
         };
         let wire = serde_json::to_value(error).expect("serialize identity error");
         assert_eq!(wire["code"], "NEXUSCREW_MCP_IDENTITY_CONTEXT_FROM_MISMATCH");
+    }
+
+    #[test]
+    fn identity_kind_outside_closed_set_is_rejected() {
+        let mut wire = serde_json::to_value(fixture()).expect("serialize identity proof");
+        wire["kind"] = serde_json::Value::String("unknown-v1".to_string());
+        assert!(serde_json::from_value::<IdentityProof>(wire).is_err());
+    }
+
+    #[test]
+    fn identity_context_rejects_expired_and_not_before_future_windows() {
+        let mut expired = context();
+        expired.expires_at = "2026-09-04T23:59:59Z".to_string();
+        assert_eq!(expired.validate(), Err(IdentityErrorCode::InvalidTime));
+
+        let mut future = context();
+        future.not_before = "2026-09-06T00:00:00Z".to_string();
+        assert_eq!(future.validate(), Err(IdentityErrorCode::InvalidTime));
     }
 }

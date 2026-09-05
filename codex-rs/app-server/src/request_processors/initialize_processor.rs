@@ -71,6 +71,9 @@ impl InitializeRequestProcessor {
         let experimental_api_enabled = capabilities.experimental_api;
         let request_attestation = capabilities.request_attestation;
         let extensions = capabilities.extensions.as_ref();
+        let identity_required =
+            extensions.is_some_and(|extensions| extensions.contains_key("nexuscrew.identity.v1"));
+        session.advertise_identity(connection_id, identity_required);
         let client_mcp_extensions = codex_mcp::client_mcp_extensions(
             extensions,
             capabilities.mcp_server_openai_form_elicitation,

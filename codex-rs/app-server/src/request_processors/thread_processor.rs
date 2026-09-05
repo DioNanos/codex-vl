@@ -3667,6 +3667,16 @@ impl ThreadRequestProcessor {
             .await;
     }
 
+    pub(crate) async fn connection_identity_bound(
+        &self,
+        connection_id: ConnectionId,
+        binding_id: String,
+    ) {
+        self.thread_state_manager
+            .connection_identity_bound(connection_id, binding_id)
+            .await;
+    }
+
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         let thread_ids = self
             .thread_state_manager

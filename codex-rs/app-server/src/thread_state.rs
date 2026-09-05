@@ -324,9 +324,10 @@ struct ThreadStateManagerInner {
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) identity_binding_id: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -353,6 +354,22 @@ impl ThreadStateManager {
             .await
             .live_connections
             .insert(connection_id, capabilities);
+    }
+
+    pub(crate) async fn connection_identity_bound(
+        &self,
+        connection_id: ConnectionId,
+        binding_id: String,
+    ) {
+        if let Some(capabilities) = self
+            .state
+            .lock()
+            .await
+            .live_connections
+            .get_mut(&connection_id)
+        {
+            capabilities.identity_binding_id = Some(binding_id);
+        }
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(
