@@ -33,6 +33,9 @@ jobs:
           ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check README ASCII policy
+        working-directory: .
+        run: python3 scripts/asciicheck.py README.md
       - name: Read Rust toolchain
         id: rust_toolchain
         shell: bash
