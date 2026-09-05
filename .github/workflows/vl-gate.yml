@@ -203,22 +203,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee termux-gate-model-guardian-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee vl-gate-model-guardian-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-guardian-terminal.out
           grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' termux-gate-model-guardian-terminal.out
       - name: Test terminal persistent cap proof
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-persistent-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee vl-gate-model-persistent-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-persistent-terminal.out
           grep -F 'test suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-persistent-terminal.out
       - name: Test terminal rendered persistent cap proof
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-rendered-persistent-terminal.out
-          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-rendered-persistent-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee vl-gate-model-rendered-persistent-terminal.out
           grep -F 'test suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-rendered-persistent-terminal.out
       - name: Test model catalog ingress caps
         shell: bash
