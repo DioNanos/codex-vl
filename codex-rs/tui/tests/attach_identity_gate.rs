@@ -1,10 +1,12 @@
 use codex_app_server_client::RemoteAppServerEndpoint;
 use codex_tui::identity_gate_test_support::app_server_target_kind;
-use codex_tui::identity_gate_test_support::embedded_fallback_diagnostic;
 use codex_tui::identity_gate_test_support::maybe_probe_default_daemon_socket;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serial_test::serial;
+use std::process::Command;
 use tempfile::TempDir;
+
+const DIAGNOSTIC_CHILD_ENV: &str = "CODEX_IDENTITY_GATE_DIAGNOSTIC_CHILD";
 
 struct EnvGuard {
     old: Option<std::ffi::OsString>,
@@ -144,6 +146,7 @@ async fn tui_without_fleet_identity_attaches_to_live_shared_daemon() -> anyhow::
 }
 
 #[tokio::test]
+#[serial]
 async fn absent_socket_keeps_fleet_tui_embedded() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
     let _identity = EnvGuard::set("cell-B");
@@ -160,9 +163,44 @@ async fn absent_socket_keeps_fleet_tui_embedded() -> anyhow::Result<()> {
 }
 
 #[test]
-fn embedded_fallback_explains_why_the_local_server_is_used() {
-    assert_eq!(
-        embedded_fallback_diagnostic(),
-        "No verified Fleet identity for the shared app-server; using an embedded app-server."
+fn embedded_fallback_emits_user_visible_diagnostic() -> anyhow::Result<()> {
+    if std::env::var_os(DIAGNOSTIC_CHILD_ENV).is_some() {
+        let _identity = EnvGuard::set("cell-B");
+        let default_socket = AbsolutePathBuf::from_absolute_path(std::path::Path::new(
+            "/tmp/codex-identity-gate-default.sock",
+        ))?;
+        let kind = app_server_target_kind(
+            /*explicit_endpoint*/ None,
+            Some(default_socket.as_path()),
+            /*can_reuse_implicit_local_daemon*/ true,
+            /*workload_identity_selected*/ false,
+        )?;
+        assert!(matches!(
+            kind,
+            codex_tui::identity_gate_test_support::TargetKind::Embedded
+        ));
+        return Ok(());
+    }
+
+    let output = Command::new(std::env::current_exe()?)
+        .env(DIAGNOSTIC_CHILD_ENV, "1")
+        .args([
+            "--exact",
+            "embedded_fallback_emits_user_visible_diagnostic",
+            "--nocapture",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "diagnostic child failed: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "No verified Fleet identity for the shared app-server; using an embedded app-server."
+        ),
+        "fallback diagnostic was not emitted on stderr: {stderr}"
+    );
+    Ok(())
 }
