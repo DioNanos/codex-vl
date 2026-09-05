@@ -1599,7 +1599,7 @@ async fn persistent_oversized_instructions_fail_session_before_inference() -> Re
         loop {
             let event = test.codex.next_event().await?;
             match event.msg {
-                EventMsg::Error(error) => break Ok(error.message),
+                EventMsg::Error(error) => break Ok::<String, anyhow::Error>(error.message),
                 EventMsg::TurnComplete(completion) => {
                     if let Some(error) = completion.error {
                         break Ok(error.message);
@@ -1671,7 +1671,7 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
         loop {
             let event = test.codex.next_event().await?;
             match event.msg {
-                EventMsg::Error(error) => break Ok(error.message),
+                EventMsg::Error(error) => break Ok::<String, anyhow::Error>(error.message),
                 EventMsg::TurnComplete(completion) => {
                     if let Some(error) = completion.error {
                         break Ok(error.message);
