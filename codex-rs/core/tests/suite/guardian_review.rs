@@ -1540,9 +1540,31 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     )
     .await;
 
-    test.submit_text_turn("run the REPL tool").await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "run the REPL tool".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let terminal_event = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let event = test.codex.next_event().await?;
+            let message = event.msg.clone();
+            eprintln!("D167_DIAG_EVENT: {message:?}");
+            if matches!(message, EventMsg::Error(_) | EventMsg::TurnComplete(_)) {
+                break Ok::<EventMsg, anyhow::Error>(message);
+            }
+        }
+    })
+    .await
+    .expect("guardian terminal event must arrive")
+    .expect("guardian event stream must remain open");
+    eprintln!("D167_DIAG_TERMINAL: {terminal_event:?}");
 
     let requests = responses.requests();
+    for (index, request) in requests.iter().enumerate() {
+        eprintln!("D167_DIAG_REQUEST[{index}]: {}", request.body_json());
+    }
     assert!(
         requests.iter().all(|request| {
             request.body_json()["client_metadata"]["x-openai-subagent"] != "guardian"
