@@ -19,11 +19,14 @@ use tokio::io::AsyncSeekExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 
+use crate::DaemonLaunchGrant;
+
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(60);
 const STOP_TIMEOUT: Duration = Duration::from_secs(70);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STDERR_LOG_TAIL_BYTES: u64 = 4096;
+const SHARED_IDENTITY_ENV_VARS: [&str; 3] = ["TMUX", "TMUX_PANE", "NEXUSCREW_MCP_SESSION"];
 
 #[derive(Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -32,6 +35,7 @@ pub(crate) struct PidBackend {
     pid_file: PathBuf,
     lock_file: PathBuf,
     command_kind: PidCommandKind,
+    launch_grant: Option<DaemonLaunchGrant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,7 +88,19 @@ impl PidBackend {
             command_kind: PidCommandKind::AppServer {
                 remote_control_enabled,
             },
+            launch_grant: None,
         }
+    }
+
+    pub(crate) fn new_with_launch_grant(
+        codex_bin: PathBuf,
+        pid_file: PathBuf,
+        remote_control_enabled: bool,
+        launch_grant: DaemonLaunchGrant,
+    ) -> Self {
+        let mut backend = Self::new(codex_bin, pid_file, remote_control_enabled);
+        backend.launch_grant = Some(launch_grant);
+        backend
     }
 
     pub(crate) fn new_update_loop(codex_bin: PathBuf, pid_file: PathBuf) -> Self {
@@ -94,6 +110,7 @@ impl PidBackend {
             pid_file,
             lock_file,
             command_kind: PidCommandKind::UpdateLoop,
+            launch_grant: None,
         }
     }
 
@@ -166,6 +183,9 @@ impl PidBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(stderr_log.into_std().await));
+        for key in self.command_env_for_shared_verified() {
+            command.env_remove(key);
+        }
         if let Some((key, value)) = self.command_env() {
             command.env(key, value);
         }
@@ -433,6 +453,15 @@ impl PidBackend {
             }
             | PidCommandKind::UpdateLoop => None,
         }
+    }
+
+    /// Reserved identity variables are scrubbed only for a startup carrying
+    /// an authority-issued grant; legacy/D startup keeps its historical env.
+    pub(crate) fn command_env_for_shared_verified(&self) -> Vec<&'static str> {
+        self.launch_grant
+            .as_ref()
+            .map(|_| SHARED_IDENTITY_ENV_VARS.to_vec())
+            .unwrap_or_default()
     }
 
     fn terminate_process(&self, pid: u32) -> Result<()> {

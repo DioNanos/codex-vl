@@ -6,6 +6,7 @@ use tempfile::TempDir;
 
 use codex_app_server_transport::REMOTE_CONTROL_DISABLED_ENV_VAR;
 
+use super::super::DaemonLaunchGrant;
 use super::PidBackend;
 use super::PidCommandKind;
 use super::PidFileState;
@@ -195,6 +196,7 @@ fn update_loop_uses_hidden_app_server_subcommand() {
         pid_file: "updater.pid".into(),
         lock_file: "updater.pid.lock".into(),
         command_kind: PidCommandKind::UpdateLoop,
+        launch_grant: None,
     };
 
     assert_eq!(
@@ -232,6 +234,22 @@ fn app_server_disabled_remote_control_uses_compatible_args_and_runtime_env() {
     assert_eq!(
         backend.command_env(),
         Some((REMOTE_CONTROL_DISABLED_ENV_VAR, "1"))
+    );
+}
+
+#[test]
+fn shared_verified_startup_scrubs_identity_environment_and_keeps_grant_off_argv() {
+    let grant = DaemonLaunchGrant::for_test("incarnation-a", "boot-a", 7);
+    let backend =
+        PidBackend::new_with_launch_grant("codex".into(), "app-server.pid".into(), true, grant);
+
+    assert_eq!(
+        backend.command_args(),
+        vec!["app-server", "--remote-control", "--listen", "unix://"]
+    );
+    assert_eq!(
+        backend.command_env_for_shared_verified(),
+        vec!["TMUX", "TMUX_PANE", "NEXUSCREW_MCP_SESSION"]
     );
 }
 
