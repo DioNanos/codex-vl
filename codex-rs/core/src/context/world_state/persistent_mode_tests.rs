@@ -123,7 +123,12 @@ fn persistent_instructions_preserve_empty_none_and_exact_limit() {
         false,
     )
     .expect("missing instructions should use the built-in");
-    assert_eq!(built_in.body().trim(), DEFAULT_INSTRUCTIONS.trim());
+    assert_eq!(
+        built_in.body().trim(),
+        DEFAULT_INSTRUCTIONS
+            .trim()
+            .replace("{{ approval_request_channel }}", "")
+    );
     assert!(
         PersistentModeState::new(
             "test-model",
