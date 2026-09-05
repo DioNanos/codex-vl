@@ -1,11 +1,15 @@
 name: vl-gate
 
 on:
+  push:
+    branches:
+      - 'ci/**'
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Git SHA to validate
-        required: true
+        description: Git SHA to validate; empty uses the pushed commit
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -26,7 +30,7 @@ jobs:
       - name: Checkout source ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Read Rust toolchain
@@ -54,7 +58,7 @@ jobs:
       - name: Checkout source ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Read Rust toolchain
@@ -86,7 +90,7 @@ jobs:
       - name: Checkout source ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Read Rust toolchain
@@ -117,7 +121,7 @@ jobs:
       - name: Checkout source ref
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Read Rust toolchain
