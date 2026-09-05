@@ -1177,7 +1177,7 @@ pub(crate) async fn make_rmcp_client(
             };
 
             let cwd = cwd.map(codex_utils_path_uri::LegacyAppPathString::into_string);
-            RmcpClient::new_stdio_client_with_protocol_mode(
+            RmcpClient::new_stdio_client_with_protocol_mode_and_binding(
                 command_os,
                 args_os,
                 env_os,
@@ -1185,6 +1185,7 @@ pub(crate) async fn make_rmcp_client(
                 cwd,
                 launcher,
                 protocol_mode,
+                runtime_context.binding_context().is_some(),
             )
             .await
             .map_err(|err| StartupOutcomeError::from(anyhow!(err)))

@@ -438,11 +438,37 @@ impl RmcpClient {
     pub async fn new_stdio_client_with_protocol_mode(
         program: OsString,
         args: Vec<OsString>,
+        env: Option<HashMap<OsString, OsString>>,
+        env_vars: &[McpServerEnvVar],
+        cwd: Option<String>,
+        launcher: Arc<dyn StdioServerLauncher>,
+        protocol_mode: McpProtocolMode,
+    ) -> io::Result<Self> {
+        Self::new_stdio_client_with_protocol_mode_and_binding(
+            program,
+            args,
+            env,
+            env_vars,
+            cwd,
+            launcher,
+            protocol_mode,
+            false,
+        )
+        .await
+    }
+
+    /// Constructs a stdio client scoped to a verified binding. The launcher
+    /// then applies the reserved-environment scrub at the final child boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_stdio_client_with_protocol_mode_and_binding(
+        program: OsString,
+        args: Vec<OsString>,
         mut env: Option<HashMap<OsString, OsString>>,
         env_vars: &[McpServerEnvVar],
         cwd: Option<String>,
         launcher: Arc<dyn StdioServerLauncher>,
         protocol_mode: McpProtocolMode,
+        shared_verified_binding: bool,
     ) -> io::Result<Self> {
         let requested_stdio_version = match protocol_mode {
             McpProtocolMode::Legacy => None,
@@ -459,6 +485,7 @@ impl RmcpClient {
                 env_vars.to_vec(),
                 cwd,
                 protocol_mode,
+                shared_verified_binding,
             ),
             launcher,
         };
