@@ -869,12 +869,22 @@ fn latest_session_cwd_filter<'a>(
     }
 }
 
+pub(crate) fn has_nexuscrew_mcp_session() -> bool {
+    std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
+}
+
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
     can_reuse_implicit_local_daemon: bool,
     workload_identity_selected: bool,
+    has_fleet_identity: bool,
 ) -> std::io::Result<AppServerTarget> {
+    if has_fleet_identity && (explicit_remote_endpoint.is_some() || default_daemon_socket.is_some())
+    {
+        tracing::warn!("shared app-server without verified cell identity: running embedded");
+        return Ok(AppServerTarget::Embedded);
+    }
     if workload_identity_selected {
         if explicit_remote_endpoint.is_some() {
             return Err(std::io::Error::new(
@@ -914,9 +924,6 @@ pub mod identity_gate_test_support {
     }
 
     pub fn has_fleet_identity() -> bool {
-        // The production gate is intentionally absent before the fix commit.
-        // The integration test reads the identity itself to encode the desired
-        // end state while still compiling against the unfixed decision path.
         std::env::var_os(FLEET_IDENTITY_ENV).is_some_and(|value| !value.is_empty())
     }
 
@@ -935,7 +942,6 @@ pub mod identity_gate_test_support {
         workload_identity_selected: bool,
         has_fleet_identity: bool,
     ) -> std::io::Result<TargetKind> {
-        let _ = has_fleet_identity;
         let explicit_remote_endpoint =
             explicit_socket.map(|socket_path| RemoteAppServerEndpoint::UnixSocket {
                 socket_path: AbsolutePathBuf::from_absolute_path(socket_path)
@@ -950,6 +956,7 @@ pub mod identity_gate_test_support {
             default_daemon_socket,
             can_reuse_implicit_local_daemon,
             workload_identity_selected,
+            has_fleet_identity,
         )?;
         Ok(kind_for_target(&target))
     }
@@ -2725,6 +2732,7 @@ mod tests {
             Some(socket_path.clone()),
             /*can_reuse_implicit_local_daemon*/ true,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(
@@ -2748,6 +2756,7 @@ mod tests {
             Some(AbsolutePathBuf::relative_to_current_dir("default.sock")?),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(
@@ -2770,6 +2779,7 @@ mod tests {
             Some(socket_path),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(target, AppServerTarget::Embedded);
@@ -2785,6 +2795,7 @@ mod tests {
                 Some(default_socket),
                 /*can_reuse_implicit_local_daemon*/ true,
                 /*workload_identity_selected*/ true,
+                /*has_fleet_identity*/ false,
             )?,
             AppServerTarget::Embedded
         );
@@ -2797,6 +2808,7 @@ mod tests {
             /*default_daemon_socket*/ None,
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ true,
+            /*has_fleet_identity*/ false,
         )
         .expect_err("remote hosts must own workload identity");
         assert_eq!(
