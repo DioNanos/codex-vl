@@ -1573,7 +1573,7 @@ async fn persistent_oversized_instructions_fail_session_before_inference() -> Re
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let oversized = "x".repeat(8 * 1024 + 1);
-    let builder = test_codex()
+    let mut builder = test_codex()
         .with_model_info_override("gpt-5.4", move |model| {
             model
                 .model_messages
@@ -1635,7 +1635,7 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
         "x".repeat(8 * 1024 - placeholder.len()),
         placeholder
     );
-    let builder = test_codex()
+    let mut builder = test_codex()
         .with_model_info_override("gpt-5.4", move |model| {
             model
                 .experimental_supported_tools
