@@ -649,8 +649,10 @@ impl ServerHandler for TestToolServer {
                         rmcp::model::ContentBlock::text("guardian-hidden-failed-result"),
                     ]))
                 } else if args.code == "nodeRepl.empty()" {
+                    let output = std::env::var("MCP_TEST_NODE_REPL_EXECUTION_MARKER")
+                        .unwrap_or_else(|_| " ".to_string());
                     Ok(CallToolResult::success(vec![
-                        rmcp::model::ContentBlock::text(" "),
+                        rmcp::model::ContentBlock::text(output),
                     ]))
                 } else if args.code == "await nodeRepl.emitImage(await tab.screenshot())" {
                     let mut meta = MetaObject::new();

@@ -16,7 +16,6 @@ use codex_core::config::CurrentTimeReminderConfig;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_extension_api::ExtensionRegistryBuilder;
-use codex_extension_api::McpToolResultInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
@@ -110,22 +109,6 @@ impl ToolLifecycleContributor for RecordingToolLifecycleContributor {
             self.call_ids
                 .lock()
                 .expect("recorded tool call ids lock should not be poisoned")
-                .push(input.call_id.to_string());
-        })
-    }
-}
-
-#[derive(Default)]
-struct RecordingMcpExecutionContributor {
-    call_ids: Mutex<Vec<String>>,
-}
-
-impl ToolLifecycleContributor for RecordingMcpExecutionContributor {
-    fn on_mcp_tool_result<'a>(&'a self, input: McpToolResultInput<'a>) -> ToolLifecycleFuture<'a> {
-        Box::pin(async move {
-            self.call_ids
-                .lock()
-                .expect("recorded MCP execution call ids lock should not be poisoned")
                 .push(input.call_id.to_string());
         })
     }
@@ -1492,13 +1475,10 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
 
     let server = start_mock_server().await;
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
-    let lifecycle_recorder = Arc::new(RecordingMcpExecutionContributor::default());
-    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
-    extensions.tool_lifecycle_contributor(lifecycle_recorder.clone());
+    let execution_marker = "guardian-node-repl-executed";
     let oversized_policy = "x".repeat(8 * 1024 + 1);
     let oversized_policy_for_model = oversized_policy.clone();
     let mut builder = test_codex()
-        .with_extensions(Arc::new(extensions.build()))
         .with_model_info_override("gpt-5.6-luna", move |model| {
             let messages = model
                 .model_messages
@@ -1524,7 +1504,10 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
                 "environment_id": remote_aware_environment_id(),
                 "cwd": config.cwd,
                 "default_tools_approval_mode": "prompt",
-                "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" }
+                "env": {
+                    "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
+                    "MCP_TEST_NODE_REPL_EXECUTION_MARKER": execution_marker
+                }
             }))
             .expect("valid REPL MCP test server");
             config
@@ -1636,14 +1619,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     }
     assert!(tool_output.contains("rejected"));
     assert!(!tool_output.contains(&oversized_policy));
-    assert!(
-        lifecycle_recorder
-            .call_ids
-            .lock()
-            .expect("tool lifecycle recorder lock")
-            .is_empty(),
-        "Guardian failure must not reach the tool executor"
-    );
+    assert!(!tool_output.contains(execution_marker));
     Ok(())
 }
 
