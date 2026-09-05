@@ -1590,17 +1590,23 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
         .iter()
         .find_map(|request| {
             request.input().into_iter().find_map(|item| {
-                let is_matching_output = item.get("type").and_then(Value::as_str)
-                    == Some("custom_tool_call_output")
-                    && item.get("call_id").and_then(Value::as_str) == Some(call_id);
+                let output_type = item.get("type").and_then(Value::as_str);
+                let is_matching_output = matches!(
+                    output_type,
+                    Some("custom_tool_call_output") | Some("function_call_output")
+                ) && item.get("call_id").and_then(Value::as_str)
+                    == Some(call_id);
                 if !is_matching_output {
                     return None;
                 }
-                item.get("output").map(|output| {
-                    output
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| output.to_string())
+                item.get("output").map(|output| match output {
+                    Value::String(text) => text.clone(),
+                    Value::Array(items) => items
+                        .iter()
+                        .filter_map(|item| item.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    _ => output.to_string(),
                 })
             })
         })
