@@ -1592,21 +1592,28 @@ async fn persistent_oversized_instructions_fail_session_before_inference() -> Re
         }]))
         .await?;
 
-    let mut error_message = None;
-    loop {
-        let event = test.codex.next_event().await?;
-        match event.msg {
-            EventMsg::Error(error) => error_message = Some(error.message),
-            EventMsg::TurnComplete(completion) => {
-                if let Some(error) = completion.error {
-                    error_message = Some(error.message);
+    let error_message = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let event = test.codex.next_event().await?;
+            match event.msg {
+                EventMsg::Error(error) => break Ok(error.message),
+                EventMsg::TurnComplete(completion) => {
+                    if let Some(error) = completion.error {
+                        break Ok(error.message);
+                    }
+                    break Ok(String::new());
                 }
-                break;
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let error_message = error_message.expect("Session must emit a fatal persistent error");
+    })
+    .await
+    .expect("Session must finish the persistent turn")
+    .expect("Session event stream must remain open");
+    assert!(
+        !error_message.is_empty(),
+        "Session must emit a fatal persistent error"
+    );
     for expected in ["persistent_instructions", "gpt-5.4", "8193", "8192"] {
         assert!(
             error_message.contains(expected),
@@ -1657,21 +1664,28 @@ async fn persistent_rendered_oversized_instructions_fail_session_before_inferenc
         }]))
         .await?;
 
-    let mut error_message = None;
-    loop {
-        let event = test.codex.next_event().await?;
-        match event.msg {
-            EventMsg::Error(error) => error_message = Some(error.message),
-            EventMsg::TurnComplete(completion) => {
-                if let Some(error) = completion.error {
-                    error_message = Some(error.message);
+    let error_message = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let event = test.codex.next_event().await?;
+            match event.msg {
+                EventMsg::Error(error) => break Ok(error.message),
+                EventMsg::TurnComplete(completion) => {
+                    if let Some(error) = completion.error {
+                        break Ok(error.message);
+                    }
+                    break Ok(String::new());
                 }
-                break;
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let error_message = error_message.expect("Session must emit a fatal rendered persistent error");
+    })
+    .await
+    .expect("Session must finish the rendered persistent turn")
+    .expect("Session event stream must remain open");
+    assert!(
+        !error_message.is_empty(),
+        "Session must emit a fatal rendered persistent error"
+    );
     for expected in ["persistent_instructions", "gpt-5.4", "8193", "8192"] {
         assert!(
             error_message.contains(expected),
