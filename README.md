@@ -72,7 +72,7 @@ release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
 The upstream base of that line is a **stable** release, but the Codex VL
-build on it is an alpha (`-vl.1`) and ships on the `next` channel. The
+build on it is an alpha (`-vl.2`) and ships on the `next` channel. The
 conservative `stable` tag remains on `0.144.5` until a later explicitly
 authorized promotion.
 

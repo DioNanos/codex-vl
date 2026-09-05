@@ -4,6 +4,20 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.153.2-vl.2 - Upstream rust-v0.153.2
+
+### Codex VL fixes
+
+- Fleet TUIs now require a verified cell identity before attaching to a shared
+  app-server; unverified sessions use an embedded fallback with a visible diagnostic,
+  while explicit shared endpoints are rejected.
+- Catalog-supplied `persistent_instructions` and Guardian `node_repl_policy` have
+  an 8 KiB byte cap at every ingress and consumer: oversized values are rejected,
+  never truncated, and Guardian fails closed with a clear diagnostic.
+- Release infrastructure keeps V8 guarded, runs SDK checks on hosted runners,
+  refreshes zlib snapshot URLs, and preserves the README ASCII policy.
+- A dedicated CI gate covers the identity and model-message cap paths.
+
 ## 0.153.2-vl.1 - Upstream rust-v0.153.2
 
 ### Upstream
