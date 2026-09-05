@@ -1479,6 +1479,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(lifecycle_recorder.clone());
     let oversized_policy = "x".repeat(8 * 1024 + 1);
+    let oversized_policy_for_model = oversized_policy.clone();
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_model_info_override("gpt-5.6-luna", move |model| {
@@ -1489,7 +1490,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
             messages.auto_review = Some(AutoReviewMessages {
                 policy: None,
                 policy_template: None,
-                node_repl_policy: Some(oversized_policy),
+                node_repl_policy: Some(oversized_policy_for_model),
                 rejection_instructions: None,
                 timeout_instructions: None,
             });
@@ -1546,25 +1547,39 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
             text_elements: Vec::new(),
         }]))
         .await?;
-    let terminal_event = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let event = test.codex.next_event().await?;
-            let message = event.msg.clone();
-            eprintln!("D167_DIAG_EVENT: {message:?}");
-            if matches!(message, EventMsg::Error(_) | EventMsg::TurnComplete(_)) {
-                break Ok::<EventMsg, anyhow::Error>(message);
-            }
-        }
+    let end_event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::McpToolCallEnd(end) if end.call_id == call_id
+        )
     })
-    .await
-    .expect("guardian terminal event must arrive")
-    .expect("guardian event stream must remain open");
-    eprintln!("D167_DIAG_TERMINAL: {terminal_event:?}");
+    .await;
+    let EventMsg::McpToolCallEnd(end_event) = end_event else {
+        unreachable!("event guard guarantees McpToolCallEnd");
+    };
+    assert_eq!(end_event.call_id, call_id);
+    let Err(rejection) = end_event.result else {
+        panic!("oversized Guardian policy must reject the MCP tool call");
+    };
+    for expected in ["node_repl_policy", "gpt-5.6-luna", "8193", "8192"] {
+        assert!(
+            rejection.contains(expected),
+            "Guardian cap diagnostic missing {expected}: {rejection}"
+        );
+    }
+    assert!(rejection.contains("rejected"));
+    assert!(!rejection.contains(&oversized_policy));
+
+    let completion_event = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let EventMsg::TurnComplete(completion) = completion_event else {
+        unreachable!("event guard guarantees TurnComplete");
+    };
+    assert!(completion.error.is_none());
 
     let requests = responses.requests();
-    for (index, request) in requests.iter().enumerate() {
-        eprintln!("D167_DIAG_REQUEST[{index}]: {}", request.body_json());
-    }
     assert!(
         requests.iter().all(|request| {
             request.body_json()["client_metadata"]["x-openai-subagent"] != "guardian"
@@ -1573,7 +1588,11 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     );
     let tool_output = requests
         .iter()
-        .find_map(|request| request.function_call_output_text(call_id))
+        .find_map(|request| {
+            request
+                .custom_tool_call_output_content_and_success(call_id)
+                .and_then(|(content, _)| content)
+        })
         .expect("the real approval caller must return a rejected tool result");
     for expected in ["node_repl_policy", "gpt-5.6-luna", "8193", "8192"] {
         assert!(
@@ -1582,6 +1601,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
         );
     }
     assert!(tool_output.contains("rejected"));
+    assert!(!tool_output.contains(&oversized_policy));
     assert!(
         lifecycle_recorder
             .call_ids
