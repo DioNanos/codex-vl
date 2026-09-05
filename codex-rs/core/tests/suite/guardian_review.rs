@@ -1482,14 +1482,17 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_model_info_override("gpt-5.6-luna", move |model| {
-            model
+            let messages = model
                 .model_messages
                 .as_mut()
-                .expect("reviewer model messages")
-                .auto_review
-                .as_mut()
-                .expect("reviewer auto-review messages")
-                .node_repl_policy = Some(oversized_policy);
+                .expect("reviewer model messages");
+            messages.auto_review = Some(AutoReviewMessages {
+                policy: None,
+                policy_template: None,
+                node_repl_policy: Some(oversized_policy),
+                rejection_instructions: None,
+                timeout_instructions: None,
+            });
         })
         .with_model_info_override("gpt-5.4", |model| {
             model.node_repl_auto_review_required = true;
@@ -1568,7 +1571,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn persistent_oversized_instructions_fail_session_before_inference() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
@@ -1632,7 +1635,7 @@ async fn persistent_oversized_instructions_fail_session_before_inference() -> Re
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn persistent_rendered_oversized_instructions_fail_session_before_inference() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
