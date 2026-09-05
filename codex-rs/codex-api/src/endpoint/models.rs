@@ -6,6 +6,7 @@ use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::validate_model_infos;
 use http::HeaderMap;
 use http::Method;
 use http::header::ETAG;
@@ -74,6 +75,9 @@ impl<T: HttpTransport> ModelsClient<T> {
                     String::from_utf8_lossy(&resp.body)
                 ))
             })?;
+        validate_model_infos(&models).map_err(|error| {
+            ApiError::Stream(format!("invalid model message in models response: {error}"))
+        })?;
 
         Ok((models, header_etag))
     }

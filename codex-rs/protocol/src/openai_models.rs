@@ -531,6 +531,10 @@ pub fn validate_model_messages(model: &ModelInfo) -> Result<(), ModelMessageText
     Ok(())
 }
 
+pub fn validate_model_infos(models: &[ModelInfo]) -> Result<(), ModelMessageTextTooLong> {
+    models.iter().try_for_each(validate_model_messages)
+}
+
 impl ModelInfo {
     pub fn resolved_context_window(&self) -> Option<i64> {
         self.context_window.or(self.max_context_window)
@@ -891,6 +895,7 @@ where
                      `model_messages.instructions_template`"
                 )));
             }
+            validate_model_messages(&model).map_err(|error| D::Error::custom(error.to_string()))?;
             Ok(model)
         })
         .collect()

@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::validate_model_infos;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
@@ -215,8 +216,14 @@ async fn load_fresh_file(
 async fn load_file(cache_path: &PathBuf) -> io::Result<Option<ModelsCacheEntry>> {
     match fs::read(cache_path).await {
         Ok(contents) => {
-            let cache = serde_json::from_slice(&contents)
+            let cache: ModelsCacheEntry = serde_json::from_slice(&contents)
                 .map_err(|err| io::Error::new(ErrorKind::InvalidData, err.to_string()))?;
+            validate_model_infos(&cache.models).map_err(|err| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("invalid model cache model message: {err}"),
+                )
+            })?;
             Ok(Some(cache))
         }
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
@@ -279,13 +286,20 @@ mod tests {
                 "client_version": "0.153.3",
                 "models": [model_json_with_persistent_instructions(len)]
             });
-            fs::write(&path, serde_json::to_vec(&payload).expect("serialize cache fixture"))
-                .await
-                .expect("write cache fixture");
+            fs::write(
+                &path,
+                serde_json::to_vec(&payload).expect("serialize cache fixture"),
+            )
+            .await
+            .expect("write cache fixture");
 
             let result = load_fresh_file(&path, Duration::from_secs(60), "0.153.3").await;
             if expected_ok {
-                assert!(result.expect("exact-limit cache load should not error").is_some());
+                assert!(
+                    result
+                        .expect("exact-limit cache load should not error")
+                        .is_some()
+                );
             } else {
                 let error = result.expect_err("oversized cache model must be rejected");
                 let message = error.to_string();

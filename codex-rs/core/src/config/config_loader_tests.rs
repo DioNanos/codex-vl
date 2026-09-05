@@ -83,13 +83,22 @@ fn local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages() {
         let payload = serde_json::json!({
             "models": [catalog_model_json_with_persistent_instructions(len)]
         });
-        std::fs::write(&path, serde_json::to_vec(&payload).expect("serialize catalog fixture"))
-            .expect("write catalog fixture");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&payload).expect("serialize catalog fixture"),
+        )
+        .expect("write catalog fixture");
         let path = AbsolutePathBuf::try_from(path).expect("absolute catalog path");
 
         let result = super::load_catalog_json(&path);
         if expected_ok {
-            assert!(result.expect("exact-limit catalog should load").models.len() == 1);
+            assert!(
+                result
+                    .expect("exact-limit catalog should load")
+                    .models
+                    .len()
+                    == 1
+            );
         } else {
             let error = result.expect_err("oversized catalog model must be rejected");
             let message = error.to_string();

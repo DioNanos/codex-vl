@@ -117,12 +117,12 @@ fn persistent_instructions_reject_oversized_values() {
 #[test]
 fn persistent_instructions_preserve_empty_none_and_exact_limit() {
     let built_in = PersistentModeState::new(
-            "test-model",
-            Some(&ReasoningEffort::Persistent),
-            None,
-            false,
-        )
-        .expect("missing instructions should use the built-in");
+        "test-model",
+        Some(&ReasoningEffort::Persistent),
+        None,
+        false,
+    )
+    .expect("missing instructions should use the built-in");
     assert_eq!(built_in.body().trim(), DEFAULT_INSTRUCTIONS.trim());
     assert!(
         PersistentModeState::new(

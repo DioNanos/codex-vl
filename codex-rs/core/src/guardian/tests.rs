@@ -3729,9 +3729,8 @@ async fn guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_
                     "node_repl_policy": "x".repeat(8 * 1024 + 1)
                 }
             });
-            model.model_messages = Some(
-                serde_json::from_value(messages.take()).expect("guardian policy fixture"),
-            );
+            model.model_messages =
+                Some(serde_json::from_value(messages.take()).expect("guardian policy fixture"));
         },
     );
     let parent_model = turn.model_info().as_ref().clone();
