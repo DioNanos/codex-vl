@@ -142,6 +142,13 @@ jobs:
           cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_keeps_shared_daemon_embedded -- --exact 2>&1 | tee vl-gate-fleet-identity.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-identity.out
           grep -F 'unverified_fleet_identity_keeps_shared_daemon_embedded ... ok' vl-gate-fleet-identity.out
+      - name: Embedded fallback emits user-visible diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate embedded_fallback_emits_user_visible_diagnostic -- --exact --nocapture 2>&1 | tee vl-gate-fallback-diagnostic.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fallback-diagnostic.out
+          grep -F 'embedded_fallback_emits_user_visible_diagnostic ... ok' vl-gate-fallback-diagnostic.out
       - name: Fleet identity rejects explicit shared endpoint
         shell: bash
         run: |
@@ -156,13 +163,6 @@ jobs:
           cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity -- --exact 2>&1 | tee vl-gate-fleet-websocket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-websocket.out
           grep -F 'unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity ... ok' vl-gate-fleet-websocket.out
-      - name: Embedded fallback emits user-visible diagnostic
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate embedded_fallback_emits_user_visible_diagnostic -- --exact --nocapture 2>&1 | tee vl-gate-fallback-diagnostic.out
-          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fallback-diagnostic.out
-          grep -F 'embedded_fallback_emits_user_visible_diagnostic ... ok' vl-gate-fallback-diagnostic.out
       - name: No Fleet identity attaches as today
         shell: bash
         run: |
