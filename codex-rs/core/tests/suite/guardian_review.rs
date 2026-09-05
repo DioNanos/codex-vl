@@ -1571,7 +1571,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_oversized_instructions_fail_session_before_inference() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
@@ -1635,7 +1635,7 @@ async fn persistent_oversized_instructions_fail_session_before_inference() -> Re
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistent_rendered_oversized_instructions_fail_session_before_inference() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;

@@ -114,6 +114,8 @@ jobs:
   targeted-tests:
     name: targeted tests
     runs-on: ubuntu-24.04
+    env:
+      RUST_MIN_STACK: "8388608"
     defaults:
       run:
         working-directory: codex-rs
@@ -188,8 +190,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # cap test filters are extended below with the runtime terminal probes
-          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests 2>&1 | tee vl-gate-model-message-caps.out
+          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests guardian_oversized_node_repl_policy_denies_before_tool_execution persistent_oversized_instructions_fail_session_before_inference persistent_rendered_oversized_instructions_fail_session_before_inference 2>&1 | tee vl-gate-model-message-caps.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-message-caps.out
           grep -F 'persistent_instructions_reject_oversized_values ... ok' vl-gate-model-message-caps.out
           grep -F 'persistent_instructions_preserve_empty_none_and_exact_limit ... ok' vl-gate-model-message-caps.out
@@ -198,9 +199,27 @@ jobs:
           grep -F 'guardian_node_repl_policy_accepts_none_empty_and_exact_limit ... ok' vl-gate-model-message-caps.out
           grep -F 'local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages ... ok' vl-gate-model-message-caps.out
           grep -F 'guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests ... ok' vl-gate-model-message-caps.out
-          grep -F 'guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' vl-gate-model-message-caps.out
-          grep -F 'persistent_oversized_instructions_fail_session_before_inference ... ok' vl-gate-model-message-caps.out
-          grep -F 'persistent_rendered_oversized_instructions_fail_session_before_inference ... ok' vl-gate-model-message-caps.out
+      - name: Test terminal guardian cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee termux-gate-model-guardian-terminal.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-guardian-terminal.out
+          grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' termux-gate-model-guardian-terminal.out
+      - name: Test terminal persistent cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-persistent-terminal.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-persistent-terminal.out
+          grep -F 'test suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-persistent-terminal.out
+      - name: Test terminal rendered persistent cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-rendered-persistent-terminal.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-rendered-persistent-terminal.out
+          grep -F 'test suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-rendered-persistent-terminal.out
       - name: Test model catalog ingress caps
         shell: bash
         run: |
