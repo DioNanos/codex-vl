@@ -203,9 +203,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo build -p codex-rmcp-client --bin test_stdio_server
           cargo test -p codex-core --test all -- suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee vl-gate-model-guardian-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-guardian-terminal.out
-          grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' termux-gate-model-guardian-terminal.out
+          grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' vl-gate-model-guardian-terminal.out
       - name: Test terminal persistent cap proof
         shell: bash
         run: |
