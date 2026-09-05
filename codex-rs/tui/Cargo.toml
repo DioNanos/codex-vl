@@ -19,6 +19,7 @@ path = "src/lib.rs"
 doctest = false
 
 [features]
+identity-gate-test = []
 legacy_tui_tests = []
 
 [lints]
