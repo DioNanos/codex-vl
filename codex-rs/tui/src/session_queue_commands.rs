@@ -32,9 +32,11 @@ pub async fn run_session_queue_command(
 ) -> Result<String> {
     let codex_home = find_codex_home().wrap_err("failed to find Codex home")?;
     let explicit_remote = options.explicit_remote_endpoint.is_some();
+    let has_fleet_identity = super::has_nexuscrew_mcp_session();
     let mut app_server =
         start_app_server_for_session_command(options, codex_home.to_path_buf()).await?;
     if !explicit_remote
+        && !has_fleet_identity
         && app_server.uses_embedded_app_server()
         && super::maybe_probe_default_daemon_socket(codex_home.as_path())
             .await

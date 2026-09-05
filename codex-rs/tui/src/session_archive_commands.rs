@@ -338,6 +338,7 @@ pub(super) async fn start_app_server_for_session_command(
     }
 
     let workload_identity_selected = codex_login::is_workload_identity_selected();
+    let has_fleet_identity = super::has_nexuscrew_mcp_session();
     let reuse_implicit_local_daemon = !workload_identity_selected
         && super::can_reuse_implicit_local_daemon(
             &cli_kv_overrides,
@@ -355,6 +356,7 @@ pub(super) async fn start_app_server_for_session_command(
         default_daemon,
         reuse_implicit_local_daemon,
         workload_identity_selected,
+        has_fleet_identity,
     )?;
     let remote_cwd_override = cli
         .cwd

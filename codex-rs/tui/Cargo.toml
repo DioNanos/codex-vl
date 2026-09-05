@@ -19,7 +19,12 @@ path = "src/lib.rs"
 doctest = false
 
 [features]
+identity-gate-test = []
 legacy_tui_tests = []
+
+[[test]]
+name = "attach_identity_gate"
+required-features = ["identity-gate-test"]
 
 [lints]
 workspace = true

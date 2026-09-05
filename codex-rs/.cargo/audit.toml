@@ -1,6 +1,7 @@
 [advisories]
 # Reviewed 2026-07-02. Keep this list in sync with ../deny.toml.
 ignore = [
+    "RUSTSEC-2024-0384", # instant via tantivy/measure_time under msa-core; remove when the transitive dependency drops instant
     "RUSTSEC-2024-0388", # derivative 2.2.0 via starlark/starlark_syntax; upstream crate is unmaintained
     "RUSTSEC-2025-0057", # fxhash 0.2.1 via starlark_map/bm25; upstream crate is unmaintained
     "RUSTSEC-2024-0436", # paste 1.0.15 via starlark/v8; upstream crate is unmaintained

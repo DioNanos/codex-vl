@@ -869,12 +869,34 @@ fn latest_session_cwd_filter<'a>(
     }
 }
 
+pub(crate) fn has_nexuscrew_mcp_session() -> bool {
+    std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
+}
+
+const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
+    "No verified Fleet identity for the shared app-server; using an embedded app-server.";
+
+#[allow(clippy::print_stderr)]
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
     can_reuse_implicit_local_daemon: bool,
     workload_identity_selected: bool,
+    has_fleet_identity: bool,
 ) -> std::io::Result<AppServerTarget> {
+    if has_fleet_identity {
+        if explicit_remote_endpoint.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "explicit app-server endpoint has no verified Fleet identity",
+            ));
+        }
+        if default_daemon_socket.is_some() {
+            eprintln!("{FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC}");
+            tracing::warn!("shared app-server without verified cell identity: running embedded");
+            return Ok(AppServerTarget::Embedded);
+        }
+    }
     if workload_identity_selected {
         if explicit_remote_endpoint.is_some() {
             return Err(std::io::Error::new(
@@ -895,6 +917,60 @@ fn app_server_target_for_launch(
         }
         None => AppServerTarget::Embedded,
     })
+}
+
+#[cfg(feature = "identity-gate-test")]
+pub mod identity_gate_test_support {
+    use super::AppServerTarget;
+    use super::RemoteAppServerEndpoint;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum TargetKind {
+        Embedded,
+        LocalDaemon,
+        Remote,
+    }
+
+    pub fn embedded_fallback_diagnostic() -> &'static str {
+        super::FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC
+    }
+
+    fn kind_for_target(target: &AppServerTarget) -> TargetKind {
+        match target {
+            AppServerTarget::Embedded => TargetKind::Embedded,
+            AppServerTarget::LocalDaemon { .. } => TargetKind::LocalDaemon,
+            AppServerTarget::Remote { .. } => TargetKind::Remote,
+        }
+    }
+
+    pub fn app_server_target_kind(
+        explicit_endpoint: Option<RemoteAppServerEndpoint>,
+        default_socket: Option<&Path>,
+        can_reuse_implicit_local_daemon: bool,
+        workload_identity_selected: bool,
+    ) -> std::io::Result<TargetKind> {
+        let default_daemon_socket = default_socket.map(|socket_path| {
+            AbsolutePathBuf::from_absolute_path(socket_path)
+                .expect("test socket path must be absolute")
+        });
+        let target = super::app_server_target_for_launch(
+            explicit_endpoint,
+            default_daemon_socket,
+            can_reuse_implicit_local_daemon,
+            workload_identity_selected,
+            super::has_nexuscrew_mcp_session(),
+        )?;
+        Ok(kind_for_target(&target))
+    }
+
+    pub async fn maybe_probe_default_daemon_socket(codex_home: &Path) -> Option<PathBuf> {
+        super::maybe_probe_default_daemon_socket(codex_home)
+            .await
+            .map(|socket_path| socket_path.into_path_buf())
+    }
 }
 
 async fn cloud_config_bundle_for_app_server_target(
@@ -2661,6 +2737,7 @@ mod tests {
             Some(socket_path.clone()),
             /*can_reuse_implicit_local_daemon*/ true,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(
@@ -2684,6 +2761,7 @@ mod tests {
             Some(AbsolutePathBuf::relative_to_current_dir("default.sock")?),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(
@@ -2706,6 +2784,7 @@ mod tests {
             Some(socket_path),
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ false,
+            /*has_fleet_identity*/ false,
         )?;
 
         assert_eq!(target, AppServerTarget::Embedded);
@@ -2721,6 +2800,7 @@ mod tests {
                 Some(default_socket),
                 /*can_reuse_implicit_local_daemon*/ true,
                 /*workload_identity_selected*/ true,
+                /*has_fleet_identity*/ false,
             )?,
             AppServerTarget::Embedded
         );
@@ -2733,6 +2813,7 @@ mod tests {
             /*default_daemon_socket*/ None,
             /*can_reuse_implicit_local_daemon*/ false,
             /*workload_identity_selected*/ true,
+            /*has_fleet_identity*/ false,
         )
         .expect_err("remote hosts must own workload identity");
         assert_eq!(

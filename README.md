@@ -44,7 +44,7 @@ codex-vl --version
 ```
 
 The command above names `@next`, the channel this version ships on. Use
-`@latest` instead when you want the stable line rather than the alpha — the
+`@latest` instead when you want the stable line rather than the alpha - the
 channel in the command has to match the one you actually want, and the two
 resolve to different versions.
 
@@ -72,7 +72,7 @@ release and preserves the complete Codex VL workflow layer, alongside the
 native Android V8 build.
 
 The upstream base of that line is a **stable** release, but the Codex VL
-build on it is an alpha (`-vl.1`) and ships on the `next` channel. The
+build on it is an alpha (`-vl.2`) and ships on the `next` channel. The
 conservative `stable` tag remains on `0.144.5` until a later explicitly
 authorized promotion.
 
@@ -119,10 +119,10 @@ optional rustup target) and prints actionable hints when something is missing.
 
 Upstream OpenAI Codex removed the experimental TUI realtime voice/audio feature
 in `rust-v0.140.0` (openai/codex#27801). Codex VL no longer ships it on any
-platform. The Android cpal/oboe enablement this fork used to carry — never
-usable from a plain Termux CLI anyway, since the audio backend (cpal → oboe →
+platform. The Android cpal/oboe enablement this fork used to carry - never
+usable from a plain Termux CLI anyway, since the audio backend (cpal -> oboe ->
 `ndk-context`) needs an Android `JavaVM`/`Activity` a command-line process does
-not have — was dropped along with it. A Termux-native audio backend remains a
+not have - was dropped along with it. A Termux-native audio backend remains a
 possible future direction, not a current capability.
 
 Vivling behavior is still experimental. It is intended to become a workflow
