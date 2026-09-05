@@ -34,6 +34,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -1460,6 +1461,232 @@ async fn guardian_denial_rejects_tool_call_with_rationale(
         "Guardian-denied command unexpectedly executed"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_wine_exec!(
+        Ok(()),
+        "Guardian approval actions require host-native paths"
+    );
+
+    let server = start_mock_server().await;
+    let mcp_server_bin = remote_aware_stdio_server_bin()?;
+    let lifecycle_recorder = Arc::new(RecordingToolLifecycleContributor::default());
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.tool_lifecycle_contributor(lifecycle_recorder.clone());
+    let oversized_policy = "x".repeat(8 * 1024 + 1);
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_model_info_override("gpt-5.6-luna", move |model| {
+            model
+                .model_messages
+                .as_mut()
+                .expect("reviewer model messages")
+                .auto_review
+                .as_mut()
+                .expect("reviewer auto-review messages")
+                .node_repl_policy = Some(oversized_policy);
+        })
+        .with_model_info_override("gpt-5.4", |model| {
+            model.node_repl_auto_review_required = true;
+            model.auto_review_model_override = Some("gpt-5.6-luna".to_string());
+        })
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            let repl: McpServerConfig = serde_json::from_value(json!({
+                "command": mcp_server_bin,
+                "environment_id": remote_aware_environment_id(),
+                "cwd": config.cwd,
+                "default_tools_approval_mode": "prompt",
+                "env": { "MCP_TEST_ENABLE_NODE_REPL_JS": "1" }
+            }))
+            .expect("valid REPL MCP test server");
+            config
+                .mcp_servers
+                .set([(String::from("repl"), repl)].into_iter().collect())
+                .expect("configure REPL MCP test server");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    wait_for_mcp_server(&test.codex, "repl").await?;
+
+    let call_id = "exec-call-oversized-guardian";
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-parent-oversized-guardian"),
+                ev_function_call_with_namespace(
+                    call_id,
+                    "mcp__repl",
+                    "js",
+                    r#"{"code":"nodeRepl.empty()"}"#,
+                ),
+                ev_completed("resp-parent-oversized-guardian"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-parent-after-oversized-guardian"),
+                ev_assistant_message("msg-parent-after-oversized-guardian", "denied"),
+                ev_completed("resp-parent-after-oversized-guardian"),
+            ]),
+        ],
+    )
+    .await;
+
+    test.submit_text_turn("run the REPL tool").await?;
+
+    let requests = responses.requests();
+    assert!(
+        requests.iter().all(|request| {
+            request.body_json()["client_metadata"]["x-openai-subagent"] != "guardian"
+        }),
+        "oversized Guardian policy must not send a reviewer inference request"
+    );
+    let tool_output = requests
+        .iter()
+        .find_map(|request| request.function_call_output_text(call_id))
+        .expect("the real approval caller must return a rejected tool result");
+    for expected in ["node_repl_policy", "gpt-5.6-luna", "8193", "8192"] {
+        assert!(
+            tool_output.contains(expected),
+            "Guardian cap diagnostic missing {expected}: {tool_output}"
+        );
+    }
+    assert!(tool_output.contains("rejected"));
+    assert!(
+        lifecycle_recorder
+            .call_ids
+            .lock()
+            .expect("tool lifecycle recorder lock")
+            .is_empty(),
+        "Guardian failure must not reach the tool executor"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistent_oversized_instructions_fail_session_before_inference() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let oversized = "x".repeat(8 * 1024 + 1);
+    let builder = test_codex()
+        .with_model_info_override("gpt-5.4", move |model| {
+            model
+                .model_messages
+                .as_mut()
+                .expect("model messages")
+                .persistent_instructions = Some(oversized);
+        })
+        .with_config(|config| {
+            config.model_reasoning_effort = Some(ReasoningEffort::Persistent);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "trigger persistent mode".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+
+    let mut error_message = None;
+    loop {
+        let event = test.codex.next_event().await?;
+        match event.msg {
+            EventMsg::Error(error) => error_message = Some(error.message),
+            EventMsg::TurnComplete(completion) => {
+                if let Some(error) = completion.error {
+                    error_message = Some(error.message);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    let error_message = error_message.expect("Session must emit a fatal persistent error");
+    for expected in ["persistent_instructions", "gpt-5.4", "8193", "8192"] {
+        assert!(
+            error_message.contains(expected),
+            "persistent cap diagnostic missing {expected}: {error_message}"
+        );
+    }
+    assert!(error_message.contains("invalid persistent model instructions"));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("inspect model requests")
+            .is_empty(),
+        "persistent cap failure must happen before inference"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persistent_rendered_oversized_instructions_fail_session_before_inference() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let placeholder = "{{ approval_request_channel }}";
+    let rendered_oversized = format!(
+        "{}{}",
+        "x".repeat(8 * 1024 - placeholder.len()),
+        placeholder
+    );
+    let builder = test_codex()
+        .with_model_info_override("gpt-5.4", move |model| {
+            model
+                .experimental_supported_tools
+                .push("send_user_message_async".to_string());
+            model
+                .model_messages
+                .as_mut()
+                .expect("model messages")
+                .persistent_instructions = Some(rendered_oversized);
+        })
+        .with_config(|config| {
+            config.model_reasoning_effort = Some(ReasoningEffort::Persistent);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "trigger rendered persistent mode".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+
+    let mut error_message = None;
+    loop {
+        let event = test.codex.next_event().await?;
+        match event.msg {
+            EventMsg::Error(error) => error_message = Some(error.message),
+            EventMsg::TurnComplete(completion) => {
+                if let Some(error) = completion.error {
+                    error_message = Some(error.message);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    let error_message = error_message.expect("Session must emit a fatal rendered persistent error");
+    for expected in ["persistent_instructions", "gpt-5.4", "8193", "8192"] {
+        assert!(
+            error_message.contains(expected),
+            "rendered persistent cap diagnostic missing {expected}: {error_message}"
+        );
+    }
+    assert!(error_message.contains("invalid persistent model instructions"));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("inspect model requests")
+            .is_empty(),
+        "rendered persistent cap failure must happen before inference"
+    );
     Ok(())
 }
 
