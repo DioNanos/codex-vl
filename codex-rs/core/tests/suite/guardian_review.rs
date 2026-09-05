@@ -1478,6 +1478,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
     let execution_marker = "guardian-node-repl-executed";
     let call_log = tempfile::NamedTempFile::new()?;
     let call_log_path = call_log.path().to_owned();
+    let call_log_path_for_config = call_log_path.clone();
     let oversized_policy = "x".repeat(8 * 1024 + 1);
     let oversized_policy_for_model = oversized_policy.clone();
     let mut builder = test_codex()
@@ -1509,7 +1510,7 @@ async fn guardian_oversized_node_repl_policy_denies_before_tool_execution() -> R
                 "env": {
                     "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
                     "MCP_TEST_NODE_REPL_EXECUTION_MARKER": execution_marker,
-                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path.to_string_lossy()
+                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path_for_config.to_string_lossy()
                 }
             }))
             .expect("valid REPL MCP test server");
@@ -1643,6 +1644,7 @@ async fn guardian_approved_node_repl_policy_records_server_call() -> Result<()> 
     let mcp_server_bin = remote_aware_stdio_server_bin()?;
     let call_log = tempfile::NamedTempFile::new()?;
     let call_log_path = call_log.path().to_owned();
+    let call_log_path_for_config = call_log_path.clone();
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.6-luna", |model| {
             model
@@ -1671,7 +1673,7 @@ async fn guardian_approved_node_repl_policy_records_server_call() -> Result<()> 
                 "default_tools_approval_mode": "prompt",
                 "env": {
                     "MCP_TEST_ENABLE_NODE_REPL_JS": "1",
-                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path.to_string_lossy()
+                    "TEST_STDIO_SERVER_CALL_LOG": call_log_path_for_config.to_string_lossy()
                 }
             }))
             .expect("valid REPL MCP test server");
