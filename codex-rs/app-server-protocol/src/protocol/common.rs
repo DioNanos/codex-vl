@@ -11,6 +11,7 @@ use crate::TS;
 use crate::export::GeneratedSchema;
 #[cfg(test)]
 use crate::export::write_json_schema;
+use crate::protocol::identity;
 use crate::protocol::v1;
 use crate::protocol::v2;
 use codex_experimental_api_macros::ExperimentalApi;
@@ -498,6 +499,11 @@ client_request_definitions! {
         params: v1::InitializeParams,
         serialization: None,
         response: v1::InitializeResponse,
+    },
+    IdentityBind => "nexuscrew/identity/bind" {
+        params: identity::IdentityBindParams,
+        serialization: None,
+        response: identity::IdentityBindResponse,
     },
 
     #[experimental("server/diagnostics")]

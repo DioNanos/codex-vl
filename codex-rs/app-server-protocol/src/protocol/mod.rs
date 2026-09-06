@@ -3,6 +3,7 @@
 
 pub mod common;
 pub mod event_mapping;
+pub mod identity;
 pub mod item_builders;
 mod mappers;
 mod serde_helpers;

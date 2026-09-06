@@ -18,6 +18,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
+use codex_mcp::McpBindingContext;
 use codex_protocol::SanitizedGitUrl;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
@@ -635,6 +636,42 @@ impl ThreadRequestProcessor {
             turn_cost_worker,
             initial_config_warnings: Arc::new(initial_config_warnings),
         }
+    }
+
+    async fn attach_mcp_binding_context(
+        thread_state_manager: &ThreadStateManager,
+        thread: &CodexThread,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) {
+        if let Some(mut context) =
+            Self::connection_mcp_binding_context(thread_state_manager, connection_id).await
+        {
+            context.thread_id = Some(thread_id.to_string());
+            thread.set_mcp_binding_context(context).await;
+        }
+    }
+
+    async fn connection_mcp_binding_context(
+        thread_state_manager: &ThreadStateManager,
+        connection_id: ConnectionId,
+    ) -> Option<McpBindingContext> {
+        let binding = thread_state_manager
+            .connection_identity_binding(connection_id)
+            .await?;
+        let origin = match binding.claims.origin {
+            codex_app_server_protocol::IdentityOrigin::LocalTui => "local_tui",
+            codex_app_server_protocol::IdentityOrigin::RemoteLive => "remote_live",
+            codex_app_server_protocol::IdentityOrigin::Daemon => "daemon",
+        };
+        Some(McpBindingContext::new(
+            binding.claims.owner_instance_id,
+            binding.claims.cell_id,
+            binding.claims.incarnation_id,
+            None::<String>,
+            origin,
+            binding.binding_id,
+        ))
     }
 
     pub(crate) async fn thread_start(
@@ -1588,6 +1625,11 @@ impl ThreadRequestProcessor {
             .await?
         };
         start_options.reserved_thread_id = reserved_thread_id;
+        start_options.mcp_binding_context = Self::connection_mcp_binding_context(
+            &listener_task_context.thread_state_manager,
+            request_id.connection_id,
+        )
+        .await;
         let create_thread_started_at = std::time::Instant::now();
         let new_thread = listener_task_context
             .thread_manager
@@ -1633,6 +1675,18 @@ impl ThreadRequestProcessor {
                 });
             }
         };
+        listener_task_context
+            .thread_state_manager
+            .bind_new_thread(thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
+        Self::attach_mcp_binding_context(
+            &listener_task_context.thread_state_manager,
+            thread.as_ref(),
+            thread_id,
+            request_id.connection_id,
+        )
+        .await;
         let session_telemetry = thread.session_telemetry();
         session_telemetry.record_startup_phase(
             "thread_start_create_thread",
@@ -2364,15 +2418,27 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_binding(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(request_id).await,
                 client_mcp_extensions,
+                Self::connection_mcp_binding_context(
+                    &self.thread_state_manager,
+                    request_id.connection_id,
+                )
+                .await,
             )
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;
+        Self::attach_mcp_binding_context(
+            &self.thread_state_manager,
+            codex_thread.as_ref(),
+            resumed_thread_id,
+            request_id.connection_id,
+        )
+        .await;
         if resumed_thread_id != thread_id {
             return Err(internal_error(format!(
                 "thread {thread_id} reloaded as {resumed_thread_id} after revert"
@@ -3667,6 +3733,16 @@ impl ThreadRequestProcessor {
             .await;
     }
 
+    pub(crate) async fn connection_identity_bound(
+        &self,
+        connection_id: ConnectionId,
+        binding: codex_app_server_protocol::IdentityBinding,
+    ) {
+        self.thread_state_manager
+            .connection_identity_bound(connection_id, binding)
+            .await;
+    }
+
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         let thread_ids = self
             .thread_state_manager
@@ -3836,6 +3912,12 @@ impl ThreadRequestProcessor {
                 return Ok(());
             }
         };
+        if let Some(source_thread) = resume_source_thread.as_ref() {
+            self.thread_state_manager
+                .authorize_thread_access(source_thread.thread_id, request_id.connection_id)
+                .await
+                .map_err(invalid_request)?;
+        }
         let paginated_thread_id = resume_source_thread.as_ref().and_then(|thread| {
             matches!(thread.history_mode, ThreadHistoryMode::Paginated).then_some(thread.thread_id)
         });
@@ -3979,12 +4061,17 @@ impl ThreadRequestProcessor {
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_binding(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(&request_id).await,
                 client_mcp_extensions,
+                Self::connection_mcp_binding_context(
+                    &self.thread_state_manager,
+                    request_id.connection_id,
+                )
+                .await,
             )
             .await
         {
@@ -3994,6 +4081,13 @@ impl ThreadRequestProcessor {
                 session_configured,
                 ..
             }) => {
+                Self::attach_mcp_binding_context(
+                    &self.thread_state_manager,
+                    codex_thread.as_ref(),
+                    thread_id,
+                    request_id.connection_id,
+                )
+                .await;
                 if let Err(err) = Self::set_app_server_client_info(
                     codex_thread.as_ref(),
                     app_server_client_name,
@@ -4269,17 +4363,6 @@ impl ThreadRequestProcessor {
                 )));
             }
             None
-        } else if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
-            && let Ok(existing_thread) = self.thread_manager.get_thread(existing_thread_id).await
-        {
-            let source_thread = self
-                .read_stored_thread_for_resume(
-                    &params.thread_id,
-                    /*path*/ None,
-                    /*include_history*/ false,
-                )
-                .await?;
-            Some((existing_thread_id, existing_thread, source_thread))
         } else {
             let source_thread = self
                 .read_stored_thread_for_resume(
@@ -4300,6 +4383,17 @@ impl ThreadRequestProcessor {
         };
 
         if let Some((existing_thread_id, existing_thread, mut source_thread)) = running_thread {
+            self.thread_state_manager
+                .authorize_thread_access(existing_thread_id, request_id.connection_id)
+                .await
+                .map_err(invalid_request)?;
+            Self::attach_mcp_binding_context(
+                &self.thread_state_manager,
+                existing_thread.as_ref(),
+                existing_thread_id,
+                request_id.connection_id,
+            )
+            .await;
             let paginated_resume =
                 matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
             let existing_thread_rollout_path = existing_thread.rollout_path();
@@ -4878,6 +4972,10 @@ impl ThreadRequestProcessor {
                 /*include_history*/ false,
             )
             .await?;
+        self.thread_state_manager
+            .authorize_thread_access(source_thread.thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
         if last_turn_id.is_some() && before_turn_id.is_some() {
             return Err(invalid_request(
@@ -4943,8 +5041,8 @@ impl ThreadRequestProcessor {
         } else {
             let mut source_thread = self
                 .read_stored_thread_for_resume(
-                    &thread_id,
-                    path.as_ref(),
+                    &source_thread_id.to_string(),
+                    source_thread.rollout_path.as_ref(),
                     /*include_history*/ true,
                 )
                 .await?;
@@ -5124,18 +5222,23 @@ impl ThreadRequestProcessor {
 
         let new_thread = if let Some(prepared_fork) = prepared_fork {
             self.thread_manager
-                .fork_prepared_thread(
+                .fork_prepared_thread_and_binding(
                     config,
                     prepared_fork,
                     thread_source,
                     parent_trace,
                     client_mcp_extensions,
                     reserved_thread_id,
+                    Self::connection_mcp_binding_context(
+                        &self.thread_state_manager,
+                        request_id.connection_id,
+                    )
+                    .await,
                 )
                 .await
         } else {
             self.thread_manager
-                .fork_thread_from_history(
+                .fork_thread_from_history_and_binding(
                     ForkSnapshot::Interrupted,
                     config,
                     InitialHistory::Resumed(ResumedHistory {
@@ -5147,6 +5250,11 @@ impl ThreadRequestProcessor {
                     parent_trace,
                     client_mcp_extensions,
                     reserved_thread_id,
+                    Self::connection_mcp_binding_context(
+                        &self.thread_state_manager,
+                        request_id.connection_id,
+                    )
+                    .await,
                 )
                 .await
         };
@@ -5169,6 +5277,17 @@ impl ThreadRequestProcessor {
                 });
             }
         };
+        self.thread_state_manager
+            .bind_forked_thread(source_thread_id, thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
+        Self::attach_mcp_binding_context(
+            &self.thread_state_manager,
+            forked_thread.as_ref(),
+            thread_id,
+            request_id.connection_id,
+        )
+        .await;
 
         Self::set_app_server_client_info(
             forked_thread.as_ref(),

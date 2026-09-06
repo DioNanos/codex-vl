@@ -87,6 +87,7 @@ pub(crate) async fn run_codex_thread_interactive(
         Arc::clone(&parent_session.services.extensions)
     };
     let (session, io) = Session::spawn(SessionSpawnArgs {
+        mcp_binding_context: parent_session.mcp_binding_context().await,
         config,
         allow_provider_model_fallback: false,
         user_instructions,

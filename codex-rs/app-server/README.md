@@ -1,5 +1,23 @@
 # codex-app-server
 
+## Protected shared endpoints
+
+The factory launching a protected Fleet endpoint must set
+`CODEX_APP_SERVER_IDENTITY_REQUIRED=1` on the daemon launch (including restarts
+and updates). This server-owned switch is latched when the request processor is
+constructed. It contains no identity capability or credential. Omitting it, or
+setting it to `0` or `false`, preserves standalone legacy operation; any other
+value enables the protected policy. Do not reuse a standalone daemon as a
+protected endpoint: the factory must launch it with this policy.
+
+The client extension `nexuscrew.identity.v1` advertises handshake support only.
+It cannot disable the protected policy. Before binding, privileged requests on
+a protected endpoint return `IDENTITY_UNVERIFIED`; initialization, binding and
+server diagnostics remain available. Verified connection context is passed into
+session construction before the first MCP runtime is installed, for start,
+resume and fork. Identity authority verification is a separate integration
+boundary; the process fixture is not a production authority.
+
 `codex app-server` is the interface Codex uses to power rich interfaces such as the [Codex VS Code extension](https://marketplace.visualstudio.com/items?itemName=openai.chatgpt).
 
 ## Table of Contents

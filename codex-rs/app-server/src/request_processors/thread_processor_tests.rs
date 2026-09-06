@@ -1493,6 +1493,7 @@ mod thread_processor_behavior_tests {
                 unrelated_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -1501,6 +1502,7 @@ mod thread_processor_behavior_tests {
                 earlier_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -1509,6 +1511,7 @@ mod thread_processor_behavior_tests {
                 later_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;

@@ -86,6 +86,41 @@ pub struct McpRuntimeInput {
     pub elicitation_lifecycle: Option<ElicitationLifecycle>,
 }
 
+/// Identity scope for one verified MCP binding incarnation.
+///
+/// Connections may only be reused when every component matches.  In
+/// particular, a new binding or daemon incarnation never inherits a prior
+/// process even when its server configuration is otherwise identical.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct McpBindingContext {
+    pub owner_instance_id: String,
+    pub cell_id: String,
+    pub incarnation_id: String,
+    pub thread_id: Option<String>,
+    pub origin: String,
+    pub binding_id: String,
+}
+
+impl McpBindingContext {
+    pub fn new(
+        owner_instance_id: impl Into<String>,
+        cell_id: impl Into<String>,
+        incarnation_id: impl Into<String>,
+        thread_id: Option<impl Into<String>>,
+        origin: impl Into<String>,
+        binding_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            owner_instance_id: owner_instance_id.into(),
+            cell_id: cell_id.into(),
+            incarnation_id: incarnation_id.into(),
+            thread_id: thread_id.map(Into::into),
+            origin: origin.into(),
+            binding_id: binding_id.into(),
+        }
+    }
+}
+
 /// Owns all mutable MCP state for one Codex thread.
 ///
 /// Publication replaces the latest state atomically. Existing bindings retain
@@ -112,6 +147,7 @@ struct PublishedMcpRuntime {
     plugins_available: bool,
     ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
     selected_environments: HashMap<String, Arc<Environment>>,
+    binding_context: Option<McpBindingContext>,
     cached_binding: Mutex<Option<CachedMcpBinding>>,
 }
 
@@ -183,6 +219,7 @@ impl McpRuntime {
                 plugins_available: false,
                 ready_selected_capability_roots: Vec::new(),
                 selected_environments: HashMap::new(),
+                binding_context: None,
                 cached_binding: Mutex::new(None),
             }),
             event_stream_cancellation: Mutex::new(EventStreamCancellation {
@@ -262,9 +299,15 @@ impl McpRuntime {
             pending: &self.reconnect_pending,
             claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
         };
+        let next_binding_context = input.runtime_context.binding_context.clone();
         self.publish(
             input,
-            (!reconnect.claimed).then_some(current.connections.as_ref()),
+            (!reconnect.claimed
+                && McpRuntimeContext::same_binding(
+                    current.binding_context.as_ref(),
+                    next_binding_context.as_ref(),
+                ))
+            .then_some(current.connections.as_ref()),
         )
         .await;
         reconnect.claimed = false;
@@ -276,6 +319,10 @@ impl McpRuntime {
         self.latest_hard_refresh_codex_apps_tools_cache().await
     }
 
+    pub fn current_binding_context(&self) -> Option<McpBindingContext> {
+        self.current.load().binding_context.clone()
+    }
+
     async fn publish(&self, input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
         let (publish, publication_gate) = McpPublicationGate::pending();
         let config = Arc::clone(&input.config);
@@ -284,6 +331,7 @@ impl McpRuntime {
         let plugins_available = input.plugins_available;
         let ready_selected_capability_roots = input.ready_selected_capability_roots.clone();
         let selected_environments = input.runtime_context.selected_environments.clone();
+        let binding_context = input.runtime_context.binding_context.clone();
         let connections = Arc::new(
             McpConnectionSet::new(
                 previous,
@@ -314,6 +362,7 @@ impl McpRuntime {
             plugins_available,
             ready_selected_capability_roots,
             selected_environments,
+            binding_context,
             cached_binding: Mutex::new(None),
         }));
         let _ = publish.send(true);
@@ -674,6 +723,7 @@ pub struct McpRuntimeContext {
     selected_environments: HashMap<String, Arc<Environment>>,
     local_process_cwd: PathBuf,
     local_http_client: Arc<dyn HttpClient>,
+    binding_context: Option<McpBindingContext>,
 }
 
 /// Applies the local HTTP headers helper configured for an MCP server.
@@ -718,6 +768,7 @@ impl McpRuntimeContext {
             selected_environments: HashMap::new(),
             local_process_cwd,
             local_http_client,
+            binding_context: None,
         }
     }
 
@@ -728,6 +779,23 @@ impl McpRuntimeContext {
     ) -> Self {
         self.selected_environments = selected_environments;
         self
+    }
+
+    /// Pins this runtime to one verified binding scope.
+    pub fn with_binding_context(mut self, binding_context: McpBindingContext) -> Self {
+        self.binding_context = Some(binding_context);
+        self
+    }
+
+    pub(crate) fn binding_context(&self) -> Option<&McpBindingContext> {
+        self.binding_context.as_ref()
+    }
+
+    pub(crate) fn same_binding(
+        current: Option<&McpBindingContext>,
+        next: Option<&McpBindingContext>,
+    ) -> bool {
+        current == next
     }
 
     pub(crate) fn local_process_cwd(&self) -> PathBuf {
@@ -817,6 +885,31 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn mcp_runtime_binding_context_key_prevents_cross_binding_reuse() {
+        let first = McpBindingContext::new(
+            "owner",
+            "cell",
+            "incarnation-1",
+            Some("thread"),
+            "local",
+            "binding-a",
+        );
+        let second = McpBindingContext::new(
+            "owner",
+            "cell",
+            "incarnation-1",
+            Some("thread"),
+            "local",
+            "binding-b",
+        );
+        assert!(!McpRuntimeContext::same_binding(
+            Some(&first),
+            Some(&second)
+        ));
+        assert!(McpRuntimeContext::same_binding(Some(&first), Some(&first)));
+    }
+
     fn stdio_server(environment_id: &str) -> McpServerConfig {
         McpServerConfig {
             auth: Default::default(),
@@ -872,6 +965,7 @@ mod tests {
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
             selected_environments: HashMap::new(),
+            binding_context: None,
             cached_binding: Mutex::new(None),
         });
         let first = McpRuntime::binding_from_published_runtime(

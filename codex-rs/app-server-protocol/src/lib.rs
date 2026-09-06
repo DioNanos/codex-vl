@@ -23,6 +23,7 @@ pub use precomputed_exports::generate_ts_with_options;
 pub use precomputed_exports::generate_types;
 pub use protocol::common::*;
 pub use protocol::event_mapping::*;
+pub use protocol::identity::*;
 pub use protocol::item_builders::*;
 pub use protocol::thread_history::*;
 pub use protocol::thread_history_projection::*;

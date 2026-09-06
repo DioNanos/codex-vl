@@ -33,6 +33,7 @@ use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
 pub use codex_app_server_client::RemoteAppServerEndpoint;
+use codex_app_server_client::VerifiedIdentityProof;
 use codex_app_server_protocol::Account as AppServerAccount;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::GetAccountResponse;
@@ -93,9 +94,13 @@ use std::fs::OpenOptions;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tracing::error;
 use tracing::warn;
 use tracing_appender::non_blocking;
@@ -439,18 +444,24 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
     }
 }
 
-async fn connect_remote_app_server(
+/// Remote B attach is only available to callers carrying authority-verified
+/// proof; the ordinary TUI path remains the D-compatible unbound fallback.
+pub(crate) async fn connect_remote_app_server_with_identity(
     endpoint: RemoteAppServerEndpoint,
+    proof: Option<VerifiedIdentityProof>,
 ) -> color_eyre::Result<AppServerClient> {
-    let app_server = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint,
-        client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        experimental_api: true,
-        mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(),
-        channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
+    let app_server = RemoteAppServerClient::connect_with_verified_identity(
+        RemoteAppServerConnectArgs {
+            endpoint,
+            client_name: "codex-tui".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        },
+        proof,
+    )
     .await
     .wrap_err("failed to connect to remote app server")?;
     Ok(AppServerClient::Remote(app_server))
@@ -489,6 +500,7 @@ async fn maybe_probe_default_daemon_socket(_codex_home: &Path) -> Option<Absolut
 #[allow(clippy::too_many_arguments)]
 async fn start_app_server(
     target: &AppServerTarget,
+    identity_proof: Option<VerifiedIdentityProof>,
     arg0_paths: Arg0DispatchPaths,
     config: Config,
     cli_kv_overrides: Vec<(String, toml::Value)>,
@@ -516,9 +528,16 @@ async fn start_app_server(
         .await
         .map(AppServerClient::InProcess),
         AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
-            connect_remote_app_server(endpoint.clone()).await
+            connect_remote_app_server_with_identity(endpoint.clone(), identity_proof).await
         }
     }
+}
+
+pub(crate) async fn connect_remote_app_server(
+    endpoint: RemoteAppServerEndpoint,
+) -> color_eyre::Result<AppServerClient> {
+    let proof = load_nexuscrew_identity_proof().await;
+    connect_remote_app_server_with_identity(endpoint, proof).await
 }
 
 pub(crate) async fn start_app_server_for_picker(
@@ -529,6 +548,7 @@ pub(crate) async fn start_app_server_for_picker(
 ) -> color_eyre::Result<AppServerSession> {
     let app_server = start_app_server(
         target,
+        None,
         Arg0DispatchPaths::default(),
         config.clone(),
         Vec::new(),
@@ -873,8 +893,149 @@ pub(crate) fn has_nexuscrew_mcp_session() -> bool {
     std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
 }
 
+fn verified_identity_proof_from_mcp_initialize(
+    response: &serde_json::Value,
+) -> Option<VerifiedIdentityProof> {
+    response
+        .get("result")
+        .and_then(|result| result.get("identityBinding"))
+        .and_then(|binding| binding.get("proof"))
+        .cloned()
+        .and_then(|proof| serde_json::from_value(proof).ok())
+        .map(VerifiedIdentityProof::from_verified_authority)
+}
+
+#[derive(Debug)]
+enum IdentityProofLoadFailure {
+    Startup(String),
+    Json(String),
+    Read(String),
+    ProofAbsent,
+}
+
+impl IdentityProofLoadFailure {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Startup(_) => "startup/write error",
+            Self::Json(_) => "JSON error",
+            Self::Read(_) => "read error",
+            Self::ProofAbsent => "proof absent",
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityProofLoadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Startup(error) | Self::Json(error) | Self::Read(error) => {
+                formatter.write_str(error)
+            }
+            Self::ProofAbsent => formatter.write_str("initialize response had no identity proof"),
+        }
+    }
+}
+
+async fn load_nexuscrew_identity_proof() -> Option<VerifiedIdentityProof> {
+    if !has_nexuscrew_mcp_session() {
+        return None;
+    }
+    let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut command = tokio::process::Command::new("nexuscrew");
+        command
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            IdentityProofLoadFailure::Startup("nexuscrew mcp stdin unavailable".to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            IdentityProofLoadFailure::Startup("nexuscrew mcp stdout unavailable".to_string())
+        })?;
+        let mut lines = BufReader::new(stdout).lines();
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "codex-tui", "version": env!("CARGO_PKG_VERSION")}
+            }
+        });
+        stdin
+            .write_all(format!("{}\n", initialize).as_bytes())
+            .await
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        let response = loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let value = serde_json::from_str::<serde_json::Value>(&line)
+                        .map_err(|error| IdentityProofLoadFailure::Json(error.to_string()))?;
+                    if value.get("id") == Some(&serde_json::json!(1)) {
+                        break value;
+                    }
+                }
+                Ok(None) => return Err(IdentityProofLoadFailure::ProofAbsent),
+                Err(error) => {
+                    return Err(IdentityProofLoadFailure::Read(error.to_string()));
+                }
+            }
+        };
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        Ok(response)
+    })
+    .await;
+
+    let response = match outcome {
+        Err(_) => {
+            tracing::warn!(reason = "timeout", "nexuscrew mcp identity fallback");
+            return None;
+        }
+        Ok(Err(failure)) => {
+            tracing::warn!(
+                reason = failure.reason(),
+                error = %failure,
+                "nexuscrew mcp identity fallback"
+            );
+            return None;
+        }
+        Ok(Ok(response)) => response,
+    };
+    let Some(proof) = verified_identity_proof_from_mcp_initialize(&response) else {
+        tracing::warn!(reason = "proof absent", "nexuscrew mcp identity fallback");
+        return None;
+    };
+    Some(proof)
+}
+
 const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
     "No verified Fleet identity for the shared app-server; using an embedded app-server.";
+
+const IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC: &str =
+    "app-server endpoint requires verified identity binding; refusing unbound attach";
+
+fn require_verified_identity_for_endpoint(
+    endpoint_requires_identity: bool,
+    has_verified_identity: bool,
+) -> std::io::Result<()> {
+    if endpoint_requires_identity && !has_verified_identity {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC,
+        ));
+    }
+    Ok(())
+}
 
 #[allow(clippy::print_stderr)]
 fn app_server_target_for_launch(
@@ -936,6 +1097,24 @@ pub mod identity_gate_test_support {
 
     pub fn embedded_fallback_diagnostic() -> &'static str {
         super::FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC
+    }
+
+    pub fn require_verified_identity_for_endpoint(
+        endpoint_requires_identity: bool,
+        has_verified_identity: bool,
+    ) -> std::io::Result<()> {
+        super::require_verified_identity_for_endpoint(
+            endpoint_requires_identity,
+            has_verified_identity,
+        )
+    }
+
+    pub fn identity_required_endpoint_diagnostic() -> &'static str {
+        super::IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC
+    }
+
+    pub fn parse_mcp_initialize_identity_proof(response: &serde_json::Value) -> bool {
+        super::verified_identity_proof_from_mcp_initialize(response).is_some()
     }
 
     fn kind_for_target(target: &AppServerTarget) -> TargetKind {
@@ -1057,6 +1236,7 @@ async fn run_ratatui_app(
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     app_server_target: AppServerTarget,
+    fleet_identity_proof: Option<VerifiedIdentityProof>,
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
     manually_selected_oss_provider: Option<String>,
@@ -1119,6 +1299,7 @@ async fn run_ratatui_app(
             &mut tui,
             start_app_server(
                 &app_server_target,
+                fleet_identity_proof.clone(),
                 arg0_paths.clone(),
                 initial_config.clone(),
                 cli_kv_overrides.clone(),
@@ -1713,6 +1894,7 @@ async fn run_ratatui_app(
                 &mut tui,
                 start_app_server(
                     &app_server_target,
+                    fleet_identity_proof.clone(),
                     arg0_paths,
                     config.clone(),
                     cli_kv_overrides.clone(),

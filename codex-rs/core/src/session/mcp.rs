@@ -162,6 +162,10 @@ impl Session {
                 })
                 .collect(),
         );
+        // Binding identity is deliberately absent on this legacy projection.
+        // The verified authority path attaches `McpBindingContext` in
+        // `build_mcp_runtime_input`; until then no child-process scrub or
+        // cross-binding reuse policy is activated (D compatibility).
         (mcp_config, runtime_context)
     }
 

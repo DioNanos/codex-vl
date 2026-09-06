@@ -230,6 +230,8 @@ pub struct ThreadManager {
 }
 
 pub struct StartThreadOptions {
+    /// Verified connection identity, installed before any initial MCP startup.
+    pub mcp_binding_context: Option<codex_mcp::McpBindingContext>,
     pub config: Config,
     pub allow_provider_model_fallback: bool,
     pub initial_history: InitialHistory,
@@ -249,6 +251,7 @@ pub struct StartThreadOptions {
 impl StartThreadOptions {
     pub fn new(config: Config) -> Self {
         Self {
+            mcp_binding_context: None,
             config,
             allow_provider_model_fallback: false,
             initial_history: InitialHistory::New,
@@ -1142,6 +1145,26 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> CodexResult<NewThread> {
+        self.resume_thread_with_history_and_binding(
+            config,
+            initial_history,
+            auth_manager,
+            parent_trace,
+            client_mcp_extensions,
+            /*mcp_binding_context*/ None,
+        )
+        .await
+    }
+
+    pub async fn resume_thread_with_history_and_binding(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        mcp_binding_context: Option<codex_mcp::McpBindingContext>,
+    ) -> CodexResult<NewThread> {
         let agent_control = self.agent_control_for_config(&config);
         let (session_source, thread_source) = initial_history
             .get_resumed_session_sources()
@@ -1160,6 +1183,7 @@ impl ThreadManager {
             thread_source,
             parent_trace,
             client_mcp_extensions,
+            mcp_binding_context,
             ..StartThreadOptions::new(config)
         };
         Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(
@@ -1352,6 +1376,34 @@ impl ThreadManager {
     where
         S: Into<ForkSnapshot>,
     {
+        self.fork_thread_from_history_and_binding(
+            snapshot,
+            config,
+            history,
+            thread_source,
+            parent_trace,
+            client_mcp_extensions,
+            reserved_thread_id,
+            /*mcp_binding_context*/ None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fork_thread_from_history_and_binding<S>(
+        &self,
+        snapshot: S,
+        config: Config,
+        history: InitialHistory,
+        thread_source: Option<ThreadSource>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        reserved_thread_id: Option<ThreadId>,
+        mcp_binding_context: Option<codex_mcp::McpBindingContext>,
+    ) -> CodexResult<NewThread>
+    where
+        S: Into<ForkSnapshot>,
+    {
         self.fork_thread_with_initial_history(
             config,
             ForkHistory {
@@ -1363,6 +1415,7 @@ impl ThreadManager {
             parent_trace,
             client_mcp_extensions,
             reserved_thread_id,
+            mcp_binding_context,
         )
         .await
     }
@@ -1376,6 +1429,29 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
         reserved_thread_id: Option<ThreadId>,
+    ) -> CodexResult<NewThread> {
+        self.fork_prepared_thread_and_binding(
+            config,
+            prepared,
+            thread_source,
+            parent_trace,
+            client_mcp_extensions,
+            reserved_thread_id,
+            /*mcp_binding_context*/ None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fork_prepared_thread_and_binding(
+        &self,
+        config: Config,
+        prepared: PreparedFork,
+        thread_source: Option<ThreadSource>,
+        parent_trace: Option<W3cTraceContext>,
+        client_mcp_extensions: ClientMcpExtensions,
+        reserved_thread_id: Option<ThreadId>,
+        mcp_binding_context: Option<codex_mcp::McpBindingContext>,
     ) -> CodexResult<NewThread> {
         let history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: prepared.source_thread_id,
@@ -1398,6 +1474,7 @@ impl ThreadManager {
                 parent_trace,
                 client_mcp_extensions,
                 reserved_thread_id,
+                mcp_binding_context,
             )
             .await;
         drop(prepared);
@@ -1412,6 +1489,7 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         client_mcp_extensions: ClientMcpExtensions,
         reserved_thread_id: Option<ThreadId>,
+        mcp_binding_context: Option<codex_mcp::McpBindingContext>,
     ) -> CodexResult<NewThread> {
         let ForkHistory {
             snapshot,
@@ -1445,6 +1523,7 @@ impl ThreadManager {
             parent_trace,
             client_mcp_extensions,
             reserved_thread_id,
+            mcp_binding_context,
             ..StartThreadOptions::new(config)
         };
         let mut request =
@@ -1920,6 +1999,7 @@ impl ThreadManagerState {
             user_shell_override,
         } = request;
         let StartThreadOptions {
+            mcp_binding_context,
             config,
             allow_provider_model_fallback,
             initial_history,
@@ -2034,6 +2114,7 @@ impl ThreadManagerState {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile
         };
         let (session, io) = Session::spawn(SessionSpawnArgs {
+            mcp_binding_context,
             config,
             allow_provider_model_fallback,
             user_instructions,

@@ -15,6 +15,7 @@ use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_history::RolloutItem;
+use codex_mcp::McpBindingContext;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::ThreadId;
@@ -234,6 +235,10 @@ impl CodexThread {
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
+    }
+
+    pub async fn set_mcp_binding_context(&self, binding_context: McpBindingContext) {
+        self.session.set_mcp_binding_context(binding_context).await;
     }
 
     /// Returns extension-owned data attached to this thread runtime.

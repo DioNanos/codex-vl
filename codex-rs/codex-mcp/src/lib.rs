@@ -18,6 +18,7 @@ pub use resource_client::McpResourcePage;
 pub use resource_client::McpResourceReadResult;
 pub use rmcp::model::ReadResourceRequestParams;
 pub use rmcp_client::MCP_SANDBOX_STATE_META_CAPABILITY;
+pub use runtime::McpBindingContext;
 pub use runtime::McpRuntime;
 pub use runtime::McpRuntimeContext;
 pub use runtime::McpRuntimeInput;

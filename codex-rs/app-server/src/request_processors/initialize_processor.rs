@@ -22,6 +22,7 @@ pub(crate) struct InitializeRequestProcessor {
     config: Arc<Config>,
     config_warnings: Arc<Vec<ConfigWarningNotification>>,
     rpc_transport: AppServerRpcTransport,
+    identity_required: bool,
 }
 
 impl InitializeRequestProcessor {
@@ -33,6 +34,10 @@ impl InitializeRequestProcessor {
         rpc_transport: AppServerRpcTransport,
     ) -> Self {
         Self {
+            // Launcher-owned, latched once; client capabilities cannot weaken it.
+            // An unrecognized value is protected (fail closed).
+            identity_required: std::env::var_os("CODEX_APP_SERVER_IDENTITY_REQUIRED")
+                .is_some_and(|value| value != "0" && value != "false"),
             outgoing,
             analytics_events_client,
             config,
@@ -71,6 +76,9 @@ impl InitializeRequestProcessor {
         let experimental_api_enabled = capabilities.experimental_api;
         let request_attestation = capabilities.request_attestation;
         let extensions = capabilities.extensions.as_ref();
+        let identity_supported =
+            extensions.is_some_and(|extensions| extensions.contains_key("nexuscrew.identity.v1"));
+        session.advertise_identity(connection_id, self.identity_required, identity_supported);
         let client_mcp_extensions = codex_mcp::client_mcp_extensions(
             extensions,
             capabilities.mcp_server_openai_form_elicitation,

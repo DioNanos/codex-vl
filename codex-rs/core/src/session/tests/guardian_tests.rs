@@ -1284,6 +1284,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
     ));
 
     let (session, io) = Session::spawn(SessionSpawnArgs {
+        mcp_binding_context: None,
         config,
         allow_provider_model_fallback: false,
         user_instructions: Default::default(),

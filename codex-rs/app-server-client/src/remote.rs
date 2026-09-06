@@ -24,6 +24,9 @@ use crate::TypedRequestError;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::IDENTITY_EXTENSION;
+use codex_app_server_protocol::IdentityBindResponse;
+use codex_app_server_protocol::IdentityProof;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
@@ -89,12 +92,37 @@ pub struct RemoteAppServerConnectArgs {
     pub opt_out_notification_methods: Vec<String>,
     pub channel_capacity: usize,
 }
+
+/// Authority-verified proof. The client does not run the NexusCrew normalizer;
+/// clock/cell/liveHost checks remain authority-side.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdentityProof(IdentityProof);
+
+impl VerifiedIdentityProof {
+    pub fn from_verified_authority(proof: IdentityProof) -> Self {
+        Self(proof)
+    }
+
+    fn into_inner(self) -> IdentityProof {
+        self.0
+    }
+}
 impl RemoteAppServerConnectArgs {
     pub(crate) fn initialize_params(&self) -> InitializeParams {
+        self.initialize_params_with_identity(false)
+    }
+
+    fn initialize_params_with_identity(&self, identity: bool) -> InitializeParams {
+        let extensions = identity.then(|| {
+            std::collections::HashMap::from([(
+                IDENTITY_EXTENSION.to_string(),
+                serde_json::json!({}),
+            )])
+        });
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
-            extensions: None,
+            extensions,
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -154,6 +182,7 @@ pub struct RemoteAppServerClient {
     pending_events: VecDeque<AppServerEvent>,
     server_version: Option<String>,
     codex_home: Option<String>,
+    identity_proof: Option<IdentityProof>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -164,8 +193,16 @@ pub struct RemoteAppServerRequestHandle {
 
 impl RemoteAppServerClient {
     pub async fn connect(args: RemoteAppServerConnectArgs) -> IoResult<Self> {
+        Self::connect_with_verified_identity(args, None).await
+    }
+
+    pub async fn connect_with_verified_identity(
+        args: RemoteAppServerConnectArgs,
+        proof: Option<VerifiedIdentityProof>,
+    ) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let initialize_params = args.initialize_params();
+        let initialize_params = args.initialize_params_with_identity(proof.is_some());
+        let identity_proof = proof.map(VerifiedIdentityProof::into_inner);
         match args.endpoint {
             RemoteAppServerEndpoint::WebSocket {
                 websocket_url,
@@ -173,13 +210,25 @@ impl RemoteAppServerClient {
             } => {
                 let (endpoint, stream) =
                     connect_websocket_endpoint(websocket_url, auth_token).await?;
-                Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
-                    .await
+                Self::connect_with_stream(
+                    channel_capacity,
+                    endpoint,
+                    stream,
+                    initialize_params,
+                    identity_proof.clone(),
+                )
+                .await
             }
             RemoteAppServerEndpoint::UnixSocket { socket_path } => {
                 let (endpoint, stream) = connect_unix_socket_endpoint(socket_path).await?;
-                Self::connect_with_stream(channel_capacity, endpoint, stream, initialize_params)
-                    .await
+                Self::connect_with_stream(
+                    channel_capacity,
+                    endpoint,
+                    stream,
+                    initialize_params,
+                    identity_proof,
+                )
+                .await
             }
         }
     }
@@ -192,11 +241,39 @@ impl RemoteAppServerClient {
         self.codex_home.as_deref()
     }
 
+    pub fn has_verified_identity(&self) -> bool {
+        self.identity_proof.is_some()
+    }
+
+    /// Re-authorize after resume/fork/new incarnation. No proof means fail
+    /// closed; the D fallback never silently attaches to a bound endpoint.
+    pub async fn reauthorize_identity(&self) -> IoResult<()> {
+        let proof = self.identity_proof.clone().ok_or_else(|| {
+            IoError::new(
+                ErrorKind::PermissionDenied,
+                "identity reauthorization unavailable: no verified proof",
+            )
+        })?;
+        let result = self
+            .request(ClientRequest::IdentityBind {
+                request_id: RequestId::String("identity-reauthorize".to_string()),
+                params: codex_app_server_protocol::IdentityBindParams { proof },
+            })
+            .await?;
+        result.map(|_| ()).map_err(|error| {
+            IoError::new(
+                ErrorKind::PermissionDenied,
+                format!("identity reauthorization rejected: {}", error.message),
+            )
+        })
+    }
+
     async fn connect_with_stream<S>(
         channel_capacity: usize,
         endpoint: String,
         stream: WebSocketStream<S>,
         initialize_params: InitializeParams,
+        identity_proof: Option<IdentityProof>,
     ) -> IoResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -206,6 +283,7 @@ impl RemoteAppServerClient {
             &mut stream,
             &endpoint,
             initialize_params,
+            identity_proof.as_ref(),
             INITIALIZE_TIMEOUT,
         )
         .await?;
@@ -480,6 +558,7 @@ impl RemoteAppServerClient {
             pending_events: pending_events.into(),
             server_version,
             codex_home,
+            identity_proof,
             worker_handle,
         })
     }
@@ -606,6 +685,7 @@ impl RemoteAppServerClient {
             pending_events: _pending_events,
             server_version: _server_version,
             codex_home: _codex_home,
+            identity_proof: _identity_proof,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -799,6 +879,7 @@ async fn initialize_remote_connection<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     params: InitializeParams,
+    identity_proof: Option<&IdentityProof>,
     initialize_timeout: Duration,
 ) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
 where
@@ -937,7 +1018,82 @@ where
     )
     .await?;
 
+    if let Some(proof) = identity_proof {
+        bind_remote_identity(
+            stream,
+            endpoint,
+            proof,
+            initialize_timeout,
+            &mut pending_events,
+        )
+        .await?;
+    }
+
     Ok((pending_events, server_version, codex_home))
+}
+
+async fn bind_remote_identity<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    proof: &IdentityProof,
+    timeout_duration: Duration,
+    pending_events: &mut Vec<AppServerEvent>,
+) -> IoResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let request_id = RequestId::String("identity-bind".to_string());
+    write_jsonrpc_message(
+        stream,
+        JSONRPCMessage::Request(jsonrpc_request_from_client_request(
+            ClientRequest::IdentityBind {
+                request_id: request_id.clone(),
+                params: codex_app_server_protocol::IdentityBindParams {
+                    proof: proof.clone(),
+                },
+            },
+        )),
+        endpoint,
+    )
+    .await?;
+    timeout(timeout_duration, async {
+        loop {
+            let Some(message) = stream.next().await else {
+                break Err(IoError::new(
+                    ErrorKind::UnexpectedEof,
+                    format!("remote app server at `{endpoint}` closed during identity binding"),
+                ));
+            };
+            match message {
+                Ok(Message::Text(text)) => {
+                    let message = serde_json::from_str::<JSONRPCMessage>(&text).map_err(|err| {
+                        IoError::other(format!("invalid identity bind response from `{endpoint}`: {err}"))
+                    })?;
+                    match message {
+                        JSONRPCMessage::Response(response) if response.id == request_id => {
+                            serde_json::from_value::<IdentityBindResponse>(response.result)
+                                .map_err(|err| IoError::new(ErrorKind::PermissionDenied, format!("invalid identity binding from `{endpoint}`: {err}")))?;
+                            break Ok(());
+                        }
+                        JSONRPCMessage::Error(error) if error.id == request_id => {
+                            break Err(IoError::new(ErrorKind::PermissionDenied, format!("remote app server at `{endpoint}` rejected identity binding: {}", error.error.message)));
+                        }
+                        JSONRPCMessage::Notification(notification) => {
+                            if let Some(event) = app_server_event_from_notification(notification) {
+                                pending_events.push(event);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => break Err(IoError::other(format!("identity bind transport failed: {err}"))),
+            }
+        }
+    })
+    .await
+    .map_err(|_| IoError::new(ErrorKind::TimedOut, format!("timed out waiting for identity binding response from `{endpoint}`")))??;
+    Ok(())
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
@@ -1016,6 +1172,31 @@ fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn verified_identity_advertises_protocol_extension() {
+        let args = RemoteAppServerConnectArgs {
+            endpoint: RemoteAppServerEndpoint::UnixSocket {
+                socket_path: AbsolutePathBuf::from_absolute_path(std::path::Path::new(
+                    "/tmp/identity-test.sock",
+                ))
+                .expect("absolute path"),
+            },
+            client_name: "test".to_string(),
+            client_version: "test".to_string(),
+            experimental_api: true,
+            mcp_server_openai_form_elicitation: false,
+            opt_out_notification_methods: Vec::new(),
+            channel_capacity: 1,
+        };
+        let extensions = args
+            .initialize_params_with_identity(true)
+            .capabilities
+            .expect("capabilities")
+            .extensions
+            .expect("identity extension");
+        assert!(extensions.contains_key(IDENTITY_EXTENSION));
+    }
+
     #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
@@ -1029,6 +1210,7 @@ mod tests {
             pending_events: VecDeque::new(),
             server_version: None,
             codex_home: None,
+            identity_proof: None,
             worker_handle,
         };
 
@@ -1036,5 +1218,27 @@ mod tests {
             .shutdown()
             .await
             .expect("shutdown should complete when worker exits first");
+    }
+
+    #[tokio::test]
+    async fn reauthorize_without_verified_proof_fails_closed() {
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (_event_tx, event_rx) = mpsc::unbounded_channel::<AppServerEvent>();
+        let worker_handle = tokio::spawn(async {});
+        let client = RemoteAppServerClient {
+            command_tx,
+            event_rx,
+            pending_events: VecDeque::new(),
+            server_version: None,
+            codex_home: None,
+            identity_proof: None,
+            worker_handle,
+        };
+        let error = client
+            .reauthorize_identity()
+            .await
+            .expect_err("unbound D path must not reauthorize silently");
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("no verified proof"));
     }
 }

@@ -66,6 +66,7 @@ use crate::protocol_mode::McpProtocolMode;
 use crate::utils::create_env_for_mcp_server;
 use crate::utils::create_env_overlay_for_remote_mcp_server;
 use crate::utils::remote_mcp_env_var_names;
+use crate::utils::sanitize_shared_verified_env;
 
 // General purpose public code.
 
@@ -92,6 +93,7 @@ pub struct StdioServerCommand {
     env_vars: Vec<McpServerEnvVar>,
     cwd: Option<String>,
     protocol_mode: McpProtocolMode,
+    shared_verified_binding: bool,
 }
 
 /// Client-side rmcp transport for a launched MCP stdio server.
@@ -160,6 +162,7 @@ impl StdioServerCommand {
         env_vars: Vec<McpServerEnvVar>,
         cwd: Option<String>,
         protocol_mode: McpProtocolMode,
+        shared_verified_binding: bool,
     ) -> Self {
         Self {
             program,
@@ -168,6 +171,7 @@ impl StdioServerCommand {
             env_vars,
             cwd,
             protocol_mode,
+            shared_verified_binding,
         }
     }
 }
@@ -264,9 +268,13 @@ impl LocalStdioServerLauncher {
             env_vars,
             cwd,
             protocol_mode,
+            shared_verified_binding,
         } = command;
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        let mut envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        if shared_verified_binding {
+            sanitize_shared_verified_env(&mut envs, &env_vars).map_err(io::Error::other)?;
+        }
         let cwd = cwd.map(PathBuf::from).unwrap_or(fallback_cwd);
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
@@ -554,6 +562,7 @@ impl ExecutorStdioServerLauncher {
             env_vars,
             cwd,
             protocol_mode: _,
+            shared_verified_binding,
         } = command;
         let Some(cwd) = cwd else {
             return Err(io::Error::other(
@@ -564,7 +573,10 @@ impl ExecutorStdioServerLauncher {
             .try_into()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_overlay_for_remote_mcp_server(env, &env_vars);
+        let mut envs = create_env_overlay_for_remote_mcp_server(env, &env_vars);
+        if shared_verified_binding {
+            sanitize_shared_verified_env(&mut envs, &env_vars).map_err(io::Error::other)?;
+        }
         let remote_env_vars = remote_mcp_env_var_names(&env_vars);
         // The executor protocol carries argv/env as UTF-8 strings. Local stdio can
         // accept arbitrary OsString values because it calls the OS directly; remote
@@ -669,6 +681,34 @@ impl ExecutorStdioServerLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_verified_env_scrub_removes_config_reintroduced_reserved_values() {
+        let mut env = HashMap::from([
+            (OsString::from("TMUX"), OsString::from("proof-secret")),
+            (OsString::from("TMUX_PANE"), OsString::from("pane-secret")),
+            (
+                OsString::from("NEXUSCREW_MCP_SESSION"),
+                OsString::from("session-secret"),
+            ),
+        ]);
+        sanitize_shared_verified_env(&mut env, &[]).expect("config values are scrubbed");
+        assert!(env.keys().all(|key| {
+            !matches!(
+                key.to_string_lossy().as_ref(),
+                "TMUX" | "TMUX_PANE" | "NEXUSCREW_MCP_SESSION"
+            )
+        }));
+    }
+
+    #[test]
+    fn shared_verified_env_rejects_reserved_env_var_override() {
+        let mut env = HashMap::new();
+        let error =
+            sanitize_shared_verified_env(&mut env, &[McpServerEnvVar::Name("TMUX".to_string())])
+                .expect_err("reserved identity env override must fail closed");
+        assert!(error.to_string().contains("TMUX"));
+    }
     use codex_protocol::config_types::EnvironmentVariablePattern;
     use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::shell_environment;

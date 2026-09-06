@@ -11,6 +11,34 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 
+pub(crate) const SHARED_VERIFIED_RESERVED_ENV: [&str; 3] =
+    ["TMUX", "TMUX_PANE", "NEXUSCREW_MCP_SESSION"];
+
+/// Enforce the shared-verified child-process boundary. Literal config values
+/// are removed after overlays are assembled; named env overrides are rejected
+/// so a caller cannot reintroduce an identity variable through `env_vars`.
+pub(crate) fn sanitize_shared_verified_env(
+    env: &mut HashMap<OsString, OsString>,
+    env_vars: &[McpServerEnvVar],
+) -> Result<()> {
+    if let Some(reserved) = env_vars.iter().find(|var| {
+        SHARED_VERIFIED_RESERVED_ENV
+            .iter()
+            .any(|name| var.name().eq_ignore_ascii_case(name))
+    }) {
+        return Err(anyhow!(
+            "shared verified MCP env override `{}` is reserved",
+            reserved.name()
+        ));
+    }
+    env.retain(|key, _| {
+        !SHARED_VERIFIED_RESERVED_ENV
+            .iter()
+            .any(|name| key.to_string_lossy().eq_ignore_ascii_case(name))
+    });
+    Ok(())
+}
+
 pub(crate) const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) fn create_env_for_mcp_server(
