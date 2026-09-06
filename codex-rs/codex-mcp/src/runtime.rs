@@ -319,6 +319,10 @@ impl McpRuntime {
         self.latest_hard_refresh_codex_apps_tools_cache().await
     }
 
+    pub fn current_binding_context(&self) -> Option<McpBindingContext> {
+        self.current.load().binding_context.clone()
+    }
+
     async fn publish(&self, input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
         let (publish, publication_gate) = McpPublicationGate::pending();
         let config = Arc::clone(&input.config);

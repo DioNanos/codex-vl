@@ -102,7 +102,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments,
             local_process_cwd,
-            binding_context: None,
+            binding_context: self.mcp_binding_context.lock().await.clone(),
         }
     }
 
@@ -129,7 +129,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             local_process_cwd,
-            binding_context: None,
+            binding_context: self.mcp_binding_context.lock().await.clone(),
         };
         self.publish_mcp_runtime(
             &desired,

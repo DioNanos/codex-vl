@@ -50,6 +50,7 @@ use codex_http_client::OutboundProxyPolicy;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_mcp::McpBindingContext;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
@@ -6612,6 +6613,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         mcp_refresh: McpRefresh::new(),
+        mcp_binding_context: Mutex::new(None),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -8912,6 +8914,7 @@ where
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
         mcp_refresh: McpRefresh::new(),
+        mcp_binding_context: Mutex::new(None),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -9002,6 +9005,29 @@ pub(crate) async fn make_session_and_context_with_rx() -> (
     async_channel::Receiver<Event>,
 ) {
     make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await
+}
+
+#[tokio::test]
+async fn verified_binding_context_reaches_mcp_runtime() {
+    let session = make_session_with_config(|_| {})
+        .await
+        .expect("create session");
+    let binding = McpBindingContext::new(
+        "owner",
+        "cell",
+        "incarnation",
+        Some("thread"),
+        "local_tui",
+        "binding",
+    );
+
+    session.set_mcp_binding_context(binding.clone()).await;
+    session.refresh_mcp_if_dirty().await;
+
+    assert_eq!(
+        session.services.mcp_runtime.current_binding_context(),
+        Some(binding)
+    );
 }
 
 #[tokio::test]

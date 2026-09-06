@@ -267,6 +267,39 @@ mod tests {
         assert_eq!(results, vec![true, false, true, false]);
     }
 
+    #[tokio::test]
+    async fn unreadable_persisted_bindings_fail_closed() {
+        let home = tempfile::tempdir().expect("create persistence home");
+        std::fs::write(
+            home.path().join("thread-identity-bindings.json"),
+            b"not-json",
+        )
+        .expect("write corrupt persistence sidecar");
+        let manager = ThreadStateManager::with_persistence(home.path());
+        let thread_id =
+            ThreadId::from_string("01a076e5-35d2-7b80-af68-d5778b6591a1").expect("thread id");
+
+        assert_eq!(
+            manager
+                .authorize_thread_access(thread_id, ConnectionId(1))
+                .await,
+            Err("thread identity binding persistence unavailable")
+        );
+    }
+
+    #[test]
+    fn failed_binding_persistence_returns_error() {
+        let home = tempfile::tempdir().expect("create persistence home");
+        let parent_file = home.path().join("not-a-directory");
+        std::fs::write(&parent_file, b"file").expect("write parent file");
+        let sidecar = parent_file.join("thread-identity-bindings.json");
+
+        assert_eq!(
+            persist_bindings(Some(&sidecar), &HashMap::new()),
+            Err("failed to persist thread identity bindings")
+        );
+    }
+
     fn thread_settings(model: &str) -> ThreadSettings {
         ThreadSettings {
             cwd: AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
@@ -326,7 +359,6 @@ impl PersistedThreadBinding {
         self.owner_instance_id == other.owner_instance_id
             && self.cell_id == other.cell_id
             && self.tmux_session == other.tmux_session
-            && self.incarnation_id == other.incarnation_id
     }
 
     fn into_runtime(self) -> ThreadBinding {
@@ -368,6 +400,7 @@ struct ThreadStateManagerInner {
     threads: HashMap<ThreadId, ThreadEntry>,
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
     persisted_bindings: HashMap<ThreadId, PersistedThreadBinding>,
+    persistence_error: Option<Arc<str>>,
 }
 
 #[derive(Clone, Default)]
@@ -402,7 +435,6 @@ impl ThreadBinding {
         self.owner_instance_id == other.owner_instance_id
             && self.cell_id == other.cell_id
             && self.tmux_session == other.tmux_session
-            && self.incarnation_id == other.incarnation_id
     }
 }
 
@@ -423,10 +455,15 @@ impl ThreadStateManager {
 
     pub(crate) fn with_persistence(codex_home: &Path) -> Self {
         let binding_store_path = codex_home.join("thread-identity-bindings.json");
-        let persisted_bindings = load_persisted_bindings(&binding_store_path);
+        let (persisted_bindings, persistence_error) =
+            match load_persisted_bindings(&binding_store_path) {
+                Ok(bindings) => (bindings, None),
+                Err(error) => (HashMap::new(), Some(Arc::<str>::from(error))),
+            };
         Self {
             state: Arc::new(Mutex::new(ThreadStateManagerInner {
                 persisted_bindings,
+                persistence_error,
                 ..Default::default()
             })),
             binding_store_path: Some(binding_store_path),
@@ -474,13 +511,27 @@ impl ThreadStateManager {
             .map(|binding| ThreadBinding::from_connection(connection_id, binding))
     }
 
+    pub(crate) async fn connection_identity_binding(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<IdentityBinding> {
+        let state = self.state.lock().await;
+        state
+            .live_connections
+            .get(&connection_id)
+            .and_then(|capabilities| capabilities.identity_binding.clone())
+    }
+
     pub(crate) async fn authorize_thread_access(
         &self,
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) -> Result<(), &'static str> {
         let requester = self.connection_thread_binding(connection_id).await;
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
+        if state.persistence_error.is_some() {
+            return Err("thread identity binding persistence unavailable");
+        }
         let thread_has_owner = state
             .threads
             .get(&thread_id)
@@ -503,6 +554,24 @@ impl ThreadStateManager {
                 .get(&thread_id)
                 .is_some_and(|owner| owner.same_owner(&requester));
         if owner_matches {
+            let mut persisted_bindings = state.persisted_bindings.clone();
+            if let Some(entry) = state.threads.get(&thread_id)
+                && entry
+                    .owner_binding
+                    .as_ref()
+                    .is_some_and(|owner| owner.same_owner(&requester))
+            {
+                if let Some(entry) = state.threads.get_mut(&thread_id) {
+                    entry.owner_binding = Some(requester.clone());
+                }
+            }
+            if let Some(owner) = persisted_bindings.get(&thread_id)
+                && owner.same_owner(&requester)
+            {
+                persisted_bindings.insert(thread_id, PersistedThreadBinding::from(&requester));
+            }
+            persist_bindings(self.binding_store_path.as_deref(), &persisted_bindings)?;
+            state.persisted_bindings = persisted_bindings;
             Ok(())
         } else {
             Err("thread identity binding owner mismatch")
@@ -518,16 +587,16 @@ impl ThreadStateManager {
             return Ok(());
         };
         let mut state = self.state.lock().await;
+        if state.persistence_error.is_some() {
+            return Err("thread identity binding persistence unavailable");
+        }
         let persisted_binding = PersistedThreadBinding::from(&binding);
+        let mut persisted_bindings = state.persisted_bindings.clone();
+        persisted_bindings.insert(thread_id, persisted_binding);
+        persist_bindings(self.binding_store_path.as_deref(), &persisted_bindings)?;
         let entry = state.threads.entry(thread_id).or_default();
         entry.owner_binding = Some(binding);
-        state
-            .persisted_bindings
-            .insert(thread_id, persisted_binding);
-        persist_bindings(
-            self.binding_store_path.as_deref(),
-            &state.persisted_bindings,
-        );
+        state.persisted_bindings = persisted_bindings;
         Ok(())
     }
 
@@ -555,19 +624,21 @@ impl ThreadStateManager {
         };
         if let Some(owner_binding) = owner_binding {
             let mut state = self.state.lock().await;
+            if state.persistence_error.is_some() {
+                return Err("thread identity binding persistence unavailable");
+            }
+            let mut persisted_bindings = state.persisted_bindings.clone();
+            persisted_bindings.insert(
+                forked_thread_id,
+                PersistedThreadBinding::from(&owner_binding),
+            );
+            persist_bindings(self.binding_store_path.as_deref(), &persisted_bindings)?;
             state
                 .threads
                 .entry(forked_thread_id)
                 .or_default()
                 .owner_binding = Some(owner_binding.clone());
-            state.persisted_bindings.insert(
-                forked_thread_id,
-                PersistedThreadBinding::from(&owner_binding),
-            );
-            persist_bindings(
-                self.binding_store_path.as_deref(),
-                &state.persisted_bindings,
-            );
+            state.persisted_bindings = persisted_bindings;
         } else {
             self.bind_new_thread(forked_thread_id, connection_id)
                 .await?;
@@ -839,39 +910,59 @@ impl ThreadStateManager {
     }
 }
 
-fn load_persisted_bindings(path: &Path) -> HashMap<ThreadId, PersistedThreadBinding> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return HashMap::new();
+fn load_persisted_bindings(
+    path: &Path,
+) -> Result<HashMap<ThreadId, PersistedThreadBinding>, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => {
+            return Err(format!(
+                "failed to read thread identity bindings at {}: {error}",
+                path.display()
+            ));
+        }
     };
-    let Ok(raw) = serde_json::from_str::<HashMap<String, PersistedThreadBinding>>(&contents) else {
-        tracing::warn!(path = %path.display(), "ignoring unreadable thread identity bindings");
-        return HashMap::new();
-    };
+    let raw = serde_json::from_str::<HashMap<String, PersistedThreadBinding>>(&contents).map_err(
+        |error| {
+            format!(
+                "failed to decode thread identity bindings at {}: {error}",
+                path.display()
+            )
+        },
+    )?;
     raw.into_iter()
-        .filter_map(|(thread_id, binding)| {
+        .map(|(thread_id, binding)| {
             ThreadId::from_string(&thread_id)
-                .ok()
                 .map(|thread_id| (thread_id, binding))
+                .map_err(|error| {
+                    format!(
+                        "invalid thread id in identity bindings at {}: {error}",
+                        path.display()
+                    )
+                })
         })
         .collect()
 }
 
-fn persist_bindings(path: Option<&Path>, bindings: &HashMap<ThreadId, PersistedThreadBinding>) {
-    let Some(path) = path else {
-        return;
-    };
+fn persist_bindings(
+    path: Option<&Path>,
+    bindings: &HashMap<ThreadId, PersistedThreadBinding>,
+) -> Result<(), &'static str> {
+    let Some(path) = path else { return Ok(()) };
     let raw = bindings
         .iter()
         .map(|(thread_id, binding)| (thread_id.to_string(), binding))
         .collect::<HashMap<_, _>>();
-    let Ok(contents) = serde_json::to_vec_pretty(&raw) else {
-        tracing::warn!(path = %path.display(), "failed to encode thread identity bindings");
-        return;
-    };
+    let contents = serde_json::to_vec_pretty(&raw).map_err(|error| {
+        tracing::error!(path = %path.display(), %error, "failed to encode thread identity bindings");
+        "failed to persist thread identity bindings"
+    })?;
     let temporary_path = path.with_extension("json.tmp");
-    if let Err(error) = std::fs::write(&temporary_path, contents)
+    std::fs::write(&temporary_path, contents)
         .and_then(|()| std::fs::rename(&temporary_path, path))
-    {
-        tracing::warn!(path = %path.display(), %error, "failed to persist thread identity bindings");
-    }
+        .map_err(|error| {
+            tracing::error!(path = %path.display(), %error, "failed to persist thread identity bindings");
+            "failed to persist thread identity bindings"
+        })
 }
