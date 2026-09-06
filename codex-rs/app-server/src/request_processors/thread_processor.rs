@@ -644,27 +644,34 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) {
-        let Some(binding) = thread_state_manager
+        if let Some(mut context) =
+            Self::connection_mcp_binding_context(thread_state_manager, connection_id).await
+        {
+            context.thread_id = Some(thread_id.to_string());
+            thread.set_mcp_binding_context(context).await;
+        }
+    }
+
+    async fn connection_mcp_binding_context(
+        thread_state_manager: &ThreadStateManager,
+        connection_id: ConnectionId,
+    ) -> Option<McpBindingContext> {
+        let binding = thread_state_manager
             .connection_identity_binding(connection_id)
-            .await
-        else {
-            return;
-        };
+            .await?;
         let origin = match binding.claims.origin {
             codex_app_server_protocol::IdentityOrigin::LocalTui => "local_tui",
             codex_app_server_protocol::IdentityOrigin::RemoteLive => "remote_live",
             codex_app_server_protocol::IdentityOrigin::Daemon => "daemon",
         };
-        thread
-            .set_mcp_binding_context(McpBindingContext::new(
-                binding.claims.owner_instance_id,
-                binding.claims.cell_id,
-                binding.claims.incarnation_id,
-                Some(thread_id.to_string()),
-                origin,
-                binding.binding_id,
-            ))
-            .await;
+        Some(McpBindingContext::new(
+            binding.claims.owner_instance_id,
+            binding.claims.cell_id,
+            binding.claims.incarnation_id,
+            None::<String>,
+            origin,
+            binding.binding_id,
+        ))
     }
 
     pub(crate) async fn thread_start(
@@ -1618,6 +1625,11 @@ impl ThreadRequestProcessor {
             .await?
         };
         start_options.reserved_thread_id = reserved_thread_id;
+        start_options.mcp_binding_context = Self::connection_mcp_binding_context(
+            &listener_task_context.thread_state_manager,
+            request_id.connection_id,
+        )
+        .await;
         let create_thread_started_at = std::time::Instant::now();
         let new_thread = listener_task_context
             .thread_manager
@@ -2406,12 +2418,17 @@ impl ThreadRequestProcessor {
             ..
         } = self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_binding(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(request_id).await,
                 client_mcp_extensions,
+                Self::connection_mcp_binding_context(
+                    &self.thread_state_manager,
+                    request_id.connection_id,
+                )
+                .await,
             )
             .await
             .map_err(|err| internal_error(format!("error reloading thread after revert: {err}")))?;
@@ -4044,12 +4061,17 @@ impl ThreadRequestProcessor {
 
         match self
             .thread_manager
-            .resume_thread_with_history(
+            .resume_thread_with_history_and_binding(
                 config,
                 thread_history,
                 self.auth_manager.clone(),
                 self.request_trace_context(&request_id).await,
                 client_mcp_extensions,
+                Self::connection_mcp_binding_context(
+                    &self.thread_state_manager,
+                    request_id.connection_id,
+                )
+                .await,
             )
             .await
         {
@@ -5200,18 +5222,23 @@ impl ThreadRequestProcessor {
 
         let new_thread = if let Some(prepared_fork) = prepared_fork {
             self.thread_manager
-                .fork_prepared_thread(
+                .fork_prepared_thread_and_binding(
                     config,
                     prepared_fork,
                     thread_source,
                     parent_trace,
                     client_mcp_extensions,
                     reserved_thread_id,
+                    Self::connection_mcp_binding_context(
+                        &self.thread_state_manager,
+                        request_id.connection_id,
+                    )
+                    .await,
                 )
                 .await
         } else {
             self.thread_manager
-                .fork_thread_from_history(
+                .fork_thread_from_history_and_binding(
                     ForkSnapshot::Interrupted,
                     config,
                     InitialHistory::Resumed(ResumedHistory {
@@ -5223,6 +5250,11 @@ impl ThreadRequestProcessor {
                     parent_trace,
                     client_mcp_extensions,
                     reserved_thread_id,
+                    Self::connection_mcp_binding_context(
+                        &self.thread_state_manager,
+                        request_id.connection_id,
+                    )
+                    .await,
                 )
                 .await
         };

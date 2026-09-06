@@ -9,6 +9,55 @@ use identity_fixture::IdentityFixture;
 use serde_json::json;
 
 #[tokio::test]
+async fn auditor_first_mcp_spawn_on_bound_connection_scrubs_reserved_env() -> Result<()> {
+    let capture = tempfile::tempdir()?;
+    let capture_path = capture.path().join("spawn.jsonl");
+    let script = r#"
+const fs = require('fs');
+fs.appendFileSync(process.env.AUDIT_CAPTURE, JSON.stringify({session:process.env.NEXUSCREW_MCP_SESSION ?? null,tmux:process.env.TMUX ?? null,pane:process.env.TMUX_PANE ?? null})+'\n');
+require('readline').createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line); if(m.id===undefined)return;
+ const result=m.method==='initialize'?{protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'audit-probe',version:'1'}}:m.method==='tools/list'?{tools:[]}:{};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');
+});
+"#;
+    let fixture = IdentityFixture::start().await?;
+    let mut client = fixture
+        .connect("owner-a", "cell-a", "incarnation-a")
+        .await?;
+    let response = client.request("thread/start", Some(json!({
+        "ephemeral": true,
+        "config": {"mcp_servers": {"audit_probe": {
+            "command":"/usr/bin/node", "args":["-e", script],
+            "startup_timeout_sec": 2, "required": true,
+            "env":{"AUDIT_CAPTURE":capture_path.to_string_lossy(),
+                "NEXUSCREW_MCP_SESSION":"dummy-session", "TMUX":"dummy-tmux", "TMUX_PANE":"dummy-pane"}
+        }}}
+    }))).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    fixture.stop().await?;
+    assert!(
+        response.get("error").is_none(),
+        "thread/start failed: {response}"
+    );
+    let records =
+        std::fs::read_to_string(capture_path).context("real MCP process must record startup")?;
+    println!("mcp_spawn_records={records}");
+    let values = records
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(!values.is_empty(), "vacuous observation");
+    assert!(
+        values
+            .iter()
+            .all(|v| *v == json!({"session":null,"tmux":null,"pane":null})),
+        "every shared verified spawn must scrub config identity, including the first one"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn new_tui_b_never_reuses_a_identity() -> Result<()> {
     let fixture = IdentityFixture::start().await?;
     let (mut tui_a, proof_a) = fixture

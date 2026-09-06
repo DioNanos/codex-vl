@@ -604,6 +604,10 @@ impl Session {
         self.request_mcp_runtime_refresh();
     }
 
+    pub(crate) async fn mcp_binding_context(&self) -> Option<McpBindingContext> {
+        self.mcp_binding_context.lock().await.clone()
+    }
+
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
@@ -667,6 +671,7 @@ impl Session {
         mut thread_extension_init: ExtensionDataInit,
         client_mcp_extensions: ClientMcpExtensions,
         agent_control: AgentControl,
+        mcp_binding_context: Option<McpBindingContext>,
         reserved_thread_id: Option<ThreadId>,
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -778,6 +783,11 @@ impl Session {
                 ));
             }
         };
+        let mcp_binding_context = mcp_binding_context.map(|mut context| {
+            // The session owns the final ID, including resume and fork paths.
+            context.thread_id = Some(thread_id.to_string());
+            context
+        });
         let resumed_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().find_map(|item| match item {
@@ -1504,7 +1514,7 @@ impl Session {
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),
-                mcp_binding_context: Mutex::new(None),
+                mcp_binding_context: Mutex::new(mcp_binding_context),
                 mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),
                 mcp_prewarm_tx,

@@ -414,6 +414,7 @@ pub(crate) enum ForkPersistence {
 }
 
 pub(crate) struct SessionSpawnArgs {
+    pub(crate) mcp_binding_context: Option<codex_mcp::McpBindingContext>,
     pub(crate) config: Config,
     pub(crate) allow_provider_model_fallback: bool,
     pub(crate) user_instructions: LoadedUserInstructions,
@@ -518,6 +519,7 @@ impl Session {
 
     async fn spawn_internal(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
         let SessionSpawnArgs {
+            mcp_binding_context,
             mut config,
             allow_provider_model_fallback,
             user_instructions,
@@ -797,6 +799,7 @@ impl Session {
             thread_extension_init,
             client_mcp_extensions,
             agent_control,
+            mcp_binding_context,
             reserved_thread_id,
             environment_manager,
             inherited_environments,
