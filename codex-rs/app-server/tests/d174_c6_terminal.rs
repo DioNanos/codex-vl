@@ -9,6 +9,69 @@ use identity_fixture::IdentityFixture;
 use serde_json::json;
 
 #[tokio::test]
+async fn protected_endpoint_rejects_legacy_dispatch_without_effects() -> Result<()> {
+    let fixture = IdentityFixture::start_protected().await?;
+    let mut verified = fixture
+        .connect("owner-a", "cell-a", "incarnation-a")
+        .await?;
+    let before = verified
+        .request("thread/loaded/list", Some(json!({})))
+        .await?;
+    assert_eq!(before["data"], json!([]), "fresh daemon: {before}");
+    let mut legacy = fixture.connect_unbound().await?;
+    for (method, params) in [
+        ("thread/start", json!({"ephemeral":true})),
+        (
+            "thread/resume",
+            json!({"threadId":"00000000-0000-0000-0000-000000000001"}),
+        ),
+        (
+            "thread/fork",
+            json!({"threadId":"00000000-0000-0000-0000-000000000001"}),
+        ),
+        ("thread/loaded/list", json!({})),
+    ] {
+        let response = legacy.request(method, Some(params)).await?;
+        assert_eq!(
+            response["error"]["message"], "IDENTITY_UNVERIFIED",
+            "{method}: {response}"
+        );
+    }
+    let after = verified
+        .request("thread/loaded/list", Some(json!({})))
+        .await?;
+    assert_eq!(
+        after["data"],
+        json!([]),
+        "denied calls must create no threads: {after}"
+    );
+    let started = verified
+        .request("thread/start", Some(json!({"ephemeral":true})))
+        .await?;
+    assert!(
+        started["thread"]["id"].is_string(),
+        "verified start: {started}"
+    );
+    fixture.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn standalone_endpoint_preserves_legacy_start() -> Result<()> {
+    let fixture = IdentityFixture::start().await?;
+    let mut legacy = fixture.connect_unbound().await?;
+    let response = legacy
+        .request("thread/start", Some(json!({"ephemeral":true})))
+        .await?;
+    fixture.stop().await?;
+    assert!(
+        response["thread"]["id"].is_string(),
+        "standalone start: {response}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn auditor_first_mcp_spawn_on_bound_connection_scrubs_reserved_env() -> Result<()> {
     let capture = tempfile::tempdir()?;
     let capture_path = capture.path().join("spawn.jsonl");

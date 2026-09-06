@@ -93,10 +93,19 @@ pub struct IdentityFixture {
     authority: IdentityAuthorityStub,
     stopped: AtomicBool,
     challenge_lock: tokio::sync::Mutex<()>,
+    protected: bool,
 }
 
 impl IdentityFixture {
     pub async fn start() -> Result<Self> {
+        Self::start_with_policy(false).await
+    }
+
+    pub async fn start_protected() -> Result<Self> {
+        Self::start_with_policy(true).await
+    }
+
+    async fn start_with_policy(protected: bool) -> Result<Self> {
         let home = TempDir::new().context("create C6 CODEX_HOME")?;
         let challenge_file = home.path().join("identity-challenges.jsonl");
         let shim = codex_utils_cargo_bin::cargo_bin("d174-daemon-shim")
@@ -109,6 +118,11 @@ impl IdentityFixture {
             .env("CODEX_HOME", home.path())
             .env("D174_APP_SERVER_BIN", &app_server)
             .env("D174_IDENTITY_CHALLENGE_FILE", &challenge_file);
+        if protected {
+            command.env("CODEX_APP_SERVER_IDENTITY_REQUIRED", "1");
+        } else {
+            command.env_remove("CODEX_APP_SERVER_IDENTITY_REQUIRED");
+        }
         scrub_shared_identity_env(&mut command);
         let output = command
             .output()
@@ -131,6 +145,7 @@ impl IdentityFixture {
                     authority: IdentityAuthorityStub,
                     stopped: AtomicBool::new(false),
                     challenge_lock: tokio::sync::Mutex::new(()),
+                    protected,
                 });
             }
             sleep(Duration::from_millis(20)).await;
@@ -153,6 +168,11 @@ impl IdentityFixture {
             .env("CODEX_HOME", self._home.path())
             .env("D174_APP_SERVER_BIN", &self.app_server)
             .env("D174_IDENTITY_CHALLENGE_FILE", &self.challenge_file);
+        if self.protected {
+            command.env("CODEX_APP_SERVER_IDENTITY_REQUIRED", "1");
+        } else {
+            command.env_remove("CODEX_APP_SERVER_IDENTITY_REQUIRED");
+        }
         scrub_shared_identity_env(&mut command);
         let output = command.output().await?;
         if !output.status.success() {

@@ -582,7 +582,11 @@ where
 fn pre_bind_dispatch_gate_rejects_tool_requests() -> Result<()> {
     run_current_thread_test_with_stack("pre_bind_dispatch_gate_rejects_tool_requests", async {
         let mut harness = TracingHarness::new().await?;
-        harness.session.advertise_identity(TEST_CONNECTION_ID, true);
+        harness.session.advertise_identity(
+            TEST_CONNECTION_ID,
+            /*required*/ true,
+            /*supported*/ true,
+        );
         let _ = harness
             .processor
             .process_request(
@@ -598,7 +602,7 @@ fn pre_bind_dispatch_gate_rejects_tool_requests() -> Result<()> {
             )
             .await;
         let message = read_error_message(&mut harness.outgoing_rx, 30_001).await;
-        assert_eq!(message, "Identity binding required before dispatch");
+        assert_eq!(message, "IDENTITY_UNVERIFIED");
         harness.shutdown().await;
         Ok(())
     })

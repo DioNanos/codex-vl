@@ -20,9 +20,14 @@ pub(crate) struct ConnectionIdentityState {
 }
 
 impl ConnectionIdentityState {
-    pub(crate) fn advertise(&mut self, connection_id: ConnectionId, required: bool) {
-        self.required = required;
-        if required && self.challenge.is_none() {
+    pub(crate) fn advertise(
+        &mut self,
+        connection_id: ConnectionId,
+        required: bool,
+        supported: bool,
+    ) {
+        self.required |= required;
+        if (self.required || supported) && self.challenge.is_none() {
             let issued_at = Utc::now();
             let challenge = IdentityChallenge {
                 version: IDENTITY_SCHEMA_VERSION.to_string(),
@@ -136,14 +141,22 @@ mod tests {
     #[test]
     fn required_connection_is_blocked_until_bind() {
         let mut state = ConnectionIdentityState::default();
-        state.advertise(ConnectionId(7), true);
+        state.advertise(
+            ConnectionId(7),
+            /*required*/ true,
+            /*supported*/ true,
+        );
         assert!(!state.ready());
     }
 
     #[test]
     fn matching_proof_binds_once() {
         let mut state = ConnectionIdentityState::default();
-        state.advertise(ConnectionId(7), true);
+        state.advertise(
+            ConnectionId(7),
+            /*required*/ true,
+            /*supported*/ true,
+        );
         let response = state.bind(proof(&state)).expect("bind");
         assert_eq!(response.binding.binding_id, "binding");
         assert!(state.ready());
@@ -153,7 +166,11 @@ mod tests {
     #[test]
     fn wrong_challenge_fails_closed() {
         let mut state = ConnectionIdentityState::default();
-        state.advertise(ConnectionId(7), true);
+        state.advertise(
+            ConnectionId(7),
+            /*required*/ true,
+            /*supported*/ true,
+        );
         let mut invalid = proof(&state);
         invalid.challenge.connection_id = "other".to_string();
         assert_eq!(

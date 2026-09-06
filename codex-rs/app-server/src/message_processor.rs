@@ -246,9 +246,14 @@ impl ConnectionSessionState {
         self.initialized.set(session).map_err(|_| ())
     }
 
-    pub(crate) fn advertise_identity(&self, connection_id: ConnectionId, required: bool) {
+    pub(crate) fn advertise_identity(
+        &self,
+        connection_id: ConnectionId,
+        required: bool,
+        supported: bool,
+    ) {
         if let Ok(mut identity) = self.identity.lock() {
-            identity.advertise(connection_id, required);
+            identity.advertise(connection_id, required, supported);
         }
     }
 
@@ -966,7 +971,7 @@ impl MessageProcessor {
             && !session.identity_ready()
             && !matches!(codex_request, ClientRequest::ServerDiagnostics { .. })
         {
-            return Err(invalid_request("Identity binding required before dispatch"));
+            return Err(invalid_request("IDENTITY_UNVERIFIED"));
         }
 
         if let Some(reason) = codex_request.experimental_reason()
