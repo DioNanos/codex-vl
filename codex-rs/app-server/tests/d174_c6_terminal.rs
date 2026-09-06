@@ -11,12 +11,15 @@ use serde_json::json;
 #[tokio::test]
 async fn new_tui_b_never_reuses_a_identity() -> Result<()> {
     let fixture = IdentityFixture::start().await?;
-    let mut tui_a = fixture
-        .connect("owner-a", "cell-a", "incarnation-a")
+    let (mut tui_a, proof_a) = fixture
+        .connect_record("owner-a", "cell-a", "incarnation-a", None)
         .await?;
     let mut tui_b = fixture
         .connect("owner-b", "cell-b", "incarnation-b")
         .await?;
+
+    let reused = fixture.connect_with_proof(proof_a).await;
+    assert!(reused.is_err(), "proof from TUI A must not bind TUI B");
 
     assert_ne!(tui_a.binding_id(), tui_b.binding_id());
     assert!(
@@ -90,6 +93,22 @@ async fn cwd_does_not_become_identity() -> Result<()> {
         proof_b.claims.owner_instance_id
     );
     assert_ne!(tui_a.binding_id(), tui_b.binding_id());
+    let mut wrong_audience = fixture.connect_identity_unbound().await?;
+    let mut wrong_audience_proof = proof_a.clone();
+    wrong_audience_proof.claims.audience = "daemon/wrong-audience".to_string();
+    let audience_rejected = wrong_audience.bind_raw(wrong_audience_proof).await?;
+    assert_eq!(
+        audience_rejected["error"]["message"],
+        "identity bind failed: AudienceMismatch"
+    );
+    let mut wrong_boot = fixture.connect_identity_unbound().await?;
+    let mut wrong_boot_proof = proof_b.clone();
+    wrong_boot_proof.claims.daemon_boot_id = "wrong-daemon-boot".to_string();
+    let boot_rejected = wrong_boot.bind_raw(wrong_boot_proof).await?;
+    assert_eq!(
+        boot_rejected["error"]["message"],
+        "identity bind failed: AudienceMismatch"
+    );
     assert!(
         tui_a
             .request("server/diagnostics", Some(json!({})))
@@ -109,19 +128,24 @@ async fn cwd_does_not_become_identity() -> Result<()> {
 #[tokio::test]
 async fn stale_socket_and_restart_are_scoped() -> Result<()> {
     let fixture = IdentityFixture::start().await?;
+    let (mut bound, proof) = fixture
+        .connect_record(
+            "owner-before-restart",
+            "cell-before-restart",
+            "incarnation-a",
+            None,
+        )
+        .await
+        .context("connect_record before replay")?;
+    let replay = bound.bind_raw(proof).await?;
+    assert_eq!(replay["error"]["message"], "identity bind failed: Replay");
     let socket = fixture.socket_path()?;
     fixture.stop().await?;
     let stale_listener = std::os::unix::net::UnixListener::bind(&socket)?;
     drop(stale_listener);
     fixture.restart().await?;
 
-    let mut client = fixture
-        .connect(
-            "owner-after-restart",
-            "cell-after-restart",
-            "incarnation-new",
-        )
-        .await?;
+    let mut client = fixture.connect_unbound().await?;
     assert!(
         client
             .request("server/diagnostics", Some(json!({})))
@@ -367,5 +391,114 @@ async fn thread_binding_persistence_rejects_other_owner_and_unbound_after_restar
     );
 
     fixture.stop().await?;
+    Ok(())
+}
+
+async fn start_owned_thread_for_auditor_probe(
+    fixture: &IdentityFixture,
+) -> Result<(String, String)> {
+    let mut owner = fixture
+        .connect("owner-a", "cell-a", "incarnation-a")
+        .await?;
+    let started = owner
+        .request(
+            "thread/start",
+            Some(json!({"ephemeral": false, "historyMode": "legacy"})),
+        )
+        .await?;
+    let id = started["thread"]["id"]
+        .as_str()
+        .context("thread id")?
+        .to_owned();
+    let path = started["thread"]["path"]
+        .as_str()
+        .context("rollout path")?
+        .to_owned();
+    tokio::fs::create_dir_all(std::path::Path::new(&path).parent().context("parent")?).await?;
+    tokio::fs::write(
+        &path,
+        format!(
+            "{{\"timestamp\":\"2026-09-06T03:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{id}\",\"id\":\"{id}\",\"timestamp\":\"2026-09-06T03:00:00Z\",\"cwd\":\"/tmp\",\"originator\":\"audit-probe\",\"cli_version\":\"0.153.2\",\"model_provider\":\"openai\"}}}}\n"
+        ),
+    )
+    .await?;
+    Ok((id, path))
+}
+
+#[tokio::test]
+async fn auditor_bound_thread_path_resume_requires_owner() -> Result<()> {
+    let fixture = IdentityFixture::start().await?;
+    let (id, path) = start_owned_thread_for_auditor_probe(&fixture).await?;
+    fixture.restart().await?;
+    let mut other = fixture
+        .connect("owner-b", "cell-b", "incarnation-b")
+        .await?;
+    let control = other
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": id, "excludeTurns": true})),
+        )
+        .await?;
+    let via_path = other
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": "not-a-uuid", "path": path, "excludeTurns": true})),
+        )
+        .await?;
+    let mut unbound = fixture.connect_unbound().await?;
+    let via_path_unbound = unbound
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": "not-a-uuid", "path": path, "excludeTurns": true})),
+        )
+        .await?;
+    fixture.stop().await?;
+    println!(
+        "control_error={:?}; path_error={:?}; path_thread={:?}; unbound_path_error={:?}; unbound_thread={:?}",
+        control["error"]["message"],
+        via_path["error"]["message"],
+        via_path["thread"]["id"],
+        via_path_unbound["error"]["message"],
+        via_path_unbound["thread"]["id"]
+    );
+    assert_eq!(
+        control["error"]["message"],
+        "thread identity binding owner mismatch"
+    );
+    assert_eq!(
+        via_path["error"]["message"], "thread identity binding owner mismatch",
+        "path must authorize the resolved owner before resume"
+    );
+    assert_eq!(
+        via_path_unbound["error"]["message"],
+        "identity required for bound thread"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn auditor_new_incarnation_reauthorizes_existing_owned_thread() -> Result<()> {
+    let fixture = IdentityFixture::start().await?;
+    let (id, _) = start_owned_thread_for_auditor_probe(&fixture).await?;
+    fixture.restart().await?;
+    let mut owner = fixture
+        .connect("owner-a", "cell-a", "incarnation-new")
+        .await?;
+    let resumed = owner
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": id, "excludeTurns": true})),
+        )
+        .await?;
+    fixture.stop().await?;
+    println!(
+        "fresh_binding={:?}; resume_error={:?}",
+        owner.binding_id(),
+        resumed["error"]["message"]
+    );
+    assert!(
+        resumed.get("error").is_none(),
+        "fresh owner authorization must permit existing owned thread resume"
+    );
     Ok(())
 }

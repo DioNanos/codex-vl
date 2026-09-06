@@ -18,6 +18,8 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::process::Command;
@@ -47,13 +49,12 @@ pub struct IdentityAuthorityStub;
 impl IdentityAuthorityStub {
     pub fn issue(
         &self,
-        challenge_file: &Path,
+        challenge: &IdentityChallenge,
         owner: &str,
         cell: &str,
         incarnation: &str,
         cwd: Option<&str>,
     ) -> Result<IdentityProof> {
-        let challenge = read_latest_challenge(challenge_file)?;
         Ok(IdentityProof {
             version: "1".to_string(),
             kind: IdentityKind::ConnectionV1,
@@ -90,6 +91,8 @@ pub struct IdentityFixture {
     shim: PathBuf,
     app_server: PathBuf,
     authority: IdentityAuthorityStub,
+    stopped: AtomicBool,
+    challenge_lock: tokio::sync::Mutex<()>,
 }
 
 impl IdentityFixture {
@@ -126,6 +129,8 @@ impl IdentityFixture {
                     shim,
                     app_server,
                     authority: IdentityAuthorityStub,
+                    stopped: AtomicBool::new(false),
+                    challenge_lock: tokio::sync::Mutex::new(()),
                 });
             }
             sleep(Duration::from_millis(20)).await;
@@ -156,6 +161,7 @@ impl IdentityFixture {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        self.stopped.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -172,6 +178,7 @@ impl IdentityFixture {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        self.stopped.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -181,16 +188,32 @@ impl IdentityFixture {
         cell: &str,
         incarnation: &str,
     ) -> Result<HeadlessTuiClient> {
-        let mut client = HeadlessTuiClient::connect_unbound(self.socket_path()?, true).await?;
-        let proof = self
-            .authority
-            .issue(&self.challenge_file, owner, cell, incarnation, None)?;
+        let _challenge_guard = self.challenge_lock.lock().await;
+        let mut client = HeadlessTuiClient::connect_unbound(
+            self.socket_path()?,
+            true,
+            Some(&self.challenge_file),
+        )
+        .await?;
+        let proof = self.authority.issue(
+            client.challenge().context("connection challenge")?,
+            owner,
+            cell,
+            incarnation,
+            None,
+        )?;
         client.bind(proof).await?;
         Ok(client)
     }
 
     pub async fn connect_unbound(&self) -> Result<HeadlessTuiClient> {
-        HeadlessTuiClient::connect_unbound(self.socket_path()?, false).await
+        HeadlessTuiClient::connect_unbound(self.socket_path()?, false, None).await
+    }
+
+    pub async fn connect_identity_unbound(&self) -> Result<HeadlessTuiClient> {
+        let _challenge_guard = self.challenge_lock.lock().await;
+        HeadlessTuiClient::connect_unbound(self.socket_path()?, true, Some(&self.challenge_file))
+            .await
     }
 
     pub async fn connect_record(
@@ -200,16 +223,32 @@ impl IdentityFixture {
         incarnation: &str,
         cwd: Option<&str>,
     ) -> Result<(HeadlessTuiClient, IdentityProof)> {
-        let mut client = HeadlessTuiClient::connect_unbound(self.socket_path()?, true).await?;
-        let proof = self
-            .authority
-            .issue(&self.challenge_file, owner, cell, incarnation, cwd)?;
+        let _challenge_guard = self.challenge_lock.lock().await;
+        let mut client = HeadlessTuiClient::connect_unbound(
+            self.socket_path()?,
+            true,
+            Some(&self.challenge_file),
+        )
+        .await?;
+        let proof = self.authority.issue(
+            client.challenge().context("connection challenge")?,
+            owner,
+            cell,
+            incarnation,
+            cwd,
+        )?;
         client.bind(proof.clone()).await?;
         Ok((client, proof))
     }
 
     pub async fn connect_with_proof(&self, proof: IdentityProof) -> Result<HeadlessTuiClient> {
-        let mut client = HeadlessTuiClient::connect_unbound(self.socket_path()?, true).await?;
+        let _challenge_guard = self.challenge_lock.lock().await;
+        let mut client = HeadlessTuiClient::connect_unbound(
+            self.socket_path()?,
+            true,
+            Some(&self.challenge_file),
+        )
+        .await?;
         client.bind(proof).await?;
         Ok(client)
     }
@@ -217,8 +256,15 @@ impl IdentityFixture {
 
 impl Drop for IdentityFixture {
     fn drop(&mut self) {
-        // Tests call stop explicitly; the daemon is detached and cannot be
-        // awaited from Drop. The pid-backed lifecycle owns final cleanup.
+        if !self.stopped.swap(true, Ordering::SeqCst) {
+            let mut command = std::process::Command::new(&self.shim);
+            command
+                .arg("daemon-stop")
+                .env("CODEX_HOME", self._home.path())
+                .env("D174_APP_SERVER_BIN", &self.app_server);
+            scrub_shared_identity_env_std(&mut command);
+            let _ = command.output();
+        }
     }
 }
 
@@ -226,10 +272,19 @@ pub struct HeadlessTuiClient {
     stream: UnixWebSocket,
     next_id: i64,
     binding_id: Option<String>,
+    challenge: Option<IdentityChallenge>,
 }
 
 impl HeadlessTuiClient {
-    async fn connect_unbound(socket: PathBuf, identity: bool) -> Result<Self> {
+    async fn connect_unbound(
+        socket: PathBuf,
+        identity: bool,
+        challenge_file: Option<&Path>,
+    ) -> Result<Self> {
+        let known_challenges = challenge_file
+            .map(read_challenge_fingerprints)
+            .transpose()?
+            .unwrap_or_default();
         let stream = UnixStream::connect(&socket)
             .await
             .with_context(|| format!("connect to app-server socket {}", socket.display()))?;
@@ -269,14 +324,34 @@ impl HeadlessTuiClient {
             anyhow::bail!("initialize failed: {response}");
         }
         send_notification(&mut stream, "initialized", None).await?;
+        let challenge = challenge_file
+            .map(|path| wait_for_new_challenge(path, &known_challenges))
+            .transpose()?
+            .flatten();
+        if identity && challenge.is_none() {
+            anyhow::bail!("identity challenge was not recorded for connection");
+        }
         Ok(Self {
             stream,
             next_id: 2,
             binding_id: None,
+            challenge,
         })
     }
 
     async fn bind(&mut self, proof: IdentityProof) -> Result<()> {
+        let response = self.bind_raw(proof).await?;
+        self.next_id += 1;
+        if response.get("error").is_some() {
+            anyhow::bail!("identity bind failed: {response}");
+        }
+        self.binding_id = response["binding"]["bindingId"]
+            .as_str()
+            .map(str::to_string);
+        Ok(())
+    }
+
+    pub async fn bind_raw(&mut self, proof: IdentityProof) -> Result<Value> {
         send_request(
             &mut self.stream,
             "nexuscrew/identity/bind",
@@ -288,13 +363,11 @@ impl HeadlessTuiClient {
         .await?;
         let response = read_response(&mut self.stream, self.next_id).await?;
         self.next_id += 1;
-        if response.get("error").is_some() {
-            anyhow::bail!("identity bind failed: {response}");
-        }
-        self.binding_id = response["binding"]["bindingId"]
-            .as_str()
-            .map(str::to_string);
-        Ok(())
+        Ok(response)
+    }
+
+    fn challenge(&self) -> Option<&IdentityChallenge> {
+        self.challenge.as_ref()
     }
 
     pub fn binding_id(&self) -> Option<&str> {
@@ -367,12 +440,46 @@ async fn read_response(stream: &mut UnixWebSocket, id: i64) -> Result<Value> {
     }
 }
 
-fn read_latest_challenge(path: &Path) -> Result<IdentityChallenge> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("read identity challenge file {}", path.display()))?;
-    let line = contents
+fn read_challenge_fingerprints(path: &Path) -> Result<std::collections::HashSet<String>> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read identity challenge file {}", path.display()));
+        }
+    };
+    contents
         .lines()
-        .next_back()
-        .context("identity challenge file is empty")?;
-    Ok(serde_json::from_str(line).context("decode identity challenge")?)
+        .map(|line| {
+            serde_json::from_str::<IdentityChallenge>(line).context("decode identity challenge")?;
+            Ok(line.to_string())
+        })
+        .collect()
+}
+
+fn wait_for_new_challenge(
+    path: &Path,
+    known_challenges: &std::collections::HashSet<String>,
+) -> Result<Option<IdentityChallenge>> {
+    for _ in 0..200 {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            for line in contents.lines() {
+                let challenge: IdentityChallenge =
+                    serde_json::from_str(line).context("decode identity challenge")?;
+                if !known_challenges.contains(line) {
+                    return Ok(Some(challenge));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Ok(None)
+}
+
+fn scrub_shared_identity_env_std(command: &mut std::process::Command) {
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("NEXUSCREW_MCP_SESSION");
 }
