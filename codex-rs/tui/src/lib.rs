@@ -94,9 +94,13 @@ use std::fs::OpenOptions;
 use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tracing::error;
 use tracing::warn;
 use tracing_appender::non_blocking;
@@ -440,12 +444,6 @@ pub fn remote_addr_supports_auth_token(endpoint: &RemoteAppServerEndpoint) -> bo
     }
 }
 
-async fn connect_remote_app_server(
-    endpoint: RemoteAppServerEndpoint,
-) -> color_eyre::Result<AppServerClient> {
-    connect_remote_app_server_with_identity(endpoint, None).await
-}
-
 /// Remote B attach is only available to callers carrying authority-verified
 /// proof; the ordinary TUI path remains the D-compatible unbound fallback.
 pub(crate) async fn connect_remote_app_server_with_identity(
@@ -502,6 +500,7 @@ async fn maybe_probe_default_daemon_socket(_codex_home: &Path) -> Option<Absolut
 #[allow(clippy::too_many_arguments)]
 async fn start_app_server(
     target: &AppServerTarget,
+    identity_proof: Option<VerifiedIdentityProof>,
     arg0_paths: Arg0DispatchPaths,
     config: Config,
     cli_kv_overrides: Vec<(String, toml::Value)>,
@@ -529,9 +528,16 @@ async fn start_app_server(
         .await
         .map(AppServerClient::InProcess),
         AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
-            connect_remote_app_server(endpoint.clone()).await
+            connect_remote_app_server_with_identity(endpoint.clone(), identity_proof).await
         }
     }
+}
+
+pub(crate) async fn connect_remote_app_server(
+    endpoint: RemoteAppServerEndpoint,
+) -> color_eyre::Result<AppServerClient> {
+    let proof = load_nexuscrew_identity_proof().await;
+    connect_remote_app_server_with_identity(endpoint, proof).await
 }
 
 pub(crate) async fn start_app_server_for_picker(
@@ -542,6 +548,7 @@ pub(crate) async fn start_app_server_for_picker(
 ) -> color_eyre::Result<AppServerSession> {
     let app_server = start_app_server(
         target,
+        None,
         Arg0DispatchPaths::default(),
         config.clone(),
         Vec::new(),
@@ -886,6 +893,117 @@ pub(crate) fn has_nexuscrew_mcp_session() -> bool {
     std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
 }
 
+fn verified_identity_proof_from_mcp_initialize(
+    response: &serde_json::Value,
+) -> Option<VerifiedIdentityProof> {
+    response
+        .get("result")
+        .and_then(|result| result.get("identityBinding"))
+        .and_then(|binding| binding.get("proof"))
+        .cloned()
+        .and_then(|proof| serde_json::from_value(proof).ok())
+        .map(VerifiedIdentityProof::from_verified_authority)
+}
+
+#[cfg(test)]
+#[test]
+fn mcp_initialize_identity_proof_is_forwarded_only_when_present() {
+    let proof = serde_json::json!({
+        "version": "1",
+        "kind": "connection-v1",
+        "challenge": {
+            "version": "1",
+            "connectionId": "connection-a",
+            "daemonBootId": "boot-a",
+            "audience": "daemon/a",
+            "nonce": "nonce-a",
+            "issuedAt": "2026-09-06T03:00:00Z",
+            "expiresAt": "2026-09-06T03:00:15Z"
+        },
+        "claims": {
+            "issuerOwner": "owner-a",
+            "audience": "daemon/a",
+            "ownerInstanceId": "owner-a",
+            "cellId": "cell-a",
+            "tmuxSession": "cloud-a",
+            "incarnationId": "incarnation-a",
+            "launchEpoch": "epoch-a",
+            "daemonBootId": "boot-a",
+            "connectionId": "connection-a",
+            "bindingId": "binding-a",
+            "origin": "local_tui",
+            "scopes": ["thread/start"],
+            "issuedAt": "2026-09-06T03:00:00Z",
+            "notBefore": "2026-09-06T03:00:00Z",
+            "expiresAt": "2026-09-06T03:00:15Z",
+            "nonce": "nonce-a"
+        },
+        "proof": "authority-proof"
+    });
+    let mut response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"identityBinding": {"proof": proof}}
+    });
+    assert!(verified_identity_proof_from_mcp_initialize(&response).is_some());
+    response["result"]["identityBinding"]
+        .as_object_mut()
+        .unwrap()
+        .remove("proof");
+    assert!(verified_identity_proof_from_mcp_initialize(&response).is_none());
+}
+
+async fn load_nexuscrew_identity_proof() -> Option<VerifiedIdentityProof> {
+    if !has_nexuscrew_mcp_session() {
+        return None;
+    }
+    let mut child = tokio::process::Command::new("nexuscrew")
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let mut lines = BufReader::new(stdout).lines();
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "codex-tui", "version": env!("CARGO_PKG_VERSION")}
+        }
+    });
+    if stdin
+        .write_all(format!("{}\n", initialize).as_bytes())
+        .await
+        .is_err()
+        || stdin.flush().await.is_err()
+    {
+        let _ = child.kill().await;
+        return None;
+    }
+    let response = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(line) = lines.next_line().await.ok()? {
+            let value = serde_json::from_str::<serde_json::Value>(&line).ok()?;
+            if value.get("id") == Some(&serde_json::json!(1)) {
+                return Some(value);
+            }
+        }
+        None
+    })
+    .await
+    .ok()
+    .flatten();
+    let _ = child.kill().await;
+    response
+        .as_ref()
+        .and_then(verified_identity_proof_from_mcp_initialize)
+}
+
 const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
     "No verified Fleet identity for the shared app-server; using an embedded app-server.";
 
@@ -1100,6 +1218,7 @@ async fn run_ratatui_app(
     loader_overrides: LoaderOverrides,
     strict_config: bool,
     app_server_target: AppServerTarget,
+    fleet_identity_proof: Option<VerifiedIdentityProof>,
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
     manually_selected_oss_provider: Option<String>,
@@ -1162,6 +1281,7 @@ async fn run_ratatui_app(
             &mut tui,
             start_app_server(
                 &app_server_target,
+                fleet_identity_proof.clone(),
                 arg0_paths.clone(),
                 initial_config.clone(),
                 cli_kv_overrides.clone(),
@@ -1756,6 +1876,7 @@ async fn run_ratatui_app(
                 &mut tui,
                 start_app_server(
                     &app_server_target,
+                    fleet_identity_proof.clone(),
                     arg0_paths,
                     config.clone(),
                     cli_kv_overrides.clone(),

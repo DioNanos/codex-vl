@@ -324,7 +324,8 @@ impl MessageProcessor {
             remote_control_handle,
             plugin_startup_tasks,
         } = args;
-        let thread_state_manager = ThreadStateManager::new();
+        let thread_state_manager =
+            ThreadStateManager::with_persistence(config.as_ref().codex_home.as_path());
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
@@ -793,7 +794,7 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
-                    identity_binding_id: None,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -901,7 +902,7 @@ impl MessageProcessor {
             let response = session
                 .bind_identity(params.proof.clone())
                 .map_err(|error| invalid_request(format!("identity bind failed: {error:?}")))?;
-            let binding_id = response.binding.binding_id.clone();
+            let binding = response.binding.clone();
             self.outgoing
                 .send_response(
                     ConnectionRequestId {
@@ -912,7 +913,7 @@ impl MessageProcessor {
                 )
                 .await;
             self.thread_processor
-                .connection_identity_bound(connection_id, binding_id)
+                .connection_identity_bound(connection_id, binding)
                 .await;
             return Ok(());
         }
@@ -933,7 +934,7 @@ impl MessageProcessor {
                         connection_id,
                         ConnectionCapabilities {
                             request_attestation: session.request_attestation(),
-                            identity_binding_id: None,
+                            identity_binding: None,
                         },
                     )
                     .await;

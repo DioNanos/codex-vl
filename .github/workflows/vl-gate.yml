@@ -189,6 +189,13 @@ jobs:
           cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-absent-socket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-absent-socket.out
           grep -F 'absent_socket_keeps_fleet_tui_embedded ... ok' vl-gate-absent-socket.out
+      - name: C5 thread binding rejects cross-owner access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --test d174_c6_terminal thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-thread-binding.out
+          grep -F 'test thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork ... ok' vl-gate-c5-thread-binding.out
       - name: C6 new TUI identity is never reused
         shell: bash
         run: |

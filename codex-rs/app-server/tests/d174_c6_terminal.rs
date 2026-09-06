@@ -3,6 +3,7 @@
 #[path = "common/identity_fixture.rs"]
 mod identity_fixture;
 
+use anyhow::Context;
 use anyhow::Result;
 use identity_fixture::IdentityFixture;
 use serde_json::json;
@@ -127,6 +128,92 @@ async fn stale_socket_and_restart_are_scoped() -> Result<()> {
             .await?
             .is_object()
     );
+    fixture.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork() -> Result<()> {
+    let fixture = IdentityFixture::start().await?;
+    let mut tui_a = fixture
+        .connect("owner-a", "cell-a", "incarnation-a")
+        .await?;
+    let mut tui_b = fixture
+        .connect("owner-b", "cell-b", "incarnation-b")
+        .await?;
+
+    let started = tui_a
+        .request(
+            "thread/start",
+            Some(json!({"ephemeral": false, "historyMode": "legacy"})),
+        )
+        .await?;
+    let thread_id = started["thread"]["id"]
+        .as_str()
+        .context("thread/start did not return a thread id")?
+        .to_string();
+    let rollout_path = started["thread"]["path"]
+        .as_str()
+        .context("thread/start did not return a rollout path")?;
+    tokio::fs::create_dir_all(
+        std::path::Path::new(rollout_path)
+            .parent()
+            .context("rollout path has no parent")?,
+    )
+    .await?;
+    tokio::fs::write(
+        rollout_path,
+        format!(
+            "{{\"timestamp\":\"2026-09-06T03:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{thread_id}\",\"id\":\"{thread_id}\",\"timestamp\":\"2026-09-06T03:00:00Z\",\"cwd\":\"/tmp\",\"originator\":\"d174-c5-test\",\"cli_version\":\"0.153.2\",\"model_provider\":\"openai\"}}}}\n"
+        ),
+    )
+    .await?;
+
+    let rejected = tui_b
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": thread_id, "excludeTurns": true})),
+        )
+        .await?;
+    assert_eq!(
+        rejected["error"]["message"],
+        "thread identity binding owner mismatch"
+    );
+
+    let resumed = tui_a
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": thread_id, "excludeTurns": true})),
+        )
+        .await?;
+    assert!(
+        resumed.get("error").is_none(),
+        "owner resume must not be rejected: {resumed}"
+    );
+
+    let forked = tui_a
+        .request(
+            "thread/fork",
+            Some(json!({"threadId": thread_id, "excludeTurns": true})),
+        )
+        .await?;
+    let fork_id = forked["thread"]["id"]
+        .as_str()
+        .context("thread/fork did not return a thread id")?
+        .to_string();
+    assert_ne!(fork_id, thread_id);
+
+    let fork_rejected = tui_b
+        .request(
+            "thread/resume",
+            Some(json!({"threadId": fork_id, "excludeTurns": true})),
+        )
+        .await?;
+    assert_eq!(
+        fork_rejected["error"]["message"],
+        "thread identity binding owner mismatch"
+    );
+
     fixture.stop().await?;
     Ok(())
 }

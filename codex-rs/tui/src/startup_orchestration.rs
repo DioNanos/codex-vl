@@ -67,7 +67,9 @@ pub(super) async fn run_main_inner(
         launch_loader_overrides.user_config_profile = Some(profile_v2.clone());
     }
     let workload_identity_selected = is_workload_identity_selected();
-    let has_fleet_identity = has_nexuscrew_mcp_session();
+    let fleet_identity_proof = super::load_nexuscrew_identity_proof().await;
+    let has_unverified_fleet_identity =
+        super::has_nexuscrew_mcp_session() && fleet_identity_proof.is_none();
 
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         let validation_target = app_server_target_for_launch(
@@ -75,7 +77,7 @@ pub(super) async fn run_main_inner(
             /*default_daemon_socket*/ None,
             /*can_reuse_implicit_local_daemon*/ false,
             workload_identity_selected,
-            has_fleet_identity,
+            has_unverified_fleet_identity,
         )?;
         let validation_environment_manager =
             if should_load_configured_environments(&loader_overrides, &validation_target) {
@@ -190,7 +192,7 @@ pub(super) async fn run_main_inner(
         default_daemon,
         reuse_implicit_local_daemon,
         workload_identity_selected,
-        has_fleet_identity,
+        has_unverified_fleet_identity,
     )?;
     let remote_cwd_override = cli
         .cwd
@@ -555,6 +557,7 @@ pub(super) async fn run_main_inner(
         loader_overrides,
         strict_config,
         app_server_target,
+        fleet_identity_proof,
         remote_cwd_override,
         config,
         manually_selected_oss_provider,

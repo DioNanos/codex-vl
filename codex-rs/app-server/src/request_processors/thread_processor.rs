@@ -1633,6 +1633,11 @@ impl ThreadRequestProcessor {
                 });
             }
         };
+        listener_task_context
+            .thread_state_manager
+            .bind_new_thread(thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
         let session_telemetry = thread.session_telemetry();
         session_telemetry.record_startup_phase(
             "thread_start_create_thread",
@@ -3670,10 +3675,10 @@ impl ThreadRequestProcessor {
     pub(crate) async fn connection_identity_bound(
         &self,
         connection_id: ConnectionId,
-        binding_id: String,
+        binding: codex_app_server_protocol::IdentityBinding,
     ) {
         self.thread_state_manager
-            .connection_identity_bound(connection_id, binding_id)
+            .connection_identity_bound(connection_id, binding)
             .await;
     }
 
@@ -3738,6 +3743,12 @@ impl ThreadRequestProcessor {
         app_server_client_version: Option<String>,
         client_mcp_extensions: ClientMcpExtensions,
     ) -> Result<(), JSONRPCErrorError> {
+        if let Ok(thread_id) = ThreadId::from_string(&params.thread_id) {
+            self.thread_state_manager
+                .authorize_thread_access(thread_id, request_id.connection_id)
+                .await
+                .map_err(invalid_request)?;
+        }
         if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
             && self
                 .pending_thread_unloads
@@ -4888,6 +4899,10 @@ impl ThreadRequestProcessor {
                 /*include_history*/ false,
             )
             .await?;
+        self.thread_state_manager
+            .authorize_thread_access(source_thread.thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
         let paginated_source = matches!(source_thread.history_mode, ThreadHistoryMode::Paginated);
         if last_turn_id.is_some() && before_turn_id.is_some() {
             return Err(invalid_request(
@@ -5179,6 +5194,10 @@ impl ThreadRequestProcessor {
                 });
             }
         };
+        self.thread_state_manager
+            .bind_forked_thread(source_thread_id, thread_id, request_id.connection_id)
+            .await
+            .map_err(invalid_request)?;
 
         Self::set_app_server_client_info(
             forked_thread.as_ref(),
