@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+d174-test-fixture = []
+
 [[bin]]
 name = "codex-app-server"
 path = "src/main.rs"
@@ -19,6 +22,7 @@ path = "src/bin/exec_server.rs"
 [[bin]]
 name = "d174-daemon-shim"
 path = "src/bin/d174_daemon_shim.rs"
+required-features = ["d174-test-fixture"]
 
 [lib]
 name = "codex_app_server"

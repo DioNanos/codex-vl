@@ -5,7 +5,7 @@ use codex_app_server_protocol::{
 };
 use uuid::Uuid;
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "d174-test-fixture")]
 use std::io::Write;
 
 use crate::outgoing_message::ConnectionId;
@@ -34,7 +34,7 @@ impl ConnectionIdentityState {
                 expires_at: (issued_at + chrono::Duration::seconds(15))
                     .to_rfc3339_opts(SecondsFormat::Secs, true),
             };
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "d174-test-fixture")]
             if let Ok(path) = std::env::var("D174_IDENTITY_CHALLENGE_FILE")
                 && let Ok(mut file) = std::fs::OpenOptions::new()
                     .create(true)

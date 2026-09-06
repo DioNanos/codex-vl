@@ -30,6 +30,13 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 type UnixWebSocket = WebSocketStream<UnixStream>;
 
+fn scrub_shared_identity_env(command: &mut Command) {
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env_remove("NEXUSCREW_MCP_SESSION");
+}
+
 /// In-repo authority substitute for the C6 process fixture. It only issues a
 /// proof after reading the daemon-issued challenge; C6 therefore exercises the
 /// real app-server/daemon/client transport, while NC-5 still covers the real
@@ -93,14 +100,14 @@ impl IdentityFixture {
             .context("locate C6 daemon shim")?;
         let app_server = codex_utils_cargo_bin::cargo_bin("codex-app-server")
             .context("locate real app-server binary")?;
-        let output = Command::new(&shim)
+        let mut command = Command::new(&shim);
+        command
             .arg("daemon-start")
             .env("CODEX_HOME", home.path())
             .env("D174_APP_SERVER_BIN", &app_server)
-            .env("D174_IDENTITY_CHALLENGE_FILE", &challenge_file)
-            .env_remove("TMUX")
-            .env_remove("TMUX_PANE")
-            .env_remove("NEXUSCREW_MCP_SESSION")
+            .env("D174_IDENTITY_CHALLENGE_FILE", &challenge_file);
+        scrub_shared_identity_env(&mut command);
+        let output = command
             .output()
             .await
             .context("start real app-server through daemon lifecycle")?;
@@ -135,13 +142,14 @@ impl IdentityFixture {
 
     pub async fn restart(&self) -> Result<()> {
         self.stop().await?;
-        let output = Command::new(&self.shim)
+        let mut command = Command::new(&self.shim);
+        command
             .arg("daemon-start")
             .env("CODEX_HOME", self._home.path())
             .env("D174_APP_SERVER_BIN", &self.app_server)
-            .env("D174_IDENTITY_CHALLENGE_FILE", &self.challenge_file)
-            .output()
-            .await?;
+            .env("D174_IDENTITY_CHALLENGE_FILE", &self.challenge_file);
+        scrub_shared_identity_env(&mut command);
+        let output = command.output().await?;
         if !output.status.success() {
             anyhow::bail!(
                 "daemon restart failed: {}",

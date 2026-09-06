@@ -193,35 +193,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-app-server --test d174_c6_terminal thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-thread-binding.out
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-thread-binding.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-thread-binding.out
           grep -F 'test thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork ... ok' vl-gate-c5-thread-binding.out
       - name: C6 new TUI identity is never reused
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-app-server --test d174_c6_terminal new_tui_b_never_reuses_a_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-new-tui.out
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal new_tui_b_never_reuses_a_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-new-tui.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-new-tui.out
           grep -F 'test new_tui_b_never_reuses_a_identity ... ok' vl-gate-c6-new-tui.out
       - name: C6 resume fork and reauthorize incarnation
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-app-server --test d174_c6_terminal resume_fork_and_new_incarnation_reauthorize -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-resume-fork.out
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal resume_fork_and_new_incarnation_reauthorize -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-resume-fork.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-resume-fork.out
           grep -F 'test resume_fork_and_new_incarnation_reauthorize ... ok' vl-gate-c6-resume-fork.out
       - name: C6 cwd is not identity
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-app-server --test d174_c6_terminal cwd_does_not_become_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-cwd.out
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal cwd_does_not_become_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-cwd.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-cwd.out
           grep -F 'test cwd_does_not_become_identity ... ok' vl-gate-c6-cwd.out
       - name: C6 stale socket restart is scoped
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-app-server --test d174_c6_terminal stale_socket_and_restart_are_scoped -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-stale-socket.out
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal stale_socket_and_restart_are_scoped -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-stale-socket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-stale-socket.out
           grep -F 'test stale_socket_and_restart_are_scoped ... ok' vl-gate-c6-stale-socket.out
       - name: Test model message caps
