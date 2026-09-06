@@ -479,10 +479,20 @@ impl ThreadStateManager {
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) -> Result<(), &'static str> {
-        let Some(requester) = self.connection_thread_binding(connection_id).await else {
-            return Ok(());
-        };
+        let requester = self.connection_thread_binding(connection_id).await;
         let state = self.state.lock().await;
+        let thread_has_owner = state
+            .threads
+            .get(&thread_id)
+            .and_then(|entry| entry.owner_binding.as_ref())
+            .is_some()
+            || state.persisted_bindings.contains_key(&thread_id);
+        if !thread_has_owner {
+            return Ok(());
+        }
+        let Some(requester) = requester else {
+            return Err("identity required for bound thread");
+        };
         let owner_matches = state
             .threads
             .get(&thread_id)
@@ -492,11 +502,6 @@ impl ThreadStateManager {
                 .persisted_bindings
                 .get(&thread_id)
                 .is_some_and(|owner| owner.same_owner(&requester));
-        if !state.threads.contains_key(&thread_id)
-            && !state.persisted_bindings.contains_key(&thread_id)
-        {
-            return Ok(());
-        }
         if owner_matches {
             Ok(())
         } else {

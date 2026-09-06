@@ -189,6 +189,10 @@ impl IdentityFixture {
         Ok(client)
     }
 
+    pub async fn connect_unbound(&self) -> Result<HeadlessTuiClient> {
+        HeadlessTuiClient::connect_unbound(self.socket_path()?, false).await
+    }
+
     pub async fn connect_record(
         &self,
         owner: &str,

@@ -196,6 +196,20 @@ jobs:
           cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-thread-binding.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-thread-binding.out
           grep -F 'test thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork ... ok' vl-gate-c5-thread-binding.out
+      - name: C5 thread binding rejects unbound access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_rejects_unbound_resume_and_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-unbound-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-unbound-thread-binding.out
+          grep -F 'test thread_binding_rejects_unbound_resume_and_fork ... ok' vl-gate-c5-unbound-thread-binding.out
+      - name: C5 persisted thread binding rejects unbound access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_persistence_rejects_other_owner_and_unbound_after_restart -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-persisted-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-persisted-thread-binding.out
+          grep -F 'test thread_binding_persistence_rejects_other_owner_and_unbound_after_restart ... ok' vl-gate-c5-persisted-thread-binding.out
       - name: C6 new TUI identity is never reused
         shell: bash
         run: |
