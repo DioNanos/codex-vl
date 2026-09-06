@@ -905,103 +905,117 @@ fn verified_identity_proof_from_mcp_initialize(
         .map(VerifiedIdentityProof::from_verified_authority)
 }
 
-#[cfg(test)]
-#[test]
-fn mcp_initialize_identity_proof_is_forwarded_only_when_present() {
-    let proof = serde_json::json!({
-        "version": "1",
-        "kind": "connection-v1",
-        "challenge": {
-            "version": "1",
-            "connectionId": "connection-a",
-            "daemonBootId": "boot-a",
-            "audience": "daemon/a",
-            "nonce": "nonce-a",
-            "issuedAt": "2026-09-06T03:00:00Z",
-            "expiresAt": "2026-09-06T03:00:15Z"
-        },
-        "claims": {
-            "issuerOwner": "owner-a",
-            "audience": "daemon/a",
-            "ownerInstanceId": "owner-a",
-            "cellId": "cell-a",
-            "tmuxSession": "cloud-a",
-            "incarnationId": "incarnation-a",
-            "launchEpoch": "epoch-a",
-            "daemonBootId": "boot-a",
-            "connectionId": "connection-a",
-            "bindingId": "binding-a",
-            "origin": "local_tui",
-            "scopes": ["thread/start"],
-            "issuedAt": "2026-09-06T03:00:00Z",
-            "notBefore": "2026-09-06T03:00:00Z",
-            "expiresAt": "2026-09-06T03:00:15Z",
-            "nonce": "nonce-a"
-        },
-        "proof": "authority-proof"
-    });
-    let mut response = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": {"identityBinding": {"proof": proof}}
-    });
-    assert!(verified_identity_proof_from_mcp_initialize(&response).is_some());
-    response["result"]["identityBinding"]
-        .as_object_mut()
-        .unwrap()
-        .remove("proof");
-    assert!(verified_identity_proof_from_mcp_initialize(&response).is_none());
+#[derive(Debug)]
+enum IdentityProofLoadFailure {
+    Startup(String),
+    Json(String),
+    Read(String),
+    ProofAbsent,
+}
+
+impl IdentityProofLoadFailure {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Startup(_) => "startup/write error",
+            Self::Json(_) => "JSON error",
+            Self::Read(_) => "read error",
+            Self::ProofAbsent => "proof absent",
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityProofLoadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Startup(error) | Self::Json(error) | Self::Read(error) => {
+                formatter.write_str(error)
+            }
+            Self::ProofAbsent => formatter.write_str("initialize response had no identity proof"),
+        }
+    }
 }
 
 async fn load_nexuscrew_identity_proof() -> Option<VerifiedIdentityProof> {
     if !has_nexuscrew_mcp_session() {
         return None;
     }
-    let mut child = tokio::process::Command::new("nexuscrew")
-        .arg("mcp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdin = child.stdin.take()?;
-    let stdout = child.stdout.take()?;
-    let mut lines = BufReader::new(stdout).lines();
-    let initialize = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "codex-tui", "version": env!("CARGO_PKG_VERSION")}
-        }
-    });
-    if stdin
-        .write_all(format!("{}\n", initialize).as_bytes())
-        .await
-        .is_err()
-        || stdin.flush().await.is_err()
-    {
-        let _ = child.kill().await;
-        return None;
-    }
-    let response = tokio::time::timeout(Duration::from_secs(5), async {
-        while let Some(line) = lines.next_line().await.ok()? {
-            let value = serde_json::from_str::<serde_json::Value>(&line).ok()?;
-            if value.get("id") == Some(&serde_json::json!(1)) {
-                return Some(value);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut command = tokio::process::Command::new("nexuscrew");
+        command
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            IdentityProofLoadFailure::Startup("nexuscrew mcp stdin unavailable".to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            IdentityProofLoadFailure::Startup("nexuscrew mcp stdout unavailable".to_string())
+        })?;
+        let mut lines = BufReader::new(stdout).lines();
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "codex-tui", "version": env!("CARGO_PKG_VERSION")}
             }
-        }
-        None
+        });
+        stdin
+            .write_all(format!("{}\n", initialize).as_bytes())
+            .await
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| IdentityProofLoadFailure::Startup(error.to_string()))?;
+        let response = loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let value = serde_json::from_str::<serde_json::Value>(&line)
+                        .map_err(|error| IdentityProofLoadFailure::Json(error.to_string()))?;
+                    if value.get("id") == Some(&serde_json::json!(1)) {
+                        break value;
+                    }
+                }
+                Ok(None) => return Err(IdentityProofLoadFailure::ProofAbsent),
+                Err(error) => {
+                    return Err(IdentityProofLoadFailure::Read(error.to_string()));
+                }
+            }
+        };
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        Ok(response)
     })
-    .await
-    .ok()
-    .flatten();
-    let _ = child.kill().await;
-    response
-        .as_ref()
-        .and_then(verified_identity_proof_from_mcp_initialize)
+    .await;
+
+    let response = match outcome {
+        Err(_) => {
+            tracing::warn!(reason = "timeout", "nexuscrew mcp identity fallback");
+            return None;
+        }
+        Ok(Err(failure)) => {
+            tracing::warn!(
+                reason = failure.reason(),
+                error = %failure,
+                "nexuscrew mcp identity fallback"
+            );
+            return None;
+        }
+        Ok(Ok(response)) => response,
+    };
+    let Some(proof) = verified_identity_proof_from_mcp_initialize(&response) else {
+        tracing::warn!(reason = "proof absent", "nexuscrew mcp identity fallback");
+        return None;
+    };
+    Some(proof)
 }
 
 const FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC: &str =
@@ -1097,6 +1111,10 @@ pub mod identity_gate_test_support {
 
     pub fn identity_required_endpoint_diagnostic() -> &'static str {
         super::IDENTITY_REQUIRED_ENDPOINT_DIAGNOSTIC
+    }
+
+    pub fn parse_mcp_initialize_identity_proof(response: &serde_json::Value) -> bool {
+        super::verified_identity_proof_from_mcp_initialize(response).is_some()
     }
 
     fn kind_for_target(target: &AppServerTarget) -> TargetKind {
