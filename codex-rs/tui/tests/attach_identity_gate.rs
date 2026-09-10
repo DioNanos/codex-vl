@@ -204,3 +204,61 @@ fn embedded_fallback_emits_user_visible_diagnostic() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn d_mode_does_not_bypass_identity_required_endpoint() {
+    let error =
+        codex_tui::identity_gate_test_support::require_verified_identity_for_endpoint(true, false)
+            .expect_err("D mode must reject an endpoint that requires binding");
+    assert_eq!(
+        error.to_string(),
+        codex_tui::identity_gate_test_support::identity_required_endpoint_diagnostic()
+    );
+}
+
+#[test]
+fn mcp_initialize_identity_proof_is_forwarded_only_when_present() {
+    let proof = serde_json::json!({
+        "version": "1",
+        "kind": "connection-v1",
+        "challenge": {
+            "version": "1",
+            "connectionId": "connection-a",
+            "daemonBootId": "boot-a",
+            "audience": "daemon/a",
+            "nonce": "nonce-a",
+            "issuedAt": "2026-09-06T03:00:00Z",
+            "expiresAt": "2026-09-06T03:00:15Z"
+        },
+        "claims": {
+            "issuerOwner": "owner-a",
+            "audience": "daemon/a",
+            "ownerInstanceId": "owner-a",
+            "cellId": "cell-a",
+            "tmuxSession": "cloud-a",
+            "incarnationId": "incarnation-a",
+            "launchEpoch": "epoch-a",
+            "daemonBootId": "boot-a",
+            "connectionId": "connection-a",
+            "bindingId": "binding-a",
+            "origin": "local_tui",
+            "scopes": ["thread/start"],
+            "issuedAt": "2026-09-06T03:00:00Z",
+            "notBefore": "2026-09-06T03:00:00Z",
+            "expiresAt": "2026-09-06T03:00:15Z",
+            "nonce": "nonce-a"
+        },
+        "proof": "authority-proof"
+    });
+    let mut response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {"identityBinding": {"proof": proof}}
+    });
+    assert!(codex_tui::identity_gate_test_support::parse_mcp_initialize_identity_proof(&response));
+    response["result"]["identityBinding"]
+        .as_object_mut()
+        .expect("identity binding object")
+        .remove("proof");
+    assert!(!codex_tui::identity_gate_test_support::parse_mcp_initialize_identity_proof(&response));
+}

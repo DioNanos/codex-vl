@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
@@ -18,6 +19,7 @@ use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
+use crate::identity::ConnectionIdentityState;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -170,6 +172,7 @@ pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
     pub(crate) mcp_event_streams: McpEventStreams,
     initialized: OnceLock<InitializedConnectionSessionState>,
+    pub(crate) identity: StdMutex<ConnectionIdentityState>,
 }
 
 #[derive(Debug)]
@@ -194,6 +197,7 @@ impl ConnectionSessionState {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             mcp_event_streams: McpEventStreams::default(),
             initialized: OnceLock::new(),
+            identity: StdMutex::new(ConnectionIdentityState::default()),
         }
     }
 
@@ -241,6 +245,44 @@ impl ConnectionSessionState {
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
         self.initialized.set(session).map_err(|_| ())
     }
+
+    pub(crate) fn advertise_identity(
+        &self,
+        connection_id: ConnectionId,
+        required: bool,
+        supported: bool,
+    ) {
+        if let Ok(mut identity) = self.identity.lock() {
+            identity.advertise(connection_id, required, supported);
+        }
+    }
+
+    pub(crate) fn identity_required(&self) -> bool {
+        self.identity
+            .lock()
+            .map(|state| state.required())
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn identity_ready(&self) -> bool {
+        self.identity
+            .lock()
+            .map(|state| state.ready())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn bind_identity(
+        &self,
+        proof: codex_app_server_protocol::IdentityProof,
+    ) -> Result<
+        codex_app_server_protocol::IdentityBindResponse,
+        codex_app_server_protocol::IdentityErrorCode,
+    > {
+        self.identity
+            .lock()
+            .map_err(|_| codex_app_server_protocol::IdentityErrorCode::AuthorityUnavailable)?
+            .bind(proof)
+    }
 }
 
 pub(crate) struct MessageProcessorArgs {
@@ -287,7 +329,8 @@ impl MessageProcessor {
             remote_control_handle,
             plugin_startup_tasks,
         } = args;
-        let thread_state_manager = ThreadStateManager::new();
+        let thread_state_manager =
+            ThreadStateManager::with_persistence(config.as_ref().codex_home.as_path());
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
@@ -756,6 +799,7 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -856,6 +900,28 @@ impl MessageProcessor {
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let connection_id = connection_request_id.connection_id;
+        if let ClientRequest::IdentityBind { request_id, params } = &codex_request {
+            if !session.initialized() {
+                return Err(invalid_request("Identity bind requires initialize"));
+            }
+            let response = session
+                .bind_identity(params.proof.clone())
+                .map_err(|error| invalid_request(format!("identity bind failed: {error:?}")))?;
+            let binding = response.binding.clone();
+            self.outgoing
+                .send_response(
+                    ConnectionRequestId {
+                        connection_id,
+                        request_id: request_id.clone(),
+                    },
+                    response,
+                )
+                .await;
+            self.thread_processor
+                .connection_identity_bound(connection_id, binding)
+                .await;
+            return Ok(());
+        }
         if let ClientRequest::Initialize { request_id, params } = codex_request {
             let connection_initialized = self
                 .initialize_processor
@@ -873,6 +939,7 @@ impl MessageProcessor {
                         connection_id,
                         ConnectionCapabilities {
                             request_attestation: session.request_attestation(),
+                            identity_binding: None,
                         },
                     )
                     .await;
@@ -898,6 +965,13 @@ impl MessageProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         if !session.initialized() {
             return Err(invalid_request("Not initialized"));
+        }
+
+        if session.identity_required()
+            && !session.identity_ready()
+            && !matches!(codex_request, ClientRequest::ServerDiagnostics { .. })
+        {
+            return Err(invalid_request("IDENTITY_UNVERIFIED"));
         }
 
         if let Some(reason) = codex_request.experimental_reason()
@@ -978,6 +1052,9 @@ impl MessageProcessor {
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
+            }
+            ClientRequest::IdentityBind { .. } => {
+                panic!("Identity bind should be handled before initialized request dispatch");
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
             ClientRequest::ConfigRead { params, .. } => self

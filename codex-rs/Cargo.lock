@@ -2057,6 +2057,7 @@ dependencies = [
  "clap",
  "codex-agent-extension",
  "codex-analytics",
+ "codex-app-server-daemon",
  "codex-app-server-protocol",
  "codex-app-server-transport",
  "codex-arg0",

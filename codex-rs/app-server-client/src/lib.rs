@@ -66,6 +66,7 @@ pub use crate::path::AppServerPath;
 pub use crate::remote::RemoteAppServerClient;
 pub use crate::remote::RemoteAppServerConnectArgs;
 pub use crate::remote::RemoteAppServerEndpoint;
+pub use crate::remote::VerifiedIdentityProof;
 
 /// Transitional access to core-only embedded app-server types.
 ///
@@ -701,6 +702,19 @@ impl AppServerClient {
             Self::InProcess(client) => client.request_typed(request).await,
             Self::Remote(client) => client.request_typed(request).await,
         }
+    }
+
+    /// Re-authorize a remote identity after a resume/fork/new incarnation.
+    /// In-process clients are already bound to their local runtime.
+    pub async fn reauthorize_identity(&self) -> IoResult<()> {
+        match self {
+            Self::InProcess(_) => Ok(()),
+            Self::Remote(client) => client.reauthorize_identity().await,
+        }
+    }
+
+    pub fn has_verified_identity(&self) -> bool {
+        matches!(self, Self::Remote(client) if client.has_verified_identity())
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {

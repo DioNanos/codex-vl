@@ -103,6 +103,11 @@ impl AppServerSession {
             rollout_maintenance_guard = None;
         }
         let request_id = self.next_request_id();
+        if self.client.has_verified_identity() {
+            self.client.reauthorize_identity().await.map_err(|err| {
+                color_eyre::eyre::eyre!("identity reauthorization required before resume: {err}")
+            })?;
+        }
         let resume_response = self
             .client
             .request_typed(ClientRequest::ThreadResume {

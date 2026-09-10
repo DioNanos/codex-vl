@@ -453,6 +453,7 @@ pub(super) async fn start_app_server_for_session_command(
         .wrap_err("failed to initialize state database")?;
     let app_server = super::start_app_server(
         &app_server_target,
+        None,
         arg0_paths,
         config,
         cli_kv_overrides,

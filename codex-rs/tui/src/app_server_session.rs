@@ -877,6 +877,11 @@ impl AppServerSession {
         goal_continuation: ForkGoalContinuation,
         presentation: ForkPresentation,
     ) -> Result<AppServerStartedThread> {
+        if self.client.has_verified_identity() {
+            self.client.reauthorize_identity().await.map_err(|err| {
+                color_eyre::eyre::eyre!("identity reauthorization required before fork: {err}")
+            })?;
+        }
         let fork_parent = match presentation {
             ForkPresentation::Regular => self
                 .thread_read(thread_id, /*include_turns*/ false)
