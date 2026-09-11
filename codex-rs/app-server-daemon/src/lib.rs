@@ -1,4 +1,8 @@
+//! Managed app-server lifecycle, serialized across CLI invocations and the updater.
+
 mod backend;
+#[cfg(windows)]
+use backend::windows::try_lock_file;
 mod client;
 mod managed_install;
 mod remote_control_client;
@@ -20,7 +24,7 @@ use codex_app_server_transport::app_server_control_socket_path;
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
 use codex_utils_home_dir::find_codex_home;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use managed_install::managed_codex_version;
 use managed_install::resolve_managed_codex_bin_for_install_context;
 use serde::Serialize;
@@ -75,6 +79,44 @@ pub struct LifecycleOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootstrapOptions {
     pub remote_control_enabled: bool,
+}
+
+/// Opaque launch scope handed to a daemon by the authority/launcher.
+/// The grant stays in memory for the private daemon channel and is never put
+/// in argv or inherited environment. NC-1 issuance is outside this slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DaemonLaunchGrant {
+    pub(crate) incarnation_id: String,
+    pub(crate) daemon_boot_id: String,
+    pub(crate) launch_epoch: u64,
+}
+
+impl DaemonLaunchGrant {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        incarnation_id: impl Into<String>,
+        daemon_boot_id: impl Into<String>,
+        launch_epoch: u64,
+    ) -> Self {
+        Self {
+            incarnation_id: incarnation_id.into(),
+            daemon_boot_id: daemon_boot_id.into(),
+            launch_epoch,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_incarnation(
+        &self,
+        incarnation_id: impl Into<String>,
+        launch_epoch: u64,
+    ) -> Self {
+        Self {
+            incarnation_id: incarnation_id.into(),
+            daemon_boot_id: format!("{}-next", self.daemon_boot_id),
+            launch_epoch,
+        }
+    }
 }
 
 /// Passively probes an existing app-server socket and returns its reported
@@ -158,7 +200,7 @@ pub struct RemoteControlOutput {
     pub app_server_version: Option<String>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartIfRunningOutcome {
     Busy,
@@ -168,21 +210,21 @@ pub(crate) enum RestartIfRunningOutcome {
     Restarted,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RestartMode {
     IfVersionChanged,
     Always,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UpdaterRefreshMode {
     None,
     ReexecIfManagedBinaryChanged,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestartDecision {
     NotReady,
@@ -192,16 +234,24 @@ enum RestartDecision {
 
 pub async fn run(command: LifecycleCommand) -> Result<LifecycleOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    if matches!(command, LifecycleCommand::Start | LifecycleCommand::Restart) {
+        backend::windows::ensure_not_elevated()?;
+    }
     Daemon::from_environment()?.run(command).await
 }
 
 pub async fn bootstrap(options: BootstrapOptions) -> Result<BootstrapOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?.bootstrap(options).await
 }
 
 pub async fn ensure_remote_control_ready() -> Result<RemoteControlReadyOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?
         .ensure_remote_control_ready()
         .await
@@ -245,6 +295,8 @@ pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartR
 
 pub async fn set_remote_control(mode: RemoteControlMode) -> Result<RemoteControlOutput> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     Daemon::from_environment()?.set_remote_control(mode).await
 }
 
@@ -252,18 +304,20 @@ pub async fn run_pid_update_loop(
     http_client_factory: codex_http_client::HttpClientFactory,
 ) -> Result<()> {
     ensure_supported_platform()?;
+    #[cfg(windows)]
+    backend::windows::ensure_not_elevated()?;
     update_loop::run(http_client_factory).await
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn ensure_supported_platform() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn ensure_supported_platform() -> Result<()> {
     Err(anyhow!(
-        "codex app-server daemon lifecycle is only supported on Unix platforms"
+        "codex app-server daemon lifecycle is only supported on Unix and Windows platforms"
     ))
 }
 
@@ -275,6 +329,7 @@ struct Daemon {
     settings_file: PathBuf,
     managed_codex_bin: PathBuf,
     install_context: InstallContext,
+    launch_grant: Option<DaemonLaunchGrant>,
 }
 
 impl Daemon {
@@ -295,6 +350,7 @@ impl Daemon {
             settings_file: state_dir.join(SETTINGS_FILE_NAME),
             managed_codex_bin,
             install_context,
+            launch_grant: None,
         })
     }
 
@@ -381,7 +437,7 @@ impl Daemon {
             .await)
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) async fn try_restart_if_running(
         &self,
         mode: RestartMode,
@@ -404,6 +460,8 @@ impl Daemon {
                 RestartDecision::NotReady => return Ok(RestartIfRunningOutcome::NotReady),
                 RestartDecision::AlreadyCurrent => RestartIfRunningOutcome::AlreadyCurrent,
                 RestartDecision::Restart => {
+                    #[cfg(windows)]
+                    backend::windows::ensure_detached_launch(managed_codex_bin)?;
                     backend.stop().await?;
                     let _ = self
                         .start_managed_backend_with_bin(&settings, managed_codex_bin)
@@ -420,8 +478,17 @@ impl Daemon {
             RestartIfRunningOutcome::NotRunning
         };
 
+        #[cfg(unix)]
         if should_reexec_updater(updater_refresh_mode, outcome) {
             crate::update_loop::reexec_managed_updater(managed_codex_bin, &self.install_context)?;
+        }
+        #[cfg(windows)]
+        if should_reexec_updater(updater_refresh_mode, outcome) {
+            backend::pid_update_loop_backend(
+                self.backend_paths_with_bin(&settings, managed_codex_bin),
+            )
+            .replace_current_updater()
+            .await?;
         }
 
         Ok(outcome)
@@ -586,11 +653,13 @@ impl Daemon {
             ));
         }
 
+        if backend.is_some() {
+            self.ensure_managed_codex_bin()?;
+        }
         settings.remote_control_enabled = remote_control_enabled;
         settings.save(&self.settings_file).await?;
 
         let app_server_version = if let Some(backend) = backend {
-            self.ensure_managed_codex_bin()?;
             backend.stop().await?;
             let _ = self.start_managed_backend(&settings).await?;
             Some(self.wait_until_ready().await?.app_server_version)
@@ -688,6 +757,8 @@ impl Daemon {
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
         if self.managed_codex_bin.is_file() {
+            #[cfg(windows)]
+            backend::windows::ensure_detached_launch(&self.managed_codex_bin)?;
             return Ok(());
         }
 
@@ -715,12 +786,12 @@ impl Daemon {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         managed_codex_version(&self.managed_codex_bin).await.ok()
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     async fn managed_codex_version_best_effort(&self) -> Option<String> {
         None
     }
@@ -739,6 +810,7 @@ impl Daemon {
             pid_file: self.pid_file.clone(),
             update_pid_file: self.update_pid_file.clone(),
             remote_control_enabled: settings.remote_control_enabled,
+            launch_grant: self.launch_grant.clone(),
         }
     }
 
@@ -763,12 +835,18 @@ impl Daemon {
 
     async fn open_operation_lock_file(&self) -> Result<tokio::fs::File> {
         if let Some(parent) = self.operation_lock_file.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| {
-                format!(
-                    "failed to create daemon state directory {}",
-                    parent.display()
-                )
-            })?;
+            #[cfg(unix)]
+            if let Some(home) = parent.parent() {
+                tokio::fs::create_dir_all(home).await?;
+            }
+            codex_uds::prepare_private_socket_directory(parent)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to create daemon state directory {}",
+                        parent.display()
+                    )
+                })?;
         }
         tokio::fs::OpenOptions::new()
             .create(true)
@@ -846,7 +924,7 @@ fn already_remote_control_status(mode: RemoteControlMode) -> RemoteControlStatus
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn restart_decision(
     mode: RestartMode,
     info: Option<&client::ProbeInfo>,
@@ -863,7 +941,7 @@ fn restart_decision(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn should_reexec_updater(
     updater_refresh_mode: UpdaterRefreshMode,
     outcome: RestartIfRunningOutcome,
@@ -904,12 +982,12 @@ fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     Err(err).context("failed to lock daemon operation")
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn try_lock_file(_file: &tokio::fs::File) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -918,6 +996,7 @@ mod tests {
     use super::BootstrapOutput;
     use super::BootstrapStatus;
     use super::Daemon;
+    use super::DaemonLaunchGrant;
     use super::LifecycleOutput;
     use super::LifecycleStatus;
     use super::RemoteControlStartOutput;
@@ -965,6 +1044,15 @@ mod tests {
             serde_json::to_string(&RemoteControlStatus::AlreadyEnabled).expect("serialize"),
             "\"alreadyEnabled\""
         );
+    }
+
+    #[test]
+    fn launch_grant_rotation_changes_incarnation_without_reusing_proof_scope() {
+        let first = DaemonLaunchGrant::for_test("incarnation-a", "boot-a", 7);
+        let next = first.next_incarnation("incarnation-b", 8);
+        assert_ne!(first.incarnation_id, next.incarnation_id);
+        assert_ne!(first.launch_epoch, next.launch_epoch);
+        assert_ne!(first.daemon_boot_id, next.daemon_boot_id);
     }
 
     #[test]
@@ -1140,6 +1228,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_creates_missing_home_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let state = temp.path().join("missing-home").join("daemon-state");
+        let daemon = Daemon {
+            socket_path: state.join("server.sock"),
+            pid_file: state.join("server.pid"),
+            update_pid_file: state.join("updater.pid"),
+            operation_lock_file: state.join("daemon.lock"),
+            settings_file: state.join("settings.json"),
+            managed_codex_bin: state.join("missing-codex"),
+            install_context: InstallContext {
+                method: InstallMethod::Other,
+                package_layout: None,
+            },
+            launch_grant: None,
+        };
+        assert_eq!(
+            daemon
+                .run(super::LifecycleCommand::Stop)
+                .await
+                .expect("stop on fresh home")
+                .status,
+            LifecycleStatus::NotRunning,
+        );
+    }
+
+    #[tokio::test]
     async fn not_ready_context_reports_daemon_app_server_before_stderr() {
         let temp_dir = TempDir::new().expect("temp dir");
         let daemon = Daemon {
@@ -1153,6 +1268,7 @@ mod tests {
                 method: InstallMethod::Other,
                 package_layout: None,
             },
+            launch_grant: None,
         };
         let stderr_log = daemon.pid_file.with_extension("stderr.log");
         tokio::fs::write(&stderr_log, "unexpected argument")

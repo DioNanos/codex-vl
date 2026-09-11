@@ -1,9 +1,13 @@
 mod pid;
+#[cfg(windows)]
+pub(crate) mod windows;
 
 use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Serialize;
+
+use crate::DaemonLaunchGrant;
 
 pub(crate) use pid::PidBackend;
 
@@ -19,14 +23,23 @@ pub(crate) struct BackendPaths {
     pub(crate) pid_file: PathBuf,
     pub(crate) update_pid_file: PathBuf,
     pub(crate) remote_control_enabled: bool,
+    pub(crate) launch_grant: Option<DaemonLaunchGrant>,
 }
 
 pub(crate) fn pid_backend(paths: BackendPaths) -> PidBackend {
-    PidBackend::new(
-        paths.codex_bin,
-        paths.pid_file,
-        paths.remote_control_enabled,
-    )
+    match paths.launch_grant {
+        Some(grant) => PidBackend::new_with_launch_grant(
+            paths.codex_bin,
+            paths.pid_file,
+            paths.remote_control_enabled,
+            grant,
+        ),
+        None => PidBackend::new(
+            paths.codex_bin,
+            paths.pid_file,
+            paths.remote_control_enabled,
+        ),
+    }
 }
 
 pub(crate) fn pid_update_loop_backend(paths: BackendPaths) -> PidBackend {

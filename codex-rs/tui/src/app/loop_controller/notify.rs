@@ -613,12 +613,25 @@ mod tests {
             delivered.load(std::sync::atomic::Ordering::Acquire),
             "the worker must pick up and deliver the persisted pending row"
         );
-        let pending = state_runtime
-            .list_pending_loop_notifications()
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        // La rimozione del pending row avviene DOPO il flag di delivery
+        // (stesso worker, due step): sotto carico parallelo l'assert
+        // immediato vede la riga ancora in set. Poll bounded invece del
+        // confronto istantaneo — l'invriante e' che ENTRO il limite la riga
+        // esca dal set, non che esca entro zero millisecondi.
+        let mut pending_empty = false;
+        for _ in 0..50 {
+            let pending = state_runtime
+                .list_pending_loop_notifications()
+                .await
+                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+            if pending.is_empty() {
+                pending_empty = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         assert!(
-            pending.is_empty(),
+            pending_empty,
             "a delivered pending row must leave the pending set"
         );
         Ok(())

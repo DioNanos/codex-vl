@@ -1,0 +1,233 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "IdentityChallenge": {
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "daemonBootId": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "issuedAt": {
+          "type": "string"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "audience",
+        "connectionId",
+        "daemonBootId",
+        "expiresAt",
+        "issuedAt",
+        "nonce",
+        "version"
+      ],
+      "type": "object"
+    },
+    "IdentityClaims": {
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "bindingId": {
+          "type": "string"
+        },
+        "cellId": {
+          "type": "string"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "daemonBootId": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "string"
+        },
+        "incarnationId": {
+          "type": "string"
+        },
+        "issuedAt": {
+          "type": "string"
+        },
+        "issuerOwner": {
+          "type": "string"
+        },
+        "launchEpoch": {
+          "type": "string"
+        },
+        "liveHost": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IdentityLiveHost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "notBefore": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/definitions/IdentityOrigin"
+        },
+        "ownerInstanceId": {
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tmuxSession": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "audience",
+        "bindingId",
+        "cellId",
+        "connectionId",
+        "daemonBootId",
+        "expiresAt",
+        "incarnationId",
+        "issuedAt",
+        "issuerOwner",
+        "launchEpoch",
+        "nonce",
+        "notBefore",
+        "origin",
+        "ownerInstanceId",
+        "scopes",
+        "tmuxSession"
+      ],
+      "type": "object"
+    },
+    "IdentityKind": {
+      "enum": [
+        "connection-v1",
+        "thread-v1",
+        "mcp-v1"
+      ],
+      "type": "string"
+    },
+    "IdentityLiveHost": {
+      "properties": {
+        "cellId": {
+          "type": "string"
+        },
+        "designation": {
+          "type": "string"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "leaseId": {
+          "type": "string"
+        },
+        "ownerInstanceId": {
+          "type": "string"
+        },
+        "pairingSessionId": {
+          "type": "string"
+        },
+        "tmuxSession": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cellId",
+        "designation",
+        "epoch",
+        "generation",
+        "leaseId",
+        "ownerInstanceId",
+        "pairingSessionId",
+        "tmuxSession"
+      ],
+      "type": "object"
+    },
+    "IdentityOrigin": {
+      "enum": [
+        "local_tui",
+        "remote_live",
+        "daemon"
+      ],
+      "type": "string"
+    },
+    "IdentityProof": {
+      "properties": {
+        "challenge": {
+          "$ref": "#/definitions/IdentityChallenge"
+        },
+        "claims": {
+          "$ref": "#/definitions/IdentityClaims"
+        },
+        "kind": {
+          "$ref": "#/definitions/IdentityKind"
+        },
+        "proof": {
+          "description": "Opaque authority proof. It is never interpreted by a client.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "challenge",
+        "claims",
+        "kind",
+        "proof",
+        "version"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "proof": {
+      "$ref": "#/definitions/IdentityProof"
+    }
+  },
+  "required": [
+    "proof"
+  ],
+  "title": "IdentityBindParams",
+  "type": "object"
+}

@@ -16,37 +16,6 @@ fn is_safety_access_block_message(message: &str) -> bool {
 }
 
 impl ChatWidget {
-    /// Reconcile UI state that can outlive a terminal turn event.
-    ///
-    /// The caller applies the user-facing follow-up separately because interrupted input is
-    /// restored, while errors may submit a queued follow-up. A disconnected or closed session
-    /// cannot consume queued input, so that caller also requests that it be discarded.
-    pub(crate) fn reconcile_terminal_turn(&mut self, discard_pending_input: bool) {
-        self.finalize_turn();
-        if discard_pending_input {
-            self.input_queue.clear();
-            self.refresh_pending_input_preview();
-        }
-    }
-
-    /// Apply a raw core abort when no `TurnComplete` follows it.
-    pub(super) fn handle_turn_aborted_event(
-        &mut self,
-        event: codex_protocol::protocol::TurnAbortedEvent,
-    ) {
-        let reason = match event.reason {
-            codex_protocol::protocol::TurnAbortReason::BudgetLimited => {
-                TurnAbortReason::BudgetLimited
-            }
-            codex_protocol::protocol::TurnAbortReason::Interrupted
-            | codex_protocol::protocol::TurnAbortReason::Replaced
-            | codex_protocol::protocol::TurnAbortReason::ReviewEnded => {
-                TurnAbortReason::Interrupted
-            }
-        };
-        self.on_interrupted_turn(reason);
-    }
-
     fn clear_guardian_review_status(&mut self) {
         self.status_state.pending_guardian_review_status.clear();
         if self.status_state.current_status.is_guardian_review() {
@@ -67,6 +36,12 @@ impl ChatWidget {
                 || self.review.is_review_mode
                 || self.mcp_startup_status.is_some(),
         );
+        if self.mcp_startup_status.is_some()
+            && !self.turn_lifecycle.agent_turn_running
+            && !self.review.is_review_mode
+        {
+            self.bottom_pane.hide_status_indicator();
+        }
         self.refresh_status_surfaces();
     }
 
@@ -99,6 +74,7 @@ impl ChatWidget {
     // Raw reasoning uses the same flow as summarized reasoning
 
     pub(super) fn on_task_started(&mut self) {
+        self.clear_context_compaction();
         self.input_queue.user_turn_pending_start = false;
         self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
@@ -113,6 +89,7 @@ impl ChatWidget {
         self.quit_shortcut_expires_at = None;
         self.quit_shortcut_key = None;
         self.update_task_running_state();
+        self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.reset_status_timer(Duration::ZERO);
         self.status_state.retry_status_header = None;
         self.clear_active_hook_cell();
@@ -143,36 +120,28 @@ impl ChatWidget {
         let sanitized_last_agent_message = last_agent_message.as_deref().map(|message| {
             parse_assistant_markdown(message, self.config.cwd.as_path()).visible_markdown
         });
-        if let Some(message) = sanitized_last_agent_message
+        // For desktop notifications: prefer the notification payload, fall back to
+        // the item-level copy source if present, otherwise send an empty string.
+        let notification_response = sanitized_last_agent_message
             .as_ref()
             .filter(|message| !message.is_empty())
-            && !self.transcript.saw_copy_source_this_turn
-        {
-            // Raw original: the copy menu extracts targets from the source text
-            // (interaction.rs falls back to the visible markdown when absent),
-            // mirroring the streaming path which records the unparsed message.
-            let raw_source = last_agent_message.clone().unwrap_or_default();
-            self.transcript
-                .record_agent_markdown(message.clone(), raw_source);
-        }
+            .cloned()
+            .or_else(|| {
+                if self.transcript.saw_copy_source_this_turn {
+                    self.transcript.last_agent_markdown.clone()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
         // Memory V2 Step 3 / P0.1: compute the summary once, BEFORE the
         // `saw_copy_source_this_turn` reset below, and reuse it for both
         // the desktop notification payload and the Vivling turn capsule.
-        // The historical bug was that `record_vivling_turn_completed`
-        // was called with the raw `last_agent_message` argument, which is
-        // always `None` on the `TurnCompleted` notification path
-        // (chatwidget/protocol.rs:252). The result was 73% of turn
-        // capsules degenerating into the "completed a codex turn"
-        // fallback even though the transcript still held the real
-        // assistant markdown for the turn.
         let copy_source_summary = compute_vivling_turn_summary(
             sanitized_last_agent_message.as_deref(),
             self.transcript.last_agent_markdown.as_deref(),
             self.transcript.saw_copy_source_this_turn,
         );
-        // For desktop notifications: prefer the notification payload, fall back to
-        // the item-level copy source if present, otherwise send an empty string.
-        let notification_response = copy_source_summary.clone().unwrap_or_default();
         self.transcript.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
@@ -223,6 +192,7 @@ impl ChatWidget {
             self.refresh_thread_usage_after_turn();
         }
         // Mark task stopped and request redraw now that all content is in history.
+        self.clear_context_compaction();
         self.status_state.pending_status_indicator_restore = false;
         self.input_queue.user_turn_pending_start = false;
         self.clear_active_hook_cell();
@@ -373,6 +343,7 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.clear_context_compaction();
         self.clear_safety_buffering();
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
@@ -404,9 +375,39 @@ impl ChatWidget {
         self.maybe_show_pending_rate_limit_prompt();
     }
 
+    /// Fork: reconciliation of a terminal turn. Upstream provides
+    /// `finalize_turn`; the fork adds the explicit decision on what to do
+    /// with pending input (queued during the turn) at every termination
+    /// site: discard or preserve.
+    pub(crate) fn reconcile_terminal_turn(&mut self, discard_pending_input: bool) {
+        self.finalize_turn();
+        if discard_pending_input {
+            self.input_queue.clear();
+            self.refresh_pending_input_preview();
+        }
+    }
+
+    /// Apply a raw core abort when no `TurnComplete` follows it.
+    pub(super) fn handle_turn_aborted_event(
+        &mut self,
+        event: codex_protocol::protocol::TurnAbortedEvent,
+    ) {
+        let reason = match event.reason {
+            codex_protocol::protocol::TurnAbortReason::BudgetLimited => {
+                TurnAbortReason::BudgetLimited
+            }
+            codex_protocol::protocol::TurnAbortReason::Interrupted
+            | codex_protocol::protocol::TurnAbortReason::Replaced
+            | codex_protocol::protocol::TurnAbortReason::ReviewEnded => {
+                TurnAbortReason::Interrupted
+            }
+        };
+        self.on_interrupted_turn(reason);
+    }
+
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
+        self.finalize_turn();
 
         let message = if message.trim().is_empty() {
             "Codex is currently experiencing high load.".to_string()
@@ -422,7 +423,7 @@ impl ChatWidget {
     fn on_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
-        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
+        self.finalize_turn();
         self.add_to_history(history_cell::new_error_event(message));
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
@@ -444,13 +445,17 @@ impl ChatWidget {
 
     pub(super) fn on_cyber_policy_error(&mut self) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
-        self.reconcile_terminal_turn(/*discard_pending_input*/ false);
-        let plan_type = if self.has_chatgpt_account {
-            self.plan_type
+        self.finalize_turn();
+        let notice = if self.config.model_provider_id == "openai" {
+            self.cyber_policy_notice
+                .get()
+                .copied()
+                .unwrap_or_default()
+                .for_model(self.current_model())
         } else {
-            None
+            crate::daybreak::Notice::Limited
         };
-        self.add_to_history(history_cell::new_cyber_policy_error_event(plan_type));
+        self.add_to_history(history_cell::new_cyber_policy_error_event(notice));
         self.request_redraw();
 
         // After an error ends the turn, try sending the next queued input.
@@ -458,6 +463,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_rate_limit_error(&mut self, error_kind: RateLimitErrorKind, message: String) {
+        self.invalidate_ordinary_usage_recovery();
         // on_error can drain queued input, before the asynchronous recovery read completes.
         self.input_queue.rate_limit_recovery_pending = self.has_chatgpt_account;
         let usage_limit_error = matches!(error_kind, RateLimitErrorKind::UsageLimit);
@@ -536,7 +542,7 @@ impl ChatWidget {
             })
         {
             self.input_queue.submit_pending_steers_after_interrupt = false;
-            self.reconcile_terminal_turn(/*discard_pending_input*/ false);
+            self.finalize_turn();
             self.add_to_history(history_cell::new_safety_access_block_event());
             self.request_redraw();
             self.maybe_send_next_queued_input();
@@ -598,20 +604,6 @@ impl ChatWidget {
     }
 }
 
-/// Compute the summary string for the Vivling turn capsule recorded at
-/// `on_task_complete` time.
-///
-/// Memory V2 design §10.1 (P0.1) — the priority chain matches the one
-/// used for the desktop notification payload so a single turn always
-/// produces the same observable summary across both surfaces:
-///
-/// 1. Sanitized notification payload, when present and non-empty.
-/// 2. The transcript's `last_agent_markdown`, but only when an
-///    item-level event recorded markdown during this turn
-///    (`saw_copy_source_this_turn`). Without that guard a residual
-///    markdown from a previous turn could leak into the new capsule.
-/// 3. `None` — caller's responsibility to fall back to the
-///    "completed a codex turn" placeholder.
 fn compute_vivling_turn_summary(
     sanitized_last_agent_message: Option<&str>,
     transcript_last_agent_markdown: Option<&str>,
@@ -647,9 +639,6 @@ mod vivling_turn_summary_tests {
 
     #[test]
     fn falls_back_to_none_when_no_copy_source_this_turn() {
-        // Residual markdown from a previous turn must not leak into the
-        // current Vivling capsule when the guard says no item-level
-        // event happened this turn.
         let got = compute_vivling_turn_summary(
             None,
             Some("residual content from previous turn"),
@@ -670,10 +659,6 @@ mod vivling_turn_summary_tests {
 
     #[test]
     fn empty_notification_payload_does_not_count_as_present() {
-        // An empty sanitized notification must not short-circuit the
-        // transcript fallback; otherwise an empty notification on a
-        // turn that did record item-level markdown would still produce
-        // the "completed a codex turn" placeholder.
         let got = compute_vivling_turn_summary(
             Some(""),
             Some("real transcript markdown"),

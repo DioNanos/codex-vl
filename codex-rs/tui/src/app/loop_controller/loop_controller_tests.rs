@@ -54,7 +54,7 @@ async fn reload_loop_jobs_state_failure_is_non_fatal() {
     assert!(matches!(control, AppRunControl::Continue));
 }
 
-fn history_cell_text(cell: &Arc<dyn HistoryCell>) -> String {
+fn history_cell_text(cell: &dyn HistoryCell) -> String {
     cell.display_lines(/*width*/ 120)
         .iter()
         .map(|line| {
@@ -100,7 +100,8 @@ async fn loop_owner_brain_off_during_turn_reports_error_and_continues() -> anyho
             thread_id,
             request: LoopCommandRequest::OwnerSetVivling,
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -110,7 +111,7 @@ async fn loop_owner_brain_off_during_turn_reports_error_and_continues() -> anyho
     let AppEvent::InsertHistoryCell(cell) = cell else {
         anyhow::bail!("expected the Vivling brain error history cell, got {cell:?}");
     };
-    let text = history_cell_text(&cell);
+    let text = history_cell_text(cell.as_ref());
     assert!(
         text.contains("Enable the Vivling brain first with `/vivling brain on`"),
         "expected the brain-off guidance, got: {text}"
@@ -138,7 +139,8 @@ async fn loop_owner_brain_on_during_turn_remains_a_positive_control() -> anyhow:
             thread_id,
             request: LoopCommandRequest::OwnerSetVivling,
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -150,8 +152,8 @@ async fn loop_owner_brain_on_during_turn_remains_a_positive_control() -> anyhow:
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     assert_eq!(
-        owner.as_ref().map(|owner| owner.owner_kind.as_str()),
-        Some(codex_state::THREAD_LOOP_OWNER_KIND_VIVLING)
+        owner.owner_kind.as_str(),
+        codex_state::THREAD_LOOP_OWNER_KIND_VIVLING
     );
     Ok(())
 }
@@ -191,7 +193,8 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
         },
         super::types::LoopCommandSource::User,
     )
-    .await?;
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     assert!(!outcome.success);
     assert!(
         outcome
@@ -207,7 +210,8 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
                 owner_kind: "vivling".to_string(),
             },
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -217,7 +221,7 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
     let AppEvent::InsertHistoryCell(cell) = cell else {
         anyhow::bail!("expected the Delegate brain error history cell, got {cell:?}");
     };
-    let text = history_cell_text(&cell);
+    let text = history_cell_text(cell.as_ref());
     assert!(
         text.contains("Enable the Vivling brain first with `/vivling brain on`"),
         "expected the brain-off guidance, got: {text}"

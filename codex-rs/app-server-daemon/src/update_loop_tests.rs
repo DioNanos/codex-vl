@@ -78,3 +78,24 @@ fn reexec_managed_updater_short_circuits_for_package_shims() {
     reexec_managed_updater(missing, &ctx(InstallMethod::Bun)).expect("bun short-circuits");
     reexec_managed_updater(missing, &ctx(InstallMethod::VitePlus)).expect("vite+ short-circuits");
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn powershell_installer_is_noninteractive_and_reports_script_failure() {
+    let valid = FakeInstallerHttp::new(InstallerResponse::Success(
+        br#"
+function Test-Installer {
+    if ($env:CODEX_NON_INTERACTIVE -ne '1') { throw 'interactive installer' }
+}
+Test-Installer
+"#
+        .to_vec(),
+    ));
+    super::install_latest_standalone(&valid)
+        .await
+        .expect("installer succeeds");
+    let failing = FakeInstallerHttp::new(InstallerResponse::Success(
+        b"throw 'installer failed'".to_vec(),
+    ));
+    assert!(super::install_latest_standalone(&failing).await.is_err());
+}

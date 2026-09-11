@@ -25,9 +25,10 @@ async fn turn_aborted_without_turn_complete_reconciles_running_state_and_queue()
     assert!(chat.input_queue.queued_user_messages.is_empty());
     assert!(chat.input_queue.pending_steers.is_empty());
     assert_no_submit_op(&mut op_rx);
-    assert!(
-        !app_event_rx
-            .try_iter()
-            .any(|event| matches!(event, AppEvent::Vl(_)))
-    );
+    while let Ok(event) = app_event_rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Vl(_)),
+            "unexpected Vl event: {event:?}"
+        );
+    }
 }
