@@ -158,3 +158,7 @@ fn parse_codex_version(output: &str) -> Result<String> {
 #[cfg(all(test, unix))]
 #[path = "managed_install_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "managed_install_path_tests.rs"]
+mod path_tests;

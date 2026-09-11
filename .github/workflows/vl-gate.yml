@@ -48,6 +48,13 @@ jobs:
         with:
           toolchain: ${{ steps.rust_toolchain.outputs.channel }}
           components: rustfmt
+      - name: Identity protocol schema round trip
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server-protocol protocol::identity::tests::identity_schema_round_trip_preserves_binding_claims --lib -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-identity-schema.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-identity-schema.out
+          grep -F 'protocol::identity::tests::identity_schema_round_trip_preserves_binding_claims ... ok' vl-gate-identity-schema.out
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -144,49 +151,98 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_keeps_shared_daemon_embedded -- --exact 2>&1 | tee vl-gate-fleet-identity.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_keeps_shared_daemon_embedded -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-fleet-identity.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-identity.out
           grep -F 'unverified_fleet_identity_keeps_shared_daemon_embedded ... ok' vl-gate-fleet-identity.out
       - name: Embedded fallback emits user-visible diagnostic
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate embedded_fallback_emits_user_visible_diagnostic -- --exact --nocapture 2>&1 | tee vl-gate-fallback-diagnostic.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate embedded_fallback_emits_user_visible_diagnostic -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-fallback-diagnostic.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fallback-diagnostic.out
           grep -F 'embedded_fallback_emits_user_visible_diagnostic ... ok' vl-gate-fallback-diagnostic.out
       - name: Fleet identity rejects explicit shared endpoint
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_shared_endpoint -- --exact 2>&1 | tee vl-gate-fleet-explicit.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_shared_endpoint -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-fleet-explicit.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-explicit.out
           grep -F 'unverified_fleet_identity_rejects_explicit_shared_endpoint ... ok' vl-gate-fleet-explicit.out
       - name: Fleet identity rejects explicit WebSocket endpoint
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity -- --exact 2>&1 | tee vl-gate-fleet-websocket.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-fleet-websocket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-fleet-websocket.out
           grep -F 'unverified_fleet_identity_rejects_explicit_websocket_with_workload_identity ... ok' vl-gate-fleet-websocket.out
       - name: No Fleet identity attaches as today
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate tui_without_fleet_identity_attaches_to_live_shared_daemon -- --exact 2>&1 | tee vl-gate-no-fleet.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate tui_without_fleet_identity_attaches_to_live_shared_daemon -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-no-fleet.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-no-fleet.out
           grep -F 'tui_without_fleet_identity_attaches_to_live_shared_daemon ... ok' vl-gate-no-fleet.out
       - name: Missing socket stays embedded
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | tee vl-gate-absent-socket.out
+          cargo test -p codex-tui --features identity-gate-test --test attach_identity_gate absent_socket_keeps_fleet_tui_embedded -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-absent-socket.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-absent-socket.out
           grep -F 'absent_socket_keeps_fleet_tui_embedded ... ok' vl-gate-absent-socket.out
+      - name: C5 thread binding rejects cross-owner access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-thread-binding.out
+          grep -F 'test thread_binding_rejects_cross_owner_resume_and_preserves_owner_on_fork ... ok' vl-gate-c5-thread-binding.out
+      - name: C5 thread binding rejects unbound access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_rejects_unbound_resume_and_fork -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-unbound-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-unbound-thread-binding.out
+          grep -F 'test thread_binding_rejects_unbound_resume_and_fork ... ok' vl-gate-c5-unbound-thread-binding.out
+      - name: C5 persisted thread binding rejects unbound access
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal thread_binding_persistence_rejects_other_owner_and_unbound_after_restart -- --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c5-persisted-thread-binding.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c5-persisted-thread-binding.out
+          grep -F 'test thread_binding_persistence_rejects_other_owner_and_unbound_after_restart ... ok' vl-gate-c5-persisted-thread-binding.out
+      - name: C6 new TUI identity is never reused
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal new_tui_b_never_reuses_a_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-new-tui.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-new-tui.out
+          grep -F 'test new_tui_b_never_reuses_a_identity ... ok' vl-gate-c6-new-tui.out
+      - name: C6 resume fork and reauthorize incarnation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal resume_fork_and_new_incarnation_reauthorize -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-resume-fork.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-resume-fork.out
+          grep -F 'test resume_fork_and_new_incarnation_reauthorize ... ok' vl-gate-c6-resume-fork.out
+      - name: C6 cwd is not identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal cwd_does_not_become_identity -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-cwd.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-cwd.out
+          grep -F 'test cwd_does_not_become_identity ... ok' vl-gate-c6-cwd.out
+      - name: C6 stale socket restart is scoped
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal stale_socket_and_restart_are_scoped -- --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c6-stale-socket.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c6-stale-socket.out
+          grep -F 'test stale_socket_and_restart_are_scoped ... ok' vl-gate-c6-stale-socket.out
       - name: Test model message caps
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests 2>&1 | tee vl-gate-model-message-caps.out
+          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-message-caps.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-message-caps.out
           grep -F 'persistent_instructions_reject_oversized_values ... ok' vl-gate-model-message-caps.out
           grep -F 'persistent_instructions_preserve_empty_none_and_exact_limit ... ok' vl-gate-model-message-caps.out
@@ -200,45 +256,45 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p codex-rmcp-client --bin test_stdio_server
-          cargo test -p codex-core --test all -- suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee vl-gate-model-guardian-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-guardian-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-guardian-terminal.out
           grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' vl-gate-model-guardian-terminal.out
       - name: Test terminal guardian execution probe
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- suite::guardian_review::guardian_approved_node_repl_policy_records_server_call --exact 2>&1 | tee vl-gate-model-guardian-execution-probe.out
+          cargo test -p codex-core --test all -- suite::guardian_review::guardian_approved_node_repl_policy_records_server_call --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-guardian-execution-probe.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-guardian-execution-probe.out
           grep -F 'test suite::guardian_review::guardian_approved_node_repl_policy_records_server_call ... ok' vl-gate-model-guardian-execution-probe.out
       - name: Test terminal persistent cap proof
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee vl-gate-model-persistent-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-persistent-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-persistent-terminal.out
           grep -F 'test suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference ... ok' vl-gate-model-persistent-terminal.out
       - name: Test terminal rendered persistent cap proof
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-core --test all -- suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee vl-gate-model-rendered-persistent-terminal.out
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-rendered-persistent-terminal.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-rendered-persistent-terminal.out
           grep -F 'test suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference ... ok' vl-gate-model-rendered-persistent-terminal.out
       - name: Test model catalog ingress caps
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-api -- remote_models_loader_accepts_exact_limit_and_rejects_oversized_messages 2>&1 | tee vl-gate-model-api-caps.out
+          cargo test -p codex-api -- remote_models_loader_accepts_exact_limit_and_rejects_oversized_messages 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-api-caps.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-api-caps.out
           grep -F 'remote_models_loader_accepts_exact_limit_and_rejects_oversized_messages ... ok' vl-gate-model-api-caps.out
-          cargo test -p codex-models-manager -- file_cache_loader_accepts_exact_limit_and_rejects_oversized_messages 2>&1 | tee vl-gate-model-cache-caps.out
+          cargo test -p codex-models-manager -- file_cache_loader_accepts_exact_limit_and_rejects_oversized_messages 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-cache-caps.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-cache-caps.out
           grep -F 'file_cache_loader_accepts_exact_limit_and_rejects_oversized_messages ... ok' vl-gate-model-cache-caps.out
       - name: Test protocol model message caps
         shell: bash
         run: |
           set -euo pipefail
-          cargo test -p codex-protocol -- model_message_text_cap_reports_field_slug_size_and_no_content model_message_text_cap_counts_utf8_bytes_without_truncating 2>&1 | tee vl-gate-model-protocol-caps.out
+          cargo test -p codex-protocol -- model_message_text_cap_reports_field_slug_size_and_no_content model_message_text_cap_counts_utf8_bytes_without_truncating 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-model-protocol-caps.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-model-protocol-caps.out
           grep -F 'model_message_text_cap_reports_field_slug_size_and_no_content ... ok' vl-gate-model-protocol-caps.out
           grep -F 'model_message_text_cap_counts_utf8_bytes_without_truncating ... ok' vl-gate-model-protocol-caps.out

@@ -7,6 +7,7 @@ use super::step_settings::StepSettingsUpdate;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::config::ConstraintError;
+use crate::context::GuardianContextMode;
 use crate::environment_selection::ThreadEnvironments;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::hook_mcp_executor::CoreHookMcpExecutor;
@@ -18,6 +19,7 @@ use codex_extension_api::ExtensionDataInit;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_mcp::McpBindingContext;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -54,11 +56,13 @@ pub(crate) struct Session {
     /// The set of enabled features should be invariant for the lifetime of the
     /// session.
     pub(super) features: ManagedFeatures,
+    pub(crate) guardian_context_mode: GuardianContextMode,
     pub(crate) windows_sandbox_proxy_settings_mode:
         codex_sandboxing::WindowsSandboxProxySettingsMode,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
     /// Owns invalidation and serializes refreshes without blocking captured calls.
     pub(super) mcp_refresh: McpRefresh,
+    pub(super) mcp_binding_context: Mutex<Option<McpBindingContext>>,
     pub(super) mcp_elicitation_reviewer_handle: OnceLock<codex_mcp::ElicitationReviewerHandle>,
     pub(super) mcp_elicitation_lifecycle_handle: OnceLock<codex_mcp::ElicitationLifecycle>,
     pub(super) mcp_prewarm_tx: async_channel::Sender<()>,
@@ -597,6 +601,15 @@ impl Session {
         self.thread_id
     }
 
+    pub(crate) async fn set_mcp_binding_context(&self, binding_context: McpBindingContext) {
+        *self.mcp_binding_context.lock().await = Some(binding_context);
+        self.request_mcp_runtime_refresh();
+    }
+
+    pub(crate) async fn mcp_binding_context(&self) -> Option<McpBindingContext> {
+        self.mcp_binding_context.lock().await.clone()
+    }
+
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
@@ -660,6 +673,7 @@ impl Session {
         mut thread_extension_init: ExtensionDataInit,
         client_mcp_extensions: ClientMcpExtensions,
         agent_control: AgentControl,
+        mcp_binding_context: Option<McpBindingContext>,
         reserved_thread_id: Option<ThreadId>,
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -771,6 +785,11 @@ impl Session {
                 ));
             }
         };
+        let mcp_binding_context = mcp_binding_context.map(|mut context| {
+            // The session owns the final ID, including resume and fork paths.
+            context.thread_id = Some(thread_id.to_string());
+            context
+        });
         let resumed_session_id = match &initial_history {
             InitialHistory::Resumed(resumed) => {
                 resumed.history.iter().find_map(|item| match item {
@@ -832,11 +851,19 @@ impl Session {
         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
             session_configuration.originator.clone(),
         ));
+        // Publish the already resolved model before extensions make startup decisions.
+        // Turn construction refreshes this attachment when the selected model changes.
+        thread_extension_init.insert(model_info);
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
         );
+        // Resolve once for live history, replay, and all reviewer consumers.
+        let guardian_context_mode = GuardianContextMode::from_features(&config.features);
+        thread_extension_data.insert(crate::context::GuardianReviewEvidence::new(
+            guardian_context_mode,
+        ));
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
@@ -1257,6 +1284,10 @@ impl Session {
             let mut state = SessionState::new_with_auto_compact_window_ids(
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
+                ContextManager::with_guardian_context_mode(
+                    guardian_context_mode,
+                    &session_configuration.session_source,
+                ),
             );
             state.base_instructions_provenance = base_instructions_provenance.clone();
             let managed_network_requirements_configured = config
@@ -1369,6 +1400,7 @@ impl Session {
                     | RolloutItem::WorldState(_)
                     | RolloutItem::RealtimeItem(_)
                     | RolloutItem::TokenUsageRecord(_)
+                    | RolloutItem::RetainedContext(_)
                     | RolloutItem::SecurityRiskScore(_) => {}
                 }
             }
@@ -1494,9 +1526,11 @@ impl Session {
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
+                guardian_context_mode,
                 windows_sandbox_proxy_settings_mode,
                 multi_agent_version,
                 mcp_refresh: McpRefresh::new(),
+                mcp_binding_context: Mutex::new(mcp_binding_context),
                 mcp_elicitation_reviewer_handle: OnceLock::new(),
                 mcp_elicitation_lifecycle_handle: OnceLock::new(),
                 mcp_prewarm_tx,

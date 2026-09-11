@@ -572,6 +572,7 @@ mod thread_processor_behavior_tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
+            originator: None,
             thread_id,
             extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
@@ -590,6 +591,7 @@ mod thread_processor_behavior_tests {
             section_position: None,
             section_entered_at: None,
             project_id: None,
+            daybreak_enabled: None,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Cli,
@@ -1493,6 +1495,7 @@ mod thread_processor_behavior_tests {
                 unrelated_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -1501,6 +1504,7 @@ mod thread_processor_behavior_tests {
                 earlier_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -1509,6 +1513,7 @@ mod thread_processor_behavior_tests {
                 later_supported_connection,
                 ConnectionCapabilities {
                     request_attestation: true,
+                    identity_binding: None,
                 },
             )
             .await;
