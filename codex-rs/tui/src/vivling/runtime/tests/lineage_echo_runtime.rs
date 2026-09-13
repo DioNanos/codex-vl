@@ -1,4 +1,4 @@
-//! codex-vl lineage passive learning runtime tests (Fase 4 iter 1A).
+//! codex-vl lineage passive learning runtime tests.
 //!
 //! Cover the `propagate_parent_summaries_to_children` runtime hook
 //! end-to-end with a real `Vivling` instance on a `TempDir` codex home:

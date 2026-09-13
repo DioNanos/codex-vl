@@ -55,6 +55,7 @@ use crate::config_manager::ConfigManager;
 use crate::error_code::OVERLOADED_ERROR_CODE;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::identity_channel::IdentityFdChannel;
 use crate::message_processor::ConnectionSessionState;
 use crate::message_processor::MessageProcessor;
 use crate::message_processor::MessageProcessorArgs;
@@ -73,6 +74,7 @@ use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
@@ -364,7 +366,36 @@ impl InProcessClientHandle {
 /// This function sends `initialize` followed by `initialized` before returning
 /// the handle, so callers receive a ready-to-use runtime. If initialize fails,
 /// the runtime is shut down and an `InvalidData` error is returned.
-pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+pub async fn start(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+    start_with_identity_channel(args, /*identity_channel*/ None).await
+}
+
+/// Starts an in-process app-server runtime with a channel captured in this process.
+///
+/// The embedded app-server shares its process with the client that captured the
+/// inherited identity descriptors, and that capture removes the declaration from
+/// the environment: the startup gate must accept the owned channel instead of
+/// re-reading the environment.
+pub async fn start_with_identity_channel(
+    args: InProcessStartArgs,
+    identity_channel: Option<IdentityFdChannel>,
+) -> IoResult<InProcessClientHandle> {
+    start_with_identity_channel_and_initialize(args, identity_channel)
+        .await
+        .map(|(handle, _initialize_response)| handle)
+}
+
+/// Starts an in-process app-server runtime and also returns its initialize response.
+///
+/// The embedded app-server answers `initialize` with the identity challenge
+/// whenever it enforces identity, and it then refuses every method but
+/// `ServerDiagnostics` until the connection binds a proof. An embedded client
+/// needs that response to complete the handshake, so the challenge travels back
+/// with the handle instead of being dropped with the initialize envelope.
+pub async fn start_with_identity_channel_and_initialize(
+    mut args: InProcessStartArgs,
+    identity_channel: Option<IdentityFdChannel>,
+) -> IoResult<(InProcessClientHandle, InitializeResponse)> {
     if let Ok(Some(err)) = check_execpolicy_for_warnings(&args.config.config_layer_stack).await {
         let (path, range) = crate::exec_policy_warning_location(&err);
         args.config_warnings.push(ConfigWarningNotification {
@@ -375,7 +406,7 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
         });
     }
     let initialize = args.initialize.clone();
-    let client = start_uninitialized(args).await?;
+    let client = start_uninitialized(args, identity_channel).await?;
 
     let initialize_response = client
         .request(ClientRequest::Initialize {
@@ -383,16 +414,28 @@ pub async fn start(mut args: InProcessStartArgs) -> IoResult<InProcessClientHand
             params: initialize,
         })
         .await?;
-    if let Err(error) = initialize_response {
-        let _ = client.shutdown().await;
-        return Err(IoError::new(
-            ErrorKind::InvalidData,
-            format!("in-process initialize failed: {}", error.message),
-        ));
-    }
+    let initialize_response = match initialize_response {
+        Ok(result) => match serde_json::from_value::<InitializeResponse>(result) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = client.shutdown().await;
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    format!("in-process initialize response did not match the protocol: {error}"),
+                ));
+            }
+        },
+        Err(error) => {
+            let _ = client.shutdown().await;
+            return Err(IoError::new(
+                ErrorKind::InvalidData,
+                format!("in-process initialize failed: {}", error.message),
+            ));
+        }
+    };
     client.notify(ClientNotification::Initialized)?;
 
-    Ok(client)
+    Ok((client, initialize_response))
 }
 
 async fn run_outbound_router(
@@ -414,7 +457,10 @@ async fn run_outbound_router(
     }
 }
 
-async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClientHandle> {
+async fn start_uninitialized(
+    args: InProcessStartArgs,
+    identity_channel: Option<IdentityFdChannel>,
+) -> IoResult<InProcessClientHandle> {
     args.config.auth_config().validate()?;
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
@@ -422,6 +468,17 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         AuthManager::shared_from_config(args.config.as_ref(), args.enable_codex_api_key_env)
             .await
             .map_err(IoError::other)?;
+    let (identity_required, authority_verifier) =
+        match crate::authority::authority_verifier_for_startup_with(identity_channel) {
+            Ok(gate) => gate,
+            Err(error) => {
+                tracing::error!(error = %error, "IDENTITY_CHANNEL_BROKEN");
+                return Err(IoError::new(
+                    ErrorKind::InvalidInput,
+                    format!("IDENTITY_CHANNEL_BROKEN: {error}"),
+                ));
+            }
+        };
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
 
@@ -471,6 +528,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
+                authority_verifier: authority_verifier.clone(),
+                identity_required,
                 outgoing: Arc::clone(&processor_outgoing),
                 analytics_events_client,
                 arg0_paths: args.arg0_paths,
@@ -490,7 +549,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 plugin_startup_tasks: Some(PluginStartupConfig::Current),
             }));
             let mut thread_created_rx = processor.thread_created_receiver();
-            let session = Arc::new(ConnectionSessionState::new());
+            let mut session_state = ConnectionSessionState::new();
+            session_state.set_authority_verifier(authority_verifier);
+            let session = Arc::new(session_state);
             let mut listen_for_threads = true;
 
             loop {
@@ -630,12 +691,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                         Some(InProcessClientMessage::ServerRequestResponse { request_id, result }) => {
                             outgoing_message_sender
-                                .notify_client_response(request_id, result)
+                                .notify_client_response(IN_PROCESS_CONNECTION_ID, request_id, result)
                                 .await;
                         }
                         Some(InProcessClientMessage::ServerRequestError { request_id, error }) => {
                             outgoing_message_sender
-                                .notify_client_error(request_id, error)
+                                .notify_client_error(IN_PROCESS_CONNECTION_ID, request_id, error)
                                 .await;
                         }
                         Some(InProcessClientMessage::Shutdown { done_tx }) => {
@@ -704,7 +765,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     _ => unreachable!("we just sent a ServerRequest variant"),
                                 };
                                 outgoing_message_sender
-                                    .notify_client_error(request_id, error)
+                                    .notify_client_error(IN_PROCESS_CONNECTION_ID, request_id, error)
                                     .await;
                             }
                         }

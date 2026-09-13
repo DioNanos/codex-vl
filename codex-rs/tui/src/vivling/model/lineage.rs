@@ -1,4 +1,4 @@
-//! codex-vl lineage passive learning (Fase 4 iter 1).
+//! codex-vl lineage passive learning.
 //!
 //! Helper model-level for **direct child** Vivlings to absorb parent
 //! distilled summaries without becoming the active actor.

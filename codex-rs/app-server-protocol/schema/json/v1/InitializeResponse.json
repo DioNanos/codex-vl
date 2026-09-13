@@ -4,6 +4,45 @@
     "AbsolutePathBuf": {
       "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
+    },
+    "IdentityChallenge": {
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "daemonBootId": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "issuedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "audience",
+        "connectionId",
+        "daemonBootId",
+        "expiresAt",
+        "issuedAt",
+        "nonce",
+        "version"
+      ],
+      "type": "object"
     }
   },
   "properties": {
@@ -14,6 +53,17 @@
         }
       ],
       "description": "Absolute path to the server's $CODEX_HOME directory."
+    },
+    "identityChallenge": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/IdentityChallenge"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Challenge for the optional `nexuscrew.identity.v1` connection binding."
     },
     "platformFamily": {
       "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",

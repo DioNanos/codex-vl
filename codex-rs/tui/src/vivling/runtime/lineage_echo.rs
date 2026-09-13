@@ -1,4 +1,4 @@
-//! codex-vl lineage passive learning runtime hook (Fase 4 iter 1A).
+//! codex-vl lineage passive learning runtime hook.
 //!
 //! Propagates the **active primary**'s distilled summaries to all
 //! direct children whose `cultural_parent_vivling_id` points to it (with

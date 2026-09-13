@@ -4,6 +4,68 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.154.0-vl.3 - Upstream rust-v0.154.0
+
+### Codex VL changes
+
+- **A daemon that is asked to require identity refuses to start without a usable
+  verifier channel.** When identity is required and the inherited verification
+  channel is absent or unusable — a missing or malformed specification, invalid
+  encoding, a reserved, closed or duplicated descriptor, a single usable half, or
+  a descriptor that is not a pipe or a socket — the daemon exits with
+  `IDENTITY_CHANNEL_BROKEN` before opening any listener. Unprotected mode exists
+  only when identity is not required. The decision is taken once at startup and
+  the validated result is carried to the identity gate, so nothing re-reads the
+  environment after the channel has been captured.
+- **npm wrapper forwards the NexusCrew identity descriptors to the native binary as integer
+  stdio entries.** The launcher passes the inherited verification descriptors through its
+  own `exec` instead of dropping them, so a managed cell reaches the daemon with the
+  identity channel intact.
+- **embedded app-server reuses the identity channel captured at TUI startup instead of
+  re-reading the environment.**
+- **embedded app-server client completes the identity handshake (challenge, proof, bind)
+  over the shared channel before the first protected request.**
+- **MCP child processes started on a verified shared binding now receive non-secret
+  binding metadata (`NEXUSCREW_VERIFIED_*`); the reserved names are rejected from MCP
+  config on every spawn, bound or not, and stay absent on unbound sessions.
+  Requires NexusCrew >= 0.9.25 for `nc_*` tools inside bound cells.**
+- **An explicit standalone identity setting now wins over an inherited identity
+  channel.** When `CODEX_APP_SERVER_IDENTITY_REQUIRED=0`, the terminal client and
+  the embedded client ignore a `NEXUSCREW_IDENTITY_FD` present in the
+  environment: the initialize request does not announce identity support, no
+  identity handshake happens, and the descriptors are left untouched, so the
+  session runs standalone instead of dying on a stale proof.
+- **A connection that reaches a server requiring identity without being issued a
+  challenge now fails closed** with `IDENTITY_CHANNEL_BROKEN` instead of being
+  treated as a successful attach.
+- **Update order: NexusCrew before codex-vl.** NexusCrew 0.9.25 exports the
+  identity declaration and no longer hands the channel to legacy cells.
+- **Requires NexusCrew ≥ 0.9.24 when run as a managed cell.** The daemon asks the
+  cell supervisor to verify a connection identity, and only NexusCrew 0.9.24 and
+  later serve the `nexuscrew/identity/verify` relay: with NexusCrew 0.9.23 a
+  managed cell that requires identity cannot complete the handshake, so update the
+  server before the daemon.
+- **A shared app server can enforce a launcher-owned identity policy.** Protected
+  requests require a verified connection, existing threads stay bound to the
+  verified connection that opened them, and verified clients bind right after the
+  handshake while reconnects obtain a fresh proof and resume, fork and
+  reauthorization flows stay safe.
+- **Verification is bound to the challenge the daemon issued.** The binding is
+  built exclusively from the claims the authority normalized — the nonce among
+  them — and a proof that does not match the issued challenge is refused instead
+  of accepted.
+- **Release gate**: the fork gate also runs the identity startup and identity
+  channel tests, so the fail-closed path is exercised on every release candidate.
+
+### Upstream
+
+- Tracks OpenAI Codex `rust-v0.154.0` (249 upstream commits): GPT-6-Astra in the
+  model picker and Amazon Bedrock catalogs, experimental managed worktrees,
+  inline asynchronous questions, a shared Windows background server, Vim replace
+  mode, richer `/copy`, plugin tool refresh, MCP OAuth coordination, and hardened
+  startup and sandbox handling.
+
+
 ## 0.153.2-vl.2 - Upstream rust-v0.153.2
 
 ### Codex VL fixes

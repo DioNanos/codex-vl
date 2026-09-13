@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 
@@ -18,6 +19,7 @@ use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
+use crate::identity::{AuthorityVerifier, ConnectionIdentityState};
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -135,6 +137,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
+    pub(crate) authority_verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
     outgoing: Arc<OutgoingMessageSender>,
     models_refresh_worker: ModelsRefreshWorker,
     turn_cost_worker: Option<TurnCostWorker>,
@@ -165,11 +168,17 @@ pub(crate) struct MessageProcessor {
     request_serialization_queues: RequestSerializationQueues,
 }
 
-#[derive(Debug)]
+// No Debug: the authority verifier (trait object) is not Debug and
+// representing it as a string has no diagnostic value.
 pub(crate) struct ConnectionSessionState {
     pub(crate) rpc_gate: Arc<ConnectionRpcGate>,
     pub(crate) mcp_event_streams: McpEventStreams,
     initialized: OnceLock<InitializedConnectionSessionState>,
+    pub(crate) identity: StdMutex<ConnectionIdentityState>,
+    /// Authority verifier (verify v1 channel). `None` in production until
+    /// the channel is wired: identity_required ON is then fail-closed
+    /// (IdentityUnverified), never accept-everything.
+    pub(crate) authority_verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
 }
 
 #[derive(Debug)]
@@ -194,7 +203,18 @@ impl ConnectionSessionState {
             rpc_gate: Arc::new(ConnectionRpcGate::new()),
             mcp_event_streams: McpEventStreams::default(),
             initialized: OnceLock::new(),
+            identity: StdMutex::new(ConnectionIdentityState::default()),
+            authority_verifier: None,
         }
+    }
+
+    /// Wires the real verifier onto the verify v1 channel. `None`
+    /// (production until the channel is wired) = fail-closed when ON.
+    pub(crate) fn set_authority_verifier(
+        &mut self,
+        verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
+    ) {
+        self.authority_verifier = verifier;
     }
 
     pub(crate) fn initialized(&self) -> bool {
@@ -241,6 +261,87 @@ impl ConnectionSessionState {
     pub(crate) fn initialize(&self, session: InitializedConnectionSessionState) -> Result<(), ()> {
         self.initialized.set(session).map_err(|_| ())
     }
+
+    pub(crate) fn advertise_identity(
+        &self,
+        connection_id: ConnectionId,
+        required: bool,
+        supported: bool,
+    ) {
+        if let Ok(mut identity) = self.identity.lock() {
+            identity.advertise(connection_id, required, supported);
+        }
+    }
+
+    pub(crate) fn identity_challenge(
+        &self,
+    ) -> Option<codex_app_server_protocol::IdentityChallenge> {
+        self.identity
+            .lock()
+            .ok()
+            .and_then(|state| state.challenge())
+    }
+
+    pub(crate) fn identity_required(&self) -> bool {
+        self.identity
+            .lock()
+            .map(|state| state.required())
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn identity_ready(&self) -> bool {
+        self.identity
+            .lock()
+            .map(|state| state.ready())
+            .unwrap_or(false)
+    }
+
+    pub(crate) async fn bind_identity(
+        &self,
+        proof: codex_app_server_protocol::IdentityProof,
+        verifier: Option<&dyn AuthorityVerifier>,
+    ) -> Result<
+        codex_app_server_protocol::IdentityBindResponse,
+        codex_app_server_protocol::IdentityErrorCode,
+    > {
+        // Synchronous phase (short lock): wire contract + time window.
+        // The guard does NOT cross the await (StdMutexGuard is not Send).
+        let (prepared, required) = {
+            let guard = self
+                .identity
+                .lock()
+                .map_err(|_| codex_app_server_protocol::IdentityErrorCode::AuthorityUnavailable)?;
+            (guard.prepare(&proof)?, guard.required())
+        };
+        // Async phase (no lock): online verification against the authority.
+        // Production without a wired verifier → ON = fail-closed.
+        let verified = if required {
+            let verifier = self
+                .authority_verifier
+                .as_deref()
+                .ok_or(codex_app_server_protocol::IdentityErrorCode::IdentityUnverified)?;
+            Some(
+                verifier
+                    .verify(prepared.proof(), prepared.challenge())
+                    .await
+                    .map_err(|refusal| {
+                        tracing::warn!(?refusal, "identity authority verification refused bind");
+                        // `challenge_mismatch` maps to AudienceMismatch;
+                        // every other refusal stays fail-closed.
+                        crate::identity::identity_error_for_refusal(&refusal)
+                    })?,
+            )
+        } else {
+            None
+        };
+        // Synchronous commit (replay re-check: a second concurrent bind
+        // prepared before the commit fails here).
+        let mut guard = self
+            .identity
+            .lock()
+            .map_err(|_| codex_app_server_protocol::IdentityErrorCode::AuthorityUnavailable)?;
+        guard.commit(prepared, verified)
+    }
 }
 
 pub(crate) struct MessageProcessorArgs {
@@ -260,6 +361,11 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
+    /// Authority verifier. `None` = fail-closed when ON.
+    pub(crate) authority_verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
+    /// Validated startup latch: enforcement is on only when the launcher required
+    /// identity and the inherited channel was captured at startup.
+    pub(crate) identity_required: bool,
     /// `None` skips startup tasks; otherwise preserve the initial config-loading path.
     pub(crate) plugin_startup_tasks: Option<PluginStartupConfig>,
 }
@@ -286,8 +392,12 @@ impl MessageProcessor {
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
+            authority_verifier,
+            identity_required,
         } = args;
-        let thread_state_manager = ThreadStateManager::new();
+        let thread_state_manager =
+            ThreadStateManager::with_persistence(config.as_ref().codex_home.as_path());
+        outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
@@ -348,6 +458,7 @@ impl MessageProcessor {
                     config.codex_home.clone(),
                 )),
                 Some(analytics_events_client.clone()),
+                codex_core::passthrough_image_store(),
                 Arc::clone(&thread_store),
                 codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),
                 installation_id,
@@ -446,6 +557,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_warnings.clone(),
             rpc_transport,
+            identity_required,
         );
         let marketplace_processor = MarketplaceRequestProcessor::new(
             Arc::clone(&config),
@@ -567,6 +679,7 @@ impl MessageProcessor {
         );
 
         Self {
+            authority_verifier,
             outgoing,
             models_refresh_worker,
             turn_cost_worker,
@@ -756,6 +869,7 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
+                    identity_binding: None,
                 },
             )
             .await;
@@ -803,6 +917,9 @@ impl MessageProcessor {
         session_state: &ConnectionSessionState,
     ) {
         session_state.rpc_gate.close().await;
+        self.outgoing
+            .disconnect_user_verification_connection(connection_id)
+            .await;
         session_state.mcp_event_streams.clear().await;
         if timeout(
             CONNECTION_RPC_DRAIN_TIMEOUT,
@@ -834,14 +951,22 @@ impl MessageProcessor {
     }
 
     /// Handle a standalone JSON-RPC response originating from the peer.
-    pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
+    pub(crate) async fn process_response(
+        &self,
+        connection_id: ConnectionId,
+        response: JSONRPCResponse,
+    ) {
         let JSONRPCResponse { id, result, .. } = response;
-        self.outgoing.notify_client_response(id, result).await
+        self.outgoing
+            .notify_client_response(connection_id, id, result)
+            .await
     }
 
     /// Handle an error object received from the peer.
-    pub(crate) async fn process_error(&self, err: JSONRPCError) {
-        self.outgoing.notify_client_error(err.id, err.error).await;
+    pub(crate) async fn process_error(&self, connection_id: ConnectionId, err: JSONRPCError) {
+        self.outgoing
+            .notify_client_error(connection_id, err.id, err.error)
+            .await;
     }
 
     async fn handle_client_request(
@@ -856,6 +981,29 @@ impl MessageProcessor {
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let connection_id = connection_request_id.connection_id;
+        if let ClientRequest::IdentityBind { request_id, params } = &codex_request {
+            if !session.initialized() {
+                return Err(invalid_request("Identity bind requires initialize"));
+            }
+            let response = session
+                .bind_identity(params.proof.clone(), self.authority_verifier.as_deref())
+                .await
+                .map_err(|error| invalid_request(format!("identity bind failed: {error:?}")))?;
+            let binding = response.binding.clone();
+            self.outgoing
+                .send_response(
+                    ConnectionRequestId {
+                        connection_id,
+                        request_id: request_id.clone(),
+                    },
+                    response,
+                )
+                .await;
+            self.thread_processor
+                .connection_identity_bound(connection_id, binding)
+                .await;
+            return Ok(());
+        }
         if let ClientRequest::Initialize { request_id, params } = codex_request {
             let connection_initialized = self
                 .initialize_processor
@@ -873,6 +1021,7 @@ impl MessageProcessor {
                         connection_id,
                         ConnectionCapabilities {
                             request_attestation: session.request_attestation(),
+                            identity_binding: None,
                         },
                     )
                     .await;
@@ -898,6 +1047,13 @@ impl MessageProcessor {
     ) -> Result<(), JSONRPCErrorError> {
         if !session.initialized() {
             return Err(invalid_request("Not initialized"));
+        }
+
+        if session.identity_required()
+            && !session.identity_ready()
+            && !matches!(codex_request, ClientRequest::ServerDiagnostics { .. })
+        {
+            return Err(invalid_request("IDENTITY_UNVERIFIED"));
         }
 
         if let Some(reason) = codex_request.experimental_reason()
@@ -978,6 +1134,15 @@ impl MessageProcessor {
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
+            }
+            ClientRequest::IdentityBind { .. } => {
+                panic!("Identity bind should be handled before initialized request dispatch");
+            }
+            ClientRequest::UserVerificationStatus { .. }
+            | ClientRequest::UserVerificationEnroll { .. }
+            | ClientRequest::UserVerificationDelete { .. }
+            | ClientRequest::UserVerificationVerify { .. } => {
+                Err(crate::user_verification::unavailable())
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
             ClientRequest::ConfigRead { params, .. } => self
@@ -1592,8 +1757,8 @@ impl MessageProcessor {
             ClientRequest::GetAuthStatus { params, .. } => {
                 self.account_processor.get_auth_status(params).await
             }
-            ClientRequest::GetAccountRateLimits { .. } => {
-                self.account_processor.get_account_rate_limits().await
+            ClientRequest::GetAccountRateLimits { params, .. } => {
+                self.account_processor.get_account_rate_limits(params).await
             }
             ClientRequest::ConsumeAccountRateLimitResetCredit { params, .. } => {
                 self.account_processor

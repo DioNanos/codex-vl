@@ -1,4 +1,4 @@
-//! codex-vl multi-origin spawn sort (Fase 4 iter 1B).
+//! codex-vl multi-origin spawn sort.
 //!
 //! `/vivling spawn` rolls one of three biological origins **uniformly**
 //! over the eligible subset; the user never picks. Cultural parent is

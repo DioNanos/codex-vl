@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
+import { buildChildStdio } from "./identity_fds.js";
 
 // __dirname equivalent in ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -487,8 +488,11 @@ if (platform === "android") {
   env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
 }
 
+// Forward the identity channel descriptors (fd 3:4) declared by NexusCrew
+// so the native binary can capture them; "inherit" alone would pass only
+// fds 0-2 and the daemon would start without its identity channel.
 const child = spawn(binaryPath, process.argv.slice(2), {
-  stdio: "inherit",
+  stdio: buildChildStdio(process.env.NEXUSCREW_IDENTITY_FD),
   env,
 });
 

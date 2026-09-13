@@ -46,12 +46,31 @@ jobs:
             version="$(node -p "require('./codex-cli/package.json').version")"
           fi
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      # upstream rust-v0.154.0 release: zig cc is the CC for musl targets.
+      # Without it the runner falls back to aarch64-linux-musl-gcc, and the
+      # tikv-jemalloc-sys 0.7.1 configure (new in 0.154.0) fails its atomics
+      # checks with "Don't have atomics implemented on this platform".
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
       - name: Install Linux musl build tools
         env:
           TARGET: aarch64-unknown-linux-musl
         run: |
           set -euo pipefail
           bash .github/scripts/install-musl-build-tools.sh
+
+      - name: Disable aws-lc jitter entropy (musl)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same guard as upstream rust-v0.154.0 rust-release: avoid the
+          # problematic aws-lc jitter entropy code path on musl builders.
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_AARCH64_UNKNOWN_LINUX_MUSL=1" >> "$GITHUB_ENV"
       - name: Build Linux arm64 native payload
         run: |
           set -euo pipefail

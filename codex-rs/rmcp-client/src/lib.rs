@@ -26,6 +26,7 @@ mod rmcp_client;
 mod service_error;
 mod startup_error;
 mod stdio_server_launcher;
+mod user_verification;
 mod utils;
 mod www_authenticate;
 
@@ -83,3 +84,4 @@ pub use startup_error::is_authentication_required_error;
 pub use stdio_server_launcher::ExecutorStdioServerLauncher;
 pub use stdio_server_launcher::LocalStdioServerLauncher;
 pub use stdio_server_launcher::StdioServerLauncher;
+pub use utils::SharedVerifiedIdentity;

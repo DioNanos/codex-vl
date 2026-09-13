@@ -786,6 +786,7 @@ async fn network_approval_uses_published_task_authority_within_same_turn(
                 exec_policy_hint: None,
                 execution_id: None,
                 disconnect: None,
+                cancellation: None,
             },
         );
     tokio::pin!(decision);
@@ -1284,6 +1285,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
     ));
 
     let (session, io) = Session::spawn(SessionSpawnArgs {
+        mcp_binding_context: None,
         config,
         allow_provider_model_fallback: false,
         user_instructions: Default::default(),

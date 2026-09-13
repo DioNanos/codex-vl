@@ -1,4 +1,4 @@
-//! codex-vl lineage passive learning (Fase 4 iter 1A) — integration tests.
+//! codex-vl lineage passive learning — integration tests.
 //!
 //! Coverage:
 //! - dedup key determinism (G1)

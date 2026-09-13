@@ -22,6 +22,7 @@ pub(crate) struct InitializeRequestProcessor {
     config: Arc<Config>,
     config_warnings: Arc<Vec<ConfigWarningNotification>>,
     rpc_transport: AppServerRpcTransport,
+    identity_required: bool,
 }
 
 impl InitializeRequestProcessor {
@@ -31,8 +32,14 @@ impl InitializeRequestProcessor {
         config: Arc<Config>,
         config_warnings: Vec<ConfigWarningNotification>,
         rpc_transport: AppServerRpcTransport,
+        identity_required: bool,
     ) -> Self {
         Self {
+            // Startup owns the required/channel decision, so this is the already
+            // validated latch. It must never re-read the environment: capturing
+            // the channel removes the variable, and a second probe would then
+            // report a false absence.
+            identity_required,
             outgoing,
             analytics_events_client,
             config,
@@ -71,6 +78,9 @@ impl InitializeRequestProcessor {
         let experimental_api_enabled = capabilities.experimental_api;
         let request_attestation = capabilities.request_attestation;
         let extensions = capabilities.extensions.as_ref();
+        let identity_supported =
+            extensions.is_some_and(|extensions| extensions.contains_key("nexuscrew.identity.v1"));
+        session.advertise_identity(connection_id, self.identity_required, identity_supported);
         let client_mcp_extensions = codex_mcp::client_mcp_extensions(
             extensions,
             capabilities.mcp_server_openai_form_elicitation,
@@ -144,6 +154,7 @@ impl InitializeRequestProcessor {
             codex_home,
             platform_family: std::env::consts::FAMILY.to_string(),
             platform_os: std::env::consts::OS.to_string(),
+            identity_challenge: session.identity_challenge(),
         };
 
         self.outgoing

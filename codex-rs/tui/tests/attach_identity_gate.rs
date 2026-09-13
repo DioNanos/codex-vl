@@ -204,3 +204,14 @@ fn embedded_fallback_emits_user_visible_diagnostic() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn d_mode_does_not_bypass_identity_required_endpoint() {
+    let error =
+        codex_tui::identity_gate_test_support::require_verified_identity_for_endpoint(true, false)
+            .expect_err("D mode must reject an endpoint that requires binding");
+    assert_eq!(
+        error.to_string(),
+        codex_tui::identity_gate_test_support::identity_required_endpoint_diagnostic()
+    );
+}

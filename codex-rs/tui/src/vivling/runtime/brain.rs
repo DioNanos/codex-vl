@@ -493,7 +493,7 @@ impl Vivling {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         })?;
 
-        // codex-vl lineage passive learning (Fase 4 iter 1A): after the
+        // codex-vl lineage passive learning (passive learning): after the
         // active primary has updated its own distilled_summaries via
         // record_turn_completed → maybe_distill_memory →
         // rebuild_learning_profiles, propagate the new/refreshed

@@ -16,6 +16,7 @@ pub use codex_app_server_transport::AppServerTransport;
 pub(crate) use codex_app_server_transport::CHANNEL_CAPACITY;
 pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::ConnectionOrigin;
+pub(crate) use codex_app_server_transport::DaemonShutdownAccess;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
 pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
 pub(crate) use codex_app_server_transport::RemoteControlEnableError;
@@ -50,13 +51,16 @@ impl ConnectionState {
         outbound_initialized: Arc<AtomicBool>,
         outbound_experimental_api_enabled: Arc<AtomicBool>,
         outbound_opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+        authority_verifier: Option<Arc<dyn crate::identity::AuthorityVerifier>>,
     ) -> Self {
+        let mut session = ConnectionSessionState::new();
+        session.set_authority_verifier(authority_verifier);
         Self {
             origin,
             outbound_initialized,
             outbound_experimental_api_enabled,
             outbound_opted_out_notification_methods,
-            session: Arc::new(ConnectionSessionState::new()),
+            session: Arc::new(session),
         }
     }
 }

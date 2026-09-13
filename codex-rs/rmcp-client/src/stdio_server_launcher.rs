@@ -38,6 +38,9 @@ use codex_exec_server::ExecParams;
 use codex_exec_server::ExecProcess;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_utils_path_uri::LegacyAppPathString;
+
+use crate::utils::SharedVerifiedIdentity;
+use crate::utils::finalize_child_env;
 use codex_utils_path_uri::PathUri;
 #[cfg(all(unix, not(target_os = "macos")))]
 use codex_utils_pty::process_group::kill_process_group;
@@ -92,6 +95,7 @@ pub struct StdioServerCommand {
     env_vars: Vec<McpServerEnvVar>,
     cwd: Option<String>,
     protocol_mode: McpProtocolMode,
+    shared_verified_identity: Option<SharedVerifiedIdentity>,
 }
 
 /// Client-side rmcp transport for a launched MCP stdio server.
@@ -160,6 +164,7 @@ impl StdioServerCommand {
         env_vars: Vec<McpServerEnvVar>,
         cwd: Option<String>,
         protocol_mode: McpProtocolMode,
+        shared_verified_identity: Option<SharedVerifiedIdentity>,
     ) -> Self {
         Self {
             program,
@@ -168,6 +173,7 @@ impl StdioServerCommand {
             env_vars,
             cwd,
             protocol_mode,
+            shared_verified_identity,
         }
     }
 }
@@ -264,9 +270,15 @@ impl LocalStdioServerLauncher {
             env_vars,
             cwd,
             protocol_mode,
+            shared_verified_identity,
         } = command;
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        let envs = finalize_child_env(
+            create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?,
+            &env_vars,
+            shared_verified_identity.as_ref(),
+        )
+        .map_err(io::Error::other)?;
         let cwd = cwd.map(PathBuf::from).unwrap_or(fallback_cwd);
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
@@ -554,6 +566,7 @@ impl ExecutorStdioServerLauncher {
             env_vars,
             cwd,
             protocol_mode: _,
+            shared_verified_identity,
         } = command;
         let Some(cwd) = cwd else {
             return Err(io::Error::other(
@@ -564,7 +577,12 @@ impl ExecutorStdioServerLauncher {
             .try_into()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_overlay_for_remote_mcp_server(env, &env_vars);
+        let envs = finalize_child_env(
+            create_env_overlay_for_remote_mcp_server(env, &env_vars),
+            &env_vars,
+            shared_verified_identity.as_ref(),
+        )
+        .map_err(io::Error::other)?;
         let remote_env_vars = remote_mcp_env_var_names(&env_vars);
         // The executor protocol carries argv/env as UTF-8 strings. Local stdio can
         // accept arbitrary OsString values because it calls the OS directly; remote
@@ -578,6 +596,7 @@ impl ExecutorStdioServerLauncher {
         // rmcp write JSON-RPC requests after the process starts.
         let started = exec_backend
             .start(ExecParams {
+                metadata: Default::default(),
                 process_id,
                 argv,
                 cwd,
@@ -669,6 +688,224 @@ impl ExecutorStdioServerLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::sanitize_shared_verified_env;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn shared_verified_env_scrub_removes_config_reintroduced_reserved_values() {
+        let mut env = HashMap::from([
+            (OsString::from("TMUX"), OsString::from("proof-secret")),
+            (OsString::from("TMUX_PANE"), OsString::from("pane-secret")),
+            (
+                OsString::from("NEXUSCREW_MCP_SESSION"),
+                OsString::from("session-secret"),
+            ),
+        ]);
+        sanitize_shared_verified_env(&mut env, &[]).expect("config values are scrubbed");
+        assert!(env.keys().all(|key| {
+            !matches!(
+                key.to_string_lossy().as_ref(),
+                "TMUX" | "TMUX_PANE" | "NEXUSCREW_MCP_SESSION"
+            )
+        }));
+    }
+
+    #[test]
+    fn shared_verified_env_rejects_reserved_env_var_override() {
+        let mut env = HashMap::new();
+        let error =
+            sanitize_shared_verified_env(&mut env, &[McpServerEnvVar::Name("TMUX".to_string())])
+                .expect_err("reserved identity env override must fail closed");
+        assert!(error.to_string().contains("TMUX"));
+    }
+
+    #[test]
+    fn shared_verified_env_injects_binding_metadata_and_scrubs_legacy() {
+        let mut env = HashMap::from([
+            (OsString::from("TMUX"), OsString::from("legacy-secret")),
+            (
+                OsString::from("NEXUSCREW_MCP_SESSION"),
+                OsString::from("legacy-session"),
+            ),
+        ]);
+        let identity = SharedVerifiedIdentity {
+            owner_instance_id: "owner-a".to_string(),
+            cell_id: "cell-a".to_string(),
+            incarnation_id: "incarnation-a".to_string(),
+            binding_id: "binding-1".to_string(),
+            origin: "local_tui".to_string(),
+            thread_id: Some("thread-1".to_string()),
+        };
+        let env = finalize_child_env(env, &[], Some(&identity)).expect("bound composition");
+        let expected = [
+            ("NEXUSCREW_VERIFIED_ENV_VERSION", "1"),
+            ("NEXUSCREW_VERIFIED_OWNER_INSTANCE_ID", "owner-a"),
+            ("NEXUSCREW_VERIFIED_CELL_ID", "cell-a"),
+            ("NEXUSCREW_VERIFIED_INCARNATION_ID", "incarnation-a"),
+            ("NEXUSCREW_VERIFIED_BINDING_ID", "binding-1"),
+            ("NEXUSCREW_VERIFIED_ORIGIN", "local_tui"),
+            ("NEXUSCREW_VERIFIED_THREAD_ID", "thread-1"),
+        ];
+        for (name, value) in expected {
+            assert_eq!(
+                env.get(OsStr::new(name)).map(OsString::as_os_str),
+                Some(OsStr::new(value)),
+                "{name} must carry the authoritative value"
+            );
+        }
+        assert!(env.keys().all(|key| {
+            !matches!(
+                key.to_string_lossy().as_ref(),
+                "TMUX" | "TMUX_PANE" | "NEXUSCREW_MCP_SESSION"
+            )
+        }));
+    }
+
+    #[test]
+    fn unbound_child_env_composition_never_carries_verified_metadata() {
+        let env = HashMap::from([
+            (
+                OsString::from("NEXUSCREW_VERIFIED_CELL_ID"),
+                OsString::from("configured-value"),
+            ),
+            (OsString::from("TMUX"), OsString::from("legacy-secret")),
+        ]);
+        let env = finalize_child_env(env, &[], None).expect("unbound composition");
+        for name in crate::utils::SHARED_VERIFIED_IDENTITY_ENV {
+            assert!(
+                !env.contains_key(OsStr::new(name)),
+                "{name} must stay absent on an unbound spawn"
+            );
+        }
+        assert_eq!(
+            env.get(OsStr::new("TMUX")).map(OsString::as_os_str),
+            Some(OsStr::new("legacy-secret")),
+            "legacy identity variables stay inherited on the unbound path"
+        );
+    }
+
+    #[test]
+    fn unbound_child_env_composition_rejects_reserved_verified_env_var_override() {
+        for name in crate::utils::SHARED_VERIFIED_IDENTITY_ENV {
+            let error = finalize_child_env(
+                HashMap::new(),
+                &[McpServerEnvVar::Name(name.to_string())],
+                None,
+            )
+            .expect_err("verified metadata override must fail closed");
+            assert!(error.to_string().contains("is reserved"), "{name}: {error}");
+        }
+        let error = finalize_child_env(
+            HashMap::new(),
+            &[McpServerEnvVar::Name(
+                "nexuscrew_verified_binding_id".to_string(),
+            )],
+            None,
+        )
+        .expect_err("case-insensitive override must fail closed");
+        assert!(
+            error.to_string().contains("is reserved"),
+            "lowercase name: {error}"
+        );
+    }
+
+    #[test]
+    fn unbound_child_env_composition_rejects_inherited_verified_value_with_named_override() {
+        let env = HashMap::from([(
+            OsString::from("NEXUSCREW_VERIFIED_ORIGIN"),
+            OsString::from("inherited-origin"),
+        )]);
+        let error = finalize_child_env(
+            env,
+            &[McpServerEnvVar::Name(
+                "NEXUSCREW_VERIFIED_ORIGIN".to_string(),
+            )],
+            None,
+        )
+        .expect_err("inherited value plus named override must fail closed");
+        assert!(error.to_string().contains("is reserved"), "{error}");
+    }
+
+    #[test]
+    fn shared_verified_env_reapplies_authoritative_values_over_reintroduced_metadata() {
+        let env = HashMap::from([
+            (
+                OsString::from("NEXUSCREW_VERIFIED_CELL_ID"),
+                OsString::from("attacker-value"),
+            ),
+            (
+                OsString::from("NEXUSCREW_VERIFIED_THREAD_ID"),
+                OsString::from("attacker-thread"),
+            ),
+        ]);
+        let identity = SharedVerifiedIdentity {
+            owner_instance_id: "owner-a".to_string(),
+            cell_id: "cell-a".to_string(),
+            incarnation_id: "incarnation-a".to_string(),
+            binding_id: "binding-1".to_string(),
+            origin: "local_tui".to_string(),
+            thread_id: None,
+        };
+        let env = finalize_child_env(env, &[], Some(&identity)).expect("bound composition");
+        assert_eq!(
+            env.get(OsStr::new("NEXUSCREW_VERIFIED_CELL_ID"))
+                .map(OsString::as_os_str),
+            Some(OsStr::new("cell-a")),
+            "authoritative metadata must win over reintroduced values"
+        );
+        assert!(
+            !env.contains_key(OsStr::new("NEXUSCREW_VERIFIED_THREAD_ID")),
+            "metadata names absent from the context must stay absent"
+        );
+    }
+
+    #[test]
+    fn executor_child_env_composition_matches_local_reserved_policy() {
+        let literal = HashMap::from([(
+            OsString::from("NEXUSCREW_VERIFIED_CELL_ID"),
+            OsString::from("configured-value"),
+        )]);
+        let env = finalize_child_env(
+            create_env_overlay_for_remote_mcp_server(Some(literal), &[]),
+            &[],
+            None,
+        )
+        .expect("executor unbound composition");
+        for name in crate::utils::SHARED_VERIFIED_IDENTITY_ENV {
+            assert!(
+                !env.contains_key(OsStr::new(name)),
+                "{name} must stay absent on an unbound executor spawn"
+            );
+        }
+
+        let identity = SharedVerifiedIdentity {
+            owner_instance_id: "owner-a".to_string(),
+            cell_id: "cell-a".to_string(),
+            incarnation_id: "incarnation-a".to_string(),
+            binding_id: "binding-1".to_string(),
+            origin: "local_tui".to_string(),
+            thread_id: None,
+        };
+        let env = finalize_child_env(
+            create_env_overlay_for_remote_mcp_server(
+                Some(HashMap::from([(
+                    OsString::from("NEXUSCREW_VERIFIED_CELL_ID"),
+                    OsString::from("attacker-value"),
+                )])),
+                &[],
+            ),
+            &[],
+            Some(&identity),
+        )
+        .expect("executor bound composition");
+        assert_eq!(
+            env.get(OsStr::new("NEXUSCREW_VERIFIED_CELL_ID"))
+                .map(OsString::as_os_str),
+            Some(OsStr::new("cell-a")),
+            "authoritative metadata must win on the executor path"
+        );
+    }
+
     use codex_protocol::config_types::EnvironmentVariablePattern;
     use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::shell_environment;

@@ -1,4 +1,4 @@
-//! codex-vl multi-origin spawn sort (Fase 4 iter 1B) — unit tests.
+//! codex-vl multi-origin spawn sort — unit tests.
 //!
 //! Pin the eligibility filter and the uniform sort behaviour:
 //! - PrimaryChild always eligible when caller invariants hold (the
