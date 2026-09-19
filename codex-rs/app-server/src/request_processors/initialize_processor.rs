@@ -8,6 +8,8 @@ use codex_login::default_client::USER_AGENT_SUFFIX;
 use codex_login::default_client::get_codex_user_agent;
 use codex_login::default_client::set_default_client_residency_requirement;
 use codex_login::default_client::set_default_originator;
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
 
 use super::*;
 use crate::message_processor::ConnectionSessionState;
@@ -22,6 +24,8 @@ pub(crate) struct InitializeRequestProcessor {
     config: Arc<Config>,
     config_warnings: Arc<Vec<ConfigWarningNotification>>,
     rpc_transport: AppServerRpcTransport,
+    identity_required: bool,
+    user_verification: Arc<crate::user_verification::Service>,
 }
 
 impl InitializeRequestProcessor {
@@ -31,13 +35,21 @@ impl InitializeRequestProcessor {
         config: Arc<Config>,
         config_warnings: Vec<ConfigWarningNotification>,
         rpc_transport: AppServerRpcTransport,
+        identity_required: bool,
+        user_verification: Arc<crate::user_verification::Service>,
     ) -> Self {
         Self {
+            // Startup owns the required/channel decision, so this is the already
+            // validated latch. It must never re-read the environment: capturing
+            // the channel removes the variable, and a second probe would then
+            // report a false absence.
+            identity_required,
             outgoing,
             analytics_events_client,
             config,
             config_warnings: Arc::new(config_warnings),
             rpc_transport,
+            user_verification,
         }
     }
 
@@ -71,7 +83,10 @@ impl InitializeRequestProcessor {
         let experimental_api_enabled = capabilities.experimental_api;
         let request_attestation = capabilities.request_attestation;
         let extensions = capabilities.extensions.as_ref();
-        let client_mcp_extensions = codex_mcp::client_mcp_extensions(
+        let identity_supported =
+            extensions.is_some_and(|extensions| extensions.contains_key("nexuscrew.identity.v1"));
+        session.advertise_identity(connection_id, self.identity_required, identity_supported);
+        let mut client_mcp_extensions = codex_mcp::client_mcp_extensions(
             extensions,
             capabilities.mcp_server_openai_form_elicitation,
         );
@@ -90,6 +105,31 @@ impl InitializeRequestProcessor {
                 "Invalid clientInfo.name: '{name}'. Must be a valid HTTP header value."
             )));
         }
+        // The bundled TUI shares this build and implements the typed verification UI.
+        // Independently deployed UIs need their own rollout before receiving this mode.
+        let user_verification_enabled = experimental_api_enabled
+            && matches!(
+                session.origin,
+                crate::transport::ConnectionOrigin::InProcess
+            )
+            && name == "codex-tui"
+            && tokio::task::spawn_blocking(self.user_verification.device_supported)
+                .await
+                .unwrap_or(false);
+        if user_verification_enabled {
+            let mut extensions = client_mcp_extensions
+                .iter()
+                .map(|(id, value)| (id.to_string(), value.clone()))
+                .collect::<std::collections::HashMap<_, _>>();
+            let settings = extensions
+                .entry(OPENAI_ELICITATION_EXTENSION_ID.to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !settings.is_object() {
+                *settings = serde_json::json!({});
+            }
+            settings["userVerification"] = serde_json::json!({});
+            client_mcp_extensions = ClientMcpExtensions::new(extensions);
+        }
         let originator = name.clone();
         let user_agent_suffix = format!("{name}; {version}");
         let mutates_global_identity = !NON_ORIGINATING_CLIENT_NAMES.contains(&name.as_str());
@@ -106,6 +146,11 @@ impl InitializeRequestProcessor {
             .is_err()
         {
             return Err(invalid_request("Already initialized"));
+        }
+        if user_verification_enabled {
+            self.outgoing
+                .enable_user_verification_connection(connection_id)
+                .await;
         }
 
         if mutates_global_identity {
@@ -144,6 +189,7 @@ impl InitializeRequestProcessor {
             codex_home,
             platform_family: std::env::consts::FAMILY.to_string(),
             platform_os: std::env::consts::OS.to_string(),
+            identity_challenge: session.identity_challenge(),
         };
 
         self.outgoing

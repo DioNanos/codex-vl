@@ -6,6 +6,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "path";
 import { fileURLToPath } from "url";
+import { buildChildStdio } from "./identity_fds.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -206,8 +207,9 @@ if (platform === "android") {
 }
 
 const resolvedBinaryPath = safeRealpath(binaryPath) ?? binaryPath;
+// Same identity channel forwarding as bin/codex.js (see the comment there).
 const child = spawn(resolvedBinaryPath, ["exec", ...process.argv.slice(2)], {
-  stdio: "inherit",
+  stdio: buildChildStdio(process.env.NEXUSCREW_IDENTITY_FD),
   env,
 });
 

@@ -54,7 +54,7 @@ async fn reload_loop_jobs_state_failure_is_non_fatal() {
     assert!(matches!(control, AppRunControl::Continue));
 }
 
-fn history_cell_text(cell: &Arc<dyn HistoryCell>) -> String {
+fn history_cell_text(cell: &dyn HistoryCell) -> String {
     cell.display_lines(/*width*/ 120)
         .iter()
         .map(|line| {
@@ -100,7 +100,8 @@ async fn loop_owner_brain_off_during_turn_reports_error_and_continues() -> anyho
             thread_id,
             request: LoopCommandRequest::OwnerSetVivling,
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -110,7 +111,7 @@ async fn loop_owner_brain_off_during_turn_reports_error_and_continues() -> anyho
     let AppEvent::InsertHistoryCell(cell) = cell else {
         anyhow::bail!("expected the Vivling brain error history cell, got {cell:?}");
     };
-    let text = history_cell_text(&cell);
+    let text = history_cell_text(cell.as_ref());
     assert!(
         text.contains("Enable the Vivling brain first with `/vivling brain on`"),
         "expected the brain-off guidance, got: {text}"
@@ -138,7 +139,8 @@ async fn loop_owner_brain_on_during_turn_remains_a_positive_control() -> anyhow:
             thread_id,
             request: LoopCommandRequest::OwnerSetVivling,
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -150,8 +152,126 @@ async fn loop_owner_brain_on_during_turn_remains_a_positive_control() -> anyhow:
         .await
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     assert_eq!(
-        owner.as_ref().map(|owner| owner.owner_kind.as_str()),
-        Some(codex_state::THREAD_LOOP_OWNER_KIND_VIVLING)
+        owner.owner_kind.as_str(),
+        codex_state::THREAD_LOOP_OWNER_KIND_VIVLING
+    );
+    Ok(())
+}
+
+/// A busy tick leaves its occurrence claimed and its tick pending for the
+/// runtime's own retry (`ReloadLoopJobs`). The claim must not outlive the
+/// blocked dispatch: on the real TUI a claimed-and-never-fired occurrence
+/// fails every later claim CAS, so the pending tick can never dispatch —
+/// not at `TurnComplete`, not after an interrupt, not after `manage_loops`.
+/// (The turn boundary emitting `ReloadLoopJobs` is covered by the
+/// chatwidget loop_reload tests; here the handler consumes that same event.)
+#[tokio::test]
+async fn a_pending_tick_left_by_a_busy_tick_dispatches_on_reload_after_the_turn()
+-> anyhow::Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir().expect("temporary Codex home should be created");
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    app.state_db = Some(state_db);
+
+    let thread_id = codex_protocol::ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.active_thread_id = Some(thread_id);
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(super::super::tests::test_thread_session(thread_id, cwd));
+
+    // The turn is running: the timer tick lands in the busy guard.
+    app.chat_widget.set_agent_turn_running_for_tests(true);
+
+    let now = super::state::loop_now_ms();
+    let occurrence_ms = now - 60_000;
+    app.state_db
+        .as_ref()
+        .expect("test state database")
+        .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
+            id: "job-claim-wakeup".to_string(),
+            thread_id,
+            label: "claim-wakeup".to_string(),
+            prompt_text: "child tick".to_string(),
+            goal_text: Some("wake after the turn".to_string()),
+            interval_seconds: 60,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: false,
+            created_by: "agent".to_string(),
+            next_run_ms: Some(occurrence_ms),
+            created_at_ms: now,
+            updated_at_ms: now,
+        })
+        .await?;
+
+    app.handle_vl_event(VlEvent::LoopTick {
+        thread_id,
+        job_id: "job-claim-wakeup".to_string(),
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    while ops.try_recv().is_ok() {}
+
+    let db = app.state_db.clone().expect("test state database");
+    let busy_job = db
+        .get_thread_loop_job_by_id(thread_id, "job-claim-wakeup")
+        .await?
+        .expect("job survives the busy tick");
+    assert!(busy_job.pending_tick, "a busy tick keeps the tick pending");
+    assert!(
+        matches!(
+            busy_job.last_status.as_deref(),
+            Some("pending_busy") | Some("skipped_busy")
+        ),
+        "busy tick status, got {:?}",
+        busy_job.last_status
+    );
+    let occurrences = db.list_loop_occurrences("job-claim-wakeup").await?;
+    assert!(
+        occurrences.is_empty(),
+        "a blocked-but-pending tick must not keep its claim (the retry could never re-claim it), got {occurrences:?}"
+    );
+
+    // Real turn-end boundary: the turn state clears and the boundary event
+    // (already proven to be emitted by the chatwidget loop_reload tests)
+    // reaches the handler.
+    app.chat_widget.set_agent_turn_running_for_tests(false);
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::Vl(VlEvent::ReloadLoopJobs { .. }) = event {
+            // The runtime loop would feed this back to `handle_vl_event`;
+            // handled explicitly below.
+        }
+    }
+
+    app.handle_vl_event(VlEvent::ReloadLoopJobs { thread_id })
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+    let job = db
+        .get_thread_loop_job_by_id(thread_id, "job-claim-wakeup")
+        .await?
+        .expect("job survives the reload");
+    assert_eq!(
+        job.last_status.as_deref(),
+        Some("submitted"),
+        "the pending tick must dispatch once the turn is over (stuck at {:?}: the occurrence claim was never released)",
+        job.last_status
+    );
+    assert!(!job.pending_tick, "a dispatched tick is no longer pending");
+    let mut dispatched = 0;
+    while let Ok(op) = ops.try_recv() {
+        if let crate::app_command::AppCommand::UserTurn { .. } = op {
+            dispatched += 1;
+        }
+    }
+    assert!(
+        dispatched >= 1,
+        "the reload must submit the loop prompt as a user turn"
     );
     Ok(())
 }
@@ -191,7 +311,8 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
         },
         super::types::LoopCommandSource::User,
     )
-    .await?;
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     assert!(!outcome.success);
     assert!(
         outcome
@@ -207,7 +328,8 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
                 owner_kind: "vivling".to_string(),
             },
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
     assert!(matches!(control, AppRunControl::Continue));
     assert!(app.chat_widget.is_agent_turn_running());
@@ -217,7 +339,7 @@ async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> an
     let AppEvent::InsertHistoryCell(cell) = cell else {
         anyhow::bail!("expected the Delegate brain error history cell, got {cell:?}");
     };
-    let text = history_cell_text(&cell);
+    let text = history_cell_text(cell.as_ref());
     assert!(
         text.contains("Enable the Vivling brain first with `/vivling brain on`"),
         "expected the brain-off guidance, got: {text}"

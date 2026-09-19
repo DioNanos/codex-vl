@@ -13,6 +13,7 @@ use app_test_support::write_mock_responses_config_toml;
 use codex_analytics::AppServerRpcTransport;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InitializeResponse;
@@ -129,7 +130,9 @@ impl TracingHarness {
             _codex_home: codex_home,
             processor,
             outgoing_rx,
-            session: Arc::new(ConnectionSessionState::new()),
+            session: Arc::new(ConnectionSessionState::new(
+                crate::transport::ConnectionOrigin::Stdio,
+            )),
             tracing,
         };
 
@@ -254,6 +257,8 @@ async fn build_test_processor(
         analytics_events_client.clone(),
     ));
     let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
+        authority_verifier: None,
+        identity_required: false,
         outgoing,
         analytics_events_client,
         arg0_paths: Arg0DispatchPaths::default(),
@@ -265,6 +270,9 @@ async fn build_test_processor(
         state_db: None,
         config_warnings: Vec::new(),
         session_source: SessionSource::VSCode,
+        user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
+            &auth_manager,
+        ))),
         auth_manager,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
         code_mode_session_provider: None,
@@ -460,6 +468,36 @@ async fn read_response<T: serde::de::DeserializeOwned>(
     }
 }
 
+async fn read_error_message(
+    outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
+    request_id: i64,
+) -> String {
+    loop {
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), outgoing_rx.recv())
+            .await
+            .expect("timed out waiting for error")
+            .expect("outgoing channel closed");
+        let crate::outgoing_message::OutgoingEnvelope::ToConnection {
+            connection_id,
+            message,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        if connection_id != TEST_CONNECTION_ID {
+            continue;
+        }
+        let crate::outgoing_message::OutgoingMessage::Error(error) = message else {
+            continue;
+        };
+        if error.id != RequestId::Integer(request_id) {
+            continue;
+        }
+        return error.error.message;
+    }
+}
+
 async fn read_thread_started_notification(
     outgoing_rx: &mut mpsc::Receiver<crate::outgoing_message::OutgoingEnvelope>,
 ) {
@@ -544,6 +582,37 @@ where
     })
     .await;
     spans.into_iter().skip(baseline_len).collect()
+}
+
+#[test]
+#[serial(app_server_tracing)]
+fn pre_bind_dispatch_gate_rejects_tool_requests() -> Result<()> {
+    run_current_thread_test_with_stack("pre_bind_dispatch_gate_rejects_tool_requests", async {
+        let mut harness = TracingHarness::new().await?;
+        harness.session.advertise_identity(
+            TEST_CONNECTION_ID,
+            /*required*/ true,
+            /*supported*/ true,
+        );
+        let _ = harness
+            .processor
+            .process_request(
+                TEST_CONNECTION_ID,
+                request_from_client_request(ClientRequest::GetAccount {
+                    request_id: RequestId::Integer(30_001),
+                    params: GetAccountParams {
+                        refresh_token: false,
+                    },
+                }),
+                &AppServerTransport::Stdio,
+                Arc::clone(&harness.session),
+            )
+            .await;
+        let message = read_error_message(&mut harness.outgoing_rx, 30_001).await;
+        assert_eq!(message, "IDENTITY_UNVERIFIED");
+        harness.shutdown().await;
+        Ok(())
+    })
 }
 
 #[test]

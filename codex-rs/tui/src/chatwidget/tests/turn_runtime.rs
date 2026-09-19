@@ -1,4 +1,5 @@
 use super::*;
+use crate::vl::VlEvent;
 
 #[tokio::test]
 async fn turn_aborted_without_turn_complete_reconciles_running_state_and_queue() {
@@ -25,9 +26,21 @@ async fn turn_aborted_without_turn_complete_reconciles_running_state_and_queue()
     assert!(chat.input_queue.queued_user_messages.is_empty());
     assert!(chat.input_queue.pending_steers.is_empty());
     assert_no_submit_op(&mut op_rx);
+    // Fix (i): l'abort ora emette il wakeup dei loop pendenti (ReloadLoopJobs
+    // è l'unico evento Vl atteso da questo confine).
+    let mut saw_reload = false;
+    while let Ok(event) = app_event_rx.try_recv() {
+        if let AppEvent::Vl(VlEvent::ReloadLoopJobs { .. }) = event {
+            saw_reload = true;
+            continue;
+        }
+        assert!(
+            !matches!(event, AppEvent::Vl(_)),
+            "unexpected Vl event: {event:?}"
+        );
+    }
     assert!(
-        !app_event_rx
-            .try_iter()
-            .any(|event| matches!(event, AppEvent::Vl(_)))
+        saw_reload,
+        "the interrupted turn must re-arm pending loop ticks"
     );
 }

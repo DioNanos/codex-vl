@@ -81,6 +81,12 @@ function createFixture(t, { platformPackageInstalled = false, binaryMode }) {
 function runLauncher(fixture, launcherName) {
   const launcherPath = path.join(fixture.binRoot, launcherName);
   copyFileSync(path.join(sourceRoot, "bin", launcherName), launcherPath);
+  // The launchers import the identity fd helper relative to their own
+  // location, so the fixture must carry it alongside the copied entry.
+  copyFileSync(
+    path.join(sourceRoot, "bin", "identity_fds.js"),
+    path.join(fixture.binRoot, "identity_fds.js"),
+  );
 
   return spawnSync(
     process.execPath,

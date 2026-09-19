@@ -11,6 +11,7 @@ use codex_config::McpServerDisabledReason;
 use codex_config::McpServerTransportConfig;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::McpBindingContext;
 use codex_mcp::McpEnvironmentAuthority;
 use codex_mcp::McpServerRegistration;
 use codex_mcp::McpServerSource;
@@ -28,6 +29,9 @@ pub(super) struct McpDesiredState {
     pub(super) session_source: SessionSource,
     pub(super) environments: TurnEnvironmentSnapshot,
     pub(super) local_process_cwd: PathBuf,
+    /// Populated only after an authority-verified identity bind. `None` keeps
+    /// legacy MCP behavior unchanged until NC binding is available.
+    pub(super) binding_context: Option<McpBindingContext>,
 }
 
 impl Session {
@@ -98,6 +102,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments,
             local_process_cwd,
+            binding_context: self.mcp_binding_context.lock().await.clone(),
         }
     }
 
@@ -124,6 +129,7 @@ impl Session {
             session_source: session_configuration.session_source.clone(),
             environments: resolved_environments.clone(),
             local_process_cwd,
+            binding_context: self.mcp_binding_context.lock().await.clone(),
         };
         self.publish_mcp_runtime(
             &desired,
@@ -143,13 +149,12 @@ impl Session {
     /// Adds effective executor-owned configuration from this exact thread snapshot.
     pub(super) fn project_selected_environment_mcp_servers<'a>(
         &'a self,
-        session_source: &'a SessionSource,
         config: &'a Config,
         environments: &'a TurnEnvironmentSnapshot,
         mut projection: McpRuntimeProjection,
     ) -> BoxFuture<'a, McpRuntimeProjection> {
         Box::pin(async move {
-            if crate::guardian::is_basic_session_source(session_source) {
+            if self.isolation == codex_extension_api::SessionIsolation::Isolated {
                 return projection;
             }
 
@@ -306,7 +311,6 @@ impl Session {
     ) {
         let mcp_projection = self
             .project_selected_environment_mcp_servers(
-                &desired.session_source,
                 &desired.config,
                 &desired.environments,
                 mcp_projection,
@@ -380,6 +384,10 @@ impl Session {
                 })
                 .collect(),
         );
+        let runtime_context = match desired.binding_context.clone() {
+            Some(binding) => runtime_context.with_binding_context(binding),
+            None => runtime_context,
+        };
         McpRuntimeInput {
             startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
                 McpStartupPolicy::LazyWhenCached

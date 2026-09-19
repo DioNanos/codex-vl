@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+d174-test-fixture = []
+
 [[bin]]
 name = "codex-app-server"
 path = "src/main.rs"
@@ -15,6 +18,11 @@ path = "src/bin/notify_capture.rs"
 [[bin]]
 name = "exec-server"
 path = "src/bin/exec_server.rs"
+
+[[bin]]
+name = "d174-daemon-shim"
+path = "src/bin/d174_daemon_shim.rs"
+required-features = ["d174-test-fixture"]
 
 [lib]
 name = "codex_app_server"
@@ -34,12 +42,14 @@ axum = { workspace = true, default-features = false, features = [
     "ws",
 ] }
 codex-analytics = { workspace = true }
+codex-app-server-daemon = { workspace = true }
 codex-agent-extension = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-aws-auth = { workspace = true }
 codex-cloud-config = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-config = { workspace = true }
+codex-network-proxy = { workspace = true }
 codex-connectors = { workspace = true }
 codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
@@ -63,6 +73,7 @@ codex-shell-command = { workspace = true }
 codex-skills = { workspace = true }
 codex-skills-extension = { workspace = true }
 codex-utils-cli = { workspace = true }
+codex-user-verification = { workspace = true }
 codex-utils-pty = { workspace = true }
 codex-backend-client = { workspace = true }
 codex-file-search = { workspace = true }
@@ -93,6 +104,7 @@ codex-utils-path-uri = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -114,10 +126,14 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v7"] }
 
+[target.'cfg(all(target_os = "linux", target_env = "musl", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+tikv-jemallocator = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 codex-windows-sandbox = { workspace = true }
 
 [dev-dependencies]
+codex-uds = { workspace = true }
 app_test_support = { workspace = true }
 axum = { workspace = true, default-features = false, features = [
     "http1",
@@ -130,6 +146,7 @@ codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
 flate2 = { workspace = true }
 hmac = { workspace = true }
+libc = { workspace = true }
 http = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

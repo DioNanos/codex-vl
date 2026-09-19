@@ -28,7 +28,6 @@ use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
 use crate::motion::ReducedMotionIndicator;
 use crate::motion::activity_indicator;
-use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
 use crate::text_formatting::capitalize_first;
 use crate::tui::FrameRequester;
@@ -43,6 +42,10 @@ pub(crate) use timer::StatusTimer;
 /// indicator's animation rate keys off this exact state.
 pub(crate) const WAITING_ON_BACKGROUND_TERMINAL_HEADER: &str = "Waiting for background terminal";
 
+#[path = "summary_shimmer.rs"]
+mod summary_shimmer;
+use summary_shimmer::summary_shimmer;
+
 pub(crate) const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
 
@@ -56,6 +59,7 @@ pub(crate) enum StatusDetailsCapitalization {
 pub(crate) struct StatusIndicatorWidget {
     /// Animated header text (defaults to "Working").
     header: String,
+    header_started_at: Instant,
     details: Option<String>,
     details_max_lines: usize,
     /// Optional suffix rendered after the elapsed/interrupt segment.
@@ -101,6 +105,7 @@ impl StatusIndicatorWidget {
     ) -> Self {
         Self {
             header: String::from("Working"),
+            header_started_at: Instant::now(),
             details: None,
             details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
             inline_message: None,
@@ -119,7 +124,10 @@ impl StatusIndicatorWidget {
 
     /// Update the animated header label (left of the brackets).
     pub(crate) fn update_header(&mut self, header: String) {
-        self.header = header;
+        if self.header != header {
+            self.header = header;
+            self.header_started_at = Instant::now();
+        }
     }
 
     /// Update the details text shown below the header.
@@ -221,7 +229,10 @@ impl StatusIndicator<'_> {
     fn lines(&self, width: u16) -> Vec<Line<'static>> {
         let row = self.row;
         let now = Instant::now();
-        let elapsed_duration = self.timer.elapsed_at(now);
+        let elapsed_duration = self.timer.display_started_at.map_or_else(
+            || self.timer.elapsed_at(now),
+            |started_at| now.saturating_duration_since(started_at),
+        );
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
         let motion_mode = MotionMode::from_animations_enabled(row.animations_enabled);
 
@@ -234,7 +245,11 @@ impl StatusIndicator<'_> {
             spans.push(indicator);
             spans.push(" ".into());
         }
-        spans.extend(shimmer_text(&row.header, motion_mode));
+        spans.extend(summary_shimmer(
+            &row.header,
+            now.saturating_duration_since(row.header_started_at),
+            motion_mode,
+        ));
         if !spans.is_empty() {
             spans.push(" ".into());
         }
@@ -290,15 +305,22 @@ impl Renderable for StatusIndicator<'_> {
         if area.is_empty() {
             return;
         }
-        if self.row.animations_enabled {
-            // Waiting for a background terminal has no animated model state;
-            // reduce redraw pressure while preserving the normal frame rate.
-            let interval = if self.row.is_waiting_on_background_terminal() {
-                Duration::from_millis(200)
+        if self.row.animations_enabled
+            || self.row.is_waiting_on_background_terminal()
+            || self.timer.display_started_at.is_some()
+        {
+            // codex-vl: waiting on a background terminal keeps a faster frame
+            // rate (200 ms) than the generic idle ticker (1 s).
+            let interval_ms = if self.row.animations_enabled {
+                32
+            } else if self.row.is_waiting_on_background_terminal() {
+                200
             } else {
-                Duration::from_millis(32)
+                1_000
             };
-            self.row.frame_requester.schedule_frame_in(interval);
+            self.row
+                .frame_requester
+                .schedule_frame_in(Duration::from_millis(interval_ms));
         }
         Paragraph::new(Text::from(self.lines(area.width))).render(area, buf);
     }
@@ -314,6 +336,22 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn changed_summary_restarts_shimmer_but_repeated_summary_keeps_phase() {
+        let (tx, _rx) = unbounded_channel();
+        let mut row = StatusIndicatorWidget::new(
+            AppEventSender::new(tx),
+            FrameRequester::test_dummy(),
+            /*animations_enabled*/ true,
+        );
+        let previous = Instant::now() - Duration::from_secs(/*secs*/ 1);
+        row.header_started_at = previous;
+        row.update_header("Working".to_owned());
+        assert_eq!(row.header_started_at, previous);
+        row.update_header("Mapping the app structure".to_owned());
+        assert!(row.header_started_at > previous);
+    }
 
     #[test]
     fn fmt_elapsed_compact_formats_seconds_minutes_hours() {

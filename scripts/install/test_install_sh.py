@@ -114,6 +114,477 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertTrue(os.access(host_path, os.X_OK))
 
+    def test_releases_latest_installs_verified_package_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+
+    def test_explicit_release_pins_even_the_current_latest_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            marker = root / "codex-home/packages/standalone/auto-update-version"
+            latest, _ = run_installer_in(root, "latest", **options)
+            self.assertEqual(latest.returncode, 0, latest.stderr)
+            release_name = f"{VERSION}-aarch64-apple-darwin"
+            self.assertEqual(marker.read_text(), release_name)
+
+            pinned, _ = run_installer_in(root, VERSION, **options)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            self.assertFalse(marker.exists())
+
+            updater_record = (
+                root / "codex-home/app-server-daemon/app-server-updater.pid"
+            )
+            updater_record.parent.mkdir(parents=True)
+            updater_record.write_text(
+                json.dumps(
+                    {"pid": os.getpid(), "processStartTime": process_start_time()}
+                )
+            )
+            old_updater, _ = run_installer_in(
+                root, "latest", old_updater_parent_pid=os.getpid(), **options
+            )
+            self.assertEqual(old_updater.returncode, 0, old_updater.stderr)
+            self.assertFalse(marker.exists())
+
+            skipped, _ = run_installer_in(
+                root, "latest", update_guard_from_release=release_name, **options
+            )
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+            self.assertFalse(marker.exists())
+
+            updater_record.write_text(
+                json.dumps({"pid": os.getpid(), "processStartTime": "stale"})
+            )
+            latest_again, _ = run_installer_in(
+                root, "latest", old_updater_parent_pid=os.getpid(), **options
+            )
+            self.assertEqual(latest_again.returncode, 0, latest_again.stderr)
+            self.assertEqual(marker.read_text(), release_name)
+
+            managed = (
+                root
+                / f"codex-home/packages/standalone/releases/{release_name}/bin/codex"
+            )
+            managed.unlink()
+            guarded, _ = run_installer_in(
+                root,
+                "latest",
+                update_guard_from_release=release_name,
+                **options,
+            )
+            self.assertEqual(guarded.returncode, 0, guarded.stderr)
+            self.assertTrue(managed.exists())
+
+    def test_uninspectable_legacy_updater_does_not_clear_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive, checksum, metadata = create_package_release(root)
+            options = dict(
+                metadata_json=metadata,
+                archive_path=archive,
+                checksum_path=checksum,
+                force_macos=True,
+            )
+            pinned, _ = run_installer_in(root, VERSION, **options)
+            self.assertEqual(pinned.returncode, 0, pinned.stderr)
+            updater_record = (
+                root / "codex-home/app-server-daemon/app-server-updater.pid"
+            )
+            updater_record.parent.mkdir(parents=True)
+            updater_record.write_text(
+                json.dumps(
+                    {"pid": os.getpid(), "processStartTime": process_start_time()}
+                )
+            )
+
+            attempted, _ = run_installer_in(
+                root,
+                "latest",
+                old_updater_parent_pid=os.getpid(),
+                fail_ps=True,
+                **options,
+            )
+            self.assertEqual(attempted.returncode, 0, attempted.stderr)
+            self.assertFalse(
+                (root / "codex-home/packages/standalone/auto-update-version").exists()
+            )
+
+    def test_releases_unusable_metadata_falls_back_to_github(self) -> None:
+        unusable_metadata = {
+            "html": "<html>proxy error</html>",
+            "empty": "",
+            "malformed_json": '{"tag_name":',
+            "missing_tag": json.dumps({"assets": []}),
+            "missing_assets": json.dumps(
+                {"tag_name": f"rust-v{VERSION}", "assets": []}
+            ),
+            "invalid_checksum_digest": json.dumps(
+                {
+                    "tag_name": f"rust-v{VERSION}",
+                    "assets": [
+                        {
+                            "name": "codex-package-aarch64-apple-darwin.tar.gz",
+                            "digest": "sha256:" + "a" * 64,
+                        },
+                        {
+                            "name": "codex-package_SHA256SUMS",
+                            "digest": "sha256:" + "z" * 64,
+                        },
+                    ],
+                }
+            ),
+            "invalid_version": json.dumps({"tag_name": "rust-vinvalid"}),
+        }
+
+        for name, releases_metadata_json in unusable_metadata.items():
+            with self.subTest(metadata=name):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    archive_path, checksum_path, metadata_json = create_package_release(
+                        root
+                    )
+
+                    result, requests = run_installer_in(
+                        root,
+                        "latest",
+                        metadata_json=metadata_json,
+                        releases_metadata_json=releases_metadata_json,
+                        archive_path=archive_path,
+                        checksum_path=checksum_path,
+                        force_macos=True,
+                        use_mirror=None,
+                    )
+
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        requests,
+                        [
+                            "https://releases.openai.com/codex/channels/latest",
+                            "https://api.github.com/repos/openai/codex/releases/latest",
+                            "https://github.com/openai/codex/releases/download/"
+                            f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                            "https://github.com/openai/codex/releases/download/"
+                            f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                        ],
+                    )
+                    self.assertIn("falling back to GitHub Releases", result.stderr)
+
+    def test_releases_exact_metadata_version_mismatch_falls_back_to_github(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+            releases_metadata = json.loads(metadata_json)
+            releases_metadata["tag_name"] = f"rust-v{MISMATCH_VERSION}"
+
+            result, requests = run_installer_in(
+                root,
+                VERSION,
+                metadata_json=metadata_json,
+                releases_metadata_json=json.dumps(releases_metadata),
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn("falling back to GitHub Releases", result.stderr)
+
+    def test_releases_asset_download_falls_back_to_github(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+                releases_mode="asset_fallback",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn("retrying from GitHub Releases", result.stderr)
+
+    def test_releases_corrupt_assets_fall_back_to_github(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+                releases_mode="corrupt_assets",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn("checksum did not match expected digest", result.stderr)
+            self.assertIn("retrying from GitHub Releases", result.stderr)
+
+    def test_releases_wrong_checksum_digest_uses_github_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+            mirror_metadata = json.loads(metadata_json)
+            for release_asset in mirror_metadata["assets"]:
+                if release_asset["name"] == "codex-package_SHA256SUMS":
+                    release_asset["digest"] = "sha256:" + "0" * 64
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                releases_metadata_json=json.dumps(mirror_metadata),
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn("checksum did not match expected digest", result.stderr)
+
+    def test_releases_incomplete_checksum_manifest_falls_back_to_github(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+            mirror_checksum_path = root / "mirror-SHA256SUMS"
+            mirror_checksum_path.write_text(
+                f"{'a' * 64}  codex-package-other-platform.tar.gz\n",
+                encoding="utf-8",
+            )
+            mirror_metadata = json.loads(metadata_json)
+            for release_asset in mirror_metadata["assets"]:
+                if release_asset["name"] == "codex-package_SHA256SUMS":
+                    release_asset["digest"] = (
+                        "sha256:"
+                        + hashlib.sha256(mirror_checksum_path.read_bytes()).hexdigest()
+                    )
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                releases_metadata_json=json.dumps(mirror_metadata),
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                releases_checksum_path=mirror_checksum_path,
+                force_macos=True,
+                use_mirror=None,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn("retrying from GitHub Releases", result.stderr)
+
+    def test_releases_corrupt_github_fallback_still_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(root)
+
+            result, requests = run_installer_in(
+                root,
+                "latest",
+                metadata_json=metadata_json,
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=None,
+                releases_mode="corrupt_checksum_and_github",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                requests,
+                [
+                    "https://releases.openai.com/codex/channels/latest",
+                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                ],
+            )
+            self.assertIn("checksum did not match expected digest", result.stderr)
+
+    def test_releases_exact_rejects_wrong_binary_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, checksum_path, metadata_json = create_package_release(
+                root,
+                metadata_version=MISMATCH_VERSION,
+            )
+
+            result, requests = run_installer_in(
+                root,
+                MISMATCH_VERSION,
+                metadata_json=metadata_json,
+                archive_path=archive_path,
+                checksum_path=checksum_path,
+                force_macos=True,
+                use_mirror=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                requests,
+                [
+                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/release.json",
+                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/codex-package_SHA256SUMS",
+                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
+                ],
+            )
+            self.assertIn(
+                f"did not report expected version {MISMATCH_VERSION}",
+                result.stderr,
+            )
+            self.assertNotIn("installed successfully", result.stdout)
+
+    def test_releases_exact_legacy_fallback_reuses_offline_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path, metadata_json = create_legacy_release(root)
+
+            first_result, first_requests = run_installer_in(
+                root,
+                VERSION,
+                metadata_json=metadata_json,
+                legacy_archive_path=archive_path,
+                force_macos=True,
+                use_mirror=True,
+                releases_mode="channel_failure",
+            )
+
+            self.assertEqual(first_result.returncode, 0, first_result.stderr)
+            self.assertEqual(
+                first_requests,
+                [
+                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                    "https://github.com/openai/codex/releases/download/"
+                    f"rust-v{VERSION}/codex-npm-darwin-arm64-{VERSION}.tgz",
+                ],
+            )
+
+            (root / "requests.log").unlink()
+            second_result, second_requests = run_installer_in(
+                root,
+                VERSION,
+                metadata_json=metadata_json,
+                force_macos=True,
+                use_mirror=True,
+                releases_mode="channel_failure",
+            )
+
+            self.assertEqual(second_result.returncode, 0, second_result.stderr)
+            self.assertEqual(
+                second_requests,
+                [
+                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
+                    "https://api.github.com/repos/openai/codex/releases/tags/"
+                    f"rust-v{VERSION}",
+                ],
+            )
+            self.assertNotIn("Downloading Codex CLI", second_result.stdout)
+
 
 def run_installer(
     release: str,
@@ -139,6 +610,11 @@ def run_installer_in(
     archive_path: Path | None = None,
     checksum_path: Path | None = None,
     force_macos: bool = False,
+    use_mirror: bool | None = False,
+    releases_mode: str = "",
+    update_guard_from_release: str | None = None,
+    old_updater_parent_pid: int | None = None,
+    fail_ps: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
     bin_dir.mkdir()
@@ -204,6 +680,19 @@ def run_installer_in(
             encoding="utf-8",
         )
         fake_uname.chmod(0o755)
+    if old_updater_parent_pid is not None:
+        fake_ps = bin_dir / "ps"
+        fake_ps.write_text(
+            "#!/bin/sh\nexit 1\n"
+            if fail_ps
+            else "#!/bin/sh\n"
+            'case "$*" in\n'
+            '  *lstart*) printf "S %s\\n" "$CODEX_TEST_PARENT_START" ;;\n'
+            '  *) printf "%s\\n" "$CODEX_TEST_PARENT_PID" ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake_ps.chmod(0o755)
 
     home = root / "home"
     home.mkdir()
@@ -226,6 +715,21 @@ def run_installer_in(
             "SHELL": "/bin/sh",
         }
     )
+    if update_guard_from_release is None:
+        env.pop("CODEX_INSTALL_IF_LATEST", None)
+        env.pop("CODEX_UPDATE_FROM_RELEASE", None)
+    else:
+        env["CODEX_INSTALL_IF_LATEST"] = "1"
+        env["CODEX_UPDATE_FROM_RELEASE"] = update_guard_from_release
+    if old_updater_parent_pid is not None:
+        env["CODEX_TEST_PARENT_PID"] = str(old_updater_parent_pid)
+        env["CODEX_TEST_PARENT_START"] = process_start_time()
+    if use_mirror is None:
+        env.pop("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", None)
+    else:
+        env["CODEX_INSTALLER_USE_RELEASES_OPENAI_COM"] = (
+            "TRUE" if use_mirror else "false"
+        )
     result = subprocess.run(
         ["/bin/sh", str(INSTALL_SCRIPT)],
         capture_output=True,
@@ -241,7 +745,18 @@ def run_installer_in(
     return result, requests
 
 
-def create_package_release(root: Path) -> tuple[Path, Path, str]:
+def process_start_time() -> str:
+    details = subprocess.check_output(
+        ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="], text=True
+    ).strip()
+    return details.split(maxsplit=1)[1]
+
+
+def create_package_release(
+    root: Path,
+    *,
+    metadata_version: str = VERSION,
+) -> tuple[Path, Path, str]:
     package_dir = root / "package"
     (package_dir / "bin").mkdir(parents=True)
     (package_dir / "codex-path").mkdir()

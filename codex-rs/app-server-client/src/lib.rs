@@ -16,6 +16,7 @@
 //! runtime remain bounded; the local consumer event queue is unbounded so
 //! unread notifications cannot prevent request responses from being delivered.
 
+mod identity_handshake;
 mod path;
 mod remote;
 
@@ -28,7 +29,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
+use codex_app_server::identity_channel::IdentityFdChannel;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+use codex_app_server::in_process::InProcessClientSender;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server::in_process::LogDbLayer;
@@ -37,8 +40,12 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::IDENTITY_EXTENSION;
+use codex_app_server_protocol::IdentityBindParams;
+use codex_app_server_protocol::IdentityBindResponse;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::InitializeResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result as JsonRpcResult;
@@ -62,10 +69,14 @@ use tokio::time::timeout;
 use toml::Value as TomlValue;
 use tracing::warn;
 
+use crate::identity_handshake::IdentityProofChannel;
+use crate::identity_handshake::identity_proof_for_challenge;
 pub use crate::path::AppServerPath;
 pub use crate::remote::RemoteAppServerClient;
 pub use crate::remote::RemoteAppServerConnectArgs;
 pub use crate::remote::RemoteAppServerEndpoint;
+pub use crate::remote::prepare_nexuscrew_identity_channel;
+pub use crate::remote::prepared_identity_channel;
 
 /// Transitional access to core-only embedded app-server types.
 ///
@@ -206,6 +217,13 @@ pub struct InProcessClientStartArgs {
     pub mcp_server_openai_form_elicitation: bool,
     /// Notification methods this client opts out of receiving.
     pub opt_out_notification_methods: Vec<String>,
+    /// Identity channel this process already captured, if any.
+    ///
+    /// The embedded app-server shares its process with the client that captured
+    /// the inherited descriptors, and that capture removes the declaration from
+    /// the environment. Handing the owned channel over keeps one capture per
+    /// process; `None` leaves the startup gate reading the environment as before.
+    pub identity_channel: Option<IdentityFdChannel>,
     /// Queue capacity for command and embedded-runtime channels (clamped to at least 1).
     pub channel_capacity: usize,
 }
@@ -216,7 +234,7 @@ impl InProcessClientStartArgs {
         let capabilities = InitializeCapabilities {
             experimental_api: self.experimental_api,
             request_attestation: false,
-            extensions: None,
+            extensions: self.identity_extension(),
             opt_out_notification_methods: if self.opt_out_notification_methods.is_empty() {
                 None
             } else {
@@ -233,6 +251,19 @@ impl InProcessClientStartArgs {
             },
             capabilities: Some(capabilities),
         }
+    }
+
+    /// The identity extension is announced exactly when this process holds the
+    /// inherited channel, mirroring the remote transport. A client that cannot
+    /// prove identity must not claim the extension; a client that holds the
+    /// channel must announce it so the server issues the challenge.
+    fn identity_extension(&self) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        self.identity_channel.is_some().then(|| {
+            std::collections::HashMap::from([(
+                IDENTITY_EXTENSION.to_string(),
+                serde_json::json!({}),
+            )])
+        })
     }
 
     fn into_runtime_start_args(self) -> InProcessStartArgs {
@@ -286,6 +317,102 @@ enum ClientCommand {
     },
 }
 
+/// Completes the connection-scoped identity handshake on the embedded transport.
+///
+/// The embedded app-server issues the daemon challenge in its initialize response
+/// as soon as identity is enforced (`required` or an announced extension), and it
+/// then refuses every method but `ServerDiagnostics` while the connection has no
+/// binding. The client therefore has to ask the authority for a proof on the
+/// channel this process captured, bind it, and only then hand the client out.
+///
+/// Every stop is a startup failure: a proof that cannot be obtained (absent
+/// channel, refusal, malformed answer, timeout), a bind the server rejects, and a
+/// response that does not match the protocol all abort here instead of leaving a
+/// half-ready client that fails later on the first protected request.
+/// A launcher-required connection without a challenge is never a successful
+/// attach: when identity is required a compliant server always issues one, so
+/// an initialize response without a challenge must fail closed instead of
+/// being mistaken for a standalone connection.
+pub(crate) fn guard_required_without_challenge(
+    challenge: Option<&codex_app_server_protocol::IdentityChallenge>,
+    required: bool,
+) -> IoResult<()> {
+    if required && challenge.is_none() {
+        return Err(IoError::new(
+            ErrorKind::PermissionDenied,
+            "IDENTITY_CHANNEL_BROKEN: the launcher required identity but this app-server issued no identity challenge",
+        ));
+    }
+    Ok(())
+}
+
+/// The launcher flag as the enforcing side reads it: any value other than
+/// `0`/`false` requests identity, and an absent variable keeps the historical
+/// non-required behavior.
+pub(crate) fn identity_required_from_env() -> bool {
+    std::env::var_os("CODEX_APP_SERVER_IDENTITY_REQUIRED")
+        .is_some_and(|value| value != "0" && value != "false")
+}
+
+async fn complete_identity_handshake(
+    request_sender: &InProcessClientSender,
+    identity_channel: Option<IdentityFdChannel>,
+    initialize_response: &InitializeResponse,
+) -> IoResult<()> {
+    let Some(challenge) = initialize_response.identity_challenge.as_ref() else {
+        guard_required_without_challenge(/*challenge*/ None, identity_required_from_env())?;
+        // Identity is not enforced on this connection: the embedded server issues a
+        // challenge whenever it is, so a response without one is the standalone case.
+        return Ok(());
+    };
+    let Some(channel) = identity_channel.map(IdentityProofChannel::from_channel) else {
+        // An issued challenge means the server enforces identity, so a client that
+        // cannot prove it must refuse to serve the caller.
+        return Err(IoError::new(
+            ErrorKind::PermissionDenied,
+            "IDENTITY_HANDSHAKE_FAILED: the embedded app-server requires identity and this process holds no identity channel",
+        ));
+    };
+    let proof = identity_proof_for_challenge(&channel, challenge)
+        .await
+        .map_err(|error| {
+            IoError::new(
+                error.kind(),
+                format!("IDENTITY_HANDSHAKE_FAILED: identity proof unavailable: {error}"),
+            )
+        })?;
+    let request_id = RequestId::String("identity-bind".to_string());
+    let outcome = request_sender
+        .request(ClientRequest::IdentityBind {
+            request_id,
+            params: IdentityBindParams { proof },
+        })
+        .await;
+    match outcome {
+        Ok(Ok(response)) => serde_json::from_value::<IdentityBindResponse>(response)
+            .map(|_binding| ())
+            .map_err(|error| {
+                IoError::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "IDENTITY_HANDSHAKE_FAILED: identity bind response did not match the protocol: {error}"
+                    ),
+                )
+            }),
+        Ok(Err(error)) => Err(IoError::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "IDENTITY_HANDSHAKE_FAILED: identity bind rejected: {} (code {})",
+                error.message, error.code
+            ),
+        )),
+        Err(error) => Err(IoError::new(
+            error.kind(),
+            format!("IDENTITY_HANDSHAKE_FAILED: identity bind transport failed: {error}"),
+        )),
+    }
+}
+
 /// Async facade over the in-process app-server runtime.
 ///
 /// This type owns a worker task that bridges between:
@@ -326,9 +453,21 @@ impl InProcessAppServerClient {
     /// Request queues remain bounded without blocking on unread notifications.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let identity_channel = args.identity_channel.clone();
+        let (mut handle, initialize_response) =
+            codex_app_server::in_process::start_with_identity_channel_and_initialize(
+                args.into_runtime_start_args(),
+                identity_channel.clone(),
+            )
+            .await?;
         let request_sender = handle.sender();
+        if let Err(error) =
+            complete_identity_handshake(&request_sender, identity_channel, &initialize_response)
+                .await
+        {
+            let _ = handle.shutdown().await;
+            return Err(error);
+        }
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         // e9996ec62a preserved transcript events by awaiting a bounded queue, but that can
         // deadlock a foreground request whose response is behind unread notifications.
@@ -348,8 +487,20 @@ impl InProcessAppServerClient {
                                 // this loop can keep draining runtime events
                                 // while the request is blocked on client input.
                                 tokio::spawn(async move {
-                                    let result = request_sender.request(*request).await;
-                                    let _ = response_tx.send(result);
+                                    // Device ceremonies belong to the waiting UI. Preserve
+                                    // its cancellation through this buffering task.
+                                    let cancellable = matches!(*request,
+                                        ClientRequest::UserVerificationStatus { .. }
+                                        | ClientRequest::UserVerificationEnroll { .. }
+                                        | ClientRequest::UserVerificationDelete { .. }
+                                        | ClientRequest::UserVerificationVerify { .. });
+                                    let mut response_tx = response_tx;
+                                    tokio::select! {
+                                        _ = response_tx.closed(), if cancellable => {}
+                                        result = request_sender.request(*request) => {
+                                            let _ = response_tx.send(result);
+                                        }
+                                    }
                                 });
                             }
                             Some(ClientCommand::Notify {
@@ -677,6 +828,36 @@ impl AppServerRequestHandle {
 }
 
 impl AppServerClient {
+    /// App-server platform family, which can differ from the executor's platform.
+    /// Older remote servers may omit this metadata.
+    pub fn platform_family(&self) -> Option<&str> {
+        match self {
+            Self::InProcess(_) => Some(std::env::consts::FAMILY),
+            Self::Remote(client) => client.platform_family(),
+        }
+    }
+
+    /// App-server operating system as reported at initialization, including unknown values.
+    pub fn platform_os(&self) -> Option<&str> {
+        match self {
+            Self::InProcess(_) => Some(std::env::consts::OS),
+            Self::Remote(client) => client.platform_os(),
+        }
+    }
+
+    /// Re-authorize a remote identity after a resume/fork/new incarnation.
+    /// In-process clients are already bound to their local runtime.
+    pub async fn reauthorize_identity(&self) -> IoResult<()> {
+        match self {
+            Self::InProcess(_) => Ok(()),
+            Self::Remote(client) => client.reauthorize_identity().await,
+        }
+    }
+
+    pub fn has_verified_identity(&self) -> bool {
+        matches!(self, Self::Remote(client) if client.has_verified_identity())
+    }
+
     pub fn codex_home(&self, local_codex_home: &AbsolutePathBuf) -> Option<AppServerPath> {
         match self {
             Self::InProcess(_) => Some(AppServerPath::from_app_server(
@@ -751,6 +932,48 @@ impl AppServerClient {
             Self::InProcess(client) => AppServerRequestHandle::InProcess(client.request_handle()),
             Self::Remote(client) => AppServerRequestHandle::Remote(client.request_handle()),
         }
+    }
+}
+
+#[cfg(test)]
+mod required_without_challenge_tests {
+    use super::*;
+    use codex_app_server_protocol::IDENTITY_VERIFY_VERSION;
+
+    fn any_challenge() -> codex_app_server_protocol::IdentityChallenge {
+        codex_app_server_protocol::IdentityChallenge {
+            version: IDENTITY_VERIFY_VERSION,
+            connection_id: "1".to_string(),
+            daemon_boot_id: "boot".to_string(),
+            audience: "daemon/1".to_string(),
+            nonce: "0".repeat(64),
+            issued_at: 0,
+            expires_at: 15_000,
+        }
+    }
+
+    #[test]
+    fn required_without_a_challenge_fails_closed() {
+        let error =
+            guard_required_without_challenge(/*challenge*/ None, /*required*/ true)
+                .expect_err("required without a challenge must not look like a standalone attach");
+        assert!(
+            error.to_string().contains("IDENTITY_CHANNEL_BROKEN"),
+            "{error}"
+        );
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn required_with_a_challenge_is_accepted() {
+        guard_required_without_challenge(Some(&any_challenge()), /*required*/ true)
+            .expect("a challenge satisfies the required guard");
+    }
+
+    #[test]
+    fn standalone_without_a_challenge_stays_ok() {
+        guard_required_without_challenge(/*challenge*/ None, /*required*/ false)
+            .expect("a standalone connection keeps the historical behavior");
     }
 }
 
@@ -864,6 +1087,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: false,
             opt_out_notification_methods: Vec::new(),
+            identity_channel: None,
             channel_capacity,
         })
         .await
@@ -931,6 +1155,22 @@ mod tests {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
+        expect_remote_initialize_with_metadata(
+            websocket,
+            serde_json::json!({
+                "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
+                "codexHome": "/server/.codex",
+            }),
+        )
+        .await;
+    }
+
+    async fn expect_remote_initialize_with_metadata<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        metadata: serde_json::Value,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
         let JSONRPCMessage::Request(request) = read_websocket_message(websocket).await else {
             panic!("expected initialize request");
         };
@@ -939,10 +1179,7 @@ mod tests {
             websocket,
             JSONRPCMessage::Response(JSONRPCResponse {
                 id: request.id,
-                result: serde_json::json!({
-                    "userAgent": "codex_cli_rs/9.8.7-test (Test OS; x86_64) rust",
-                    "codexHome": "/server/.codex",
-                }),
+                result: metadata,
             }),
         )
         .await;
@@ -1079,7 +1316,15 @@ mod tests {
 
     #[tokio::test]
     async fn typed_request_roundtrip_works() {
-        let client = start_test_client(SessionSource::Exec).await;
+        let TestClient {
+            _codex_home,
+            client,
+        } = start_test_client(SessionSource::Exec).await;
+        let client = AppServerClient::InProcess(client);
+        assert_eq!(
+            (client.platform_family(), client.platform_os()),
+            (Some(std::env::consts::FAMILY), Some(std::env::consts::OS))
+        );
         let _response: ConfigRequirementsReadResponse = client
             .request_typed(ClientRequest::ConfigRequirementsRead {
                 request_id: RequestId::Integer(1),
@@ -1253,6 +1498,41 @@ mod tests {
         );
 
         client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_platform_metadata_preserves_reported_and_missing_values() {
+        for (family, os) in [
+            (Some("windows"), Some("windows")),
+            (Some("unix"), Some("linux")),
+            (Some("future-family"), Some("future-os")),
+            (Some("unix"), None),
+            (None, Some("linux")),
+            (None, None),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                let mut metadata = serde_json::json!({});
+                if let Some(family) = family {
+                    metadata["platformFamily"] = family.into();
+                }
+                if let Some(os) = os {
+                    metadata["platformOs"] = os.into();
+                }
+                expect_remote_initialize_with_metadata(&mut websocket, metadata).await;
+                websocket.close(None).await.expect("close should succeed");
+            })
+            .await;
+            let client = AppServerClient::Remote(
+                RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+                    .await
+                    .expect("remote client should connect"),
+            );
+            assert_eq!(
+                (client.platform_family(), client.platform_os()),
+                (family, os)
+            );
+            client.shutdown().await.expect("shutdown should complete");
+        }
     }
 
     #[tokio::test]
@@ -1981,6 +2261,7 @@ mod tests {
             experimental_api: true,
             mcp_server_openai_form_elicitation: true,
             opt_out_notification_methods: Vec::new(),
+            identity_channel: None,
             channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
         }
         .into_runtime_start_args();

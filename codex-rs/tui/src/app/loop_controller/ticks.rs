@@ -27,6 +27,7 @@ use super::formatting::LOOP_STATUS_BLOCKED_OWNER;
 use super::formatting::LOOP_STATUS_BLOCKED_REVIEW;
 use super::formatting::LOOP_STATUS_BLOCKED_SIDE;
 use super::formatting::LOOP_STATUS_DELEGATED_VIVLING;
+use super::formatting::LOOP_STATUS_DROPPED_BUSY;
 use super::formatting::LOOP_STATUS_EXPIRED;
 use super::formatting::LOOP_STATUS_INVALID_RUNNER_MODEL;
 use super::formatting::LOOP_STATUS_PENDING_BUSY;
@@ -45,6 +46,19 @@ use super::state::retry_tick_runtime_state;
 use crate::vl::delegated_loops::VivlingReadiness;
 use crate::vl::delegated_loops::owner_from_resolution;
 use crate::vl::delegated_loops::resolve_effective_owner;
+
+/// Status persisted when a tick cannot dispatch because the thread is busy.
+/// A one-shot is disarmed either way (`retry_tick_runtime_state` returns the
+/// empty state for one-shots), so it carries its own readable cause instead of
+/// pretending the tick is still pending; a recurring schedule keeps the
+/// pending_busy retry semantics.
+fn blocked_status_for(schedule_kind: &str, outcome: LoopPromptSubmissionOutcome) -> &'static str {
+    if schedule_kind == "one_shot" {
+        LOOP_STATUS_DROPPED_BUSY
+    } else {
+        loop_submission_status(outcome).unwrap_or(LOOP_STATUS_PENDING_BUSY)
+    }
+}
 
 fn loop_submission_status(outcome: LoopPromptSubmissionOutcome) -> Option<&'static str> {
     match outcome {
@@ -833,7 +847,7 @@ pub(super) async fn process_submission(
         | LoopPromptSubmissionOutcome::BlockedSideConversation => (
             retry_state.next_run_ms,
             retry_state.pending_tick,
-            loop_submission_status(submission).map(str::to_string),
+            Some(blocked_status_for(schedule_kind, submission).to_string()),
         ),
         LoopPromptSubmissionOutcome::BlockedMissingThread => {
             return Ok(());
@@ -860,6 +874,19 @@ pub(super) async fn process_submission(
         )
         .await
         .map_err(loop_state_error)?;
+    // A blocked-but-pending tick must not keep its dispatch claim: the
+    // claim makes one dispatch attempt at-most-once, it does not own the
+    // occurrence. The runtime retry (`ReloadLoopJobs`) re-dispatches the
+    // SAME occurrence through a fresh claim, so keeping the row here would
+    // fail that CAS forever and strand the pending tick. A one-shot drop
+    // stays terminal (its retry state is empty, so `pending_tick` is false
+    // here by construction); fired claims are never released. Best-effort,
+    // mirroring `finish_loop_tick` at the runner boundary.
+    if pending_tick && let Some(scheduled_at_ms) = occurrence_ms {
+        let _ = state_runtime
+            .release_loop_occurrence_claim(&job.id, scheduled_at_ms)
+            .await;
+    }
     let runtime_state = if pending_tick {
         Some("pending")
     } else if next_run_ms.is_some() {
@@ -892,7 +919,10 @@ pub(super) async fn process_submission(
 
 #[cfg(test)]
 mod tests {
+    use super::LOOP_STATUS_DROPPED_BUSY;
+    use super::LOOP_STATUS_PENDING_BUSY;
     use super::LOOP_STATUS_PROGRESS;
+    use super::blocked_status_for;
     use super::execute_internal_payload;
     use super::loop_now_ms;
     use super::process_submission;
@@ -1147,5 +1177,25 @@ mod tests {
             "failed one_shot must never dispatch a second child tick"
         );
         Ok(())
+    }
+
+    // (i-bis) D2=(b): a one-shot disarmed by a busy tick carries its own
+    // readable cause; a recurring schedule keeps the pending_busy semantics.
+    #[test]
+    fn blocked_status_names_the_one_shot_drop() {
+        use crate::chatwidget::loop_jobs::LoopPromptSubmissionOutcome;
+
+        assert_eq!(
+            blocked_status_for("one_shot", LoopPromptSubmissionOutcome::BlockedUserTurn),
+            LOOP_STATUS_DROPPED_BUSY
+        );
+        assert_eq!(
+            blocked_status_for("one_shot", LoopPromptSubmissionOutcome::BlockedReviewMode),
+            LOOP_STATUS_DROPPED_BUSY
+        );
+        assert_eq!(
+            blocked_status_for("interval", LoopPromptSubmissionOutcome::BlockedUserTurn),
+            LOOP_STATUS_PENDING_BUSY
+        );
     }
 }

@@ -25,7 +25,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use codex_history::RolloutLine;
 use schemars::schema_for;
-use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -39,6 +38,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
+
+#[path = "export_user_verification.rs"]
+mod user_verification;
 
 pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY BY HAND!\n\n";
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
@@ -55,6 +57,13 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "ThreadSearchOccurrence",
     "ThreadSearchTextRange",
     "TurnSettingsUpdateStatus",
+    "UserVerificationProof",
+    "UserVerificationCancellationReason",
+    "UserVerificationErrorDetails",
+    "UserVerificationFailureReason",
+    "UserVerificationInvalidRequestReason",
+    "UserVerificationRpcError",
+    "UserVerificationUnavailableReason",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -123,6 +132,7 @@ pub fn generate_ts_with_options(
     ClientRequest::export_all_to(out_dir)?;
     export_client_responses(out_dir)?;
     ClientNotification::export_all_to(out_dir)?;
+    crate::UserVerificationRpcError::export_all_to(out_dir)?;
 
     ServerRequest::export_all_to(out_dir)?;
     export_server_responses(out_dir)?;
@@ -220,6 +230,10 @@ pub fn generate_json_with_experimental(out_dir: &Path, experimental_api: bool) -
         schemas.push(emit(out_dir)?);
     }
 
+    schemas.push(write_json_schema::<crate::UserVerificationRpcError>(
+        out_dir,
+        "v2::UserVerificationRpcError",
+    )?);
     schemas.extend(export_client_param_schemas(out_dir)?);
     schemas.extend(export_client_response_schemas(out_dir)?);
     schemas.extend(export_server_param_schemas(out_dir)?);
@@ -260,6 +274,11 @@ fn filter_experimental_ts(out_dir: &Path) -> Result<()> {
     filter_request_ts(out_dir, "ServerRequest.ts", EXPERIMENTAL_SERVER_METHODS)?;
     filter_experimental_type_fields_ts(out_dir, &registered_fields)?;
     remove_generated_type_files(out_dir, &experimental_method_types, "ts")?;
+    let elicitation_path = out_dir.join("v2/McpServerElicitationRequestParams.ts");
+    if elicitation_path.exists() {
+        let content = fs::read_to_string(&elicitation_path)?;
+        fs::write(elicitation_path, user_verification::filter_ts(&content))?;
+    }
     Ok(())
 }
 
@@ -284,6 +303,11 @@ pub(crate) fn filter_experimental_ts_tree(tree: &mut BTreeMap<PathBuf, String>) 
     }
 
     for (path, content) in tree.iter_mut() {
+        if path.file_stem().and_then(|stem| stem.to_str())
+            == Some("McpServerElicitationRequestParams")
+        {
+            *content = user_verification::filter_ts(content);
+        }
         let Some(type_name) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
@@ -328,7 +352,7 @@ fn filter_request_ts_contents(mut content: String, experimental_methods: &[&str]
     let filtered_arms: Vec<String> = arms
         .into_iter()
         .filter(|arm| {
-            extract_method_from_arm(arm)
+            extract_discriminator_from_arm(arm, "method")
                 .is_none_or(|method| !experimental_methods.contains(method.as_str()))
         })
         .collect();
@@ -414,6 +438,7 @@ fn filter_experimental_schema(bundle: &mut Value) -> Result<()> {
     prune_experimental_methods(bundle, EXPERIMENTAL_CLIENT_METHODS);
     prune_experimental_methods(bundle, EXPERIMENTAL_SERVER_METHODS);
     remove_experimental_method_type_definitions(bundle);
+    user_verification::filter_json(bundle);
     Ok(())
 }
 
@@ -793,14 +818,14 @@ fn split_top_level_multi(input: &str, delimiters: &[char]) -> Vec<String> {
     parts
 }
 
-fn extract_method_from_arm(arm: &str) -> Option<String> {
+fn extract_discriminator_from_arm(arm: &str, discriminator: &str) -> Option<String> {
     let (open, close) = find_top_level_brace_span(arm)?;
     let inner = &arm[open + 1..close];
     for field in split_top_level(inner, ',') {
         let Some((name, value)) = parse_property(field.as_str()) else {
             continue;
         };
-        if name != "method" {
+        if name != discriminator {
             continue;
         }
         let value = value.trim_start();
@@ -1129,12 +1154,94 @@ fn build_flat_v2_schema(bundle: &Value) -> Result<Value> {
 
     flat_definitions.extend(shared_definitions);
     flat_root.insert("title".to_string(), Value::String(format!("{title}V2")));
+
+    // v2 schemas may reference types that live in OTHER namespaces of the
+    // mixed bundle (in this fork: `identity`). The flat bundle carries the
+    // referenced namespaces along (a nested map, so `#/definitions/<ns>/<Type>`
+    // refs stay valid) plus their non-v2 dependencies. A name without a
+    // namespace stays a check error: no bypass.
+    loop {
+        flat_root.insert(
+            "definitions".to_string(),
+            Value::Object(flat_definitions.clone()),
+        );
+        let mut flat_bundle = Value::Object(flat_root.clone());
+        rewrite_ref_prefix(&mut flat_bundle, "#/definitions/v2/", "#/definitions/");
+        ensure_no_ref_prefix(&flat_bundle, "#/definitions/v2/", "flat v2")?;
+        let mut missing_namespaces = Vec::new();
+        referenced_missing_namespaces(
+            &flat_bundle,
+            definitions,
+            &flat_definitions,
+            &mut missing_namespaces,
+        );
+        if missing_namespaces.is_empty() {
+            break;
+        }
+        let mut carried = false;
+        for namespace in missing_namespaces {
+            let Some(namespace_value) = definitions.get(&namespace) else {
+                continue;
+            };
+            if !is_namespace_map(namespace_value) {
+                continue;
+            }
+            let dependencies =
+                collect_definition_dependencies(definitions, collect_non_v2_refs(namespace_value));
+            for dependency in dependencies {
+                if dependency != namespace
+                    && !flat_definitions.contains_key(&dependency)
+                    && let Some(schema) = definitions.get(&dependency)
+                {
+                    flat_definitions.insert(dependency, schema.clone());
+                }
+            }
+            flat_definitions.insert(namespace, namespace_value.clone());
+            carried = true;
+        }
+        if !carried {
+            break;
+        }
+    }
     flat_root.insert("definitions".to_string(), Value::Object(flat_definitions));
     let mut flat_bundle = Value::Object(flat_root);
     rewrite_ref_prefix(&mut flat_bundle, "#/definitions/v2/", "#/definitions/");
     ensure_no_ref_prefix(&flat_bundle, "#/definitions/v2/", "flat v2")?;
     ensure_referenced_definitions_present(&flat_bundle, "flat v2")?;
     Ok(flat_bundle)
+}
+
+/// Namespace names referenced by the flat bundle but missing from the flat
+/// definitions. Returns only names for which the mixed bundle has a
+/// namespace map: any other name stays a check error.
+fn referenced_missing_namespaces(
+    value: &Value,
+    definitions: &Map<String, Value>,
+    flat_definitions: &Map<String, Value>,
+    missing: &mut Vec<String>,
+) {
+    match value {
+        Value::Object(obj) => {
+            if let Some(Value::String(reference)) = obj.get("$ref")
+                && let Some(name) = reference.strip_prefix("#/definitions/")
+                && let Some((namespace, _)) = name.split_once('/')
+                && !flat_definitions.contains_key(namespace)
+                && is_namespace_map(definitions.get(namespace).unwrap_or(&Value::Null))
+                && !missing.iter().any(|existing| existing == namespace)
+            {
+                missing.push(namespace.to_string());
+            }
+            for child in obj.values() {
+                referenced_missing_namespaces(child, definitions, flat_definitions, missing);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                referenced_missing_namespaces(child, definitions, flat_definitions, missing);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_non_v2_refs(value: &Value) -> HashSet<String> {
@@ -1559,8 +1666,11 @@ where
     write_json_schema_with_return::<T>(out_dir, name)
 }
 
-fn write_pretty_json(path: PathBuf, value: &impl Serialize) -> Result<()> {
-    let json = serde_json::to_vec_pretty(value)
+fn write_pretty_json(path: PathBuf, value: &Value) -> Result<()> {
+    let mut value = value.clone();
+    // Keep Cargo and Bazel output identical without changing meaningful array order.
+    value.sort_all_objects();
+    let json = serde_json::to_vec_pretty(&value)
         .with_context(|| format!("Failed to serialize JSON schema to {}", path.display()))?;
     fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
@@ -2154,6 +2264,11 @@ mod tests {
             "params?: GetAccountTokenUsageParams | undefined, }"
         );
         assert!(client_request_ts.contains(LEGACY_ACCOUNT_USAGE_REQUEST));
+        const LEGACY_ACCOUNT_RATE_LIMITS_REQUEST: &str = concat!(
+            "{ \"method\": \"account/rateLimits/read\", id: RequestId, ",
+            "params?: GetAccountRateLimitsParams | undefined, }"
+        );
+        assert!(client_request_ts.contains(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST));
         let account_usage_response_ts = std::str::from_utf8(
             fixture_tree
                 .get(Path::new("v2/GetAccountTokenUsageResponse.ts"))
@@ -2232,12 +2347,16 @@ mod tests {
                 });
 
             let contents = std::str::from_utf8(contents)?;
-            // The stable usage RPC originally required `params: undefined`. Keep that exact
-            // legacy value accepted while extending the same method with optional thread params.
-            let legacy_account_usage_undefined = path == Path::new("ClientRequest.ts")
-                && contents.matches("| undefined").count() == 1
-                && contents.contains(LEGACY_ACCOUNT_USAGE_REQUEST);
-            if contents.contains("| undefined") && !legacy_account_usage_undefined {
+            // Both stable usage RPCs originally required `params: undefined`. Preserve that
+            // source compatibility only for these exact envelopes, not arbitrary new fields.
+            let checked_contents = if path == Path::new("ClientRequest.ts") {
+                contents
+                    .replace(LEGACY_ACCOUNT_USAGE_REQUEST, "")
+                    .replace(LEGACY_ACCOUNT_RATE_LIMITS_REQUEST, "")
+            } else {
+                contents.to_owned()
+            };
+            if checked_contents.contains("| undefined") {
                 undefined_offenders.push(path.clone());
             }
 
@@ -2423,12 +2542,23 @@ mod tests {
             "ThreadStartParams lost the capabilities property in the committed JSON schema"
         );
 
-        let manage_loops = schema
+        // 0.154: i campi opzionali escono come tipo nullable ["boolean","null"]
+        // nel v2; la garanzia fork e' che il flag ci sia e sia boolean-typed.
+        let manage_loops_types: Vec<String> = match schema
             .pointer("/definitions/ThreadClientCapabilities/properties/manageLoops/type")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        assert_eq!(
-            manage_loops, "boolean",
+        {
+            Some(serde_json::Value::String(single)) => vec![single.clone()],
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        assert!(
+            manage_loops_types.iter().any(|kind| kind == "boolean")
+                && manage_loops_types
+                    .iter()
+                    .all(|kind| kind == "boolean" || kind == "null"),
             "ThreadClientCapabilities lost the manageLoops flag in the committed JSON schema"
         );
         Ok(())

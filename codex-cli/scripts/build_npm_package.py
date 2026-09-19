@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -271,6 +272,29 @@ def prepare_staging_dir(staging_dir: Path | None) -> tuple[Path, bool]:
     return temp_dir, True
 
 
+_RELATIVE_IMPORT_RE = re.compile(r"""from\s+["'](\./[^"']+\.js)["']""")
+def assert_staged_relative_imports_resolve(staging_dir: Path) -> None:
+    """Fail closed when a staged launcher imports a file we did not stage.
+
+    The `files` list is explicit and the launcher is copied by name, so a new
+    module under `codex-cli/bin` can be left out of the tarball while the
+    launcher keeps importing it: the breakage would only appear after
+    publishing, on a user's install. Any relative `from "./x.js"` that has no
+    staged counterpart is a packaging error, not a warning.
+    """
+    missing: list[str] = []
+    for script in sorted((staging_dir / "bin").glob("*.js")):
+        source = script.read_text(encoding="utf-8")
+        for match in _RELATIVE_IMPORT_RE.finditer(source):
+            imported = match.group(1)
+            if not (script.parent / imported).is_file():
+                missing.append(f"{script.relative_to(staging_dir)} imports {imported}")
+    if missing:
+        raise RuntimeError(
+            "staged launcher imports files that were not staged: " + "; ".join(missing)
+        )
+
+
 def stage_sources(
     staging_dir: Path,
     version: str,
@@ -286,6 +310,10 @@ def stage_sources(
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
+        # The launcher imports this helper; staging it explicitly is what keeps a
+        # published main package runnable (see stage_relative_import_guard).
+        shutil.copy2(CODEX_CLI_ROOT / "bin" / "identity_fds.js", bin_dir / "identity_fds.js")
+        assert_staged_relative_imports_resolve(staging_dir)
         scripts_dir = staging_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(
@@ -373,6 +401,7 @@ def stage_sources(
     if package == "codex":
         package_json["files"] = [
             "bin/codex.js",
+            "bin/identity_fds.js",
             "bin/codex-exec.js",
             "scripts/postinstall.js",
         ]

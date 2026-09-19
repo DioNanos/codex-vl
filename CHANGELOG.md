@@ -4,6 +4,35 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.155.1-vl.1 - 2026-09-19 - Upstream rust-v0.155.1
+
+### Codex VL changes
+
+- **Loop ticks blocked by a running turn now wake up when the turn ends.** A loop
+  tick that lands while an agent turn is running is recorded as pending and its
+  dispatch claim is released, so the pending tick is dispatched as soon as the
+  turn completes — also after an interrupt (Escape) and behind queued input,
+  where it stays pending until the last queued turn completes. A one-shot tick
+  that lands on a busy turn is dropped with an explicit `dropped_busy` status
+  instead of being silently disarmed.
+- **A single oversized model entry no longer hides the whole model list.** The
+  message-size guard now drops only the offending entry and keeps the remaining
+  models visible and selectable.
+
+### Upstream
+
+- Upstream `rust-v0.155.0` and `rust-v0.155.1` (message handling and model catalog updates).
+- `rustls` 0.23.45 (security advisory RUSTSEC-2026-0285).
+
+## 0.154.0-vl.3 - Upstream rust-v0.154.0
+
+### Codex VL changes
+
+- **embedded app-server reuses the identity channel captured at TUI startup instead of
+  re-reading the environment.**
+- **embedded app-server client completes the identity handshake (challenge, proof, bind)
+  over the shared channel before the first protected request.**
+
 ## 0.153.2-vl.2 - Upstream rust-v0.153.2
 
 ### Codex VL fixes

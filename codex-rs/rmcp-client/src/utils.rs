@@ -11,6 +11,157 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 
+pub(crate) const SHARED_VERIFIED_RESERVED_ENV: [&str; 3] =
+    ["TMUX", "TMUX_PANE", "NEXUSCREW_MCP_SESSION"];
+
+/// Version tag for the reserved verified-binding metadata names below.
+pub(crate) const SHARED_VERIFIED_ENV_VERSION: &str = "1";
+
+/// Reserved non-secret metadata names handed to an MCP child process when the
+/// session runs on a verified shared binding. The values are copied from the
+/// session's binding context, never from the environment, argv, or config.
+pub const SHARED_VERIFIED_IDENTITY_ENV: [&str; 7] = [
+    "NEXUSCREW_VERIFIED_ENV_VERSION",
+    "NEXUSCREW_VERIFIED_OWNER_INSTANCE_ID",
+    "NEXUSCREW_VERIFIED_CELL_ID",
+    "NEXUSCREW_VERIFIED_INCARNATION_ID",
+    "NEXUSCREW_VERIFIED_BINDING_ID",
+    "NEXUSCREW_VERIFIED_ORIGIN",
+    "NEXUSCREW_VERIFIED_THREAD_ID",
+];
+
+/// Non-secret identity metadata derived from a verified shared binding. This
+/// is attribution data only: it authorizes nothing by itself and never
+/// carries secrets, tokens, or capabilities.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedVerifiedIdentity {
+    pub owner_instance_id: String,
+    pub cell_id: String,
+    pub incarnation_id: String,
+    pub binding_id: String,
+    pub origin: String,
+    pub thread_id: Option<String>,
+}
+
+impl SharedVerifiedIdentity {
+    /// Environment pairs for the reserved metadata names. The thread name is
+    /// present only when the binding context carries a thread.
+    pub fn env_pairs(&self) -> Vec<(OsString, OsString)> {
+        let mut pairs: Vec<(&str, &str)> = vec![
+            (
+                "NEXUSCREW_VERIFIED_ENV_VERSION",
+                SHARED_VERIFIED_ENV_VERSION,
+            ),
+            (
+                "NEXUSCREW_VERIFIED_OWNER_INSTANCE_ID",
+                self.owner_instance_id.as_str(),
+            ),
+            ("NEXUSCREW_VERIFIED_CELL_ID", self.cell_id.as_str()),
+            (
+                "NEXUSCREW_VERIFIED_INCARNATION_ID",
+                self.incarnation_id.as_str(),
+            ),
+            ("NEXUSCREW_VERIFIED_BINDING_ID", self.binding_id.as_str()),
+            ("NEXUSCREW_VERIFIED_ORIGIN", self.origin.as_str()),
+        ];
+        if let Some(thread_id) = self.thread_id.as_deref() {
+            pairs.push(("NEXUSCREW_VERIFIED_THREAD_ID", thread_id));
+        }
+        pairs
+            .into_iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect()
+    }
+}
+
+fn is_legacy_shared_verified_reserved_name(name: &str) -> bool {
+    SHARED_VERIFIED_RESERVED_ENV
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+}
+
+fn is_verified_identity_reserved_name(name: &str) -> bool {
+    SHARED_VERIFIED_IDENTITY_ENV
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+}
+
+/// Reject named overrides and scrub inherited or reintroduced values for the
+/// verified-binding metadata names. This applies to every child spawn, bound
+/// or not: a `NEXUSCREW_VERIFIED_*` value must only ever come from the
+/// launcher's authoritative metadata, never from config or the environment.
+pub(crate) fn sanitize_verified_identity_env(
+    env: &mut HashMap<OsString, OsString>,
+    env_vars: &[McpServerEnvVar],
+) -> Result<()> {
+    if let Some(reserved) = env_vars
+        .iter()
+        .find(|var| is_verified_identity_reserved_name(var.name()))
+    {
+        return Err(anyhow!(
+            "verified MCP env override `{}` is reserved",
+            reserved.name()
+        ));
+    }
+    env.retain(|key, _| !is_verified_identity_reserved_name(&key.to_string_lossy()));
+    Ok(())
+}
+
+/// Enforce the shared-verified boundary for the legacy identity variables.
+/// Applies only when the session runs on a shared verified binding: the
+/// legacy embedded path keeps inheriting these variables. Literal config
+/// values are removed after overlays are assembled; named env overrides are
+/// rejected so a caller cannot reintroduce an identity variable through
+/// `env_vars`.
+pub(crate) fn sanitize_shared_verified_env(
+    env: &mut HashMap<OsString, OsString>,
+    env_vars: &[McpServerEnvVar],
+) -> Result<()> {
+    if let Some(reserved) = env_vars
+        .iter()
+        .find(|var| is_legacy_shared_verified_reserved_name(var.name()))
+    {
+        return Err(anyhow!(
+            "shared verified MCP env override `{}` is reserved",
+            reserved.name()
+        ));
+    }
+    env.retain(|key, _| !is_legacy_shared_verified_reserved_name(&key.to_string_lossy()));
+    Ok(())
+}
+
+/// Compose the final child environment for an MCP stdio server. Both launcher
+/// paths funnel through this function so the reserved-name policy is applied
+/// in exactly one place: verified metadata names are unconditional, the
+/// legacy identity variables are scrubbed only on a shared verified binding,
+/// and the authoritative metadata always wins over reintroduced values.
+pub(crate) fn finalize_child_env(
+    mut envs: HashMap<OsString, OsString>,
+    env_vars: &[McpServerEnvVar],
+    identity: Option<&SharedVerifiedIdentity>,
+) -> Result<HashMap<OsString, OsString>> {
+    sanitize_verified_identity_env(&mut envs, env_vars)?;
+    if identity.is_some() {
+        sanitize_shared_verified_env(&mut envs, env_vars)?;
+    }
+    if let Some(identity) = identity {
+        apply_shared_verified_identity(&mut envs, identity);
+    }
+    Ok(envs)
+}
+
+/// Apply the verified-binding metadata to a child environment after the
+/// reserved scrub. The authoritative values always win over anything the
+/// environment or configuration reintroduced under the reserved names.
+pub(crate) fn apply_shared_verified_identity(
+    env: &mut HashMap<OsString, OsString>,
+    identity: &SharedVerifiedIdentity,
+) {
+    for (name, value) in identity.env_pairs() {
+        env.insert(name, value);
+    }
+}
+
 pub(crate) const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) fn create_env_for_mcp_server(

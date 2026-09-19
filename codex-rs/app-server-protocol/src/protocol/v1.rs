@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::protocol::common::AuthMode;
+use crate::protocol::identity::IdentityChallenge;
 use crate::protocol::v2::ForcedChatgptWorkspaceIds;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
@@ -77,6 +78,10 @@ pub struct InitializeResponse {
     /// Operating system for the running app-server target, for example
     /// `"macos"`, `"linux"`, or `"windows"`.
     pub platform_os: String,
+    /// Challenge for the optional `nexuscrew.identity.v1` connection binding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub identity_challenge: Option<IdentityChallenge>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

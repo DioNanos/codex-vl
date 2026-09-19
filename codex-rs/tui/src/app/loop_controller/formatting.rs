@@ -13,6 +13,9 @@ pub(super) const LOOP_STATUS_INVALID_RUNNER_MODEL: &str = "invalid_runner_model"
 pub(super) const LOOP_STATUS_NEEDS_APPROVAL: &str = "needs_approval";
 pub(super) const LOOP_STATUS_TIMEOUT: &str = "timeout";
 pub(super) const LOOP_STATUS_PENDING_BUSY: &str = "pending_busy";
+/// A one-shot blocked by an active turn is disarmed (one-shots do not retry):
+/// `dropped_busy` says so instead of pretending the tick is still pending.
+pub(super) const LOOP_STATUS_DROPPED_BUSY: &str = "dropped_busy";
 pub(super) const LOOP_STATUS_BLOCKED_REVIEW: &str = "blocked_review";
 pub(super) const LOOP_STATUS_BLOCKED_SIDE: &str = "blocked_side";
 pub(super) const LOOP_STATUS_BLOCKED_OWNER: &str = "blocked_owner";

@@ -53,6 +53,32 @@ WHERE job_id = ? AND scheduled_at_ms = ?
         Ok(result.rows_affected() == 1)
     }
 
+    /// Releases the dispatch claim of an occurrence whose tick ended
+    /// blocked but still pending. The claim makes ONE dispatch attempt
+    /// at-most-once; it does not own the occurrence for its whole life.
+    /// The runtime retry (`ReloadLoopJobs`) re-dispatches the same
+    /// occurrence through a fresh claim, so an unreleased claim would
+    /// fail that CAS forever and strand the pending tick. Only un-fired
+    /// claims are released: a fired occurrence keeps its at-most-once
+    /// tombstone.
+    pub async fn release_loop_occurrence_claim(
+        &self,
+        job_id: &str,
+        scheduled_at_ms: i64,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+DELETE FROM vl_loop_occurrences
+WHERE job_id = ? AND scheduled_at_ms = ? AND fired_count = 0
+"#,
+        )
+        .bind(job_id)
+        .bind(scheduled_at_ms)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Occurrence rows of a job, oldest first (riepilogo/audit).
     pub async fn list_loop_occurrences(&self, job_id: &str) -> anyhow::Result<Vec<LoopOccurrence>> {
         let rows = sqlx::query(
@@ -190,6 +216,56 @@ mod tests {
                 .await?
         );
         assert_eq!(runtime.list_loop_occurrences(&job_id).await?.len(), 2);
+        Ok(())
+    }
+
+    /// A blocked-but-pending tick releases its claim so the runtime retry
+    /// can claim the same occurrence again; a fired claim is a tombstone.
+    #[tokio::test]
+    async fn a_released_claim_is_reclaimable_until_fired() -> anyhow::Result<()> {
+        let (runtime, job_id) = runtime_with_job().await?;
+        let scheduled_at_ms: i64 = 1_700_000_100_000;
+
+        assert!(
+            runtime
+                .claim_loop_occurrence(&job_id, scheduled_at_ms, 1_700_000_100_100)
+                .await?
+        );
+        // The blocked tick releases the un-fired claim...
+        assert!(
+            runtime
+                .release_loop_occurrence_claim(&job_id, scheduled_at_ms)
+                .await?
+        );
+        // ...and the retry claims the SAME occurrence again.
+        assert!(
+            runtime
+                .claim_loop_occurrence(&job_id, scheduled_at_ms, 1_700_000_100_200)
+                .await?
+        );
+        // Once fired, the claim is a tombstone: never releasable, never
+        // re-claimable (at-most-once dispatch per occurrence).
+        assert!(
+            runtime
+                .mark_loop_occurrence_fired(&job_id, scheduled_at_ms, 1_700_000_100_300)
+                .await?
+        );
+        assert!(
+            !runtime
+                .release_loop_occurrence_claim(&job_id, scheduled_at_ms)
+                .await?
+        );
+        assert!(
+            !runtime
+                .claim_loop_occurrence(&job_id, scheduled_at_ms, 1_700_000_100_400)
+                .await?
+        );
+        // Releasing an occurrence that was never claimed is a no-op.
+        assert!(
+            !runtime
+                .release_loop_occurrence_claim(&job_id, scheduled_at_ms + 30_000)
+                .await?
+        );
         Ok(())
     }
 }

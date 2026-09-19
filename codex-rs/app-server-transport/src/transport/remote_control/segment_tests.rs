@@ -140,6 +140,7 @@ fn invalid_response_becomes_remote_control_jsonrpc_error() {
                     codex_home,
                     platform_family: "unix".to_string(),
                     platform_os: "linux".to_string(),
+                    identity_challenge: None,
                 })),
             })),
         },
