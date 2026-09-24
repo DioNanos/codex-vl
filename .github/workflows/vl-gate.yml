@@ -369,3 +369,30 @@ jobs:
           cargo test -p codex-app-server-client --lib -- remote::identity_startup_tests:: 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-identity-client-startup.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-identity-client-startup.out
           grep -F 'remote::identity_startup_tests::managed_startup_protects_channel_without_mcp ... ok' vl-gate-identity-client-startup.out
+      - name: Test apply_patch sandbox bypass chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pins the approved apply_patch bypass chain for platforms that cannot provide a
+          # filesystem sandbox (issues #22/#25): the first-attempt override decision with the
+          # platform predicate and the real approval outcome, the apply_patch runtime sandbox
+          # context for a bypassed attempt, and the production post-run classifier that must
+          # not turn an unrelated failure into a sandbox denial. The pre-verification read
+          # guards pin the executor read routing a patch verification depends on.
+          cargo test -p codex-core --lib -- file_system_sandbox_context_preserves_executor_workspace_permissions file_system_sandbox_context_respects_sandbox_request approved_apply_patch_on_sandboxless_platform_executes_without_fs_sandbox r2_unrelated_failure_after_bypass_is_not_a_sandbox_denial approved_needs_approval_bypasses_sandbox_on_platform_without_sandbox_by_construction approved_needs_approval_keeps_sandbox_on_platform_expected_to_have_one by_construction_bypass_still_respects_denied_reads by_construction_flag_alone_does_not_bypass_without_approval unapproved_request_on_sandboxless_platform_stays_fail_closed linux_platform_keeps_sandboxed_first_attempt delete_preverification_reads_host_files_when_no_sandbox_can_exist update_preverification_reads_host_files_when_no_sandbox_can_exist denied_read_policy_keeps_preverification_fail_closed_when_no_sandbox_can_exist linux_platform_keeps_preverification_on_the_sandboxed_routing unapproved_apply_patch_on_sandboxless_platform_still_gets_no_bypass 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-apply-patch-sandbox.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-apply-patch-sandbox.out
+          grep -F 'file_system_sandbox_context_preserves_executor_workspace_permissions ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'file_system_sandbox_context_respects_sandbox_request ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'approved_apply_patch_on_sandboxless_platform_executes_without_fs_sandbox ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'r2_unrelated_failure_after_bypass_is_not_a_sandbox_denial ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'approved_needs_approval_bypasses_sandbox_on_platform_without_sandbox_by_construction ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'approved_needs_approval_keeps_sandbox_on_platform_expected_to_have_one ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'by_construction_bypass_still_respects_denied_reads ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'by_construction_flag_alone_does_not_bypass_without_approval ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'unapproved_request_on_sandboxless_platform_stays_fail_closed ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'linux_platform_keeps_sandboxed_first_attempt ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'delete_preverification_reads_host_files_when_no_sandbox_can_exist ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'update_preverification_reads_host_files_when_no_sandbox_can_exist ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'denied_read_policy_keeps_preverification_fail_closed_when_no_sandbox_can_exist ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'linux_platform_keeps_preverification_on_the_sandboxed_routing ... ok' vl-gate-apply-patch-sandbox.out
+          grep -F 'unapproved_apply_patch_on_sandboxless_platform_still_gets_no_bypass ... ok' vl-gate-apply-patch-sandbox.out

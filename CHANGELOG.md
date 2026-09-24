@@ -4,6 +4,17 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.156.1-vl.2 - 2026-09-24 - Upstream rust-v0.156.1
+
+### Codex VL changes
+
+- **An approved patch now runs on builds that cannot provide a filesystem sandbox.**
+  On Android/Termux builds the platform has no sandbox backend at all, so the executor
+  refused the first attempt of an approved patch with "filesystem sandbox cannot be
+  enforced on this executor" and the patch never ran. The approval is now honoured on
+  the existing unsandboxed path, while every platform that can sandbox keeps the
+  sandboxed first attempt and policies with denied reads keep failing closed.
+
 ## 0.156.1-vl.1 - 2026-09-24 - Upstream rust-v0.156.1
 
 ### Codex VL changes

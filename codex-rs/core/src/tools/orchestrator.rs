@@ -24,6 +24,7 @@ use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
 use crate::tools::sandboxing::default_exec_approval_requirement;
 use crate::tools::sandboxing::sandbox_override_for_first_attempt;
+use crate::tools::sandboxing::sandbox_unavailable_by_construction;
 use crate::tools::sandboxing::unsandboxed_execution_allowed;
 use codex_otel::ToolDecisionSource;
 use codex_protocol::error::CodexErrorDetails;
@@ -231,6 +232,8 @@ impl ToolOrchestrator {
                 tool.sandbox_permissions(req),
                 &requirement,
                 &file_system_sandbox_policy,
+                sandbox_unavailable_by_construction(),
+                already_approved,
             )
         } else {
             SandboxOverride::NoOverride
