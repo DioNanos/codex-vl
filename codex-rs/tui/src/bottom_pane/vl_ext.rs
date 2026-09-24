@@ -608,11 +608,16 @@ mod tests {
 
     #[test]
     fn render_body_invokes_codex_vl_push_render_extras() {
-        let body = extract_fn_body(MOD_SOURCE, "as_renderable_with_composer_right_reserve")
-            .expect("as_renderable_with_composer_right_reserve must exist in bottom_pane/mod.rs");
+        // codex-vl: upstream 0.156 renamed the render entry point from
+        // `as_renderable_with_composer_right_reserve` to
+        // `as_renderable_with_options(ComposerRenderOptions)`; the fork
+        // invariant is that THE render entry point (whatever its name)
+        // publishes the Vivling sidebar + strip via the thin bridge.
+        let body = extract_fn_body(MOD_SOURCE, "as_renderable_with_options")
+            .expect("as_renderable_with_options must exist in bottom_pane/mod.rs");
         assert!(
             body.contains("self.codex_vl_push_render_extras("),
-            "as_renderable_with_composer_right_reserve must call \
+            "as_renderable_with_options must call \
              self.codex_vl_push_render_extras(&mut flex2) to publish the \
              Vivling sidebar + strip in the render path. Body was:\n{body}",
         );

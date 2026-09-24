@@ -24,6 +24,7 @@ pub(crate) async fn connect(
         #[cfg(windows)]
         AppServerTarget::LocalDaemon {
             endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+            ..
         } => {
             // Revalidate at the real connection, not just the earlier discovery probe.
             let (socket_path, _directory) =
@@ -46,7 +47,7 @@ pub(crate) async fn connect(
             };
             Ok(AppServerClient::Remote(app_server))
         }
-        AppServerTarget::LocalDaemon { endpoint } | AppServerTarget::Remote { endpoint } => {
+        AppServerTarget::LocalDaemon { endpoint, .. } | AppServerTarget::Remote { endpoint } => {
             crate::connect_remote_app_server_with_identity(endpoint.clone(), identity_proof).await
         }
     }

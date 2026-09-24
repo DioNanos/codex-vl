@@ -16,6 +16,7 @@ use codex_app_server_protocol::RequestId;
 use futures::SinkExt;
 use futures::StreamExt;
 use serde_json::Value;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -179,6 +180,13 @@ impl IdentityAuthorityStub {
 
 pub struct IdentityFixture {
     _home: TempDir,
+    // Keep the fake package dir alive as long as the fixture: `shim` points at
+    // `<package>/bin/codex`, and a local TempDir would be deleted when the
+    // constructor returns — then `stop()` (and the Drop) would try to spawn a
+    // path that no longer exists, surfacing as a bare ENOENT with no context.
+    // The daemon start works because it happens INSIDE the constructor, while
+    // the dir is still there.
+    _package: TempDir,
     challenge_file: PathBuf,
     shim: PathBuf,
     app_server: PathBuf,
@@ -203,6 +211,38 @@ impl IdentityFixture {
         let challenge_file = home.path().join("identity-challenges.jsonl");
         let shim = codex_utils_cargo_bin::cargo_bin("d174-daemon-shim")
             .context("locate C6 daemon shim")?;
+        // The daemon lifecycle refuses to start unless the CLI runs from a
+        // complete packaged layout (InstallContext::package_layout, resolved
+        // from current_exe). A cargo target/ binary has no layout, so wrap the
+        // shim in a minimal but complete package; after install the daemon runs
+        // the packaged shim, which delegates the app-server to
+        // D174_APP_SERVER_BIN as designed.
+        let package = TempDir::new().context("create fake CLI package")?;
+        let package_bin = package.path().join("bin");
+        let package_path = package.path().join("codex-path");
+        let package_resources = package.path().join("codex-resources");
+        std::fs::create_dir_all(&package_bin)?;
+        std::fs::create_dir_all(&package_path)?;
+        std::fs::create_dir_all(&package_resources)?;
+        let packaged_shim = package_bin.join("codex");
+        std::fs::copy(&shim, &packaged_shim)?;
+        std::fs::write(package_bin.join("codex-code-mode-host"), b"")?;
+        std::fs::write(package_path.join("rg"), b"")?;
+        std::fs::write(package_resources.join("bwrap"), b"")?;
+        // The lifecycle validates that every packaged binary is executable.
+        let executable = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&packaged_shim, executable.clone())?;
+        std::fs::set_permissions(package_bin.join("codex-code-mode-host"), executable.clone())?;
+        std::fs::set_permissions(package_path.join("rg"), executable.clone())?;
+        std::fs::set_permissions(package_resources.join("bwrap"), executable)?;
+        std::fs::write(
+            package.path().join("codex-package.json"),
+            format!(
+                r#"{{"layoutVersion":1,"version":"0.0.0","target":"{}","entrypoint":"bin/codex"}}"#,
+                fake_package_target(),
+            ),
+        )?;
+        let shim = packaged_shim;
         let app_server = codex_utils_cargo_bin::cargo_bin("codex-app-server")
             .context("locate real app-server binary")?;
         let mut command = Command::new(&shim);
@@ -237,6 +277,7 @@ impl IdentityFixture {
             if socket.as_path().exists() {
                 return Ok(Self {
                     _home: home,
+                    _package: package,
                     challenge_file,
                     shim,
                     app_server,
@@ -250,6 +291,29 @@ impl IdentityFixture {
             sleep(Duration::from_millis(20)).await;
         }
         anyhow::bail!("daemon did not create app-server socket")
+    }
+
+    /// Surfaces the managed backend logs on teardown: the daemon redirects the
+    /// app-server output into these files, and a test that fails after the
+    /// daemon reports success would otherwise lose the child's own error.
+    pub fn dump_managed_backend_logs(&self) {
+        let daemon_dir = self._home.path().join("app-server-daemon");
+        for name in ["daemon.stderr.log", "daemon.stdout.log"] {
+            let contents = match std::fs::read_to_string(daemon_dir.join(name)) {
+                Ok(contents) if !contents.is_empty() => contents,
+                _ => continue,
+            };
+            eprintln!("--- {name} (last 4000 chars) ---");
+            let tail = contents
+                .chars()
+                .rev()
+                .take(4000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            eprintln!("{tail}");
+        }
     }
 
     pub fn socket_path(&self) -> Result<PathBuf> {
@@ -379,6 +443,10 @@ impl IdentityFixture {
 
 impl Drop for IdentityFixture {
     fn drop(&mut self) {
+        // The daemon redirects the managed app-server output into these files:
+        // on a failing test this is the only place the child's own error shows
+        // up, since the daemon reports success as soon as the backend spawns.
+        self.dump_managed_backend_logs();
         if !self.stopped.swap(true, Ordering::SeqCst) {
             let mut command = std::process::Command::new(&self.shim);
             command
@@ -605,4 +673,20 @@ fn scrub_shared_identity_env_std(command: &mut std::process::Command) {
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("NEXUSCREW_MCP_SESSION");
+}
+
+/// Mirror of app-server-daemon prepare_install::platform_target, which is
+/// private; codex-package.json target must match it exactly.
+fn fake_package_target() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") if cfg!(target_env = "gnu") => "aarch64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("linux", "x86_64") if cfg!(target_env = "gnu") => "x86_64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("windows", "aarch64") => "aarch64-pc-windows-msvc",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        (os, arch) => unreachable!("unsupported packaged daemon platform {os}/{arch}"),
+    }
 }

@@ -49,6 +49,7 @@ async fn retries_on_early_close() {
         namespace_tools: None,
         name: "openai".into(),
         base_url: Some(format!("{}/v1", server.uri())),
+        model_catalog_url: None,
         // Environment variable that should exist in the test environment.
         // ModelClient will return an error if the environment variable for the
         // provider is not set.
@@ -56,6 +57,7 @@ async fn retries_on_early_close() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,

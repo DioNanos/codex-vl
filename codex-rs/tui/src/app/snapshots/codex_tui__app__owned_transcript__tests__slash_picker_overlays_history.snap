@@ -1,0 +1,19 @@
+---
+source: tui/src/app/owned_transcript_tests.rs
+assertion_line: 1038
+expression: open_text
+---
+Transcript row 30: content behind the menu
+Transcript row 31: content behind the menu
+Transcript row 32: content behind the menu
+Transcript row 33: content behind the menu
+› /model     choose what model and reasoning effort to use
+  /memories  configure memory use and generation
+  /mention   mention a file
+  /mcp       list MCP tools; use /mcp verbose for details or /mcp reload to
+             refresh
+
+› /m
+
+  gpt-test default · /tmp/project
+  model high · fast
