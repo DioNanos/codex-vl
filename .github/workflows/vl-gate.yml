@@ -259,6 +259,26 @@ jobs:
           cargo test -p codex-app-server --features d174-test-fixture --test d174_c6_terminal unbound_mcp_spawn_rejects_reserved_verified_env_var_override -- --exact --ignored --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-c8-unbound-override.out
           grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-c8-unbound-override.out
           grep -F 'test unbound_mcp_spawn_rejects_reserved_verified_env_var_override ... ok' vl-gate-c8-unbound-override.out
+      - name: F5 guardian validates the parent-fallback cap before the policy comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --lib -- session::step_activation::tests::model_safety_rejects_oversized_parent_fallback_messages --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-f5-guardian-cap.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-f5-guardian-cap.out
+          grep -F 'test session::step_activation::tests::model_safety_rejects_oversized_parent_fallback_messages ... ok' vl-gate-f5-guardian-cap.out
+      - name: F5 guardian validates the retained-model cap (valid destination)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --lib -- session::step_activation::tests::model_safety_rejects_oversized_retained_parent_fallback_messages --exact --nocapture 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-f5-retained-cap.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-f5-retained-cap.out
+          grep -F 'test session::step_activation::tests::model_safety_rejects_oversized_retained_parent_fallback_messages ... ok' vl-gate-f5-retained-cap.out
+      - name: App-server lib tests compile and pass (identity test support)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server --lib user_verification 2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee vl-gate-app-server-lib-user-verification.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' vl-gate-app-server-lib-user-verification.out
       - name: Test model message caps
         shell: bash
         run: |

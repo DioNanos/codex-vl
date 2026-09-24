@@ -57,9 +57,18 @@ impl native::UserVerificationProvider for BlockingProvider {
     }
     fn ensure_key(
         &self,
-        _guard: &native::UserVerificationRequestGuard,
+        guard: &native::UserVerificationRequestGuard,
     ) -> Result<native::UserVerificationKeyCreation, native::UserVerificationError> {
-        unreachable!("this test must not create keys")
+        guard.check()?;
+        self.calls.fetch_add(/*val*/ 1, Ordering::SeqCst);
+        Ok(native::UserVerificationKeyCreation {
+            created: false,
+            credential: native::UserVerificationKeyInfo {
+                credential_id: "credential".into(),
+                algorithm: "ecdsaP256Sha256X962".into(),
+                public_key: "public-key".into(),
+            },
+        })
     }
     fn delete(
         &self,
@@ -168,6 +177,11 @@ impl Harness {
                 ConnectionOrigin::WebSocket => AppServerRpcTransport::Websocket,
             },
             remote_control_handle: None,
+            // Identity is not required in this test support: the same pair
+            // `message_processor_tracing_tests.rs` already uses. This standalone
+            // fixture is not an identity client.
+            authority_verifier: None,
+            identity_required: false,
             plugin_startup_tasks: None,
         }));
         Ok(Self {

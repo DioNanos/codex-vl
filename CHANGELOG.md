@@ -4,6 +4,27 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.156.1-vl.1 - 2026-09-24 - Upstream rust-v0.156.1
+
+### Codex VL changes
+
+- **The Guardian parent-fallback guard stays fail-closed on the new model-switch
+  path.** A model switch now validates the parent-fallback policy sources of the
+  destination and of every retained model before the policies are compared, so an
+  oversized catalog message refuses the switch instead of reaching the Guardian
+  prompt.
+- **The 8 KiB cap on model messages follows the upstream refactor.** Validation runs
+  where the resolved messages are built, and the remote catalog loader now drops
+  only the oversized model instead of hiding the whole catalog.
+- **The status-indicator watch follows the upstream progress/shimmer condition:** the
+  background-terminal frame branch keeps its bounded interval on top of it.
+
+### Upstream
+
+- Upstream `rust-v0.156.0` and `rust-v0.156.1`: GPT-6 model family, daemon-managed
+  installs gain an updater loop with release restore, model catalog and message
+  handling updates.
+
 ## 0.155.1-vl.1 - 2026-09-19 - Upstream rust-v0.155.1
 
 ### Codex VL changes

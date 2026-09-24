@@ -1,0 +1,49 @@
+---
+source: tui/src/app/empty_state_animation_tests.rs
+assertion_line: 225
+expression: text(after)
+---
+╭───────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.156.1)                │
+│                                           │
+│ model:     GPT-5.6-Sol   /model to change │
+│ directory: /tmp/project                   │
+╰───────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                              Tip: Start a fresh idea with /new; the previous session stays in history.
+
+› Ask Codex to do anything
+
+  GPT-5.6-Sol default · /tmp/project
+  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view

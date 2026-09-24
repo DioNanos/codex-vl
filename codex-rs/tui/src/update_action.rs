@@ -18,6 +18,8 @@ use codex_install_context::StandalonePlatform;
 /// the supported update path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
+    /// Replace the local daemon after restoring the terminal.
+    Daemon(DaemonUpdateSource),
     /// Update via `npm install -g @mmmbuto/codex-vl`.
     NpmGlobalLatest,
     /// Update via `bun install -g @mmmbuto/codex-vl`.
@@ -65,6 +67,7 @@ impl UpdateAction {
     /// chatgpt-hosted installer shell scripts.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
+            UpdateAction::Daemon(source) => ("codex", source.command_args()),
             UpdateAction::NpmGlobalLatest
             | UpdateAction::StandaloneUnix
             | UpdateAction::StandaloneWindows => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
@@ -216,6 +219,22 @@ mod tests {
                 "UpdateAction::{action:?} must not surface the upstream \
                  chatgpt installer URL. Was: {rendered}",
             );
+        }
+    }
+}
+
+/// Package source explicitly selected by the user in the daemon menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonUpdateSource {
+    PublicStable,
+    ThisCli,
+}
+
+impl DaemonUpdateSource {
+    pub fn command_args(self) -> &'static [&'static str] {
+        match self {
+            Self::PublicStable => &["app-server", "daemon", "update"],
+            Self::ThisCli => &["app-server", "daemon", "update", "--from-cli", "--yes"],
         }
     }
 }

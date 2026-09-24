@@ -1,0 +1,15 @@
+---
+source: tui/src/update_prompt.rs
+expression: rendered
+---
+
+  Update available ·
+  0.156.1 → 9.9.9
+  Release notes:
+  https://github.com/DioNa
+  nos/codex-vl/releases/la
+↑
+› 3. Skip until next version
+
+  enter continue · esc
+  skip
