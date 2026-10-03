@@ -521,7 +521,7 @@ tracing-subscriber = "0.3.22"
 tracing-test = "0.2.5"
 tonic = { version = "0.14.3", default-features = false, features = ["channel", "codegen"] }
 tonic-prost = "0.14.3"
-tree-sitter = "0.25.10"
+tree-sitter = "0.26.13"
 tree-sitter-bash = "0.25"
 tree-sitter-powershell = "=0.26.4"
 ts-rs = "11"
