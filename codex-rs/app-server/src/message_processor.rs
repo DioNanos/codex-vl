@@ -398,6 +398,10 @@ impl MessageProcessor {
             authority_verifier,
             identity_required,
         } = args;
+        // Startup credential reads must not open a browser before initialize selects the policy.
+        let gateway_login_control =
+            codex_login::GatewayLoginControl::for_runtime(&auth_manager.runtime_config());
+        gateway_login_control.require_explicit_login();
         let thread_state_manager =
             ThreadStateManager::with_persistence(config.as_ref().codex_home.as_path());
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
@@ -559,6 +563,7 @@ impl MessageProcessor {
         );
         let git_processor = GitRequestProcessor::new();
         let initialize_processor = InitializeRequestProcessor::new(
+            gateway_login_control,
             outgoing.clone(),
             analytics_events_client.clone(),
             Arc::clone(&config),
@@ -974,6 +979,8 @@ impl MessageProcessor {
         session_state: &ConnectionSessionState,
     ) {
         session_state.rpc_gate.close().await;
+        self.account_processor
+            .gateway_connection_closed(connection_id);
         self.request_serialization_queues.discard_closed().await;
         self.outgoing
             .disconnect_user_verification_connection(connection_id)
@@ -1875,6 +1882,33 @@ impl MessageProcessor {
             ClientRequest::BedrockSetup { params, .. } => {
                 self.account_processor.bedrock_setup(params).await
             }
+            ClientRequest::GatewayOAuthRead { .. } => {
+                Box::pin(self.account_processor.gateway_oauth_read())
+                    .await
+                    .map(|response| Some(response.into()))
+            }
+            ClientRequest::GatewayOAuthLogin { .. } => {
+                if session
+                    .opted_out_notification_methods()
+                    .contains("account/gatewayOAuth/changed")
+                {
+                    Err(invalid_request(
+                        "Gateway login requires account/gatewayOAuth/changed notifications",
+                    ))
+                } else {
+                    Box::pin(
+                        self.account_processor
+                            .gateway_oauth_login(connection_id, &session.rpc_gate),
+                    )
+                    .await
+                    .map(|response| Some(response.into()))
+                }
+            }
+            ClientRequest::GatewayOAuthCancel { .. } => {
+                Box::pin(self.account_processor.gateway_oauth_cancel(connection_id))
+                    .await
+                    .map(|response| Some(response.into()))
+            }
             ClientRequest::LogoutAccount { .. } => {
                 self.account_processor
                     .logout_account(request_id.clone())
@@ -1994,3 +2028,7 @@ impl MessageProcessor {
 #[cfg(test)]
 #[path = "message_processor_tracing_tests.rs"]
 mod message_processor_tracing_tests;
+
+#[cfg(test)]
+#[path = "message_processor_gateway_oauth_tests.rs"]
+mod gateway_oauth_tests;

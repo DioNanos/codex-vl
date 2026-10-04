@@ -85,7 +85,7 @@ async fn app_for_loop_owner_slash_test() -> anyhow::Result<(
     app.primary_thread_id = Some(thread_id);
     app.active_thread_id = Some(thread_id);
     app.chat_widget.set_agent_turn_running_for_tests(true);
-    Ok((app, events, thread_id, codex_home))
+    Ok((*app, events, thread_id, codex_home))
 }
 
 #[tokio::test]

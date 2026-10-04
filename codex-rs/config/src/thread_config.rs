@@ -316,6 +316,7 @@ mod tests {
             supports_websockets: true,
             namespace_tools: None,
             supports_standalone_web_search: true,
+            include_internal_metadata: false,
         }
     }
 }

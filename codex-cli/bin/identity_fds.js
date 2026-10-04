@@ -5,7 +5,7 @@
 // ("a:b"). Node's `stdio: "inherit"` only forwards descriptors 0-2: in any
 // additional position it is equivalent to "ignore", so a descriptor passed
 // that way never reaches the child and the native binary fails closed.
-// Measured behavior (D-224): stdio[3] = "inherit" makes the child fail with
+// Measured behavior: stdio[3] = "inherit" makes the child fail with
 // EINVAL, while stdio[3] = 3 forwards the real parent descriptor and the
 // child reads the channel marker. This helper converts the declared
 // descriptors into a `stdio` array holding the descriptor NUMBERS at their

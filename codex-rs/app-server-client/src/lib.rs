@@ -31,6 +31,7 @@ use std::time::Duration;
 pub use codex_app_server::app_server_control_socket_path;
 use codex_app_server::identity_channel::IdentityFdChannel;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
+pub use codex_app_server::in_process::EmbeddedNetworkPolicy;
 use codex_app_server::in_process::InProcessClientSender;
 pub use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
@@ -58,7 +59,7 @@ use codex_config::NoopThreadConfigLoader;
 use codex_core::config::Config;
 pub use codex_core::otel_init::build_provider as build_otel_provider;
 pub use codex_exec_server::EnvironmentManager;
-pub use codex_exec_server::ExecServerRuntimePaths;
+pub use codex_exec_server::ExecServerRuntimeOptions;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -179,6 +180,29 @@ impl Error for TypedRequestError {
     }
 }
 
+// Await transport in a separate statement before calling this: dropping the
+// completed future must precede any caller-provided Deserialize implementation.
+fn decode_typed_response<T>(
+    method: &str,
+    response: IoResult<RequestResult>,
+) -> Result<T, TypedRequestError>
+where
+    T: DeserializeOwned,
+{
+    let response = response.map_err(|source| TypedRequestError::Transport {
+        method: method.to_string(),
+        source,
+    })?;
+    let result = response.map_err(|source| TypedRequestError::Server {
+        method: method.to_string(),
+        source,
+    })?;
+    serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
+        method: method.to_string(),
+        source,
+    })
+}
+
 #[derive(Clone)]
 pub struct InProcessClientStartArgs {
     /// Resolved argv0 dispatch paths used by command execution internals.
@@ -193,6 +217,8 @@ pub struct InProcessClientStartArgs {
     pub strict_config: bool,
     /// Preloaded cloud config bundle provider.
     pub cloud_config_bundle: CloudConfigBundleLoader,
+    /// Policy shared with transports created by the embedder before startup.
+    pub embedded_network_policy: EmbeddedNetworkPolicy,
     /// Feedback sink used by app-server/core telemetry and logs.
     pub feedback: CodexFeedback,
     /// SQLite tracing layer used to flush recently emitted logs before feedback upload.
@@ -232,6 +258,7 @@ impl InProcessClientStartArgs {
     /// Builds initialize params from caller-provided metadata.
     pub fn initialize_params(&self) -> InitializeParams {
         let capabilities = InitializeCapabilities {
+            explicit_gateway_oauth: false,
             experimental_api: self.experimental_api,
             request_attestation: false,
             extensions: self.identity_extension(),
@@ -275,6 +302,7 @@ impl InProcessClientStartArgs {
             loader_overrides: self.loader_overrides,
             strict_config: self.strict_config,
             cloud_config_bundle: self.cloud_config_bundle,
+            embedded_network_policy: self.embedded_network_policy,
             thread_config_loader: Arc::new(NoopThreadConfigLoader),
             feedback: self.feedback,
             log_db: self.log_db,
@@ -620,21 +648,8 @@ impl InProcessAppServerClient {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 
     /// Sends a typed client notification.
@@ -790,21 +805,8 @@ impl InProcessAppServerRequestHandle {
         T: DeserializeOwned,
     {
         let method = request.method_name();
-        let response =
-            self.request(request)
-                .await
-                .map_err(|source| TypedRequestError::Transport {
-                    method: method.to_string(),
-                    source,
-                })?;
-        let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.to_string(),
-            source,
-        })?;
-        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
-            method: method.to_string(),
-            source,
-        })
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 }
 
@@ -820,10 +822,9 @@ impl AppServerRequestHandle {
     where
         T: DeserializeOwned,
     {
-        match self {
-            Self::InProcess(handle) => handle.request_typed(request).await,
-            Self::Remote(handle) => handle.request_typed(request).await,
-        }
+        let method = request.method_name();
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 }
 
@@ -878,10 +879,9 @@ impl AppServerClient {
     where
         T: DeserializeOwned,
     {
-        match self {
-            Self::InProcess(client) => client.request_typed(request).await,
-            Self::Remote(client) => client.request_typed(request).await,
-        }
+        let method = request.method_name();
+        let response = self.request(request).await;
+        decode_typed_response(method, response)
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {
@@ -1001,6 +1001,7 @@ mod tests {
     use codex_utils_absolute_path::AbsolutePathBuf;
     use futures::SinkExt;
     use futures::StreamExt;
+    use futures::poll;
     use pretty_assertions::assert_eq;
     use std::ops::Deref;
     use std::path::Path;
@@ -1075,6 +1076,7 @@ mod tests {
             loader_overrides: LoaderOverrides::default(),
             strict_config: false,
             cloud_config_bundle: CloudConfigBundleLoader::default(),
+            embedded_network_policy: Default::default(),
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: Some(state_db),
@@ -1312,6 +1314,42 @@ mod tests {
                 .expect("initialize capabilities")
                 .mcp_server_openai_form_elicitation
         );
+    }
+
+    #[tokio::test]
+    async fn typed_request_drop_cancels_waiting_send_and_reply() {
+        let (command_tx, mut commands) = mpsc::channel(/*buffer*/ 1);
+        let handle =
+            AppServerRequestHandle::InProcess(InProcessAppServerRequestHandle { command_tx });
+        let request = ClientRequest::ConfigRequirementsRead {
+            request_id: RequestId::String("typed-request".to_string()),
+            params: None,
+        };
+        let mut pending = Box::pin(handle.request_typed::<serde_json::Value>(request.clone()));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(poll!(&mut pending).is_pending());
+        let mut blocked = Box::pin(handle.request_typed::<serde_json::Value>(request.clone()));
+        assert!(poll!(&mut blocked).is_pending());
+        drop(blocked);
+
+        let ClientCommand::Request {
+            request: sent,
+            response_tx,
+        } = commands.try_recv().expect("first request should be queued")
+        else {
+            panic!("expected request command");
+        };
+        assert_eq!(*sent, request);
+        assert!(!response_tx.is_closed());
+        drop(pending);
+        assert!(response_tx.is_closed());
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -1566,6 +1604,7 @@ mod tests {
 
         assert_eq!(client.server_version(), Some("9.8.7-test"));
         assert_eq!(client.codex_home(), Some("/server/.codex"));
+        let client = AppServerClient::Remote(client);
         let response: GetAccountResponse = client
             .request_typed(ClientRequest::GetAccount {
                 request_id: RequestId::Integer(1),
@@ -2205,7 +2244,7 @@ mod tests {
 
     #[tokio::test]
     async fn next_event_surfaces_lagged_markers() {
-        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (command_tx, _) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let worker_handle = tokio::spawn(async {});
         event_tx
@@ -2237,7 +2276,7 @@ mod tests {
             EnvironmentManager::create_for_tests(
                 Some("ws://127.0.0.1:8765".to_string()),
                 Some(
-                    ExecServerRuntimePaths::new(
+                    ExecServerRuntimeOptions::new(
                         std::env::current_exe().expect("current exe"),
                         /*codex_linux_sandbox_exe*/ None,
                     )
@@ -2254,6 +2293,7 @@ mod tests {
             loader_overrides: LoaderOverrides::default(),
             strict_config: false,
             cloud_config_bundle: CloudConfigBundleLoader::default(),
+            embedded_network_policy: Default::default(),
             feedback: CodexFeedback::new(),
             log_db: None,
             state_db: None,

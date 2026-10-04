@@ -87,20 +87,34 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
 # codex-vl fork: workflow CI stages prebuilt binaries into
-# `vendor/<target>/codex-resources/bwrap` and `vendor/<target>/path/rg`
-# (legacy layout). PACKAGE_NATIVE_COMPONENTS lists logical component names;
-# this map translates them to the actual subdirectory inside vendor/<target>.
-COMPONENT_DEST_DIR: dict[str, str] = {
+# `vendor/<target>/codex-resources/bwrap`, `vendor/<target>/codex/` and
+# `vendor/<target>/path/rg` (legacy source layout, unchanged). This map
+# translates each logical component to its SOURCE subdirectory inside
+# vendor/<target> as staged by the workflows.
+COMPONENT_SRC_DIR: dict[str, str] = {
     "bwrap": "codex-resources",
     "codex": "codex",
-    # Sits next to the codex binary: upstream resolves the code-mode host
-    # relative to it, so a different directory makes code mode fail closed.
     "codex-code-mode-host": "codex",
     "codex-responses-api-proxy": "codex-responses-api-proxy",
     "codex-windows-sandbox-setup": "codex",
     "codex-command-runner": "codex",
     "rg": "path",
 }
+
+# Destination layout inside the tarball: the codex-package layout the daemon
+# requires (codex-package.json next to `bin/codex`, with codex-path/ and
+# codex-resources/ siblings). Without it `prepare_install` fails with "no
+# complete local package" and remote-control cannot start from npm.
+COMPONENT_DEST_DIR: dict[str, str] = {
+    "bwrap": "codex-resources",
+    "codex": "bin",
+    "codex-code-mode-host": "bin",
+    "codex-responses-api-proxy": "codex-responses-api-proxy",
+    "codex-windows-sandbox-setup": "codex-resources",
+    "codex-command-runner": "codex-resources",
+    "rg": "codex-path",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -209,6 +223,7 @@ def main() -> int:
                 native_components,
                 target_filter={target_filter} if target_filter else None,
             )
+            write_codex_package_manifest(staging_dir, package, release_version)
             validate_native_payload(staging_dir, package)
 
         if release_version:
@@ -539,14 +554,14 @@ def copy_native_binaries(
             dest_target_dir.mkdir(parents=True, exist_ok=True)
 
         for component in sorted(components_set - {CODEX_PACKAGE_COMPONENT}):
-            dest_dir_name = COMPONENT_DEST_DIR.get(component, component)
-            src_component_dir = target_dir / dest_dir_name
+            src_dir_name = COMPONENT_SRC_DIR.get(component, component)
+            src_component_dir = target_dir / src_dir_name
             if not src_component_dir.exists():
                 raise RuntimeError(
                     f"Missing native component '{component}' in vendor source: {src_component_dir}"
                 )
 
-            dest_component_dir = dest_target_dir / dest_dir_name
+            dest_component_dir = dest_target_dir / COMPONENT_DEST_DIR.get(component, component)
             if dest_component_dir.exists():
                 shutil.rmtree(dest_component_dir)
             shutil.copytree(src_component_dir, dest_component_dir)
@@ -593,6 +608,48 @@ def assert_tarball_contains_native_payload(tarball_path: Path, package: str) -> 
     print(f"native payload verified inside {tarball_path.name}: {len(expected)} entries")
 
 
+def write_codex_package_manifest(
+    staging_dir: Path,
+    package: str,
+    release_version: str | None,
+) -> Path:
+    """codex-vl fork: write the daemon's codex-package.json for each staged target.
+
+    The remote-control daemon refuses to launch a CLI without this manifest
+    next to the binaries (`prepare_install` / CodexPackageLayout: "no complete
+    local package"). The variant pins the fork identity so the daemon never
+    executes an upstream binary staged in the same CODEX_HOME packages tree.
+    """
+    platform_config = CODEX_PLATFORM_PACKAGES.get(package)
+    if platform_config is None:
+        return staging_dir / "codex-package.json"
+
+    target = platform_config["target_triple"]
+    manifest = {
+        "layoutVersion": 1,
+        "version": release_version or _read_workspace_version(),
+        "target": target,
+        "variant": "codex-vl",
+        "entrypoint": "bin/codex",
+        "resourcesDir": "codex-resources",
+        "pathDir": "codex-path",
+    }
+    manifest_path = staging_dir / "vendor" / target / "codex-package.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"codex-package.json written: {manifest_path}", flush=True)
+    return manifest_path
+
+
+def _read_workspace_version() -> str:
+    """Read [workspace.package] version from codex-rs/Cargo.toml (repo root cwd)."""
+    cargo_toml = Path("codex-rs") / "Cargo.toml"
+    for line in cargo_toml.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("version = "):
+            return stripped.split('"')[1]
+    raise RuntimeError(f"workspace version not found in {cargo_toml}")
+
+
 def validate_native_payload(staging_dir: Path, package: str) -> None:
     """codex-vl fork: per-package native payload validator (linux/android/darwin)."""
     platform_config = CODEX_PLATFORM_PACKAGES.get(package)
@@ -600,7 +657,7 @@ def validate_native_payload(staging_dir: Path, package: str) -> None:
         return
 
     target = platform_config["target_triple"]
-    codex_dir = staging_dir / "vendor" / target / "codex"
+    codex_dir = staging_dir / "vendor" / target / "bin"
     # codex-vl fork: only the single `codex` binary is shipped; `codex-vl-exec`
     # dispatches it via the `exec` subcommand (no standalone codex-exec binary).
     required: tuple[str, ...] = ("codex",)
@@ -619,6 +676,13 @@ def validate_native_payload(staging_dir: Path, package: str) -> None:
         missing_list = ", ".join(missing)
         raise RuntimeError(
             f"Native payload for {package} is missing required binaries: {missing_list}"
+        )
+
+    manifest_path = staging_dir / "vendor" / target / "codex-package.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            f"Native payload for {package} is missing {manifest_path}: the daemon "
+            "refuses a CLI without its codex-package.json layout manifest"
         )
 
 
@@ -652,6 +716,19 @@ def validate_codex_package_dir(package_dir: Path) -> None:
         raise RuntimeError(f"Missing files in Codex package directory {package_dir}: {missing}")
 
 
+def normalize_npm_pack_output(parsed: object) -> list[dict]:
+    """Normalize `npm pack --json` output across npm versions.
+
+    npm <= 11 returns a list with one entry; npm 12 returns an object keyed
+    by package name. Both carry the same per-package fields.
+    """
+    if isinstance(parsed, dict):
+        return list(parsed.values())
+    if isinstance(parsed, list):
+        return parsed
+    raise RuntimeError("Unexpected npm pack --json output shape.")
+
+
 def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -672,7 +749,7 @@ def run_npm_pack(staging_dir: Path, output_path: Path) -> Path:
             text=True,
         )
         try:
-            pack_output = json.loads(stdout)
+            pack_output = normalize_npm_pack_output(json.loads(stdout))
         except json.JSONDecodeError as exc:
             raise RuntimeError("Failed to parse npm pack output.") from exc
 

@@ -128,6 +128,11 @@ impl AsyncQuestions {
     pub(crate) fn set_keymap(&mut self, keymap: &RuntimeKeymap) {
         self.keymap = keymap.clone();
         self.composer.set_keymap_bindings(keymap);
+        self.next_hint = crate::chat_hint::hint_for(
+            keymap,
+            "edit_queued_message",
+            codex_terminal_detection::terminal_info(),
+        );
     }
 
     pub(crate) fn set_vim_enabled(&mut self, enabled: bool) {

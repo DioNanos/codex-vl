@@ -165,6 +165,7 @@ async fn start_embedded_test_client(
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         identity_channel,
+        embedded_network_policy: Default::default(),
         channel_capacity: crate::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
     .await?;

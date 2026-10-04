@@ -3,18 +3,19 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use super::executable_identity_from_bytes;
 use super::managed_codex_bin;
-use super::parse_codex_version;
 use super::resolve_managed_codex_bin_for_install_context;
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
 use codex_install_context::StandalonePlatform;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use super::ExecutableIdentity;
+use super::executable_identity;
+use super::parse_codex_version;
 
-// codex-vl: post-merge InstallContext is a struct; helpers below build the
-// per-method fixture variants the old enum API gave for free.
+// codex-vl: helper di test ripristinati (persi dall'auto-merge rust-v0.158.0).
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 fn ctx(method: InstallMethod) -> InstallContext {
     InstallContext {
         method,
@@ -35,14 +36,32 @@ fn rejects_malformed_codex_cli_version_output() {
     assert!(parse_codex_version("codex\n").is_err());
 }
 
-#[test]
-fn executable_identity_uses_binary_contents() {
-    let old = executable_identity_from_bytes(b"old");
-    let same = executable_identity_from_bytes(b"old");
-    let new = executable_identity_from_bytes(b"new");
-
-    assert_eq!(old, same);
-    assert_ne!(old, new);
+#[tokio::test]
+async fn executable_identity_uses_binary_contents() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let executable = directory.path().join("codex");
+    // Span multiple reads, including a partial final buffer, and preserve the
+    // digest stored by older clients that hashed the complete file in memory.
+    let mut bytes: Vec<u8> = (0..200_003).map(|index| (index % 251) as u8).collect();
+    for contents in [&bytes[..], &[][..]] {
+        std::fs::write(&executable, contents).expect("write executable");
+        assert_eq!(
+            executable_identity(&executable).await.expect("identity"),
+            ExecutableIdentity {
+                digest: *blake3::hash(contents).as_bytes(),
+            }
+        );
+    }
+    std::fs::write(&executable, &bytes).expect("write executable");
+    let old = executable_identity(&executable).await.expect("identity");
+    bytes[100_000] ^= 1;
+    std::fs::write(&executable, bytes).expect("replace executable");
+    assert_ne!(
+        executable_identity(&executable)
+            .await
+            .expect("new identity"),
+        old
+    );
 }
 
 #[test]
@@ -158,7 +177,7 @@ fn managed_codex_bin_routes_other_via_current_exe() {
     });
 }
 
-fn with_self_exe(path: &Path, f: impl FnOnce()) {
+pub(crate) fn with_self_exe<T>(path: &Path, f: impl FnOnce() -> T) -> T {
     let _guard = ENV_LOCK.lock().expect("env lock");
     let old = std::env::var_os("CODEX_SELF_EXE");
     // SAFETY: the test holds a process-wide mutex for this environment
@@ -166,7 +185,7 @@ fn with_self_exe(path: &Path, f: impl FnOnce()) {
     unsafe {
         std::env::set_var("CODEX_SELF_EXE", path);
     }
-    f();
+    let result = f();
     // SAFETY: guarded by ENV_LOCK as above.
     unsafe {
         match old {
@@ -174,4 +193,5 @@ fn with_self_exe(path: &Path, f: impl FnOnce()) {
             None => std::env::remove_var("CODEX_SELF_EXE"),
         }
     }
+    result
 }

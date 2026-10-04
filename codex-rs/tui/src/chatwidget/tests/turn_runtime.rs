@@ -16,6 +16,7 @@ async fn turn_aborted_without_turn_complete_reconciles_running_state_and_queue()
     chat.handle_turn_aborted_event(codex_protocol::protocol::TurnAbortedEvent {
         turn_id: chat.turn_lifecycle.last_turn_id.clone(),
         reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+        error: None,
         started_at: None,
         completed_at: None,
         duration_ms: None,

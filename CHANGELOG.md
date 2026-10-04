@@ -4,6 +4,103 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.160.0-vl.1 - 2026-10-02 - Upstream rust-v0.160.0
+
+### Codex VL changes
+
+- Terminal cleanup and exit reporting tolerate disconnected stdout and stderr
+  without triggering another panic; fatal errors still exit with status 1.
+
+- **The packed npm tarball now carries the mapped `codex-package` layout.** It ships
+  `bin/codex`, `bin/codex-code-mode-host`, `codex-path/rg`, `codex-resources/bwrap`
+  and a `codex-package.json` manifest with `variant: "codex-vl"`, `entrypoint` and
+  the target triple. The managed daemon requires that manifest
+  (`prepare_install` refuses a package without it), so an install from npm is a
+  complete package, not a lone launcher.
+- **remote-control starts from an npm install on the phone too.** With the mapped
+  layout inside the tarball, the daemon launched by the npm package finds its
+  `bin/codex` and the `-vl` manifest instead of failing with "reinstall codex-vl".
+- **Android is a first-class platform target.** `aarch64-linux-android` is
+  understood by `platform_target` and packaged like the desktop targets, so the
+  same mapped layout is produced for Android.
+- **A codex-vl daemon coexists with the upstream one (isolation L1+L2).** The
+  managed packages, the state directory and the control socket use the dedicated
+  `-vl` namespaces, so a codex-vl daemon and an upstream `codex` daemon run on the
+  same machine without sharing sockets, state or package locations.
+- **On Termux the daemon reuses the npm-installed binary instead of demanding
+  a standalone install.** The lifecycle recalculation on Android keeps the
+  selection made by the npm launcher (re-checked against the `-vl` manifest)
+  rather than requiring `packages/app-server-daemon-vl/current`, which an npm
+  install never creates.
+- **`npm pack --json` is read in both shapes.** npm 12 returns a keyed object
+  where npm ≤11 returns an array; the packaging script accepts either, so a local
+  `npm pack` with npm 12 no longer aborts before the tarball is inspected.
+- **`codex-vl-exec` resolves the mapped platform layout too.** The second npm
+  entrypoint now finds the native binary in the `codex-package` layout as well as
+  the legacy `vendor/<triple>/codex/codex` one, so `codex-vl-exec --version` and
+  exec runs work straight from an npm install of the new package.
+- **The packaging workflows compile bubblewrap from a neutral path and reject
+  CI-checkout leakage.** The bwrap sources are built under `/tmp/cvl-bwrap`, the
+  cargo target dir lives outside the CI checkout (`/tmp/cvl-target`, remapped to
+  `/target`), and a guard derived from the CI repository name refuses a tarball
+  that embeds the runner checkout path, for any repository the workflows run in.
+
+### Upstream
+
+- Upstream `rust-v0.159.3`, a small maintenance release on the 0.159 line:
+  eligible local sessions signed in with ChatGPT can now show optional reminders
+  to complete account security setup (#49744). The server keeps ownership of
+  eligibility and rollout; when a notice is unavailable no banner is shown.
+- Upstream `rust-v0.160.0` (56 commits): input typed before a reconnect is
+  preserved and sent afterwards (#49105), projectless sessions honor workspace
+  defaults (#49160), app-server provider defaults are honored in the TUI
+  (#49161), explicit provider model catalogs are authoritative (#49135),
+  X11 primary selection and middle-click paste (#49112), content-filter retry
+  guidance (#49119), background subprocesses no longer open Windows console
+  windows (#49164), and model provider lookup in TUI history is fixed (#49171).
+
+## 0.158.0-vl.1 - 2026-09-29 - Upstream rust-v0.158.0
+
+### Codex VL changes
+
+- Merge of upstream `rust-v0.156.1..rust-v0.158.0` (333 commits) with the fork feature
+  register applied: 47 conflicts resolved by hand, no whole-side takes on code.
+- **Vivling is carried over intact.** The Vivling runtime, per-loop delegation to the
+  Vivling assistant, recurring/daily/one-shot loop scheduling with at-most-once
+  occurrences, and the end-of-tick summaries are unchanged from 0.156.1: this merge
+  does not touch them, and they build and pass the release gate on top of the new
+  upstream core.
+- Termux: restore native daemon startup and private sockets (#28, thanks @PeiPei233)
+- **The Guardian keeps its fail-closed node REPL policy guard on the new review flow.**
+  `GuardianNodeReplPolicy::from_messages` still takes the model slug and the resolved
+  model messages and refuses oversized catalog text before it can reach the prompt.
+  Upstream removed the `compaction_model_hash` sync-review gate in the same
+  area (#47272); the fork follows the upstream decision there.
+- **The in-process app-server keeps the managed-identity gate.** Upstream rewrote
+  `start_uninitialized` around `ConfigManager`/`bootstrap::configure`; the rewritten
+  body still validates the fork identity channel and fails closed with
+  `IDENTITY_CHANNEL_BROKEN` before any client is served.
+- **MCP binding context survives the new thread-start path.** Upstream now reserves a
+  thread id and registers the creating connection before `thread/start` returns; the
+  per-connection binding context is applied on top of that flow.
+- **The daemon managed-install tests are restored.** Upstream replaced
+  `managed_install_tests.rs` wholesale; the six `managed_codex_bin_*` tests (self-exe
+  routing for npm/bun/vite-plus/other, standalone/brew fallback) and the
+  `with_self_exe` helper are back, adapted to the renamed
+  `executable_identity_from_reader`.
+- **The bundled model catalog follows the upstream 0.158 catalog** (the fork carried a
+  manual GPT-6 Sol/Luna backport that upstream has since shipped officially), and the
+  model-migration prompts follow the provider-scoped upstream table.
+
+### Upstream
+
+- Upstream `rust-v0.157.0`, `rust-v0.157.1` and `rust-v0.158.0`: fullscreen transcript
+  with text selection by default, conversation fork shortcut, Mermaid rendering,
+  remote-control WebSocket exec-server with bearer token, MCP OAuth client secrets,
+  `/import` in remote sessions, approval review that can retry with new input,
+  Guardian instruction deduplication and sync review across compaction hash
+  differences, Windows sandbox fixes for Windows 10 paths and nested writable roots.
+
 ## 0.156.1-vl.2 - 2026-09-24 - Upstream rust-v0.156.1
 
 ### Codex VL changes
@@ -522,7 +619,7 @@ Based on the OpenAI Codex `rust-v0.130.0` release line.
 
 ## 0.128.3 - Local Linux rebuild
 
-- Rebuilds and reinstalls the local Linux package from the aligned Forge/GitHub base.
+- Rebuilds and reinstalls the local Linux package from the aligned repository base.
 - Keeps the 0.128.2 packaging corrections while refreshing the installed CLI payload.
 
 ## 0.128.2 - Corrected npm packaging

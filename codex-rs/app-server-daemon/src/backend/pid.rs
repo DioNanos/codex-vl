@@ -22,7 +22,7 @@ use serde::Serialize;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -750,12 +750,37 @@ async fn inspect_empty_pid_reservation(
     Ok(EmptyPidReservation::Stale)
 }
 
+// Android/Termux: `ps -o lstart=` is not available in toybox, and mixing its
+// wall-clock string with /proc ticks makes every live daemon fail verification.
+// Creation and verification both read process state and start time (clock ticks
+// since boot) from /proc/<pid>/stat.
+#[cfg(target_os = "android")]
+async fn read_process_details(pid: u32) -> Result<(String, String)> {
+    let stat = tokio::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .await
+        .with_context(|| format!("failed to read /proc/{pid}/stat"))?;
+    parse_proc_stat_details(&stat, pid)
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn parse_proc_stat_details(stat: &str, pid: u32) -> Result<(String, String)> {
+    let after_comm = stat
+        .rfind(')')
+        .with_context(|| format!("malformed /proc/{pid}/stat: missing closing paren"))?;
+    let fields: Vec<&str> = stat[after_comm + 1..].split_whitespace().collect();
+    // fields[0] = state (field 3 of stat), fields[19] = starttime (field 22).
+    let starttime = fields
+        .get(19)
+        .with_context(|| format!("malformed /proc/{pid}/stat: starttime field missing"))?;
+    Ok((fields[0].to_string(), starttime.to_string()))
+}
+
 #[cfg(unix)]
 async fn read_process_start_time(pid: u32) -> Result<String> {
     Ok(read_process_details(pid).await?.1)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 async fn read_process_details(pid: u32) -> Result<(String, String)> {
     let output = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "stat=", "-o", "lstart="])

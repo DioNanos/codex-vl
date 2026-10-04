@@ -22,31 +22,53 @@ experimental workflow features:
 ## Install
 
 Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
-Android arm64 installs use packaged native binaries:
+Android arm64 installs use packaged native binaries. npm 11 and later require
+explicit permission for the package postinstall script.
+
+Install the latest release on Linux x64, Linux arm64, or Termux arm64.
 
 ```bash
-npm install -g @mmmbuto/codex-vl
+npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl
+```
+
+Check the installed version.
+
+```bash
 codex-vl --version
+```
+
+Sign in to Codex VL.
+
+```bash
 codex-vl login
 ```
 
-The macOS arm64 package builds the native binary locally with Cargo. npm 12
-blocks dependency lifecycle scripts unless the package is explicitly allowed,
-so verify the build prerequisites and use this complete install command:
+The macOS arm64 package builds the native binary locally with Cargo. On npm 11
+and later, explicitly allow the postinstall script and show its build output.
+
+Check that Xcode Command Line Tools are installed.
 
 ```bash
 xcode-select -p
-cargo --version
-npm install -g @mmmbuto/codex-vl@next \
-  --allow-scripts=@mmmbuto/codex-vl \
-  --foreground-scripts
-codex-vl --version
 ```
 
-The command above names `@next`, the channel this version ships on. Use
-`@latest` instead when you want the stable line rather than the alpha - the
-channel in the command has to match the one you actually want, and the two
-resolve to different versions.
+Check that Cargo is available.
+
+```bash
+cargo --version
+```
+
+Install the latest release on macOS arm64 and display build output.
+
+```bash
+npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl --foreground-scripts
+```
+
+Check the installed macOS version.
+
+```bash
+codex-vl --version
+```
 
 The first macOS build can take 10-30 minutes. If a previous install left the
 platform package or binary incomplete, uninstall `@mmmbuto/codex-vl` first,
@@ -59,22 +81,29 @@ Installing it does not replace the official `codex` binary.
 
 For a local npm prefix:
 
+Set the npm installation prefix.
+
 ```bash
 npm config set prefix ~/.local
-npm install -g @mmmbuto/codex-vl # add the macOS flags shown above on npm 12
+```
+
+Install the latest release under that prefix; foreground output also shows the macOS source build.
+
+```bash
+npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl --foreground-scripts
+```
+
+Check the version under the local prefix.
+
+```bash
 ~/.local/bin/codex-vl --version
 ```
 
 ## Release Channels
 
-The `0.153.2` line is based on the upstream Codex `rust-v0.153.2` stable
-release and preserves the complete Codex VL workflow layer, alongside the
-native Android V8 build.
-
-The upstream base of that line is a **stable** release, but the Codex VL
-build on it is an alpha (`-vl.2`) and ships on the `next` channel. The
-conservative `stable` tag remains on `0.144.5` until a later explicitly
-authorized promotion.
+The `latest` and `next` channels both point to `0.160.0-vl.1`, based on
+upstream Codex `rust-v0.160.0`. The conservative `stable` tag currently points
+to `0.153.2-vl.2`.
 
 Packages cover Linux x64, Linux arm64 (musl), Android arm64, and macOS arm64
 source builds. The main package is a thin wrapper: the binaries live in the
@@ -91,11 +120,7 @@ process variable explicitly by name when the server needs it; repeat the flag
 for multiple names:
 
 ```bash
-codex-vl mcp add example-server \
-  --env-var EXAMPLE_MCP_SESSION \
-  --env-var TMUX \
-  --env-var TMUX_PANE \
-  -- example-server mcp
+codex-vl mcp add example-server --env-var EXAMPLE_MCP_SESSION --env-var TMUX --env-var TMUX_PANE -- example-server mcp
 ```
 
 The command stores only the variable names. Their values are read from the
@@ -190,8 +215,15 @@ Minimal flow:
 
 ## Build From Source
 
+Enter the Rust workspace.
+
 ```bash
 cd codex-rs
+```
+
+Build the CLI in release mode.
+
+```bash
 cargo build --release -p codex-cli --bin codex
 ```
 

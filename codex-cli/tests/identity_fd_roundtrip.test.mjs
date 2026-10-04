@@ -1,6 +1,6 @@
 // End-to-end proof that the identity descriptors declared via
 // NEXUSCREW_IDENTITY_FD actually reach a spawned child when passed as
-// integers, and that the pre-D224 "inherit" array does NOT.
+// integers, and that the legacy "inherit" array does NOT.
 //
 // Harness note: buildChildStdio("3:4") returns literal descriptors 3 and 4,
 // which name this TEST process' descriptors, not the harness pipes. We call
@@ -8,7 +8,7 @@
 // the actual parent-side fifo fds, preserving the integer-at-declared-
 // position semantics that the wrapper ships.
 //
-// The negative control uses the pre-D224 array
+// The negative control uses the legacy array
 // ["inherit","inherit","inherit","inherit","inherit"]: per Node docs
 // "inherit" in additional positions is equivalent to "ignore", so the child
 // read of fd 3 must fail (EINVAL/EBADF) and no echo may be produced. A
@@ -137,8 +137,8 @@ test("integer descriptors forward the identity channel to the child", () => {
   }
 });
 
-test('pre-D224 "inherit" array does NOT forward the identity channel', () => {
-  // Same shape the pre-D224 wrapper shipped; stderr piped only to capture
+test('legacy "inherit" array does NOT forward the identity channel', () => {
+  // Same shape the legacy wrapper shipped; stderr piped only to capture
   // the child failure without changing descriptor-3 semantics.
   const oldStdio = ["inherit", "inherit", "pipe", "inherit", "inherit"];
   const { echoed, stderr, status } = roundtrip(oldStdio);

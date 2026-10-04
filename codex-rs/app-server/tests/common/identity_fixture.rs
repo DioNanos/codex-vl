@@ -238,7 +238,7 @@ impl IdentityFixture {
         std::fs::write(
             package.path().join("codex-package.json"),
             format!(
-                r#"{{"layoutVersion":1,"version":"0.0.0","target":"{}","entrypoint":"bin/codex"}}"#,
+                r#"{{"layoutVersion":1,"version":"0.0.0","target":"{}","variant":"codex-vl","entrypoint":"bin/codex"}}"#,
                 fake_package_target(),
             ),
         )?;
@@ -679,6 +679,7 @@ fn scrub_shared_identity_env_std(command: &mut std::process::Command) {
 /// private; codex-package.json target must match it exactly.
 fn fake_package_target() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("android", "aarch64") => "aarch64-linux-android",
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "aarch64") if cfg!(target_env = "gnu") => "aarch64-unknown-linux-gnu",

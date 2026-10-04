@@ -126,6 +126,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       RUST_MIN_STACK: "8388608"
+      # Hosted runners have ~14 GB free; linking the identity test binaries
+      # overflows it. Dropping dev debug info shrinks the link objects.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     defaults:
       run:
         working-directory: codex-rs
@@ -136,6 +139,16 @@ jobs:
           ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          echo "== df -h before =="; df -h /
+          # "No space left on device" / ld Bus error during the link step.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          echo "== df -h after =="; df -h /
       - name: Read Rust toolchain
         id: rust_toolchain
         shell: bash

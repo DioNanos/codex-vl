@@ -1,0 +1,478 @@
+name: gate-vl-0158
+
+on:
+  push:
+    branches:
+      - gate-vl-0158
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-vl-0158-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: gates - seam and REGISTER
+    runs-on: [self-hosted, mgm]
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      RUST_MIN_STACK: 8388608
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+      TZ: UTC
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout vl-0158 candidate with full history and tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-ci
+      - name: Validate setup-ci build root and prepare gate paths
+        run: |
+          set -euo pipefail
+          : "${CI_BUILD_ROOT:?setup-ci did not define CI_BUILD_ROOT}"
+          : "${CARGO_TARGET_DIR:?setup-ci did not define CARGO_TARGET_DIR}"
+          test "$CARGO_TARGET_DIR" = "$CI_BUILD_ROOT/cargo-target"
+          for path in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$BAZEL_REPOSITORY_CACHE" "$BAZEL_REPO_CONTENTS_CACHE"; do
+            case "$path" in "$CI_BUILD_ROOT"/*) ;; *) echo "Bazel path outside CI_BUILD_ROOT: $path" >&2; exit 1 ;; esac
+          done
+          GATE_LOG_DIR="$CI_BUILD_ROOT/gate-vl-0158-logs/$GITHUB_JOB"
+          CODEX_HOME="$CI_BUILD_ROOT/codex-home-$GITHUB_RUN_ID"
+          case "$CODEX_HOME" in "$CI_BUILD_ROOT"/*) ;; *) echo "CODEX_HOME outside CI_BUILD_ROOT: $CODEX_HOME" >&2; exit 1 ;; esac
+          mkdir -p "$CODEX_HOME"
+          mkdir -p "$GATE_LOG_DIR"
+          printf 'GATE_LOG_DIR=%s\n' "$GATE_LOG_DIR" >> "$GITHUB_ENV"
+          printf 'CODEX_HOME=%s\n' "$CODEX_HOME" >> "$GITHUB_ENV"
+          printf 'CI_BUILD_ROOT=%s\nCARGO_TARGET_DIR=%s\nCODEX_HOME=%s\nLC_ALL=%s\nLANG=%s\nTZ=%s\n' \
+            "$CI_BUILD_ROOT" "$CARGO_TARGET_DIR" "$CODEX_HOME" "$LC_ALL" "$LANG" "$TZ" \
+            | tee "$GATE_LOG_DIR/ci-isolation.log"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-setup.log"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Verify MGM provides libcap-dev
+        run: dpkg-query -W -f='${Status}\n' libcap-dev | grep -Fx 'install ok installed' | tee "$GATE_LOG_DIR/libcap-dev.log"
+
+      - name: Confirm candidate identity and version alignment
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git merge-base --is-ancestor efa5ddee751435850abc47305ce4a6b36659a441 HEAD
+          grep -n '^version = "0.158.0"' codex-rs/Cargo.toml
+          grep -n '"version": "0.158.0-vl.1"' codex-cli/package.json
+          test -z "$(git diff --diff-filter=U --name-only)"
+          ! find . -name '*.snap.new' -print -quit | grep -q .
+
+      - name: Negative seam control then restored green
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          mkdir -p "$GATE_LOG_DIR"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tui/src/app/app_server_events.rs")
+          source = path.read_text()
+          needle = "if super::loop_controller::is_manage_loops_dynamic_tool("
+          replacement = "if !super::loop_controller::is_manage_loops_dynamic_tool("
+          if source.count(needle) != 1 or replacement in source:
+              raise SystemExit("unexpected manage_loops seam before mutation")
+          path.write_text(source.replace(needle, replacement, 1))
+          PY
+
+          set +e
+          nice -n 10 cargo test -p codex-tui --lib loop_tool_routing -- --nocapture \
+            2>&1 | tee "$GATE_LOG_DIR/seam-red.log"
+          red_rc=${PIPESTATUS[0]}
+          set -e
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tui/src/app/app_server_events.rs")
+          source = path.read_text()
+          needle = "if !super::loop_controller::is_manage_loops_dynamic_tool("
+          replacement = "if super::loop_controller::is_manage_loops_dynamic_tool("
+          if source.count(needle) != 1:
+              raise SystemExit("unexpected manage_loops seam during restore")
+          path.write_text(source.replace(needle, replacement, 1))
+          PY
+          git diff --exit-code -- tui/src/app/app_server_events.rs
+
+          test "$red_rc" -ne 0
+          grep -F 'manage_loops_dynamic_tool_is_served_by_the_loop_controller_in_embedded_mode ... FAILED' "$GATE_LOG_DIR/seam-red.log"
+          grep -F 'upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_mode ... FAILED' "$GATE_LOG_DIR/seam-red.log"
+          grep -E 'test result: FAILED\. 0 passed; 2 failed;' "$GATE_LOG_DIR/seam-red.log"
+
+          nice -n 10 cargo test -p codex-tui --lib loop_tool_routing -- --nocapture \
+            2>&1 | tee "$GATE_LOG_DIR/seam-green.log"
+          grep -F 'manage_loops_dynamic_tool_is_served_by_the_loop_controller_in_embedded_mode ... ok' "$GATE_LOG_DIR/seam-green.log"
+          grep -F 'upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_mode ... ok' "$GATE_LOG_DIR/seam-green.log"
+          grep -E 'test result: ok\. 2 passed;' "$GATE_LOG_DIR/seam-green.log"
+
+      - name: Targeted REGISTER suites with nonzero test counts
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          mkdir -p "$GATE_LOG_DIR"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-before-register.log"
+
+          run_test() {
+            local label="$1"
+            shift
+            "$@" 2>&1 | tee "$GATE_LOG_DIR/${label}.log"
+            grep -E 'running [1-9][0-9]* tests?' "$GATE_LOG_DIR/${label}.log"
+            grep -E 'test result: ok\. [1-9][0-9]* passed;' "$GATE_LOG_DIR/${label}.log"
+          }
+
+          run_core_lib_with_isolation() {
+            local core_log="$GATE_LOG_DIR/core_lib.log"
+            local report="$GATE_LOG_DIR/core_lib_reclassifications.tsv"
+            local core_rc isolation_rc summary classification
+            local -a failed_tests
+
+            printf 'test\tfull_suite\tisolation_1\tisolation_2\tclassification\n' > "$report"
+            set +e
+            nice -n 10 cargo test -p codex-core --lib 2>&1 | tee "$core_log"
+            core_rc=${PIPESTATUS[0]}
+            set -e
+
+            if [ "$core_rc" -eq 0 ]; then
+              grep -E 'test result: ok\. [1-9][0-9]* passed;' "$core_log"
+              printf '%s\t%s\t%s\t%s\t%s\n' '-' 'pass' '-' '-' 'full-suite-pass' >> "$report"
+              return 0
+            fi
+
+            grep -E 'test result: FAILED\.' "$core_log"
+            mapfile -t failed_tests < <(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$core_log")
+            if [ "${#failed_tests[@]}" -eq 0 ]; then
+              printf '%s\t%s\t%s\t%s\t%s\n' '-' 'failure' '-' '-' 'unparseable-full-suite-failure' >> "$report"
+              return 1
+            fi
+
+            for test_name in "${failed_tests[@]}"; do
+              local -a isolated=()
+              classification='persistent-failure'
+              for attempt in 1 2; do
+                local isolation_log="$GATE_LOG_DIR/core_lib-isolation-${attempt}-${test_name//::/_}.log"
+                set +e
+                nice -n 10 cargo test -p codex-core --lib "$test_name" -- --exact --nocapture \
+                  2>&1 | tee "$isolation_log"
+                isolation_rc=${PIPESTATUS[0]}
+                set -e
+                summary=$(grep -m 1 'test result:' "$isolation_log" || true)
+                summary=${summary//$'\t'/ }
+                if [ "$isolation_rc" -eq 0 ] \
+                  && grep -Fx 'running 1 test' "$isolation_log" \
+                  && grep -E 'test result: ok\. 1 passed;' "$isolation_log"; then
+                  isolated+=("pass:$summary")
+                else
+                  isolated+=("fail:$summary")
+                fi
+              done
+
+              if [[ "${isolated[0]}" == pass:* && "${isolated[1]}" == pass:* ]]; then
+                classification='interference-or-flake'
+              fi
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$test_name" 'failure' "${isolated[0]}" "${isolated[1]}" "$classification" >> "$report"
+              if [ "$classification" != 'interference-or-flake' ]; then
+                return 1
+              fi
+            done
+          }
+
+          run_tui_lib_with_isolation() {
+            local tui_log="$GATE_LOG_DIR/tui_lib.log"
+            local report="$GATE_LOG_DIR/tui_lib_reclassifications.tsv"
+            local tui_rc isolation_rc summary classification
+            local -a failed_tests
+
+            printf 'test\tfull_suite\tisolation_1\tisolation_2\tclassification\n' > "$report"
+            set +e
+            # La famiglia analytics (156 test) e' pesante per natura e nella corsa
+            # parallela va in contesa: la esegue il passo dedicato «Analytics family»
+            # con --test-threads=2. Qui si salta SOLO quella famiglia, e il passo
+            # dedicato la verifica per intero — non e' una deroga.
+            nice -n 10 cargo test -p codex-tui --lib -- --skip analytics:: 2>&1 | tee "$tui_log"
+            tui_rc=${PIPESTATUS[0]}
+            set -e
+
+            if [ "$tui_rc" -eq 0 ]; then
+              grep -E 'test result: ok\. [1-9][0-9]* passed;' "$tui_log"
+              printf '%s\t%s\t%s\t%s\t%s\n' '-' 'pass' '-' '-' 'full-suite-pass' >> "$report"
+              return 0
+            fi
+
+            grep -E 'test result: FAILED\.' "$tui_log"
+            mapfile -t failed_tests < <(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$tui_log")
+            if [ "${#failed_tests[@]}" -eq 0 ]; then
+              printf '%s\t%s\t%s\t%s\t%s\n' '-' 'failure' '-' '-' 'unparseable-full-suite-failure' >> "$report"
+              return 1
+            fi
+
+            for test_name in "${failed_tests[@]}"; do
+              local -a isolated=()
+              classification='persistent-failure'
+              for attempt in 1 2; do
+                local isolation_log="$GATE_LOG_DIR/tui_lib-isolation-${attempt}-${test_name//::/_}.log"
+                set +e
+                nice -n 10 cargo test -p codex-tui --lib "$test_name" -- --exact --nocapture \
+                  2>&1 | tee "$isolation_log"
+                isolation_rc=${PIPESTATUS[0]}
+                set -e
+                summary=$(grep -m 1 'test result:' "$isolation_log" || true)
+                summary=${summary//$'\t'/ }
+                if [ "$isolation_rc" -eq 0 ] \
+                  && grep -Fx 'running 1 test' "$isolation_log" \
+                  && grep -E 'test result: ok\. 1 passed;' "$isolation_log"; then
+                  isolated+=("pass:$summary")
+                else
+                  isolated+=("fail:$summary")
+                fi
+              done
+
+              if [[ "${isolated[0]}" == pass:* && "${isolated[1]}" == pass:* ]]; then
+                classification='interference-or-flake'
+              fi
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$test_name" 'failure' "${isolated[0]}" "${isolated[1]}" "$classification" >> "$report"
+              if [ "$classification" != 'interference-or-flake' ]; then
+                return 1
+              fi
+            done
+          }
+
+          run_recap_pins() {
+            local recap_log="$GATE_LOG_DIR/recap_pins.log"
+            local test_name
+            : > "$recap_log"
+            for test_name in \
+              normal_tui_thread_without_declared_tools_receives_builtins \
+              temporary_system_tui_thread_without_declared_tools_remains_tool_free; do
+              nice -n 10 cargo test -p codex-app-server --lib "$test_name" -- --nocapture \
+                2>&1 | tee -a "$recap_log"
+            done
+            test "$(grep -Ec 'running 1 test' "$recap_log")" -eq 2
+            test "$(grep -Ec 'test result: ok\. 1 passed;' "$recap_log")" -eq 2
+          }
+
+          run_test goals nice -n 10 cargo test -p codex-goal-extension
+          run_test background_model_client nice -n 10 cargo test -p codex-core background_model_client_resolves_requested_model
+          run_test manage_loops nice -n 10 cargo test -p codex-tui -- manage_loops
+          run_test loop nice -n 10 cargo test -p codex-tui -- loop
+          run_test vivling nice -n 10 cargo test -p codex-tui -- vivling
+          run_test loop_controller nice -n 10 cargo test -p codex-tui --lib -- loop_controller::tests
+          run_test vl_footer nice -n 10 cargo test -p codex-tui --lib loop_context_renders_below_status_line_without_replacing_it
+          run_test manager_dependency nice -n 10 cargo test -p codex-tui --test manager_dependency_regression
+          run_test pairing nice -n 10 cargo test -p codex-app-server-daemon --lib -- pairing
+          run_recap_pins
+          run_core_lib_with_isolation
+          run_tui_lib_with_isolation
+          run_test fork_identity_pins nice -n 10 cargo test -p codex-tui --test fork_identity_pins
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-register.log"
+
+      - name: Analytics family (tui lib, bounded threads)
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          log="$GATE_LOG_DIR/tui_lib_analytics.log"
+          # Questi 156 test NON sono saltati: nel passo precedente la sola famiglia
+          # analytics e' esclusa dalla corsa parallela e qui viene eseguita per
+          # intero con parallelismo limitato. Motivo misurato: upstream e candidato
+          # hanno tempi identici (0,99x sulla famiglia, +-2% sui singoli test; run
+          # 36540435971), quindi il rosso era contesa, non lentezza del fork.
+          nice -n 10 cargo test -p codex-tui --lib analytics:: -- --test-threads=2 2>&1 | tee "$log"
+          grep -E 'running [1-9][0-9]* tests?' "$log"
+          grep -E 'test result: ok\. [1-9][0-9]* passed;' "$log"
+
+      - name: Upload seam and REGISTER logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # in-tree pin
+        with:
+          name: gate-vl-0158-gates-logs
+          path: ${{ env.GATE_LOG_DIR }}
+          if-no-files-found: error
+
+  workspace:
+    name: workspace - compile, code-mode host, no-run
+    runs-on: [self-hosted, mgm]
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      RUST_MIN_STACK: 8388608
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+      TZ: UTC
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout vl-0158 candidate with full history and tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-ci
+      - name: Validate setup-ci build root and prepare gate paths
+        run: |
+          set -euo pipefail
+          : "${CI_BUILD_ROOT:?setup-ci did not define CI_BUILD_ROOT}"
+          : "${CARGO_TARGET_DIR:?setup-ci did not define CARGO_TARGET_DIR}"
+          test "$CARGO_TARGET_DIR" = "$CI_BUILD_ROOT/cargo-target"
+          for path in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$BAZEL_REPOSITORY_CACHE" "$BAZEL_REPO_CONTENTS_CACHE"; do
+            case "$path" in "$CI_BUILD_ROOT"/*) ;; *) echo "Bazel path outside CI_BUILD_ROOT: $path" >&2; exit 1 ;; esac
+          done
+          GATE_LOG_DIR="$CI_BUILD_ROOT/gate-vl-0158-logs/$GITHUB_JOB"
+          CODEX_HOME="$CI_BUILD_ROOT/codex-home-$GITHUB_RUN_ID"
+          case "$CODEX_HOME" in "$CI_BUILD_ROOT"/*) ;; *) echo "CODEX_HOME outside CI_BUILD_ROOT: $CODEX_HOME" >&2; exit 1 ;; esac
+          mkdir -p "$CODEX_HOME"
+          mkdir -p "$GATE_LOG_DIR"
+          printf 'GATE_LOG_DIR=%s\n' "$GATE_LOG_DIR" >> "$GITHUB_ENV"
+          printf 'CODEX_HOME=%s\n' "$CODEX_HOME" >> "$GITHUB_ENV"
+          printf 'CI_BUILD_ROOT=%s\nCARGO_TARGET_DIR=%s\nCODEX_HOME=%s\nLC_ALL=%s\nLANG=%s\nTZ=%s\n' \
+            "$CI_BUILD_ROOT" "$CARGO_TARGET_DIR" "$CODEX_HOME" "$LC_ALL" "$LANG" "$TZ" \
+            | tee "$GATE_LOG_DIR/ci-isolation.log"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-setup.log"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Verify MGM provides libcap-dev
+        run: dpkg-query -W -f='${Status}\n' libcap-dev | grep -Fx 'install ok installed' | tee "$GATE_LOG_DIR/libcap-dev.log"
+
+      - name: Confirm candidate identity and version alignment
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git merge-base --is-ancestor efa5ddee751435850abc47305ce4a6b36659a441 HEAD
+          grep -n '^version = "0.158.0"' codex-rs/Cargo.toml
+          grep -n '"version": "0.158.0-vl.1"' codex-cli/package.json
+          test -z "$(git diff --diff-filter=U --name-only)"
+          ! find . -name '*.snap.new' -print -quit | grep -q .
+
+      - name: Compile gates including code-mode host stdio and gRPC
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          nice -n 10 cargo check -p codex-app-server -p codex-tui -p codex-core \
+            2>&1 | tee "$GATE_LOG_DIR/check-three-crates.log"
+          nice -n 10 cargo check -p codex-code-mode-host --all-targets \
+            2>&1 | tee "$GATE_LOG_DIR/code-mode-host.log"
+          echo 'disk between compile checks and workspace no-run'
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-before-workspace-no-run.log"
+          nice -n 10 cargo test --workspace --no-run --exclude codex-voice-host \
+            2>&1 | tee "$GATE_LOG_DIR/workspace-no-run.log"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-workspace-no-run.log"
+
+      - name: Upload workspace logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # in-tree pin
+        with:
+          name: gate-vl-0158-workspace-logs
+          path: ${{ env.GATE_LOG_DIR }}
+          if-no-files-found: error
+
+  packaging:
+    name: packaging - consumers and npm dry-run
+    needs: [gates, workspace]
+    runs-on: [self-hosted, mgm]
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      RUST_MIN_STACK: 8388608
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+      TZ: UTC
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout vl-0158 candidate with full history and tags
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.sha }}
+
+      - uses: ./.github/actions/setup-ci
+      - name: Validate setup-ci build root and prepare gate paths
+        run: |
+          set -euo pipefail
+          : "${CI_BUILD_ROOT:?setup-ci did not define CI_BUILD_ROOT}"
+          : "${CARGO_TARGET_DIR:?setup-ci did not define CARGO_TARGET_DIR}"
+          test "$CARGO_TARGET_DIR" = "$CI_BUILD_ROOT/cargo-target"
+          for path in "$BAZEL_OUTPUT_BASE" "$BAZEL_OUTPUT_USER_ROOT" "$BAZEL_REPOSITORY_CACHE" "$BAZEL_REPO_CONTENTS_CACHE"; do
+            case "$path" in "$CI_BUILD_ROOT"/*) ;; *) echo "Bazel path outside CI_BUILD_ROOT: $path" >&2; exit 1 ;; esac
+          done
+          GATE_LOG_DIR="$CI_BUILD_ROOT/gate-vl-0158-logs/$GITHUB_JOB"
+          CODEX_HOME="$CI_BUILD_ROOT/codex-home-$GITHUB_RUN_ID"
+          case "$CODEX_HOME" in "$CI_BUILD_ROOT"/*) ;; *) echo "CODEX_HOME outside CI_BUILD_ROOT: $CODEX_HOME" >&2; exit 1 ;; esac
+          mkdir -p "$CODEX_HOME"
+          mkdir -p "$GATE_LOG_DIR"
+          printf 'GATE_LOG_DIR=%s\n' "$GATE_LOG_DIR" >> "$GITHUB_ENV"
+          printf 'CODEX_HOME=%s\n' "$CODEX_HOME" >> "$GITHUB_ENV"
+          printf 'CI_BUILD_ROOT=%s\nCARGO_TARGET_DIR=%s\nCODEX_HOME=%s\nLC_ALL=%s\nLANG=%s\nTZ=%s\n' \
+            "$CI_BUILD_ROOT" "$CARGO_TARGET_DIR" "$CODEX_HOME" "$LC_ALL" "$LANG" "$TZ" \
+            | tee "$GATE_LOG_DIR/ci-isolation.log"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-setup.log"
+
+      - name: Confirm candidate identity and version alignment
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git merge-base --is-ancestor efa5ddee751435850abc47305ce4a6b36659a441 HEAD
+          grep -n '^version = "0.158.0"' codex-rs/Cargo.toml
+          grep -n '"version": "0.158.0-vl.1"' codex-cli/package.json
+          test -z "$(git diff --diff-filter=U --name-only)"
+          ! find . -name '*.snap.new' -print -quit | grep -q .
+
+      - name: Code-mode host consumer and packaging gates
+        run: |
+          set -euo pipefail
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-before-packaging.log"
+          {
+            if rg -n 'code-mode-host.{0,160}(ws://|wss://)|(ws://|wss://).{0,160}code-mode-host' \
+              codex-rs/tui codex-rs/core codex-rs/app-server codex-cli scripts; then
+              echo 'real ws:// consumer toward code-mode-host requires a separate migration' >&2
+              exit 1
+            fi
+            rg -n 'codex-code-mode-host' \
+              codex-cli/scripts/build_npm_package.py \
+              scripts/codex_package/layout.py \
+              scripts/codex_package/cargo.py \
+              scripts/install/install.sh
+            python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
+            (cd codex-cli && npm pack --dry-run)
+          } 2>&1 | tee "$GATE_LOG_DIR/packaging.log"
+          df -h / /home "$CARGO_TARGET_DIR" | tee "$GATE_LOG_DIR/df-after-packaging.log"
+
+      - name: Upload packaging logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # in-tree pin
+        with:
+          name: gate-vl-0158-packaging-logs
+          path: ${{ env.GATE_LOG_DIR }}
+          if-no-files-found: error

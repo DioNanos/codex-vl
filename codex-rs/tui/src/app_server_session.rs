@@ -3,9 +3,14 @@
 //! This module owns the typed JSON-RPC calls needed by the TUI and keeps
 //! request/response plumbing out of `App` and `ChatWidget`.
 
-mod fs;
+mod external_agent_config;
+pub(crate) mod fs;
 mod history;
 mod models;
+pub(crate) mod provider_selection;
+#[cfg(test)]
+#[path = "app_server_session/provider_selection_tests.rs"]
+mod provider_selection_tests;
 mod realtime;
 mod rollout_history;
 mod thread_list;
@@ -45,11 +50,6 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigBatchWriteParams;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::ConfigWriteResponse;
-use codex_app_server_protocol::ExternalAgentConfigDetectParams;
-use codex_app_server_protocol::ExternalAgentConfigDetectResponse;
-use codex_app_server_protocol::ExternalAgentConfigImportParams;
-use codex_app_server_protocol::ExternalAgentConfigImportResponse;
-use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
@@ -155,9 +155,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use uuid::Uuid;
@@ -324,12 +323,14 @@ pub(crate) struct AppServerSession {
     task_search_generation: Arc<AtomicU64>,
     remote_cwd_override: Option<PathBuf>,
     thread_params_mode: ThreadParamsMode,
+    /// Explicit CLI provider selection, distinct from resolved configuration defaults.
+    pub(crate) model_provider_override: Option<String>,
     history_support: ThreadHistorySupport,
     thread_settings_update_supported: bool,
     default_model: Option<String>,
     available_models: Vec<ModelPreset>,
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
-    external_agent_config_import_completion_pending: AtomicBool,
+    external_agent_config_import_id: Mutex<Option<String>>,
     dynamic_tool_mcp: Option<Arc<DynamicToolMcpServer>>,
 }
 
@@ -356,13 +357,6 @@ impl ThreadParamsMode {
             Self::Embedded => Some(config.workspace_roots.clone()),
             // Client config paths belong to the client host. Let the server resolve its
             // defaults or restore the saved roots, then adopt the roots in its response.
-            Self::Remote => None,
-        }
-    }
-
-    fn model_provider_from_config(self, config: &Config) -> Option<String> {
-        match self {
-            Self::Embedded => Some(config.model_provider_id.clone()),
             Self::Remote => None,
         }
     }
@@ -434,12 +428,13 @@ impl AppServerSession {
             task_search_generation: Arc::new(AtomicU64::new(0)),
             remote_cwd_override: None,
             thread_params_mode,
+            model_provider_override: None,
             history_support: ThreadHistorySupport::Paginated,
             thread_settings_update_supported: true,
             default_model: None,
             available_models: Vec::new(),
             managed_new_thread_defaults: None,
-            external_agent_config_import_completion_pending: AtomicBool::new(false),
+            external_agent_config_import_id: Mutex::default(),
             dynamic_tool_mcp: None,
         }
     }
@@ -655,7 +650,7 @@ impl AppServerSession {
                     .map(|model| model.model.clone())
             })
             .or_else(|| available_models.first().map(|model| model.model.clone()))
-            .wrap_err("model/list returned no models for TUI bootstrap")?;
+            .wrap_err("No models are available. Set `model` explicitly or check your model catalog configuration.")?;
         self.default_model = Some(default_model.clone());
         self.available_models = available_models.clone();
 
@@ -764,64 +759,6 @@ impl AppServerSession {
             .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
     }
 
-    pub(crate) async fn external_agent_config_detect(
-        &mut self,
-        params: ExternalAgentConfigDetectParams,
-    ) -> Result<ExternalAgentConfigDetectResponse> {
-        let request_id = self.next_request_id();
-        self.client
-            .request_typed(ClientRequest::ExternalAgentConfigDetect { request_id, params })
-            .await
-            .wrap_err("externalAgentConfig/detect failed during external agent import")
-    }
-
-    pub(crate) async fn external_agent_config_import(
-        &mut self,
-        migration_items: Vec<ExternalAgentConfigMigrationItem>,
-        migration_source: String,
-    ) -> Result<()> {
-        // Mark the import active before sending the request so a fast completion notification
-        // cannot arrive before the TUI records it.
-        if self
-            .external_agent_config_import_completion_pending
-            .swap(true, Ordering::Relaxed)
-        {
-            color_eyre::eyre::bail!(EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE);
-        }
-        let request_id = self.next_request_id();
-        let response: Result<ExternalAgentConfigImportResponse> = self
-            .client
-            .request_typed(ClientRequest::ExternalAgentConfigImport {
-                request_id,
-                params: ExternalAgentConfigImportParams {
-                    migration_items,
-                    source: Some("cli".to_string()),
-                    provider_id: Some(migration_source.clone()),
-                    migration_source: Some(migration_source),
-                },
-            })
-            .await
-            .wrap_err("externalAgentConfig/import failed during external agent import");
-        match response {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                self.external_agent_config_import_completion_pending
-                    .store(false, Ordering::Relaxed);
-                Err(err)
-            }
-        }
-    }
-
-    pub(crate) fn external_agent_config_import_in_progress(&self) -> bool {
-        self.external_agent_config_import_completion_pending
-            .load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn consume_external_agent_config_import_completion(&self) -> bool {
-        self.external_agent_config_import_completion_pending
-            .swap(false, Ordering::Relaxed)
-    }
-
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.client.next_event().await
     }
@@ -854,6 +791,10 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        params.model_provider = self
+            .model_provider_override
+            .clone()
+            .or(params.model_provider);
         if let Some(selected_profile) = selected_profile {
             params.runtime_workspace_roots = None;
             params.permissions = Some(selected_profile.profile_id.clone());
@@ -1030,6 +971,13 @@ impl AppServerSession {
                 self.thread_params_mode(),
                 self.remote_cwd_override.as_deref(),
             )
+        };
+        params.model_provider = match config_source {
+            ForkConfigSource::Local => self
+                .model_provider_override
+                .clone()
+                .or(params.model_provider),
+            ForkConfigSource::Session => Some(config.model_provider_id.clone()),
         };
         if config_source == ForkConfigSource::Session {
             // Active-session config has already adopted the server's roots. Fork does
@@ -1767,6 +1715,7 @@ pub(crate) async fn start_thread_with_request_handle(
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<PathBuf>,
     thread_tool_transport: ThreadToolTransport,
+    model_provider_override: Option<String>,
 ) -> Result<AppServerStartedThread> {
     let request_id = RequestId::String(format!("startup-thread-start-{}", Uuid::new_v4()));
     let mut params = thread_start_params_from_config(
@@ -1775,6 +1724,7 @@ pub(crate) async fn start_thread_with_request_handle(
         remote_cwd_override.as_deref(),
         /*session_start_source*/ None,
     );
+    params.model_provider = model_provider_override.or(params.model_provider);
     thread_tool_transport.configure(&mut params);
     let (response, _history_support, task_tools_available) =
         request_thread_start_with_history_fallback(&request_handle, request_id, params)
@@ -1929,18 +1879,6 @@ fn config_request_overrides_from_config(
             .map(std::string::ToString::to_string),
     );
     insert(
-        "model_reasoning_summary",
-        config
-            .model_reasoning_summary
-            .map(|summary| summary.to_string()),
-    );
-    insert(
-        "model_verbosity",
-        config
-            .model_verbosity
-            .map(|verbosity| verbosity.to_string()),
-    );
-    insert(
         "personality",
         personality_opt_out_only(config.personality).map(|personality| personality.to_string()),
     );
@@ -1948,6 +1886,23 @@ fn config_request_overrides_from_config(
         "web_search",
         Some(config.web_search_mode.value().to_string()),
     );
+    // Only winning launch choices may replace server defaults or saved thread settings.
+    let origins = config.config_layer_stack.origins();
+    let effective = config.config_layer_stack.effective_config();
+    for key in ["model_reasoning_summary", "model_verbosity"] {
+        if origins.get(key).is_some_and(|origin| {
+            matches!(
+                origin.name,
+                ConfigLayerSource::SessionFlags
+                    | ConfigLayerSource::User {
+                        profile: Some(_),
+                        ..
+                    }
+            )
+        }) {
+            overrides.insert(key.to_string(), serde_json::json!(effective[key]));
+        }
+    }
     if config.bypass_hook_trust {
         overrides.insert("bypass_hook_trust".to_string(), true.into());
     }
@@ -2124,7 +2079,7 @@ pub(crate) fn thread_start_params_from_config(
         .flatten();
     ThreadStartParams {
         model: config.model.clone(),
-        model_provider: thread_params_mode.model_provider_from_config(config),
+        model_provider: provider_selection::explicit_provider(config),
         service_tier: service_tier_override_from_config(config),
         cwd: thread_cwd_from_config(config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: thread_params_mode.workspace_roots_from_config(config),
@@ -2153,6 +2108,7 @@ fn thread_resume_params_from_config(
     thread_params_mode: ThreadParamsMode,
     remote_cwd_override: Option<&std::path::Path>,
     model_settings: ResumeModelSettings,
+    permission_overrides: crate::resume_permissions::ResumePermissions,
 ) -> ThreadResumeParams {
     if model_settings == ResumeModelSettings::PreserveExistingThread {
         return ThreadResumeParams {
@@ -2182,7 +2138,7 @@ fn thread_resume_params_from_config(
     let (model, model_provider) = match model_settings {
         ResumeModelSettings::OverrideFromCurrentConfig => (
             config.model.clone(),
-            thread_params_mode.model_provider_from_config(&config),
+            provider_selection::explicit_provider(&config),
         ),
         ResumeModelSettings::RestoreFromThread | ResumeModelSettings::PreserveExistingThread => {
             (None, None)
@@ -2205,13 +2161,19 @@ fn thread_resume_params_from_config(
         ),
         ..ThreadResumeParams::default()
     };
-    if thread_params_mode == ThreadParamsMode::Remote {
-        // Resuming restores the server's saved permission settings, including named profiles.
+    if thread_params_mode == ThreadParamsMode::Remote || !permission_overrides.approval_policy {
         params.approval_policy = None;
+    }
+    if thread_params_mode == ThreadParamsMode::Remote || !permission_overrides.approvals_reviewer {
         params.approvals_reviewer = None;
+    }
+    if thread_params_mode == ThreadParamsMode::Remote || !permission_overrides.profile {
         params.sandbox = None;
         params.permissions = None;
         remove_permission_config_overrides(&mut params.config);
+    }
+    if !permission_overrides.workspace_roots {
+        params.runtime_workspace_roots = None;
     }
     params
 }
@@ -2235,7 +2197,7 @@ fn thread_fork_params_from_config(
     ThreadForkParams {
         thread_id: thread_id.to_string(),
         model: config.model.clone(),
-        model_provider: thread_params_mode.model_provider_from_config(&config),
+        model_provider: provider_selection::explicit_provider(&config),
         service_tier: service_tier_override_from_config(&config),
         cwd: thread_cwd_from_config(&config, thread_params_mode, remote_cwd_override),
         runtime_workspace_roots: thread_params_mode.workspace_roots_from_config(&config),
@@ -2381,23 +2343,14 @@ async fn thread_session_state_from_thread_resume_response(
     response: &ThreadResumeResponse,
     local_settings: &LocalSettings,
     config: &Config,
-    thread_params_mode: ThreadParamsMode,
+    _thread_params_mode: ThreadParamsMode,
 ) -> Result<ThreadSessionState, String> {
-    let permission_profile = if matches!(thread_params_mode, ThreadParamsMode::Embedded)
-        && response.active_permission_profile.is_none()
-    {
-        PermissionProfile::from_legacy_sandbox_policy_for_cwd(
-            &response.sandbox.to_core(),
-            response.cwd.as_path(),
-        )
-    } else {
-        display_permission_profile_from_thread_response(
-            &response.sandbox,
-            response.cwd.as_path(),
-            config,
-            thread_params_mode,
-        )
-    };
+    // The server owns restored rules. This legacy projection is for display only;
+    // normal turns do not send it back as an execution override.
+    let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+        &response.sandbox.to_core(),
+        response.cwd.as_path(),
+    );
     let mut session = thread_session_state_from_thread_response(
         &response.thread.id,
         crate::windows_sandbox::host_from_environments(response.thread.environments.as_deref()),
@@ -2668,6 +2621,25 @@ mod tests {
         app_server.bootstrap(&config).await?;
 
         assert_eq!(app_server.next_request_id, next_request_id + 3);
+        app_server.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bootstrap_empty_catalog_reports_configuration_error() -> Result<()> {
+        let codex_home = tempfile::tempdir()?;
+        let mut config = build_config(&codex_home).await;
+        config.model = None;
+        config.model_catalog = Some(codex_protocol::openai_models::ModelsResponse::default());
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+        let error = app_server
+            .bootstrap(&config)
+            .await
+            .err()
+            .expect("bootstrap requires a model");
+        insta::assert_snapshot!(error.to_string(), @"No models are available. Set `model` explicitly or check your model catalog configuration.");
+
         app_server.shutdown().await?;
         Ok(())
     }
@@ -3004,7 +2976,7 @@ mod tests {
                 .active_permission_profile()
                 .map(permission_profile_id_from_active_profile)
         );
-        assert_eq!(params.model_provider, Some(config.model_provider_id));
+        assert_eq!(params.model_provider, None);
         assert_eq!(params.thread_source, Some(ThreadSource::User));
         assert_eq!(params.dynamic_tools, None);
     }
@@ -3243,6 +3215,7 @@ mod tests {
             ThreadParamsMode::Remote,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::OverrideFromCurrentConfig,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -3288,6 +3261,7 @@ mod tests {
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
             ResumeModelSettings::RestoreFromThread,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
 
         assert_eq!(resume.cwd, Some(remote_cwd.to_string_lossy().to_string()));
@@ -3384,6 +3358,7 @@ mod tests {
             ThreadParamsMode::Remote,
             Some(remote_cwd.as_path()),
             ResumeModelSettings::OverrideFromCurrentConfig,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -3439,6 +3414,7 @@ mod tests {
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::OverrideFromCurrentConfig,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
         let fork = thread_fork_params_from_config(
             config,
@@ -3454,12 +3430,11 @@ mod tests {
         let string = |value: &str| serde_json::Value::String(value.to_string());
         let expected_config = HashMap::from([
             ("model_reasoning_effort".to_string(), string("high")),
-            ("model_reasoning_summary".to_string(), string("detailed")),
-            ("model_verbosity".to_string(), string("low")),
             ("web_search".to_string(), string("disabled")),
             ("bypass_hook_trust".to_string(), true.into()),
         ]);
         let mut expected_start_config = expected_config.clone();
+        expected_start_config.insert("model_reasoning_summary".to_string(), string("detailed"));
         expected_start_config.insert(
             "features".to_string(),
             serde_json::json!({"concurrent_reasoning_summaries": false}),
@@ -3467,6 +3442,71 @@ mod tests {
         assert_eq!(start.config, Some(expected_start_config));
         assert_eq!(resume.config, Some(expected_config.clone()));
         assert_eq!(fork.config, Some(expected_config));
+    }
+
+    #[tokio::test]
+    async fn config_overrides_forward_explicit_summary_and_verbosity() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir_all(workspace.join(".codex"))?;
+        std::fs::write(
+            home.path().join("config.toml"),
+            format!(
+                "model_reasoning_summary = \"concise\"\nmodel_verbosity = \"low\"\n[projects.{}]\ntrust_level = \"trusted\"\n",
+                toml::Value::String(workspace.to_string_lossy().into_owned()),
+            ),
+        )?;
+        let profile = AbsolutePathBuf::from_absolute_path(home.path().join("work.config.toml"))?;
+        std::fs::write(
+            &profile,
+            "model_reasoning_summary = \"detailed\"\nmodel_verbosity = \"high\"\n",
+        )?;
+        for (selected_profile, project, cli, expected) in [
+            (false, false, false, [None, None]),
+            (true, false, false, [Some("detailed"), Some("high")]),
+            (false, false, true, [Some("auto"), Some("medium")]),
+            (true, false, true, [Some("auto"), Some("medium")]),
+            (true, true, false, [None, None]),
+            (true, true, true, [Some("auto"), Some("medium")]),
+        ] {
+            std::fs::write(
+                workspace.join(".codex/config.toml"),
+                if project {
+                    "model_reasoning_summary = \"concise\"\nmodel_verbosity = \"low\"\n"
+                } else {
+                    ""
+                },
+            )?;
+            let config = ConfigBuilder::default()
+                .codex_home(home.path().to_path_buf())
+                .harness_overrides(ConfigOverrides {
+                    cwd: Some(workspace.clone()),
+                    ..ConfigOverrides::default()
+                })
+                .loader_overrides(codex_config::LoaderOverrides {
+                    user_config_path: selected_profile.then(|| profile.clone()),
+                    user_config_profile: selected_profile.then(|| "work".parse().unwrap()),
+                    ..codex_config::LoaderOverrides::without_managed_config_for_tests()
+                })
+                .cli_overrides(if cli {
+                    vec![
+                        ("model_reasoning_summary".to_string(), "auto".into()),
+                        ("model_verbosity".to_string(), "medium".into()),
+                    ]
+                } else {
+                    Vec::new()
+                })
+                .build()
+                .await?;
+            let overrides =
+                config_request_overrides_from_config(&config).expect("config overrides");
+            assert_eq!(
+                ["model_reasoning_summary", "model_verbosity"]
+                    .map(|key| overrides.get(key).and_then(serde_json::Value::as_str)),
+                expected,
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -3485,22 +3525,17 @@ mod tests {
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::RestoreFromThread,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
 
         assert_eq!(params.model, None);
         assert_eq!(params.model_provider, None);
         assert_eq!(
             params.config,
-            Some(HashMap::from([
-                (
-                    "model_reasoning_summary".to_string(),
-                    serde_json::Value::String("detailed".to_string()),
-                ),
-                (
-                    "web_search".to_string(),
-                    serde_json::Value::String("cached".to_string()),
-                ),
-            ]))
+            Some(HashMap::from([(
+                "web_search".to_string(),
+                serde_json::Value::String("cached".to_string()),
+            )]))
         );
     }
 
@@ -3516,6 +3551,7 @@ mod tests {
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::PreserveExistingThread,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
 
         assert_eq!(
@@ -3834,6 +3870,7 @@ mod tests {
                 mode,
                 /*remote_cwd_override*/ None,
                 ResumeModelSettings::OverrideFromCurrentConfig,
+                crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
             );
             let fork = thread_fork_params_from_config(
                 config.clone(),
@@ -3945,6 +3982,7 @@ mod tests {
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::OverrideFromCurrentConfig,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
         let control_fork = thread_fork_params_from_config(
             config.clone(),
@@ -3975,6 +4013,7 @@ mod tests {
             ThreadParamsMode::Embedded,
             /*remote_cwd_override*/ None,
             ResumeModelSettings::OverrideFromCurrentConfig,
+            crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
         );
         let treatment_fork = thread_fork_params_from_config(
             config,
@@ -4070,7 +4109,7 @@ mod tests {
                     duration_ms: None,
                 }],
             },
-            model: "gpt-5.4".to_string(),
+            model: "gpt-5.5".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
             cwd: test_path_buf("/tmp/project").abs(),
@@ -4092,7 +4131,7 @@ mod tests {
             collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
                 mode: codex_protocol::config_types::ModeKind::Plan,
                 settings: codex_protocol::config_types::Settings {
-                    model: "gpt-5.4".to_string(),
+                    model: "gpt-5.5".to_string(),
                     reasoning_effort: None,
                     developer_instructions: Some("Keep planning".to_string()),
                 },

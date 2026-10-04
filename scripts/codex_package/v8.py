@@ -25,6 +25,16 @@ class RustyV8ArtifactPair:
     binding: Path
 
 
+def v8_from_source(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this environment asks for a V8 built from source.
+
+    One predicate for both the resolver and the build path: a source build is
+    the only case with no prebuilt archive to judge.
+    """
+    environ = os.environ if environ is None else environ
+    return environ.get("V8_FROM_SOURCE") in {"true", "1", "yes"}
+
+
 def resolve_codex_v8_cargo_env(
     spec: TargetSpec,
     *,
@@ -32,7 +42,7 @@ def resolve_codex_v8_cargo_env(
     cache_root: Path | None = None,
 ) -> dict[str, str]:
     environ = os.environ if environ is None else environ
-    if environ.get("V8_FROM_SOURCE") in {"true", "1", "yes"}:
+    if v8_from_source(environ):
         return {}
 
     archive_override = environ.get("RUSTY_V8_ARCHIVE")
@@ -40,11 +50,12 @@ def resolve_codex_v8_cargo_env(
     if archive_override and binding_override:
         # Returning {} leaves cargo inheriting os.environ, so these two paths are
         # what the build links -- this function chooses nothing but still decides
-        # everything. Judging the override here is the only thing between a
-        # release build and the plain archive: the profile is not in the path, the
-        # v8 build script accepts whatever RUSTY_V8_ARCHIVE names, and the result
-        # links and runs with the sandbox absent.
-        assert_sandbox_archive(Path(archive_override))
+        # everything. Resolution stays pure here: the archive is judged by the
+        # build path (`cargo.py`), which calls `assert_sandbox_archive` on
+        # whatever `RUSTY_V8_ARCHIVE` this returns before running cargo. Without
+        # that judgement a release build links the plain archive: the profile is
+        # not in the path and the v8 build script accepts whatever the variable
+        # names.
         return {}
     if archive_override or binding_override:
         raise RuntimeError(
@@ -52,9 +63,9 @@ def resolve_codex_v8_cargo_env(
         )
 
     artifacts = fetch_codex_v8_artifacts(spec, cache_root=cache_root)
-    # Downloaded from the pinned URL for the sandbox profile, and still checked:
-    # the pin says which bytes, not what they do.
-    assert_sandbox_archive(artifacts.archive)
+    # Downloaded from the pinned URL for the sandbox profile -- the pin says
+    # which bytes, not what they do. Judging happens on the build path
+    # (`cargo.py`), which validates the archive this returns.
     return {
         "RUSTY_V8_ARCHIVE": str(artifacts.archive),
         "RUSTY_V8_SRC_BINDING_PATH": str(artifacts.binding),
@@ -113,8 +124,20 @@ def fetch_codex_v8_artifacts(
     binding = cache_dir / binding_name
     checksums = cache_dir / checksums_name
 
-    download_file(f"{release_url}/{checksums.name}", checksums)
-    verify_release_checksum_manifest(checksums, version=version)
+    # A cached manifest is sufficient only while it matches this checkout's
+    # release pin. Probe without deleting it in case refresh is unavailable.
+    cached_manifest_valid = False
+    try:
+        if not checksums.is_symlink():
+            verify_release_checksum_manifest(
+                checksums, version=version, remove_invalid=False
+            )
+            cached_manifest_valid = True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    if not cached_manifest_valid:
+        download_file(f"{release_url}/{checksums.name}", checksums)
+        verify_release_checksum_manifest(checksums, version=version)
     expected_checksums = load_checksums(checksums, {archive.name, binding.name})
     for artifact in [archive, binding]:
         ensure_valid_artifact(
@@ -148,7 +171,9 @@ def default_cache_root() -> Path:
     return Path(tempfile.gettempdir()) / "codex-package"
 
 
-def verify_release_checksum_manifest(checksums_path: Path, *, version: str) -> None:
+def verify_release_checksum_manifest(
+    checksums_path: Path, *, version: str, remove_invalid: bool = True
+) -> None:
     version_suffix = version.replace(".", "_")
     trusted_checksums = (
         REPO_ROOT
@@ -164,7 +189,8 @@ def verify_release_checksum_manifest(checksums_path: Path, *, version: str) -> N
         if has_checksum(checksums_path, digest):
             return
 
-        checksums_path.unlink(missing_ok=True)
+        if remove_invalid:
+            checksums_path.unlink(missing_ok=True)
         raise RuntimeError(
             f"V8 checksum manifest {checksums_path} does not match its trusted SHA-256."
         )

@@ -163,7 +163,7 @@ mod tests {
             let thread_id = ThreadId::new();
             app.primary_thread_id = Some(thread_id);
             app.active_thread_id = Some(thread_id);
-            Ok((app, state_runtime, thread_id, codex_home))
+            Ok((*app, state_runtime, thread_id, codex_home))
         }
 
         fn add_args(label: &str) -> serde_json::Value {
@@ -220,7 +220,7 @@ mod tests {
             app.register_managed_loop_scope(thread_id, &job.id, "resumed");
 
             // This is the in-memory part of resume's thread reconstruction.
-            app.reset_thread_event_state();
+            app.reset_thread_event_state().await;
             app.primary_thread_id = Some(thread_id);
             app.active_thread_id = Some(thread_id);
 

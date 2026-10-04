@@ -6,6 +6,7 @@ const {
   existsSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
 } = require("node:fs");
 const { createHash } = require("node:crypto");
 const os = require("node:os");
@@ -15,7 +16,7 @@ const root = path.resolve(__dirname, "..");
 const target = "aarch64-apple-darwin";
 const manifest = path.join(root, "codex-rs", "Cargo.toml");
 const releaseDir = path.join(root, "codex-rs", "target", target, "release");
-const vendorCodexDir = path.join(root, "vendor", target, "codex");
+const vendorCodexDir = path.join(root, "vendor", target, "bin");
 
 function fail(message) {
   console.error(`[codex-vl] ${message}`);
@@ -220,4 +221,31 @@ for (const binary of ["codex", "codex-code-mode-host"]) {
   chmodSync(dest, 0o755);
 }
 
+// The daemon requires the codex-package layout manifest next to the
+// binaries (prepare_install: "no complete local package" without it). The
+// source build IS the fork: the variant pins the identity so a staged
+// upstream binary is never executed in its place.
+const workspaceVersion = readFileSync(path.join(root, "codex-rs", "Cargo.toml"), "utf8")
+  .split("\n")
+  .map((line) => line.trim())
+  .find((line) => line.startsWith("version = "));
+if (!workspaceVersion) {
+  fail("workspace version not found in codex-rs/Cargo.toml");
+}
+const codexPackageManifest = {
+  layoutVersion: 1,
+  version: workspaceVersion.split('"')[1],
+  target,
+  variant: "codex-vl",
+  entrypoint: "bin/codex",
+  resourcesDir: "codex-resources",
+  pathDir: "codex-path",
+};
+writeFileSync(
+  path.join(root, "vendor", target, "codex-package.json"),
+  `${JSON.stringify(codexPackageManifest, null, 2)}\n`,
+);
 console.log("[codex-vl] installed local macOS binaries");
+console.log(
+  `[codex-vl] codex-package.json written: ${path.join(root, "vendor", target, "codex-package.json")}`,
+);

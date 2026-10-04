@@ -1,5 +1,6 @@
 //! Inline editing for asynchronous questions. Legacy request_user_input keeps its own overlay.
 //! Local submissions and committed desktop replies remove questions; arrival never steals focus.
+//! Live turn completion recovers unsent typed drafts before removing pending questions.
 
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
@@ -66,8 +67,10 @@ pub(crate) struct AsyncQuestions {
     pub(crate) delivery_enabled: bool,
     pub(crate) submission: Option<QuestionSubmission>,
     visible_options: std::cell::Cell<(usize, usize)>,
-    pub(crate) next_hint: Option<crate::key_hint::ShortcutHint>,
     keymap: RuntimeKeymap,
+    /// Hint shown for "next question"/"queued messages": the terminal family by
+    /// default, overridden when the caller sets the edit binding explicitly.
+    pub(crate) next_hint: Option<crate::key_hint::ShortcutHint>,
     // Ignore autorepeat from the number key that opened Other.
     other_selector: Option<KeyCode>,
     pub(super) composer: ChatComposer,
@@ -94,6 +97,11 @@ impl AsyncQuestions {
         );
         composer.set_keymap_bindings(&keymap);
         composer.set_footer_hint_override(Some(Vec::new()));
+        let next_hint = crate::chat_hint::hint_for(
+            &keymap,
+            "edit_queued_message",
+            codex_terminal_detection::terminal_info(),
+        );
         Self {
             app_event_tx,
             state: QuestionState::default(),
@@ -102,8 +110,8 @@ impl AsyncQuestions {
             delivery_enabled: true,
             submission: None,
             visible_options: std::cell::Cell::new((0, 0)),
-            next_hint: None,
             keymap,
+            next_hint,
             other_selector: None,
             composer,
         }

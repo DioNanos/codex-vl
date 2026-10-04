@@ -1123,7 +1123,7 @@ mod tests {
         let cwd = app.config.cwd.to_path_buf();
         app.chat_widget
             .handle_thread_session(test_thread_session(thread_id, cwd));
-        Ok((app, state_runtime, thread_id, codex_home))
+        Ok((*app, state_runtime, thread_id, codex_home))
     }
 
     async fn create_interval_job(

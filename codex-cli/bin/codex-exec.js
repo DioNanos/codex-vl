@@ -55,12 +55,22 @@ const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriple];
 // the platform package drops ~220 MB (one fewer V8-linked binary).
 const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
-const localBinaryPath = path.join(
-  localVendorRoot,
-  targetTriple,
-  "codex",
-  codexBinaryName,
-);
+// Since 0.159.3 the platform package ships the mapped layout
+// (`<triple>/bin/codex`, `<triple>/codex-path`); older packages and the
+// repository-local vendor payload use the legacy layout
+// (`<triple>/codex/codex`, `<triple>/path`). Resolve both, mapped first.
+function findArchBinary(archRoot) {
+  for (const rel of [
+    ["bin", codexBinaryName],
+    ["codex", codexBinaryName],
+  ]) {
+    const candidate = path.join(archRoot, ...rel);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
 let vendorRoot = null;
 let resolvedPlatformPackageRoot = null;
@@ -75,15 +85,15 @@ try {
 }
 
 let archRoot = vendorRoot ? path.join(vendorRoot, targetTriple) : null;
-let binaryPath = archRoot
-  ? path.join(archRoot, "codex", codexBinaryName)
-  : null;
+let binaryPath = archRoot ? findArchBinary(archRoot) : null;
 
-if (!binaryPath || !existsSync(binaryPath)) {
-  if (existsSync(localBinaryPath)) {
+if (!binaryPath) {
+  const localArchRoot = path.join(localVendorRoot, targetTriple);
+  const localBinary = findArchBinary(localArchRoot);
+  if (localBinary) {
     vendorRoot = localVendorRoot;
-    archRoot = path.join(vendorRoot, targetTriple);
-    binaryPath = localBinaryPath;
+    archRoot = localArchRoot;
+    binaryPath = localBinary;
   } else {
     throw new Error(nativePackageDiagnostic(detectPackageManager()));
   }
@@ -190,8 +200,12 @@ function safeRealpath(targetPath) {
 }
 
 const additionalDirs = [];
-const pathDir = path.join(archRoot, "path");
-if (existsSync(pathDir)) {
+// Mapped layout uses `codex-path`, the legacy one uses `path`.
+const pathDir = [
+  path.join(archRoot, "codex-path"),
+  path.join(archRoot, "path"),
+].find((candidate) => existsSync(candidate));
+if (pathDir) {
   additionalDirs.push(pathDir);
 }
 

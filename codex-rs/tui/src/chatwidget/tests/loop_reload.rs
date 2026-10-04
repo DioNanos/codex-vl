@@ -17,6 +17,7 @@ fn aborted_interrupt_event(chat: &ChatWidget) -> codex_protocol::protocol::TurnA
     codex_protocol::protocol::TurnAbortedEvent {
         turn_id: chat.turn_lifecycle.last_turn_id.clone(),
         reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+        error: None,
         started_at: None,
         completed_at: None,
         duration_ms: None,

@@ -8,7 +8,9 @@ from pathlib import Path
 from .targets import REPO_ROOT
 from .targets import PackageVariant
 from .targets import TargetSpec
+from .v8 import assert_sandbox_archive
 from .v8 import resolve_codex_v8_cargo_env
+from .v8 import v8_from_source
 
 
 CODEX_RS_ROOT = REPO_ROOT / "codex-rs"
@@ -66,6 +68,19 @@ def build_source_binaries(
         cargo_env = None
         if entrypoint_bin is None or code_mode_host_bin is None:
             codex_v8_env = resolve_codex_v8_cargo_env(spec)
+            # Judge the archive this build will actually LINK, not just the one
+            # the resolver picked. With paired overrides the resolver returns {}
+            # on purpose and cargo inherits os.environ, so its RUSTY_V8_ARCHIVE
+            # reaches the linker without ever passing through the resolver: that
+            # override is exactly what the guard exists for (the profile is not
+            # in the path and the v8 build script accepts whatever the variable
+            # names). A source build links no prebuilt, so there is nothing to
+            # judge there.
+            archive = codex_v8_env.get("RUSTY_V8_ARCHIVE")
+            if archive is None and not v8_from_source():
+                archive = os.environ.get("RUSTY_V8_ARCHIVE")
+            if archive:
+                assert_sandbox_archive(Path(archive))
             if codex_v8_env:
                 cargo_env = {**os.environ, **codex_v8_env}
 

@@ -18,6 +18,7 @@ use super::TIP_SEPARATOR;
 use crate::bottom_pane::request_user_input::render::render_rows_bottom_aligned;
 use crate::bottom_pane::request_user_input::render::truncate_line_word_boundary_with_ellipsis;
 use crate::keymap::KeymapContext;
+use codex_terminal_detection::terminal_info;
 
 impl Renderable for AsyncQuestions {
     fn cursor_style(&self, area: Rect) -> crossterm::cursor::SetCursorStyle {
@@ -193,7 +194,9 @@ impl AsyncQuestions {
             tips.push(crate::footer_hint::shortcut(&key.display_label(), "skip"));
         }
         tips.extend(option_tip.map(Line::from));
-        if let Some(key) = chat_hint("prompt_stack_back") {
+        if let Some(key) =
+            crate::chat_hint::hint_for(&self.keymap, "prompt_stack_back", terminal_info())
+        {
             let label = if self.state.current_idx > 0 {
                 "prev question"
             } else {
@@ -209,7 +212,9 @@ impl AsyncQuestions {
             None
         };
         if let Some(label) = next
-            && let Some(key) = self.next_hint
+            && let Some(key) = self.next_hint.or_else(|| {
+                crate::chat_hint::hint_for(&self.keymap, "edit_queued_message", terminal_info())
+            })
         {
             tips.push(crate::footer_hint::shortcut(&key.display_label(), label));
         }
