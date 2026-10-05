@@ -4,6 +4,12 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.160.0-vl.2 - 2026-10-05 - Upstream rust-v0.160.0
+
+### Codex VL changes
+
+- Recover from a stale daemon PID record when the PID belongs to another user.
+
 ## 0.160.0-vl.1 - 2026-10-02 - Upstream rust-v0.160.0
 
 ### Codex VL changes

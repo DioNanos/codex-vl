@@ -7,24 +7,24 @@ use pretty_assertions::assert_eq;
 #[cfg(unix)]
 use tempfile::TempDir;
 
+use super::INSTALL_URL;
+use super::InstallerHttp;
+use super::InstallerResponse;
 use super::fetch_installer_script;
 use super::install_latest_standalone;
 #[cfg(unix)]
 use super::manual_update::run as manual_update_once;
 use super::reexec_managed_updater;
-use super::InstallerHttp;
-use super::InstallerResponse;
-use super::INSTALL_URL;
-#[cfg(unix)]
-use crate::managed_install::executable_identity;
-#[cfg(unix)]
-use crate::managed_install::executable_identity_from_reader;
 #[cfg(unix)]
 use crate::Daemon;
 #[cfg(unix)]
 use crate::UpdateOutput;
 #[cfg(unix)]
 use crate::UpdateStatus;
+#[cfg(unix)]
+use crate::managed_install::executable_identity;
+#[cfg(unix)]
+use crate::managed_install::executable_identity_from_reader;
 #[cfg(unix)]
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
@@ -1121,10 +1121,12 @@ async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settin
             assert_eq!(std::fs::read(&daemon.pid_file).unwrap(), pid);
             daemon.stop().await.unwrap();
         } else {
-            assert!(result
-                .unwrap_err()
-                .to_string()
-                .contains("no running managed daemon"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no running managed daemon")
+            );
             assert_eq!(daemon.load_settings().await.unwrap(), original);
         }
         server.abort();

@@ -25,7 +25,10 @@ fn npm_android_layout(root: &Path) -> PathBuf {
     std::fs::create_dir_all(bin.parent().unwrap()).expect("npm bin directory");
     std::fs::write(&bin, NPM_ANDROID_FIXTURE_BYTES).expect("npm binary");
     std::fs::write(
-        bin.parent().and_then(Path::parent).unwrap().join("codex-package.json"),
+        bin.parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("codex-package.json"),
         concat!(
             r#"{"layoutVersion":1,"version":"0.160.0-vl.1","target":"aarch64-linux-android","#,
             r#""variant":"codex-vl","entrypoint":"bin/codex","#,
@@ -87,13 +90,19 @@ async fn prepare_reuses_termux_binary_outside_managed_packages() {
 
     // Dopo prepare: la selezione ripetuta sullo STESSO lifecycle.
     with_self_exe(&npm_bin, || {
-        let after = installed.current_installation().expect("installation after prepare");
+        let after = installed
+            .current_installation()
+            .expect("installation after prepare");
         assert_eq!(after.managed_codex_bin, expected);
     });
 
     // Variante estranea ATTRAVERSO prepare: fail closed, nessun packages creato.
     std::fs::write(
-        npm_bin.parent().and_then(Path::parent).unwrap().join("codex-package.json"),
+        npm_bin
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("codex-package.json"),
         concat!(
             r#"{"layoutVersion":1,"version":"0.160.0-vl.1","target":"aarch64-linux-android","#,
             r#""variant":"codex-termux","entrypoint":"bin/codex"}"#,
@@ -108,7 +117,11 @@ async fn prepare_reuses_termux_binary_outside_managed_packages() {
 
     // Manifest assente ATTRAVERSO prepare: stesso fail closed.
     std::fs::remove_file(
-        npm_bin.parent().and_then(Path::parent).unwrap().join("codex-package.json"),
+        npm_bin
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("codex-package.json"),
     )
     .expect("remove manifest");
     let error = super::prepare(&installed, &DaemonSettings::default())
@@ -136,7 +149,10 @@ fn android_policy_keeps_npm_selection_and_never_builds_packages() {
     with_self_exe(&npm_bin, || {
         let selected = crate::Daemon::managed_selection_for_platform(true, &context, &home)
             .expect("android selection");
-        assert_eq!(selected, std::fs::canonicalize(&npm_bin).expect("canonicalize"));
+        assert_eq!(
+            selected,
+            std::fs::canonicalize(&npm_bin).expect("canonicalize")
+        );
         crate::managed_install::ensure_selected_variant_is_fork(&selected)
             .expect("variant codex-vl accepted");
         assert!(!home.join("packages").exists());
@@ -172,7 +188,10 @@ fn android_selection_fail_closed_on_missing_or_foreign_manifest() {
     });
 
     std::fs::write(
-        bin.parent().and_then(Path::parent).unwrap().join("codex-package.json"),
+        bin.parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("codex-package.json"),
         concat!(
             r#"{"layoutVersion":1,"version":"0.160.0-vl.1","target":"aarch64-linux-android","#,
             r#""variant":"codex-termux","entrypoint":"bin/codex"}"#,
@@ -328,8 +347,11 @@ async fn upstream_legacy_installation_is_preserved_while_fork_seeds_its_own() {
     // nello state -vl) va predisposto e ricontrollato dopo prepare.
     let upstream_state = home.join("app-server-daemon");
     std::fs::create_dir_all(&upstream_state).unwrap();
-    std::fs::write(upstream_state.join("app-server.stderr.log"), b"upstream log")
-        .unwrap();
+    std::fs::write(
+        upstream_state.join("app-server.stderr.log"),
+        b"upstream log",
+    )
+    .unwrap();
     let source = temp.path().join("new");
     let new_bin = package(&source, "0.160.0");
     prepare_from_package(
@@ -351,7 +373,10 @@ async fn upstream_legacy_installation_is_preserved_while_fork_seeds_its_own() {
         selected.starts_with(home.join("packages/app-server-daemon-vl/releases")),
         "selezione fuori dal root -vl: {selected:?}"
     );
-    assert_eq!(std::fs::read(&selected).unwrap(), std::fs::read(&new_bin).unwrap());
+    assert_eq!(
+        std::fs::read(&selected).unwrap(),
+        std::fs::read(&new_bin).unwrap()
+    );
     // L'installazione legacy upstream resta esattamente com'era: binario,
     // current, log, nessun marker o migrazione, nessun root app-server-daemon.
     assert_eq!(std::fs::read(&upstream_bin).unwrap(), upstream_bin_before);
@@ -438,8 +463,11 @@ async fn explicit_selection_requires_unchanged_cli_and_pins_all_versions() {
             std::os::unix::fs::symlink(&upstream_release, &upstream_current).unwrap();
             std::fs::write(&upstream_marker, b"0.152.0-local-target").unwrap();
             std::fs::create_dir_all(&upstream_state).unwrap();
-            std::fs::write(upstream_state.join("app-server.stderr.log"), b"upstream log")
-                .unwrap();
+            std::fs::write(
+                upstream_state.join("app-server.stderr.log"),
+                b"upstream log",
+            )
+            .unwrap();
             upstream_bin_before = Some(std::fs::read(&upstream_bin).unwrap());
             upstream_log_before =
                 Some(std::fs::read(upstream_state.join("app-server.stderr.log")).unwrap());
@@ -449,8 +477,7 @@ async fn explicit_selection_requires_unchanged_cli_and_pins_all_versions() {
         // pacchetto selezionato, da ricontrollare dopo l'errore.
         let fork_current_before = initial_root.join("current").canonicalize().unwrap();
         let fork_marker_before = std::fs::read(initial_root.join("auto-update-version")).ok();
-        let selected_bytes_before =
-            std::fs::read(fork_current_before.join("bin/codex")).unwrap();
+        let selected_bytes_before = std::fs::read(fork_current_before.join("bin/codex")).unwrap();
         let error = prepare_from_package(
             &daemon(&home),
             &settings,
@@ -491,7 +518,10 @@ async fn explicit_selection_requires_unchanged_cli_and_pins_all_versions() {
                 upstream_current.canonicalize().unwrap(),
                 upstream_release.canonicalize().unwrap()
             );
-            assert_eq!(std::fs::read(&upstream_marker).unwrap(), b"0.152.0-local-target");
+            assert_eq!(
+                std::fs::read(&upstream_marker).unwrap(),
+                b"0.152.0-local-target"
+            );
             assert_eq!(
                 std::fs::read(upstream_release.join("bin/codex")).unwrap(),
                 upstream_bin_before.as_deref().unwrap()
@@ -648,25 +678,31 @@ async fn broken_selection_is_not_a_missing_installation() {
             .to_string()
             .contains("managed standalone install not found")
     );
-    assert!(error.to_string().contains(
-        crate::managed_install::package_root(&home)
-            .join("current/bin")
-            .join("codex")
-            .to_string_lossy()
-            .as_ref()
-    ));
+    assert!(
+        error.to_string().contains(
+            crate::managed_install::package_root(&home)
+                .join("current/bin")
+                .join("codex")
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
     assert_eq!(
         std::fs::read_link(current).unwrap(),
         PathBuf::from("missing-release")
     );
     // Nessuna nuova release o marker nasce nel root del fork per colpa della
     // selezione rotta.
-    assert!(!crate::managed_install::package_root(&home)
-        .join("releases")
-        .exists());
-    assert!(!crate::managed_install::package_root(&home)
-        .join("auto-update-version")
-        .exists());
+    assert!(
+        !crate::managed_install::package_root(&home)
+            .join("releases")
+            .exists()
+    );
+    assert!(
+        !crate::managed_install::package_root(&home)
+            .join("auto-update-version")
+            .exists()
+    );
     // I sentinel upstream non sono solo presenti: i loro bytes sono immutati.
     assert_eq!(
         std::fs::read(upstream_current.join("bin/codex")).unwrap(),

@@ -3,7 +3,7 @@ source: tui/src/update_prompt.rs
 expression: terminal.backend()
 ---
 
-  Update available · 0.159.3 → 9.9.9
+  Update available · 0.160.0 → 9.9.9
   Release notes: https://github.com/DioNanos/codex-vl/releases/latest
 
 › 1. Update now (runs `npm install -g @mmmbuto/codex-vl`)                       

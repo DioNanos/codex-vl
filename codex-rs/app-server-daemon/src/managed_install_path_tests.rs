@@ -29,7 +29,9 @@ fn fork_root_is_isolated_from_upstream_installs() {
     std::fs::create_dir_all(&upstream_state).expect("upstream state");
     // Attesa letterale della selezione nel root fork: la funzione in prova non
     // puo' certificare la propria selezione.
-    let fork_selection_expected = fork_root_expected.join("current/bin").join(super::managed_codex_file_name());
+    let fork_selection_expected = fork_root_expected
+        .join("current/bin")
+        .join(super::managed_codex_file_name());
     for name in [
         "settings.json",
         "daemon.lock",
@@ -56,12 +58,16 @@ fn fork_root_is_isolated_from_upstream_installs() {
 
     // Il root resta il namespace -vl e la selezione resta nel current del fork.
     assert_eq!(super::package_root(home.path()), fork_root_expected);
-    let fork_packaged = fork_root.join("current/bin").join(super::managed_codex_file_name());
+    let fork_packaged = fork_root
+        .join("current/bin")
+        .join(super::managed_codex_file_name());
     assert_eq!(super::managed_codex_bin(home.path()), fork_packaged);
 
     // Fallback legacy SOLO dentro il root fork: current/codex esistente ->
     // selezione legacy del fork; aggiunto current/bin/codex -> packaged.
-    let fork_legacy = fork_root.join("current").join(super::managed_codex_file_name());
+    let fork_legacy = fork_root
+        .join("current")
+        .join(super::managed_codex_file_name());
     std::fs::create_dir_all(fork_legacy.parent().unwrap()).expect("fork current");
     std::fs::write(&fork_legacy, b"fork legacy").expect("fork legacy");
     assert_eq!(super::managed_codex_bin(home.path()), fork_legacy);
@@ -77,7 +83,9 @@ fn fork_root_is_isolated_from_upstream_installs() {
         assert_eq!(super::package_root(home.path()), fork_root_expected);
         assert_eq!(
             super::managed_codex_bin(home.path()),
-            fork_root.join("current/bin").join(super::managed_codex_file_name())
+            fork_root
+                .join("current/bin")
+                .join(super::managed_codex_file_name())
         );
         std::fs::remove_file(&fork_root).expect("cleanup fork root");
     }
@@ -141,11 +149,17 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
     std::fs::create_dir_all(upstream_managed.parent().expect("bin parent")).expect("release");
     std::fs::write(&upstream_managed, b"stable upstream").expect("managed bin");
     std::os::unix::fs::symlink(&upstream_release, &upstream_current).expect("current release");
-    assert!(!super::is_stable_standalone_release(home.path(), &upstream_managed));
+    assert!(!super::is_stable_standalone_release(
+        home.path(),
+        &upstream_managed
+    ));
     let upstream_marker = upstream_standalone.join("auto-update-version");
     std::fs::write(
         &upstream_marker,
-        upstream_release.file_name().expect("release name").as_encoded_bytes(),
+        upstream_release
+            .file_name()
+            .expect("release name")
+            .as_encoded_bytes(),
     )
     .expect("latest selection");
     assert!(
@@ -168,8 +182,14 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
     std::os::unix::fs::symlink(&release, &current).expect("current release");
     assert!(!super::is_stable_standalone_release(home.path(), &managed));
     let marker = fork_root.join("auto-update-version");
-    std::fs::write(&marker, release.file_name().expect("release name").as_encoded_bytes())
-        .expect("latest selection");
+    std::fs::write(
+        &marker,
+        release
+            .file_name()
+            .expect("release name")
+            .as_encoded_bytes(),
+    )
+    .expect("latest selection");
     assert!(super::is_stable_standalone_release(home.path(), &managed));
     std::fs::write(&marker, b"0.159.0-x86_64-unknown-linux-musl").expect("stale selection");
     assert!(!super::is_stable_standalone_release(home.path(), &managed));
@@ -185,20 +205,36 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
     std::os::unix::fs::symlink(&alpha, &current).expect("current alpha");
     // Rifiuto della VERSIONE (alpha): il marker corrisponde alla release, ma
     // il predicato esige una stable numerica.
-    std::fs::write(&marker, alpha.file_name().expect("alpha release name").as_encoded_bytes())
-        .expect("alpha marker");
-    assert!(!super::is_stable_standalone_release(home.path(), &alpha_managed));
+    std::fs::write(
+        &marker,
+        alpha
+            .file_name()
+            .expect("alpha release name")
+            .as_encoded_bytes(),
+    )
+    .expect("alpha marker");
+    assert!(!super::is_stable_standalone_release(
+        home.path(),
+        &alpha_managed
+    ));
     // Caso distinto: MARKER ASSENTE, a release invariata.
     std::fs::remove_file(&marker).expect("remove marker for missing-marker case");
-    assert!(!super::is_stable_standalone_release(home.path(), &alpha_managed));
+    assert!(!super::is_stable_standalone_release(
+        home.path(),
+        &alpha_managed
+    ));
 
     let local = fork_root.join("local-main");
     let local_managed = local.join("bin/codex");
-    std::fs::create_dir_all(local_managed.parent().expect("local bin parent")).expect("local build");
+    std::fs::create_dir_all(local_managed.parent().expect("local bin parent"))
+        .expect("local build");
     std::fs::write(&local_managed, b"local").expect("local bin");
     std::fs::remove_file(&current).expect("remove current");
     std::os::unix::fs::symlink(&local, &current).expect("current local build");
-    assert!(!super::is_stable_standalone_release(home.path(), &local_managed));
+    assert!(!super::is_stable_standalone_release(
+        home.path(),
+        &local_managed
+    ));
 
     // Versione reale del fork (suffisso -vl.1): il predicato richiede tre
     // componenti numeriche -> resta fuori dall'updater standalone.
@@ -208,9 +244,15 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
     std::fs::write(&real_managed, b"real fork release").expect("real bin");
     std::fs::remove_file(&current).expect("remove current");
     std::os::unix::fs::symlink(&real, &current).expect("current real");
-    std::fs::write(&marker, real.file_name().expect("release name").as_encoded_bytes())
-        .expect("real marker");
-    assert!(!super::is_stable_standalone_release(home.path(), &real_managed));
+    std::fs::write(
+        &marker,
+        real.file_name().expect("release name").as_encoded_bytes(),
+    )
+    .expect("real marker");
+    assert!(!super::is_stable_standalone_release(
+        home.path(),
+        &real_managed
+    ));
 }
 
 #[cfg(unix)]
