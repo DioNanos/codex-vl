@@ -22,14 +22,103 @@ pub(super) struct CompatibilityError {
     pub restart_features: Option<BTreeMap<String, bool>>,
 }
 
+/// Shared startup policy: selection and automatic startup use the same captured identity.
+pub(super) struct LaunchPolicy {
+    pub exclusion: Option<&'static str>,
+    has_unverified_fleet_identity: bool,
+}
+
+impl LaunchPolicy {
+    pub fn new(
+        cli: &Cli,
+        cli_kv_overrides: &[(String, toml::Value)],
+        loader_overrides: &LoaderOverrides,
+        workload_identity_selected: bool,
+        exec_server_url: Option<&std::ffi::OsStr>,
+        has_unverified_fleet_identity: bool,
+    ) -> Self {
+        Self {
+            exclusion: exclusion(
+                cli,
+                cli_kv_overrides,
+                loader_overrides,
+                workload_identity_selected,
+                exec_server_url,
+                has_unverified_fleet_identity,
+            ),
+            has_unverified_fleet_identity,
+        }
+    }
+
+    pub fn select_target(
+        &self,
+        explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
+        default_daemon_socket: Option<AbsolutePathBuf>,
+        workload_identity_selected: bool,
+        exec_server_url: Option<&std::ffi::OsStr>,
+    ) -> std::io::Result<AppServerTarget> {
+        app_server_target_for_launch(
+            explicit_remote_endpoint,
+            default_daemon_socket,
+            self.exclusion.is_none(),
+            workload_identity_selected,
+            exec_server_url,
+            self.has_unverified_fleet_identity,
+        )
+    }
+
+    /// The callback is the sole automatic daemon launch path; tests inject a recorder.
+    pub async fn finish<F, Fut>(
+        &mut self,
+        target: &mut AppServerTarget,
+        auto_start_daemon: bool,
+        start: F,
+    ) -> std::io::Result<bool>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = std::io::Result<Option<(AbsolutePathBuf, bool)>>>,
+    {
+        if !auto_start_daemon || self.exclusion.is_some() {
+            return Ok(false);
+        }
+        match start().await? {
+            Some((socket_path, managed)) => {
+                *target = AppServerTarget::LocalDaemon {
+                    endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
+                    allow_embedded_fallback: false,
+                };
+                Ok(managed)
+            }
+            None => {
+                *target = AppServerTarget::Embedded;
+                self.exclusion = Some("this Windows launcher");
+                Ok(false)
+            }
+        }
+    }
+
+    pub fn warning(&self, auto_start_daemon: bool) -> Option<String> {
+        self.exclusion
+            .filter(|_| auto_start_daemon || self.has_unverified_fleet_identity)
+            .map(|reason| {
+                format!(
+                    "Running without the shared background server: {reason} requires embedded mode."
+                )
+            })
+    }
+}
+
 pub(super) fn exclusion(
     cli: &Cli,
     cli_kv_overrides: &[(String, toml::Value)],
     loader_overrides: &LoaderOverrides,
     workload_identity_selected: bool,
     exec_server_url: Option<&std::ffi::OsStr>,
+    has_unverified_fleet_identity: bool,
 ) -> Option<&'static str> {
-    if cli.no_daemon {
+    if has_unverified_fleet_identity {
+        Some("unverified Fleet identity")
+    } else if cli.no_daemon {
         Some("--no-daemon")
     } else if cli.oss {
         Some("--oss")

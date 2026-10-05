@@ -4,6 +4,16 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.160.0-vl.3 - 2026-10-05 - Upstream rust-v0.160.0
+
+### Codex VL changes
+
+- Keep Fleet sessions without an identity channel on an embedded app-server,
+  including when automatic daemon startup is enabled or a shared daemon is
+  already running. Explain the fallback without exposing identity data.
+- Preserve shared daemon startup for sessions with an identity channel and
+  reject explicit shared endpoints when Fleet identity is unavailable.
+
 ## 0.160.0-vl.2 - 2026-10-05 - Upstream rust-v0.160.0
 
 ### Codex VL changes

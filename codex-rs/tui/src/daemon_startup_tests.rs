@@ -372,7 +372,8 @@ fn daemon_eligibility_preserves_launch_options_and_explains_exclusions() {
                 &[],
                 &LoaderOverrides::default(),
                 /*workload_identity_selected*/ false,
-                /*exec_server_url*/ None
+                /*exec_server_url*/ None,
+                /*has_unverified_fleet_identity*/ false
             ),
             expected
         );
@@ -408,7 +409,10 @@ fn daemon_eligibility_preserves_launch_options_and_explains_exclusions() {
         ),
     ] {
         assert_eq!(
-            daemon_startup::exclusion(&cli, kv, &loader, workload, executor),
+            daemon_startup::exclusion(
+                &cli, kv, &loader, workload, executor,
+                /*has_unverified_fleet_identity*/ false,
+            ),
             Some(expected)
         );
     }
@@ -420,7 +424,8 @@ fn daemon_eligibility_preserves_launch_options_and_explains_exclusions() {
             &overrides,
             &LoaderOverrides::default(),
             /*workload_identity_selected*/ false,
-            /*exec_server_url*/ None
+            /*exec_server_url*/ None,
+            /*has_unverified_fleet_identity*/ false
         ),
         None
     );
@@ -440,4 +445,137 @@ fn daemon_exclusion_warning_snapshot() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!("daemon_exclusion_warning", text);
+}
+
+#[tokio::test]
+async fn fleet_launch_sequence_without_channel_never_auto_starts() -> anyhow::Result<()> {
+    use clap::Parser;
+    use std::cell::Cell;
+
+    for socket_present in [false, true] {
+        for auto_start in [false, true] {
+            let cli = Cli::parse_from(["codex"]);
+            let mut policy = daemon_startup::LaunchPolicy::new(
+                &cli,
+                &[],
+                &LoaderOverrides::default(),
+                /*workload_identity_selected*/ false,
+                /*exec_server_url*/ None,
+                /*has_unverified_fleet_identity*/ true,
+            );
+            let socket = AbsolutePathBuf::from_absolute_path(
+                std::env::temp_dir().join("fleet-startup.sock"),
+            )?;
+            // A present socket includes a daemon started manually for remote control.
+            let mut target = policy.select_target(
+                /*explicit_remote_endpoint*/ None,
+                socket_present.then(|| socket.clone()),
+                /*workload_identity_selected*/ false,
+                /*exec_server_url*/ None,
+            )?;
+            let calls = Cell::new(0);
+            let managed = policy
+                .finish(&mut target, auto_start, || async {
+                    calls.set(calls.get() + 1);
+                    Ok(Some((socket.clone(), true)))
+                })
+                .await?;
+            assert_eq!(
+                calls.get(),
+                0,
+                "socket_present={socket_present}, auto_start={auto_start}"
+            );
+            assert!(matches!(target, AppServerTarget::Embedded));
+            assert!(!managed);
+            assert_eq!(policy.warning(auto_start), Some(
+                "Running without the shared background server: unverified Fleet identity requires embedded mode.".to_string()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_launch_sequence_with_channel_preserves_shared_startup() -> anyhow::Result<()> {
+    use clap::Parser;
+    use std::cell::Cell;
+
+    // This is the captured gate result for both a Fleet channel and a non-Fleet TUI.
+    // It does not claim that channel availability itself authenticates a binding.
+    for socket_present in [false, true] {
+        for auto_start in [false, true] {
+            let cli = Cli::parse_from(["codex"]);
+            let mut policy = daemon_startup::LaunchPolicy::new(
+                &cli,
+                &[],
+                &LoaderOverrides::default(),
+                /*workload_identity_selected*/ false,
+                /*exec_server_url*/ None,
+                /*has_unverified_fleet_identity*/ false,
+            );
+            let socket = AbsolutePathBuf::from_absolute_path(
+                std::env::temp_dir().join("fleet-startup.sock"),
+            )?;
+            let mut target = policy.select_target(
+                /*explicit_remote_endpoint*/ None,
+                socket_present.then(|| socket.clone()),
+                /*workload_identity_selected*/ false,
+                /*exec_server_url*/ None,
+            )?;
+            let calls = Cell::new(0);
+            let managed = policy
+                .finish(&mut target, auto_start, || async {
+                    calls.set(calls.get() + 1);
+                    Ok(Some((socket.clone(), true)))
+                })
+                .await?;
+            assert_eq!(calls.get(), usize::from(auto_start));
+            assert_eq!(managed, auto_start);
+            assert_eq!(
+                matches!(target, AppServerTarget::LocalDaemon { .. }),
+                socket_present || auto_start
+            );
+            assert_eq!(policy.warning(auto_start), None);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn fleet_launch_sequence_rejects_explicit_unverified_endpoints() -> anyhow::Result<()> {
+    use clap::Parser;
+    let cli = Cli::parse_from(["codex"]);
+    let policy = daemon_startup::LaunchPolicy::new(
+        &cli,
+        &[],
+        &LoaderOverrides::default(),
+        /*workload_identity_selected*/ false,
+        /*exec_server_url*/ None,
+        /*has_unverified_fleet_identity*/ true,
+    );
+    for endpoint in [
+        RemoteAppServerEndpoint::UnixSocket {
+            socket_path: AbsolutePathBuf::from_absolute_path(
+                std::env::temp_dir().join("fleet-startup.sock"),
+            )?,
+        },
+        RemoteAppServerEndpoint::WebSocket {
+            websocket_url: "wss://remote.example.test/".to_string(),
+            auth_token: None,
+        },
+    ] {
+        let error = policy
+            .select_target(
+                Some(endpoint),
+                /*default_daemon_socket*/ None,
+                /*workload_identity_selected*/ false,
+                /*exec_server_url*/ None,
+            )
+            .expect_err("explicit endpoints must be rejected before automatic startup");
+        assert_eq!(
+            error.to_string(),
+            "explicit app-server endpoint has no verified Fleet identity"
+        );
+    }
+    Ok(())
 }

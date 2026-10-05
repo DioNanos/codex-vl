@@ -177,14 +177,15 @@ pub(super) async fn run_main_inner(
         .await;
     }
 
-    let mut daemon_exclusion = daemon_startup::exclusion(
+    let mut daemon_policy = daemon_startup::LaunchPolicy::new(
         &cli,
         &cli_kv_overrides,
         &launch_loader_overrides,
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        has_unverified_fleet_identity,
     );
-    let reuse_implicit_local_daemon = daemon_exclusion.is_none();
+    let reuse_implicit_local_daemon = daemon_policy.exclusion.is_none();
     let search_only_config_override = !workload_identity_selected
         && cli.web_search
         && startup_preflight::has_only_search_config_override(&cli_kv_overrides)
@@ -311,13 +312,11 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let mut app_server_target = app_server_target_for_launch(
+    let mut app_server_target = daemon_policy.select_target(
         explicit_remote_endpoint,
         default_daemon,
-        reuse_implicit_local_daemon,
         workload_identity_selected,
         std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
-        has_unverified_fleet_identity,
     )?;
     let remote_cwd_override = cli
         .cwd
@@ -502,7 +501,7 @@ pub(super) async fn run_main_inner(
         && !cli.no_daemon
         && !app_server_target.uses_remote_workspace();
     if auto_start_daemon
-        && daemon_exclusion.is_none()
+        && daemon_policy.exclusion.is_none()
         && should_show_bedrock_setup_wizard(
             LoginStatus::NotAuthenticated,
             config.model_provider.requires_openai_auth,
@@ -521,46 +520,40 @@ pub(super) async fn run_main_inner(
             .is_none()
     {
         // The Bedrock wizard configures its provider through the embedded server.
-        daemon_exclusion = Some("Bedrock sign-in");
+        daemon_policy.exclusion = Some("Bedrock sign-in");
         app_server_target = AppServerTarget::Embedded;
     }
     let mut daemon_features = daemon_startup::server_features(&cli_kv_overrides);
     // Disabling shared services requires confirmation, even on a fresh auto-start.
     daemon_features.retain(|_, enabled| *enabled);
-    let mut managed_daemon = false;
-    if auto_start_daemon && daemon_exclusion.is_none() {
-        let output = startup_draft
-            .run_until(async {
-                // Daemon startup needs no terminal input. Keep the composer visible and
-                // responsive while it checks the running server or prepares an installation.
-                let result = codex_app_server_daemon::start_with_features(&daemon_features).await;
-                daemon_telemetry::record_start(&config, &result).await;
-                match result {
-                    Ok(output) => Ok(Some(output)),
-                    #[cfg(windows)]
-                    Err(err) if err.is::<codex_app_server_daemon::DetachedLaunchRestricted>() => {
-                        Ok(None)
+    let managed_daemon = daemon_policy
+        .finish(&mut app_server_target, auto_start_daemon, || async {
+            startup_draft
+                .run_until(async {
+                    // Keep the composer responsive while checking or preparing the daemon.
+                    let result =
+                        codex_app_server_daemon::start_with_features(&daemon_features).await;
+                    daemon_telemetry::record_start(&config, &result).await;
+                    match result {
+                        Ok(output) => Ok(Some((
+                            AbsolutePathBuf::from_absolute_path_checked(output.socket_path)?,
+                            output.backend.is_some(),
+                        ))),
+                        #[cfg(windows)]
+                        Err(err)
+                            if err.is::<codex_app_server_daemon::DetachedLaunchRestricted>() =>
+                        {
+                            Ok(None)
+                        }
+                        Err(err) => Err(std::io::Error::other(format!(
+                            "{err:#}\n{}",
+                            daemon_startup::FAILURE_HINT
+                        ))),
                     }
-                    Err(err) => Err(std::io::Error::other(format!(
-                        "{err:#}\n{}",
-                        daemon_startup::FAILURE_HINT
-                    ))),
-                }
-            })
-            .await??;
-        if let Some(output) = output {
-            managed_daemon = output.backend.is_some();
-            app_server_target = AppServerTarget::LocalDaemon {
-                endpoint: RemoteAppServerEndpoint::UnixSocket {
-                    socket_path: AbsolutePathBuf::from_absolute_path_checked(output.socket_path)?,
-                },
-                allow_embedded_fallback: false,
-            };
-        } else {
-            app_server_target = AppServerTarget::Embedded;
-            daemon_exclusion = Some("this Windows launcher");
-        }
-    }
+                })
+                .await?
+        })
+        .await?;
     // The overview must inspect the shared server's agents regardless of local settings.
     let compatibility_warning = if cli.agents_overview {
         None
@@ -575,20 +568,13 @@ pub(super) async fn run_main_inner(
     };
     if compatibility_warning.is_some() {
         app_server_target = AppServerTarget::Embedded;
-        daemon_exclusion = Some("daemon feature settings");
+        daemon_policy.exclusion = Some("daemon feature settings");
     }
     if app_server_target.uses_embedded_network_policy() {
         embedded_network_policy.activate(&mut config);
     }
-    let daemon_startup_warning = compatibility_warning.or_else(|| {
-        daemon_exclusion
-            .filter(|_| auto_start_daemon)
-            .map(|reason| {
-                format!(
-                    "Running without the shared background server: {reason} requires embedded mode."
-                )
-            })
-    });
+    let daemon_startup_warning =
+        compatibility_warning.or_else(|| daemon_policy.warning(auto_start_daemon));
     #[cfg(target_os = "macos")]
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
@@ -647,7 +633,7 @@ pub(super) async fn run_main_inner(
             codex_rollout::sqlite_telemetry_recorder(metrics.clone(), otel_originator.as_str());
         let _ = codex_state::install_process_db_telemetry(telemetry);
     }
-    let selection_reason = match (&app_server_target, daemon_exclusion) {
+    let selection_reason = match (&app_server_target, daemon_policy.exclusion) {
         (AppServerTarget::Remote { .. }, _) => "explicit_remote",
         _ if cli.agents_overview => "agents",
         (_, Some("--no-daemon")) => "explicit_no_daemon",
