@@ -21,6 +21,9 @@ CARGO_RS_ROOT = ROOT / "codex-rs"
 WORKSPACE_PACKAGE_FIELDS = ("version", "edition", "license")
 TOP_LEVEL_NAME_EXCEPTIONS = {
     "windows-sandbox-rs": "codex-windows-sandbox",
+    # The package name stays fork-gate. cargo -p and the gate tests select
+    # that name, so the codex- prefix is not applied here.
+    "fork-gate": "fork-gate",
 }
 UTILITY_NAME_EXCEPTIONS = {
     "path-utils": "codex-utils-path",
