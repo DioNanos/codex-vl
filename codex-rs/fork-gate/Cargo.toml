@@ -1,5 +1,5 @@
 [package]
-name = "codex-fork-gate"
+name = "fork-gate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
