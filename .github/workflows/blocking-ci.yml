@@ -55,12 +55,15 @@ jobs:
       # and uses a remote cache with credentials this fork does not have.
       # The fork publishes with cargo. Add `bazel` back here when those
       # jobs are re-enabled by removing their `if`.
+      # `sdk` is not a merge gate on this fork. Its Bazel build job is
+      # disabled in sdk.yml. The Python installation job still runs and
+      # is not required. Add `sdk` back here when the Bazel job is
+      # re-enabled by removing its `if`.
       - blob-size-policy
       - cargo-deny
       - codespell
       - repo-checks
       - rust-ci
-      - sdk
     runs-on: ubuntu-24.04
     steps:
       # Keep the helper on the same combined revision as the child workflows so

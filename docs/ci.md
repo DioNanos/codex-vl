@@ -7,8 +7,9 @@ disabled, and why:
 
 - **blocking-ci** (pull requests and main): codespell, repo-checks,
   cargo-deny, the cargo gates in rust-ci (format, cargo shear, and the
-  argument-comment lint package), sdk, and the blob size policy. Bazel
-  does not run.
+  argument-comment lint package), and the blob size policy. Bazel
+  does not run. The Python SDK installation job still runs and is not
+  part of `CI required`.
 - **postmerge-ci** (pushes to main): calls `rust-ci-full.yml` and
   `v8-canary.yml`. On this fork the cargo checks in rust-ci-full stay
   required. The Linux v8-canary legs run on GitHub-hosted runners.
@@ -58,9 +59,11 @@ Per workflow:
   lint library with cargo, not Bazel, so it stays. The two Linux legs
   (x64 and arm64) run. The macOS leg and the Windows leg are commented
   out of the `matrix: include:` list.
-- **`sdk.yml`**: the Linux sdk job stays required. Its timeout is 45
-  minutes because this fork has no upstream remote cache. Restore 20 when
-  that cache or those runners exist.
+- **`sdk.yml`**: the Bazel `sdks` job is turned off with `if: false`.
+  It builds the CLI and the code-mode host with Bazel, which is off on
+  this fork. Remove the `if` to restore it, and add `sdk` back to the
+  `CI required` needs list in `blocking-ci.yml`. The Python installation
+  job still runs and is not a merge gate.
 
 ## Known postmerge limitation
 

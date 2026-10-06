@@ -34,6 +34,12 @@ jobs:
             '
 
   sdks:
+    # Disabled on this fork. This job builds //codex-rs/cli:codex and
+    # //codex-rs/code-mode-host:codex-code-mode-host with Bazel. Bazel is
+    # upstream's build system and is off on this fork; the fork publishes
+    # with cargo. Re-enable by removing this `if`, and add `sdk` back to
+    # the `CI required` needs list in blocking-ci.yml.
+    if: false
     runs-on: ubuntu-24.04
     # This fork has no upstream remote cache and no upstream runners, so a
     # cold Linux run needs more than the upstream 20 minutes. Restore 20
