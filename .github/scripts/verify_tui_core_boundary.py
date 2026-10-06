@@ -60,8 +60,7 @@ def manifest_failures() -> list[str]:
             if manifest_rel in ALLOWED_MANIFEST_CORE_DEP:
                 continue
             failures.append(
-                f"{manifest_rel} declares `{FORBIDDEN_PACKAGE}` "
-                f"in `[{section_name}]`"
+                f"{manifest_rel} declares `{FORBIDDEN_PACKAGE}` in `[{section_name}]`"
             )
     elif manifest_rel not in ALLOWED_MANIFEST_CORE_DEP:
         failures.append(f"{manifest_rel} is missing")

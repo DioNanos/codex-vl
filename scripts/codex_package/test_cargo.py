@@ -145,10 +145,13 @@ class SourceBuildV8SandboxGuardTest(unittest.TestCase):
             archive = touch_file(root / "override-archive.a")
             binding = touch_file(root / "override-binding.rs")
             with (
-                mock.patch.dict(os.environ, {
-                    "RUSTY_V8_ARCHIVE": str(archive),
-                    "RUSTY_V8_SRC_BINDING_PATH": str(binding),
-                }),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "RUSTY_V8_ARCHIVE": str(archive),
+                        "RUSTY_V8_SRC_BINDING_PATH": str(binding),
+                    },
+                ),
                 mock.patch.object(cargo_module, "assert_sandbox_archive") as guard,
                 mock.patch.object(cargo_module.subprocess, "run") as run,
                 mock.patch.object(cargo_module, "validate_source_outputs"),
@@ -163,10 +166,13 @@ class SourceBuildV8SandboxGuardTest(unittest.TestCase):
             archive = touch_file(root / "override-archive.a")
             binding = touch_file(root / "override-binding.rs")
             with (
-                mock.patch.dict(os.environ, {
-                    "RUSTY_V8_ARCHIVE": str(archive),
-                    "RUSTY_V8_SRC_BINDING_PATH": str(binding),
-                }),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "RUSTY_V8_ARCHIVE": str(archive),
+                        "RUSTY_V8_SRC_BINDING_PATH": str(binding),
+                    },
+                ),
                 mock.patch.object(
                     cargo_module,
                     "assert_sandbox_archive",
