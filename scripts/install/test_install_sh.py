@@ -114,6 +114,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertTrue(os.access(host_path, os.X_OK))
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_latest_installs_verified_package_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -237,6 +238,7 @@ class InstallShTest(unittest.TestCase):
                 (root / "codex-home/packages/standalone/auto-update-version").exists()
             )
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_unusable_metadata_falls_back_to_github(self) -> None:
         unusable_metadata = {
             "html": "<html>proxy error</html>",
@@ -297,6 +299,7 @@ class InstallShTest(unittest.TestCase):
                     )
                     self.assertIn("falling back to GitHub Releases", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_exact_metadata_version_mismatch_falls_back_to_github(
         self,
     ) -> None:
@@ -332,6 +335,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertIn("falling back to GitHub Releases", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_asset_download_falls_back_to_github(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -363,6 +367,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertIn("retrying from GitHub Releases", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_corrupt_assets_fall_back_to_github(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -395,6 +400,7 @@ class InstallShTest(unittest.TestCase):
             self.assertIn("checksum did not match expected digest", result.stderr)
             self.assertIn("retrying from GitHub Releases", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_wrong_checksum_digest_uses_github_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -430,6 +436,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertIn("checksum did not match expected digest", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_incomplete_checksum_manifest_falls_back_to_github(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -474,6 +481,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertIn("retrying from GitHub Releases", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_corrupt_github_fallback_still_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -504,6 +512,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertIn("checksum did not match expected digest", result.stderr)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_exact_rejects_wrong_binary_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -537,6 +546,7 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertNotIn("installed successfully", result.stdout)
 
+    @unittest.skip("fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped")
     def test_releases_exact_legacy_fallback_reuses_offline_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -617,7 +627,7 @@ def run_installer_in(
     fail_ps: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = root / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     request_log = root / "requests.log"
     fake_curl = bin_dir / "curl"
     fake_curl.write_text(
@@ -695,7 +705,7 @@ def run_installer_in(
         fake_ps.chmod(0o755)
 
     home = root / "home"
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
