@@ -26,11 +26,11 @@ Out of scope here:
 
 ## Reporting
 
-| Channel | Where |
-|---|---|
-| Issues, PRs, ideas | [DioNanos/codex-vl](https://github.com/DioNanos/codex-vl) |
-| Security disclosures | [`SECURITY.md`](./SECURITY.md) — `security@mmmbuto.com` |
-| General contact | `dev@mmmbuto.com` |
+| Channel              | Where                                                     |
+| -------------------- | --------------------------------------------------------- |
+| Issues, PRs, ideas   | [DioNanos/codex-vl](https://github.com/DioNanos/codex-vl) |
+| Security disclosures | [`SECURITY.md`](./SECURITY.md) — `security@mmmbuto.com`   |
+| General contact      | `dev@mmmbuto.com`                                         |
 
 When reporting a bug, please include: Codex VL version (`codex-vl --version`),
 platform target (Linux musl / Android arm64 / macOS arm64), and a minimal
@@ -62,4 +62,4 @@ See [`LICENSE`](./LICENSE) and [`NOTICE`](./NOTICE).
 
 ---
 
-*Per aspera ad astra.*
+_Per aspera ad astra._
