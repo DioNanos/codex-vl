@@ -2,13 +2,19 @@
 //! Every exchange owns its descriptors while awaiting readiness: cancelling the
 //! future closes them without leaving a blocking worker behind.
 
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::io::Read;
+use std::io::Write;
+use std::io::{self};
+use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;

@@ -1,8 +1,13 @@
 use chrono::Utc;
-use codex_app_server_protocol::{
-    IDENTITY_SCHEMA_VERSION, IDENTITY_VERIFY_VERSION, IdentityBindResponse, IdentityBinding,
-    IdentityChallenge, IdentityClaims, IdentityErrorCode, IdentityOrigin, IdentityProof,
-};
+use codex_app_server_protocol::IDENTITY_SCHEMA_VERSION;
+use codex_app_server_protocol::IDENTITY_VERIFY_VERSION;
+use codex_app_server_protocol::IdentityBindResponse;
+use codex_app_server_protocol::IdentityBinding;
+use codex_app_server_protocol::IdentityChallenge;
+use codex_app_server_protocol::IdentityClaims;
+use codex_app_server_protocol::IdentityErrorCode;
+use codex_app_server_protocol::IdentityOrigin;
+use codex_app_server_protocol::IdentityProof;
 use std::ffi::OsStr;
 use std::future::Future;
 use std::pin::Pin;
@@ -303,7 +308,9 @@ impl ConnectionIdentityState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_app_server_protocol::{IdentityClaims, IdentityKind, IdentityOrigin};
+    use codex_app_server_protocol::IdentityClaims;
+    use codex_app_server_protocol::IdentityKind;
+    use codex_app_server_protocol::IdentityOrigin;
     use std::sync::Arc;
 
     #[test]

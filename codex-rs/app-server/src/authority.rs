@@ -12,10 +12,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codex_app_server_protocol::{IdentityChallenge, IdentityProof};
-use serde_json::{Value, json};
+use codex_app_server_protocol::IdentityChallenge;
+use codex_app_server_protocol::IdentityProof;
+use serde_json::Value;
+use serde_json::json;
 
-use crate::identity::{AuthorityRefusal, AuthorityVerifier, VerifiedIdentityClaims};
+use crate::identity::AuthorityRefusal;
+use crate::identity::AuthorityVerifier;
+use crate::identity::VerifiedIdentityClaims;
 use crate::identity_channel::IdentityFdChannel;
 #[cfg(test)]
 use crate::identity_channel::parse_identity_fd_spec as parse_fd_spec;
@@ -316,7 +320,8 @@ mod tests {
 
     #[test]
     fn verifier_fd_spec_present_opens_both_descriptors() {
-        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
 
         // The declared channel must be a pipe or socket pair: a regular file is
         // refused by the startup validation, so the fixture has to be honest.

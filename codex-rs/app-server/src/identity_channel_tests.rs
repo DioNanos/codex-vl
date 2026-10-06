@@ -1,7 +1,8 @@
 use super::*;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 fn pair() -> (IdentityFdChannel, UnixStream) {
     let (channel, peer) = UnixStream::pair().unwrap();

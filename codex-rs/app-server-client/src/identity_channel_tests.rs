@@ -1,5 +1,7 @@
 use super::*;
-use std::io::{BufRead, Read, Write};
+use std::io::BufRead;
+use std::io::Read;
+use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
@@ -137,7 +139,8 @@ fn spawn_fake_authority(
     std::thread::JoinHandle<usize>,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     let served = std::sync::Arc::new(AtomicUsize::new(0));
     let counter = std::sync::Arc::clone(&served);
     let handle = std::thread::spawn(move || {

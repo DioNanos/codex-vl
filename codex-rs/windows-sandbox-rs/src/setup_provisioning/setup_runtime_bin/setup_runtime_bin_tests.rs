@@ -1,4 +1,5 @@
-use super::{ensure_runtime_tree_readable, runtime_paths};
+use super::ensure_runtime_tree_readable;
+use super::runtime_paths;
 use crate::LocalSid;
 use crate::add_deny_read_ace;
 use crate::add_deny_write_ace;
