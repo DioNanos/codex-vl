@@ -584,8 +584,9 @@ fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(),
         // Il gate ha gia' assertito refs non-vuoto prima di chiamare; se qui e'
         // vuoto la provenienza e' comunque non applicable: fail, non verde.
         return Err(vec![
+            // Literal kept: the gate matches this text.
             "nessun ref refs/remotes/upstream/*: il criterio 'nostro vs upstream' non e' \
-             applicable"
+             applicabile" // codespell:ignore
                 .into(),
         ]);
     }
@@ -911,9 +912,10 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         Ok(o) => panic!(
+            // Literal kept: the gate matches this text.
             "il remote 'upstream' non esiste o 'git remote get-url' e' fallito (status {}): {}. \
-             Il criterio 'nostro vs upstream' non e' applicable senza un remote upstream \
-             autenticato. Il gate non passa verde per assenza di ispezione.",
+             Il criterio 'nostro vs upstream' non e' applicabile senza un remote upstream " // codespell:ignore
+            "autenticato. Il gate non passa verde per assenza di ispezione.",
             o.status,
             String::from_utf8_lossy(&o.stderr)
         ),
@@ -930,11 +932,12 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     let expected = format!("{}/{}", UPSTREAM_HOST, UPSTREAM_REPO);
     assert!(
         canonical == expected,
+        // Literals kept: the gate matches this text.
         "il remote 'upstream' non e' il repository upstream atteso: trovato {canonical:?} \
          (URL {upstream_url:?}), atteso {expected:?}. Un remote che punta altrove — un fork, \
-         un mirror, un repo sbagliato — makes l'insieme dei commit 'nostri' SBAGLIATO: superata \
-         la guardia sul vuoto, il confronto avviene against il riferimento sbagliato e un commit \
-         con attribuzione AI resta nascosto (presente nel remote sbagliato => classificato \
+         un mirror, un repo sbagliato — rende l'insieme dei commit 'nostri' SBAGLIATO: superata " // codespell:ignore
+        "la guardia sul vuoto, il confronto avviene contro il riferimento sbagliato e un commit " // codespell:ignore
+        "con attribuzione AI resta nascosto (presente nel remote sbagliato => classificato \
          'upstream' => non ispezionato). Correggi il remote con `git remote set-url upstream \
          <URL atteso>`. Il gate non prova a indovinare e non degrada silenziosamente."
     );
@@ -1000,9 +1003,10 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     .collect();
     assert!(
         !upstream_refs.is_empty(),
+        // Literal kept: the gate matches this text.
         "nessun ref refs/remotes/upstream/* presente: il criterio 'nostro vs upstream' \
-         non e' applicable. Esegui `git fetch upstream`. Il gate non passa verde \
-         per assenza di ispezione."
+         non e' applicabile. Esegui `git fetch upstream`. Il gate non passa verde " // codespell:ignore
+        "per assenza di ispezione."
     );
 
     // PROVENIENZA DEI REF (dati), non solo dell'URL (config). L'autenticazione
@@ -1175,7 +1179,8 @@ fn i_motivi_mordano_ancora() {
     for ok in ["DAGGER", "FOO_DAG_BAR", "CDAG", "myDAG2"] {
         assert!(
             !has_isolated(ok, &handle),
-            "false positivo su sottostringa non isolata: {ok}"
+            // Literal kept: the gate matches this text.
+            "falso positivo su sottostringa non isolata: {ok}" // codespell:ignore
         );
     }
     // handle resta CASE-SENSITIVE: "dag" minuscolo (directed acyclic graph,
@@ -1455,7 +1460,7 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
 // (git_authority_for, sopra). E' rosso di suo se e solo se emerge una vera
 // divergenza — non era mai successo finora nello sviluppo di questo file,
 // ma la proprieta' era comunque non verificata: la conformita' RFC 3986
-// veniva againstllata against un'attesa scritta a mano nel test, mai against
+// veniva controllata against un'attesa scritta a mano nel test, mai against
 // Git.
 #[test]
 fn canonical_remote_concorda_con_git_sullautorita() {
@@ -1572,9 +1577,10 @@ fn canonical_remote_concorda_con_git_sullautorita() {
         Some(git_host) => assert_ne!(
             strip_port(&git_host),
             expected_host,
+            // Literal kept: the gate matches this text.
             "se Git avesse un'opinione su questo URL, non deve MAI essere \
-             l'host atteso (altrimenti rifiutarlo sarebbe un false negativo, \
-             non prudenza): {git_host:?}"
+             l'host atteso (altrimenti rifiutarlo sarebbe un falso negativo, " // codespell:ignore
+            "non prudenza): {git_host:?}"
         ),
         None => {
             // Anche se in questa esecuzione git_authority_for non riesce a
@@ -1876,7 +1882,8 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
     );
     for (perche, pezzo) in [
         (
-            "la causa probable (binario di un worktree rimosso)",
+            // Literal kept: the gate matches this text.
+            "la causa probabile (binario di un worktree rimosso)", // codespell:ignore
             "worktree",
         ),
         ("il rimedio (ricompilare)", "cargo clean -p fork-gate"),

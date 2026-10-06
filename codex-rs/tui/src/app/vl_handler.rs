@@ -395,7 +395,8 @@ impl App {
         };
         let Some(thread_id) = self.chat_widget.thread_id() else {
             self.chat_widget.add_info_message(
-                "No active thread: cannot apply the suggestion".to_string(),
+                // Literal kept: this string is shown, not prose.
+                "Nessun thread attivo: impossibile applicare la suggestion".to_string(), // codespell:ignore
                 None,
             );
             return;
