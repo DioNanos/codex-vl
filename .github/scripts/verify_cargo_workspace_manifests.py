@@ -45,6 +45,10 @@ MANIFEST_FEATURE_EXCEPTIONS = {
 OPTIONAL_DEPENDENCY_EXCEPTIONS = {
     ("codex-rs/vendor/msa-core/Cargo.toml", "dependencies", "reqwest"),
 }
+# vendored crate, upstream lint policy
+LINTS_EXCEPTIONS = {
+    "codex-rs/vendor/msa-core/Cargo.toml",
+}
 INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS = {}
 
 
@@ -53,6 +57,7 @@ def main() -> int:
     used_manifest_feature_exceptions: set[str] = set()
     used_optional_dependency_exceptions: set[tuple[str, str, str]] = set()
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]] = set()
+    used_lints_exceptions: set[str] = set()
     failures_by_path: dict[str, list[str]] = {}
 
     for path in manifests_to_verify():
@@ -62,6 +67,7 @@ def main() -> int:
             used_manifest_feature_exceptions,
             used_optional_dependency_exceptions,
             used_internal_dependency_feature_exceptions,
+            used_lints_exceptions,
         ):
             failures_by_path[manifest_key(path)] = errors
 
@@ -70,6 +76,7 @@ def main() -> int:
         used_manifest_feature_exceptions,
         used_optional_dependency_exceptions,
         used_internal_dependency_feature_exceptions,
+        used_lints_exceptions,
     )
 
     if not failures_by_path:
@@ -123,6 +130,7 @@ def manifest_errors(
     used_manifest_feature_exceptions: set[str],
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
+    used_lints_exceptions: set[str],
 ) -> list[str]:
     manifest = load_manifest(path)
     package = manifest.get("package")
@@ -136,7 +144,15 @@ def manifest_errors(
                 errors.append(f"set `{field}.workspace = true` in `[package]`")
 
         lints = manifest.get("lints")
-        if not (isinstance(lints, dict) and lints.get("workspace") is True):
+        path_key = manifest_key(path)
+        if path_key in LINTS_EXCEPTIONS:
+            used_lints_exceptions.add(path_key)
+            if isinstance(lints, dict) and lints.get("workspace") is True:
+                errors.append(
+                    "remove `[lints]` with `workspace = true`; "
+                    "this vendored crate keeps its upstream lint policy"
+                )
+        elif not (isinstance(lints, dict) and lints.get("workspace") is True):
             errors.append("add `[lints]` with `workspace = true`")
 
         expected_name = expected_package_name(path)
@@ -336,7 +352,15 @@ def add_unused_exception_errors(
     used_manifest_feature_exceptions: set[str],
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
+    used_lints_exceptions: set[str],
 ) -> None:
+    for path_key in sorted(set(LINTS_EXCEPTIONS) - used_lints_exceptions):
+        add_failure(
+            failures_by_path,
+            path_key,
+            "remove the stale lints exception from `LINTS_EXCEPTIONS`",
+        )
+
     for path_key in sorted(
         set(MANIFEST_FEATURE_EXCEPTIONS) - used_manifest_feature_exceptions
     ):
