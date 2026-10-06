@@ -18,8 +18,8 @@ use crate::managed_install::tests::with_self_exe;
 /// riattesi dopo prepare, con una sola definizione per fixture e assert.
 const NPM_ANDROID_FIXTURE_BYTES: &[u8] = b"fixture selection bytes";
 
-/// Layout reale di un pacchetto npm Android: `bin/codex` eseguibile più il
-/// manifest con la variante del fork, accanto al binario.
+/// Real layout of an Android npm package: an executable `bin/codex` plus the
+/// manifest with the fork variant, next to the binary.
 fn npm_android_layout(root: &Path) -> PathBuf {
     let bin = root.join("npm/bin/codex");
     std::fs::create_dir_all(bin.parent().unwrap()).expect("npm bin directory");
@@ -68,12 +68,12 @@ async fn prepare_reuses_termux_binary_outside_managed_packages() {
         method: InstallMethod::Npm,
         package_layout: None,
     };
-    // Attesa CANONICIZZATA: il resolver canonicalizza il self exe, il
-    // confronto grezzo col TMPDIR con symlink darebbe un falso rosso.
+    // Canonicalized expectation: the resolver canonicalizes the self exe, and
+    // a raw comparison against TMPDIR through a symlink would be a false red.
     let expected = std::fs::canonicalize(&npm_bin).expect("canonicalize npm binary");
 
-    // Prima di prepare: current_installation conserva la selezione npm
-    // (self exe con manifest della variante), non il percorso gestito.
+    // Before prepare: current_installation keeps the npm selection
+    // (self exe with the variant manifest), not the managed path.
     let installed = with_self_exe(&npm_bin, || {
         daemon.current_installation().expect("current installation")
     });
@@ -96,7 +96,7 @@ async fn prepare_reuses_termux_binary_outside_managed_packages() {
         assert_eq!(after.managed_codex_bin, expected);
     });
 
-    // Variante estranea ATTRAVERSO prepare: fail closed, nessun packages creato.
+    // Foreign variant through prepare: fail closed, and no packages directory is created.
     std::fs::write(
         npm_bin
             .parent()
@@ -131,11 +131,11 @@ async fn prepare_reuses_termux_binary_outside_managed_packages() {
     assert!(!home.join("packages").exists());
 }
 
-// La policy Android esercitabile anche su Linux: con il metodo Npm la
-// selezione del lifecycle e` il binario npm (self exe), mai
-// packages/app-server-daemon-vl/current. Prova unitaria RIPETUTA della
-// selezione e del controllo variante: non attraversa prepare (quello e`
-// coperto dal test Android sotto, sul lifecycle reale).
+// The Android policy can also be exercised on Linux: with the Npm method the
+// lifecycle selection is the npm binary (self exe), never
+// packages/app-server-daemon-vl/current. Repeated unit check of the
+// selection and of the variant check: it does not go through prepare (that
+// is covered by the Android test below, on the real lifecycle).
 #[test]
 fn android_policy_keeps_npm_selection_and_never_builds_packages() {
     let temp = tempfile::TempDir::new().expect("temp");
@@ -165,8 +165,8 @@ fn android_policy_keeps_npm_selection_and_never_builds_packages() {
     });
 }
 
-// Fail closed con manifest assente o variante estranea: la selezione si
-// risolve, ma il controllo L1 rifiuta l'esecuzione e packages/ non nasce.
+// Fail closed when the manifest is missing or the variant is foreign: the selection
+// resolves, but the L1 check rejects execution and packages/ is not created.
 #[test]
 fn android_selection_fail_closed_on_missing_or_foreign_manifest() {
     let temp = tempfile::TempDir::new().expect("temp");
@@ -448,10 +448,10 @@ async fn explicit_selection_requires_unchanged_cli_and_pins_all_versions() {
         )
         .await
         .unwrap();
-        // L'installazione upstream, quando presente, e` un albero separato
-        // con i suoi sentinel: release/current/marker/log propri, mai il
-        // root fork. I bytes iniziali vengono salvati e ricontrollati dopo
-        // rifiuto, annullamento e sostituzione.
+        // The upstream install, when present, is a separate tree
+        // with its own sentinels: its own release, current, marker, and log,
+        // never the fork root. The initial bytes are saved and checked again
+        // after rejection, cancellation, and replacement.
         let upstream_release = home.join("packages/standalone/releases/0.152.0-local-target");
         let upstream_current = home.join("packages/standalone/current");
         let upstream_marker = home.join("packages/standalone/auto-update-version");

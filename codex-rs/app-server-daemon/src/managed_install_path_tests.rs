@@ -128,7 +128,7 @@ fn fork_root_is_isolated_from_upstream_installs() {
         assert_eq!(
             std::fs::read(upstream_state.join(name)).unwrap(),
             b"",
-            "sentinel upstream alterato: {name}"
+            "upstream sentinel was changed: {name}"
         );
     }
 }
@@ -136,8 +136,8 @@ fn fork_root_is_isolated_from_upstream_installs() {
 #[cfg(unix)]
 #[test]
 fn updater_only_runs_for_stable_installer_owned_releases() {
-    // Root upstream (packages/standalone): NON e` di proprieta` del fork — il
-    // predicato resta falso anche con release stable e marker corrispondente.
+    // Upstream root (packages/standalone): it is not owned by the fork, so the
+    // predicate stays false even with a stable release and a matching marker.
     let home = tempfile::TempDir::new().expect("home");
     let upstream_state = home.path().join("app-server-daemon");
     std::fs::create_dir(&upstream_state).unwrap();
@@ -236,8 +236,8 @@ fn updater_only_runs_for_stable_installer_owned_releases() {
         &local_managed
     ));
 
-    // Versione reale del fork (suffisso -vl.1): il predicato richiede tre
-    // componenti numeriche -> resta fuori dall'updater standalone.
+    // Real fork version (the -vl.1 suffix): the predicate requires three
+    // numeric components, so this release stays out of the standalone updater.
     let real = fork_root.join("releases/0.160.0-vl.1-x86_64-unknown-linux-musl");
     let real_managed = real.join("bin/codex");
     std::fs::create_dir_all(real_managed.parent().expect("bin parent")).expect("real release");
