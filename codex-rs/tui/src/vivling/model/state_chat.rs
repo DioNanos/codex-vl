@@ -96,10 +96,7 @@ impl VivlingState {
             } else {
                 "I am still tiny. Give me real work and I will learn your rhythm.".to_string()
             }
-        } else if contains_any(
-            &normalized,
-            &["name", "nome"], // codespell:ignore
-        ) {
+        } else if contains_any(&normalized, &["name", "nome"]) {
             format!("My name is {}.", self.name)
         } else if contains_any(&normalized, &["who are you", "chi sei", "what are you"]) {
             format!(

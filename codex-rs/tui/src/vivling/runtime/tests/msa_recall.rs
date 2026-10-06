@@ -103,10 +103,9 @@ fn recall_saturation_resets_and_recovers() {
 
 fn rich_source_with(marker: &str) -> String {
     format!(
-        // Literal kept: the recall fixture is matched, not prose.
         "Analisi completa del bug nel modulo websocket: la backoff window cresceva senza \
-         limite perche' il moltiplicatore non veniva azzerato dopo un successo. Il fix vive " // codespell:ignore
-        "nella funzione di reconnect e il marcatore distintivo del dettaglio e' {marker}, \
+         limite perche' il moltiplicatore non veniva azzerato dopo un successo. Il fix vive \
+         nella funzione di reconnect e il marcatore distintivo del dettaglio e' {marker}, \
          che si trova ben oltre il taglio dei centoventi caratteri del summary."
     )
 }

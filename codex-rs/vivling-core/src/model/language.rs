@@ -61,10 +61,9 @@ fn stopwords(lang: &str) -> &'static [&'static str] {
             "salut", "oui", "non",
         ],
         "de" => &[
-            "der", "die", "das", "und", "ist", // codespell:ignore
-            "nicht", "ein", "eine", "den", "dem", "mit", "auf", "von", "zu", "aber", "ich", "du",
-            "wir", "sie", // codespell:ignore
-            "war", "sind", "haben", "kann", "wird", "soll", "auch",
+            "der", "die", "das", "und", "ist", "nicht", "ein", "eine", "den", "dem", "mit", "auf",
+            "von", "zu", "aber", "ich", "du", "wir", "sie", "war", "sind", "haben", "kann", "wird",
+            "soll", "auch",
         ],
         _ => &[],
     }
@@ -242,7 +241,7 @@ impl VivlingLanguageState {
             }
             "es" => {
                 "Sugerencia: pulsa Ctrl+J para abrir el chat dedicado del Vivling \
-                     (historial preservado, scroll por línea, sin saturar el hilo principal)." // codespell:ignore
+                     (historial preservado, scroll por línea, sin saturar el hilo principal)."
             }
             "fr" => {
                 "Astuce : appuie sur Ctrl+J pour ouvrir le chat dédié du Vivling \

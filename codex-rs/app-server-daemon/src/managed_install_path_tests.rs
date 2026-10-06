@@ -128,8 +128,7 @@ fn fork_root_is_isolated_from_upstream_installs() {
         assert_eq!(
             std::fs::read(upstream_state.join(name)).unwrap(),
             b"",
-            // Literal kept: this string is matched, not prose.
-            "sentinel upstream alterato: {name}" // codespell:ignore
+            "sentinel upstream alterato: {name}"
         );
     }
 }

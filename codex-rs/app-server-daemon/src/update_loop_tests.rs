@@ -326,7 +326,7 @@ async fn check_explicit_update(fault: LifecycleFault) -> Vec<LifecycleReport> {
                         return Err(format!("manca il rifiuto disabled: {message}"));
                     }
                     if !message.contains("@mmmbuto/codex-vl@latest") {
-                        return Err(format!("manca il nome del pacchetto npm: {message}")); // codespell:ignore
+                        return Err(format!("manca il nome del pacchetto npm: {message}"));
                     }
                     if !http.requested_urls().is_empty() {
                         return Err(format!(
@@ -1456,7 +1456,7 @@ async fn check_manual_update_restart(local_package: bool, fault: RequestFault) -
                 return Err(format!("manca il rifiuto disabled: {message}"));
             }
             if !message.contains("@mmmbuto/codex-vl@latest") {
-                return Err(format!("manca il nome del pacchetto npm: {message}")); // codespell:ignore
+                return Err(format!("manca il nome del pacchetto npm: {message}"));
             }
         }
 
