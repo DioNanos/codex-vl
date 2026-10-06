@@ -248,6 +248,10 @@ deny = [
         "codex-responses-api-proxy",
         # Temporary migration exceptions.
         "codex-otel",
+        # Intentional exception: msa-core's optional embeddings feature uses
+        # reqwest directly. The HTTP client stays as it is; this records the
+        # debt instead of routing the call through codex-http-client now.
+        "msa-core",
         # Third-party crates that own their reqwest integration. These are not part of the
         # first-party migration count above.
         "oauth2",
