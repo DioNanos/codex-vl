@@ -394,7 +394,7 @@ fn symbol(name: &str) -> Option<&'static str> {
         "int" => "∫",
         "iint" => "∬",
         "iiint" => "∭",
-        "oint" => "∮",
+        "oint" => "∮", // codespell:ignore
         "infty" => "∞",
         "partial" => "∂",
         "nabla" => "∇",

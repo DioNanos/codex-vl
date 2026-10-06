@@ -324,7 +324,7 @@ struct RosterIndexHeader {
 
 /// Build the ordered list of candidate state files to deserialise.
 /// Preferred source is the `roster.json` index; falls back to a
-/// filtered directory walk if the index is missing or unparseable.
+/// filtered directory walk if the index is missing or unparsable.
 fn collect_state_candidates(roster_dir: &Path) -> Result<Vec<PathBuf>, MemoryAgentError> {
     let roster_path = roster_dir.join("roster.json");
     if let Ok(body) = std::fs::read_to_string(&roster_path)

@@ -613,11 +613,11 @@ mod tests {
             delivered.load(std::sync::atomic::Ordering::Acquire),
             "the worker must pick up and deliver the persisted pending row"
         );
-        // La rimozione del pending row avviene DOPO il flag di delivery
-        // (stesso worker, due step): sotto carico parallelo l'assert
-        // immediato vede la riga ancora in set. Poll bounded invece del
-        // confronto istantaneo — l'invriante e' che ENTRO il limite la riga
-        // esca dal set, non che esca entro zero millisecondi.
+        // The pending row is removed AFTER the delivery flag
+        // (same worker, two steps): under parallel load an immediate
+        // assert still sees the row in the set. Bounded poll instead of
+        // an instant comparison — the invariant is that the row leaves
+        // the set WITHIN the limit, not within zero milliseconds.
         let mut pending_empty = false;
         for _ in 0..50 {
             let pending = state_runtime

@@ -349,11 +349,11 @@ fn stale_signals_section(state: &VivlingState) -> Option<String> {
 /// Memory V2 Step 5.A — language steering hint for the brain.
 ///
 /// The Vivling answers in the language inherited from the user (axis G).
-/// Mode controls the mix policy: `MirrorUser` rispecchia il mix utente,
-/// `Strict` blocca sulla prima detection, `DominantOnly` insiste sulla
-/// lingua dominante della finestra. La sezione viene aggiunta a tutti
-/// i path (Assist, Chat, LoopTick) cosi' anche l'automation parla nella
-/// lingua del proprietario.
+/// Mode controls the mix policy: `MirrorUser` mirrors the user's mix,
+/// `Strict` stops at the first detection, `DominantOnly` insists on the
+/// window's dominant language. The section is added on every path
+/// (Assist, Chat, LoopTick) so automation also speaks the owner's
+/// language.
 /// Memory V2 Step 9.A — bounds applied to artifacts the memory agent
 /// (Step 7.B / 8.B) writes into the prompt. The agent already runs
 /// `redact_secrets`, but it does not cap field length: a future

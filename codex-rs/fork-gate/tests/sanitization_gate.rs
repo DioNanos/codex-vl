@@ -8,7 +8,7 @@
 // l'elenco dei motivi da cercare. Una lista scritta a mano copre cio' che
 // ricordi; un test copre cio' che c'e', e fallisce prima del publish invece
 // che dopo. Il rationale specchia quello del gate dell'albero pubblicato:
-// un elenco di motivi vietati, applicato ai file che escono.
+// un elenco di motivi vietati, applied ai file che escono.
 //
 // Ogni voce vietata dice PERCHE' e' vietata: un elenco di stringhe senza
 // motivo si svuota di senso e prima o poi qualcuno ne toglie una per far
@@ -17,7 +17,7 @@
 // positivi). Un binario inatteso in un file di testo FA FALLIRE, non e'
 // saltato in silenzio.
 //
-// Il gate e' ROSSO sul commit di base: le tre classi esistono. Non ripara
+// Il gate e' ROSSO sul commit di base: le three classi esistono. Non ripara
 // il codice, segnala. Le riparazioni le decide l'operatore.
 //
 // I needle vietati sono costruiti a FRAMMENTI (mai letterali nel sorgente):
@@ -38,7 +38,7 @@ use std::process::Command;
 /// — macro di COMPILAZIONE, il cui valore resta dentro il binario di test. Un
 /// binario riusato dalla cache dopo che il worktree di build era stato rimosso
 /// cercava la radice in un path morto: il gate era verde o rosso a seconda di
-/// DOVE era stato compilato, non di cosa conteneva l'albero (misurato: tre test
+/// DOVE era stato compilato, non di cosa conteneva l'albero (misurato: three test
 /// panicavano col path di un worktree cancellato, e solo `cargo clean -p
 /// fork-gate` restituiva la verita').
 ///
@@ -85,7 +85,7 @@ fn radice_da(start: &Path) -> Option<PathBuf> {
 }
 
 /// Il fallimento PARLANTE: se il gate non sa dove guardare, lo DICE — fonti
-/// provate, causa piu' probabile, rimedio. Un panic ambiguo in questa posizione
+/// tried, causa piu' probable, rimedio. Un panic ambiguo in questa posizione
 /// si legge come un difetto di sanificazione e innesca la caccia al leak
 /// sbagliata; uno che spiega se stesso si risolve in un minuto.
 fn msg_radice_non_trovata(fonti: &[PathBuf]) -> String {
@@ -155,7 +155,7 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 
 // Repository upstream atteso: il CRITERIO e' scritto qui nel test, non
 // assunto dall'ambiente. codex-vl e' un fork DOWNSTREAM di openai/codex su
-// GitHub: solo quello e' il riferimento contro cui ha senso misurare i commit
+// GitHub: solo quello e' il riferimento against cui ha senso misurare i commit
 // "nostri". Si accetta sia HTTPS sia SSH dello STESSO repo: l'identita' e'
 // "host/owner/repo", il protocollo e' un dettaglio che non deve far fallire
 // un remote legittimo. Ma un remote che punta a un ALTRO repo — un fork
@@ -163,10 +163,10 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 // questo chiude: il gate verificava che l'insieme dei commit "nostri" fosse
 // NON VUOTO, non che fosse quello GIUSTO. Se il remote punta altrove,
 // l'insieme risulta non vuoto e SBAGLIATO: superata la guardia sul vuoto, il
-// confronto avviene contro il riferimento sbagliato e un commit con
+// confronto avviene against il riferimento sbagliato e un commit con
 // attribuzione AI resterebbe nascosto (presente nel remote sbagliato =>
 // classificato "upstream" => non ispezionato). La stessa forma di ieri —
-// "il gate seleziona qualcosa" contro "il gate seleziona cio' che dichiara
+// "il gate seleziona qualcosa" against "il gate seleziona cio' che dichiara
 // di guardare". Ora il gate autentica il remote PRIMA di fidarsene: se non
 // e' quello atteso, FALLISCE dicendo perche' — non prova a indovinare e non
 // degrada silenziosamente.
@@ -194,8 +194,8 @@ const UPSTREAM_REPO: &str = "openai/codex";
 ///   sta nel path, non e' scp-like);
 /// - host preso per intero e confrontato per intero dai chiamanti (== / !=):
 ///   un lookalike come github.com.altro.example non coincide.
-/// In dubbio si rifiuta (None), non si normalizza: un falso positivo costa una
-/// verifica umana, un falso negativo fa uscire una traccia.
+/// In dubbio si rifiuta (None), non si normalizza: un false positivo costa una
+/// verifica umana, un false negativo fa uscire una traccia.
 fn canonical_remote(url: &str) -> Option<String> {
     let u = url.trim();
 
@@ -248,7 +248,7 @@ fn canonical_remote(url: &str) -> Option<String> {
         // esiste un host DNS-risolvibile diverso da quello atteso che Git
         // contatterebbe davvero in questo caso — solo un fallimento sempre e
         // comunque. Misurato (git credential fill e git ls-remote, nessun
-        // dato sensibile in gioco): "https://a@b@github.com/..." -> Git
+        // dato sensitive in gioco): "https://a@b@github.com/..." -> Git
         // prova ad accedere a "https://b@github.com/..." e fallisce "URL
         // rejected: Bad hostname" — mai su github.com. Leggere qui l'ULTIMO
         // '@' (rfind) come faceva prima produceva "github.com": un host che
@@ -287,7 +287,7 @@ fn canonical_remote(url: &str) -> Option<String> {
         // ("github.com/openai/codex.git" invece di
         // "github.com/openai/codex"), il confronto con l'atteso falliva, e
         // un remote PERFETTAMENTE ONESTO veniva rifiutato con un messaggio
-        // che accusa "punta a un altro repo" — falso, e nel posto sbagliato:
+        // che accusa "punta a un altro repo" — false, e nel posto sbagliato:
         // il difetto era nel parser, non nel remote.
         let tail = tail.strip_suffix(".git").unwrap_or(tail);
         if tail.is_empty() {
@@ -330,8 +330,8 @@ fn canonical_remote(url: &str) -> Option<String> {
 // La conformita' a RFC 3986 non e' la proprieta' che serve: e' un mezzo. La
 // proprieta' che serve e': il parser deve vedere LO STESSO HOST che
 // contatterebbe Git. Oggi coincidono per ogni URL provato, ma nessun test le
-// legava — la conformita' RFC era verificata contro un'interpretazione
-// scritta a mano dentro il test, non contro Git stesso. Le funzioni sotto
+// legava — la conformita' RFC era verificata against un'interpretazione
+// scritta a mano dentro il test, non against Git stesso. Le funzioni sotto
 // chiedono a Git quale autorita' risolverebbe per un URL, SENZA MAI aprire
 // una connessione di rete.
 //
@@ -342,20 +342,20 @@ fn canonical_remote(url: &str) -> Option<String> {
 // aggiungerne uno fittizio: altrimenti si accoda a un helper REALE gia'
 // configurato a livello di sistema/globale, che per un host reale (es.
 // github.com) puo' restituire una credenziale VERA dell'operatore in chiaro
-// sullo stdout del comando — misurato durante lo sviluppo di questo stesso
+// sullo stdout del command — misurato durante lo sviluppo di questo stesso
 // test. L'helper fittizio risponde SEMPRE con user/pass finti, cosi' `git
 // credential fill` non tenta mai I/O interattivo ne' di rete.
 //
 // scp-like ([user@]host:owner/repo): per SSH, Git passa la stringa
-// "destination" COSI' COM'E' al comando ssh, senza interpretarla lui
-// stesso. Si intercetta quel comando con GIT_SSH_COMMAND — uno script che
+// "destination" COSI' COM'E' al command ssh, senza interpretarla lui
+// stesso. Si intercetta quel command con GIT_SSH_COMMAND — uno script che
 // stampa il suo primo argomento su STDERR e muore subito, prima di aprire
 // un socket — per catturare la destination esatta che Git avrebbe usato,
 // poi si chiede a `ssh -G <destination>` come SSH stesso la risolverebbe
 // (hostname reale): di nuovo nessuna connessione, `-G` stampa la
 // configurazione effettiva e basta.
 //
-// Limite dichiarato: per scp-like, se `destination` non e' un target SSH
+// Limit dichiarato: per scp-like, se `destination` non e' un target SSH
 // valido (es. contiene un carattere che OpenSSH stesso rifiuta nello
 // username), `ssh -G` fallisce e la funzione ritorna None — non e' un'
 // assenza di prova sull'host, e' l'assenza dell'oggetto da confrontare.
@@ -395,9 +395,9 @@ fn credential_fill_field(url: &str, field: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix(prefix.as_str()).map(str::to_string))
 }
 
-/// Cattura la "destination" SSH che Git passerebbe DAVVERO al comando ssh
+/// Cattura la "destination" SSH che Git passerebbe DAVVERO al command ssh
 /// per `url` (scp-like o ssh://), senza mai aprire una connessione: il
-/// comando ssh e' sostituito con uno script che stampa il suo primo
+/// command ssh e' sostituito con uno script che stampa il suo primo
 /// argomento su stderr e muore subito. `git ls-remote` fallisce SEMPRE (lo
 /// script non implementa alcun protocollo git) — e' il fallimento atteso,
 /// il dato utile e' nello stderr catturato prima di quel fallimento.
@@ -487,16 +487,16 @@ fn git_authority_for(url: &str) -> Option<String> {
 
 // ---- provenienza dei ref: il gate si fida solo se puo' provarla -----------
 
-/// Primo campo fra apici in `s` (il nome di branch/ref in una riga di
+/// Primo campo fra apici in `s` (il name di branch/ref in una riga di
 /// FETCH_HEAD: `branch 'main' of <url>`). I nomi di branch git non contengono
-/// apici, quindi il primo paio delimita il nome.
+/// apici, quindi il primo paio delimita il name.
 fn first_quoted(s: &str) -> Option<&str> {
     let a = s.find('\'')?;
     let b = s[a + 1..].find('\'')?;
     Some(&s[a + 1..a + 1 + b])
 }
 
-/// Provenienza dei ref `refs/remotes/upstream/*` che il gate usa come limite
+/// Provenienza dei ref `refs/remotes/upstream/*` che il gate usa come limit
 /// negativo (`HEAD --not <ref>`) per classificare i commit "nostri".
 ///
 /// Autenticare l'URL del remote (la CONFIGURAZIONE) NON basta: `git remote
@@ -525,7 +525,7 @@ fn first_quoted(s: &str) -> Option<&str> {
 /// cadrebbe a caso: il gate PRETENDE la condizione locale e dice come
 /// soddisfarla.
 ///
-/// FETCH_HEAD assente, detto PER INTERO. La causa sottile che merita il nome:
+/// FETCH_HEAD assente, detto PER INTERO. La causa sottile che merita il name:
 /// FETCH_HEAD e' PER-WORKTREE, i ref `refs/remotes/upstream/*` sono CONDIVISI
 /// da tutti i checkout del repo. Un gate girato in un worktree dove nessuna
 /// fetch e' mai stata fatta vede i ref (scaricati da un altro checkout) ma non
@@ -554,7 +554,7 @@ fn msg_fetch_head_assente(fh_path: &Path) -> String {
 /// controllo di URL di config). Ritorna `Ok(())` se ogni ref e' provato,
 /// `Err(failures)` altrimenti.
 fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(), Vec<String>> {
-    // Ref usati dal gate: refs/remotes/upstream/* -> nome -> sha.
+    // Ref usati dal gate: refs/remotes/upstream/* -> name -> sha.
     let out = git(
         root,
         &[
@@ -582,10 +582,10 @@ fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(),
     }
     if refs.is_empty() {
         // Il gate ha gia' assertito refs non-vuoto prima di chiamare; se qui e'
-        // vuoto la provenienza e' comunque non applicabile: fail, non verde.
+        // vuoto la provenienza e' comunque non applicable: fail, non verde.
         return Err(vec![
             "nessun ref refs/remotes/upstream/*: il criterio 'nostro vs upstream' non e' \
-             applicabile"
+             applicable"
                 .into(),
         ]);
     }
@@ -614,7 +614,7 @@ fn provenienza_refs_provata(root: &Path, expected_canonical: &str) -> Result<(),
         }
     };
 
-    // FETCH_HEAD -> nome -> (sha, canonical url). Una riga senza ` of <url>`
+    // FETCH_HEAD -> name -> (sha, canonical url). Una riga senza ` of <url>`
     // (fetch di un oggetto diretto, senza ref) non prova un ref: la si salta.
     let mut fh: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     for raw in content.lines() {
@@ -723,10 +723,10 @@ struct Vietato {
 
 // ---- needle vietati (costruiti a frammenti) --------------------------------
 
-/// Attribuzione AI nel corpo dei commit. Classe piu' importante e piu'
+/// Attribuzione AI nel corpo dei commit. Class piu' importante e piu'
 /// difficile: vive nella STORIA (git log), non nei file. Guardare solo i
 /// file la manca. I commit upstream pubblici prima del fork NON sono nostri
-/// e non devono far fallire: vedi il criterio nel test di classe 1.
+/// e non devono far fallire: vedi il criterio nel test di class 1.
 fn ai_vietati() -> Vec<Vietato> {
     vec![
         Vietato {
@@ -754,8 +754,8 @@ fn op_handle() -> String {
     joined(&["D", "A", "G"])
 }
 
-/// Marcatori di audit interni che non appartengono alle note di release
-/// tracciate (.release/*.md): il register li esclude dal tree pubblico.
+/// Internal audit markers that do not belong to the tracked release notes
+/// (.release/*.md): the register excludes them from the public tree.
 fn audit_vietati() -> Vec<Vietato> {
     vec![
         Vietato {
@@ -833,7 +833,7 @@ fn scan_text(rel: &str, bytes: &[u8], vietati: &[Vietato], isolated: bool) -> Ve
 /// alcun ref `refs/remotes/upstream/*` (`HEAD --not <ref>`), con i corpi
 /// scansionati per attribuzione AI. Log in una sola invocazione:
 /// `%H%x00%B%x00` separa hash e corpo con NUL (il corpo e' NUL-free, lo split
-/// e' robusto); `--not` applica ogni ref upstream come limite negativo
+/// e' robusto); `--not` applica ogni ref upstream come limit negativo
 /// (esclusione ancestry): un commit raggiungibile da HEAD e da qualsiasi ref
 /// upstream e' upstream, non nostro. Estratta in funzione perche' il controllo
 /// negativo deve esercitare la STESSA ispezione su un fixture, non una copia.
@@ -883,17 +883,17 @@ fn ispeziona_storia(root: &Path, upstream_refs: &[String]) -> (usize, Vec<String
     (visti, colpe)
 }
 
-// ---- CLASSE 1: attribuzione AI nella STORIA del fork ----------------------
+// ---- CLASS 1: attribuzione AI nella STORIA del fork ----------------------
 
 #[test]
 fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     let root = repo_root();
 
-    // AUTENTICAZIONE DEL REMOTE prima di fidarsene. Il gate esclude i commit
+    // AUTENTICAZIONE DEL REMOTE prima di fidarsene. Il gate excludes i commit
     // raggiungibili da refs/remotes/upstream/*: se quel remote punta altrove
     // (un fork, un mirror, un repo sbagliato), l'insieme dei commit "nostri" e'
-    // SBAGLIATO — non vuoto, ma misurato contro il riferimento sbagliato.
-    // Superata la guardia sul vuoto, il confronto avverrebbe contro il remote
+    // SBAGLIATO — non vuoto, ma misurato against il riferimento sbagliato.
+    // Superata la guardia sul vuoto, il confronto avverrebbe against il remote
     // sbagliato e un commit con attribuzione AI resterebbe nascosto (presente
     // nel remote sbagliato => classificato "upstream" => non ispezionato). L'URL
     // del remote deve corrispondere al repository upstream atteso: il criterio
@@ -912,7 +912,7 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         Ok(o) => panic!(
             "il remote 'upstream' non esiste o 'git remote get-url' e' fallito (status {}): {}. \
-             Il criterio 'nostro vs upstream' non e' applicabile senza un remote upstream \
+             Il criterio 'nostro vs upstream' non e' applicable senza un remote upstream \
              autenticato. Il gate non passa verde per assenza di ispezione.",
             o.status,
             String::from_utf8_lossy(&o.stderr)
@@ -932,8 +932,8 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
         canonical == expected,
         "il remote 'upstream' non e' il repository upstream atteso: trovato {canonical:?} \
          (URL {upstream_url:?}), atteso {expected:?}. Un remote che punta altrove — un fork, \
-         un mirror, un repo sbagliato — rende l'insieme dei commit 'nostri' SBAGLIATO: superata \
-         la guardia sul vuoto, il confronto avviene contro il riferimento sbagliato e un commit \
+         un mirror, un repo sbagliato — makes l'insieme dei commit 'nostri' SBAGLIATO: superata \
+         la guardia sul vuoto, il confronto avviene against il riferimento sbagliato e un commit \
          con attribuzione AI resta nascosto (presente nel remote sbagliato => classificato \
          'upstream' => non ispezionato). Correggi il remote con `git remote set-url upstream \
          <URL atteso>`. Il gate non prova a indovinare e non degrada silenziosamente."
@@ -948,13 +948,13 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     // upstream fuori dal ramo principale — backport su rami release/0.144,
     // [0.146], tag di release che vivono su rami di manutenzione — entrano
     // nella storia del fork via merge ma NON stanno su upstream/main.
-    // Escluderli solo via upstream/main li attribuirebbe a noi: falso
+    // Escluderli solo via upstream/main li attribuirebbe a noi: false
     // positivo, il guardiano accusa l'innocente. Escludere TUTTI i ref
     // remotizzati di upstream restituisce a chi di diritto i commit di
     // release che stanno su un ramo remotizzato (release/0.144, 0.146, …).
     // Non copre, e non promette di coprire, i commit di release raggiungibili
     // SOLO da un tag, senza alcun ramo remotizzato che li contenga: quelli
-    // restano classificati "nostro" — falso positivo dichiarato, vedi RESIDUO
+    // restano classificati "nostro" — false positivo dichiarato, vedi RESIDUO
     // sotto. Dire "li restituisce tutti a chi di diritto" prometterebbe piu'
     // di cio' che il codice mantiene: il gate non restituisce ogni commit di
     // release a chi di diritto, restituisce quelli sui rami remotizzati e
@@ -967,12 +967,12 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     //
     // RESIDUO DICHIARATO (verso d'errore scelto): un commit upstream
     // raggiungibile SOLO da un tag — non da alcun ramo remotizzato — resterebbe
-    // classificato "nostro". E' un FALSO POSITIVO: il gate si arrossa,
+    // classificato "nostro". E' un FALSE POSITIVO: il gate si arrossa,
     // l'operatore verifica, vede che e' upstream, lo smista. Si sceglie questo
-    // verso (falso positivo che chiede verifica umana) invece del falso
+    // verso (false positivo che chiede verifica umana) invece del false
     // negativo (un commit nostro escluso e una traccia che esce): il gate
-    // esiste per non far uscire tracce, e un falso positivo si chiarisce a
-    // mente, un falso negativo non si chiarisce mai. I tag non si escludono
+    // esiste per non far uscire tracce, e un false positivo si chiarisce a
+    // mente, un false negativo non si chiarisce mai. I tag non si escludono
     // proprio per non allargare il verso sbagliato: distinguere un tag upstream
     // da uno nostro e' fragile, e in dubbio si flagga.
     //
@@ -985,7 +985,7 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     //
     // Dipendenza: almeno un ref refs/remotes/upstream/* deve esistere
     // (`git fetch upstream`). Se non c'e' neanche uno, il gate FALLISCE: il
-    // criterio non e' applicabile e non si passa verde per assenza di ispezione.
+    // criterio non e' applicable e non si passa verde per assenza di ispezione.
     let upstream_refs: Vec<String> = git(
         &root,
         &[
@@ -1001,13 +1001,13 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     assert!(
         !upstream_refs.is_empty(),
         "nessun ref refs/remotes/upstream/* presente: il criterio 'nostro vs upstream' \
-         non e' applicabile. Esegui `git fetch upstream`. Il gate non passa verde \
+         non e' applicable. Esegui `git fetch upstream`. Il gate non passa verde \
          per assenza di ispezione."
     );
 
     // PROVENIENZA DEI REF (dati), non solo dell'URL (config). L'autenticazione
     // dell'URL sopra dimostra solo che la CONFIGURAZIONE punta al remote atteso:
-    // NON dimostra che i ref `refs/remotes/upstream/*` siano stati scaricati DA
+    // does NOT show that the refs `refs/remotes/upstream/*` have been downloaded FROM
     // quel remote. `git remote set-url` cambia la configurazione ma NON
     // ripulisce i ref gia' scaricati, che restano del remote precedente: l'URL
     // oggi corretto non prova la provenienza dei ref che quell'URL non ha mai
@@ -1072,7 +1072,7 @@ fn classe1_attribuzione_ai_assente_dalla_storia_del_fork() {
     );
 }
 
-// ---- CLASSE 2: handle dell'operatore nel sorgente Rust --------------------
+// ---- CLASS 2: handle dell'operatore nel sorgente Rust --------------------
 
 #[test]
 fn classe2_handle_operatore_assente_dal_rust_tracciato() {
@@ -1124,7 +1124,7 @@ fn classe2_handle_operatore_assente_dal_rust_tracciato() {
     );
 }
 
-// ---- CLASSE 3: marker di audit interni nelle note di release ---------------
+// ---- CLASS 3: marker di audit interni nelle note di release ---------------
 
 #[test]
 fn classe3_marker_audit_assenti_dalle_release_notes() {
@@ -1175,7 +1175,7 @@ fn i_motivi_mordano_ancora() {
     for ok in ["DAGGER", "FOO_DAG_BAR", "CDAG", "myDAG2"] {
         assert!(
             !has_isolated(ok, &handle),
-            "falso positivo su sottostringa non isolata: {ok}"
+            "false positivo su sottostringa non isolata: {ok}"
         );
     }
     // handle resta CASE-SENSITIVE: "dag" minuscolo (directed acyclic graph,
@@ -1254,7 +1254,7 @@ fn i_motivi_mordano_ancora() {
     }
     // un remote che punta altrove (il nostro fork, un mirror, un repo vicino
     // ma non quello) NON e' upstream: il criterio lo distingue, non lo accetta
-    // per vicinanza di host o di nome.
+    // per vicinanza di host o di name.
     for wrong in [
         "https://github.com/DioNanos/codex-vl.git",
         "https://github.com/openai/codex-cli.git",
@@ -1279,7 +1279,7 @@ fn i_motivi_mordano_ancora() {
     // (git credential fill, nessuna connessione: `git -c credential.helper=
     // -c 'credential.helper=!f(){ echo username=x; echo password=x; };f'
     // credential fill` con url=... in input) e confermato con `git
-    // ls-remote` (fallisce sempre, nessun dato sensibile in gioco perche'
+    // ls-remote` (fallisce sempre, nessun dato sensitive in gioco perche'
     // l'hostname e' rifiutato prima di qualunque tentativo di rete): Git
     // tratta il PRIMO '@' come separatore userinfo/host, non l'ultimo — per
     // "https://a@b@github.com/..." risolve host="b@github.com" (userinfo
@@ -1368,7 +1368,7 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
     // URL ingannevoli: l'autorita' reale NON e' github.com, ma l'URL e'
     // scritto per far sembrare che lo sia ( '@' nella query/fragment, host
     // atteso nel path, '@' con host finto prima di quello reale). Tutti
-    // devono essere rifiutati come upstream, e il MOTIVO deve essere visibile:
+    // devono essere rifiutati come upstream, e il MOTIVO deve essere visible:
     // l'host che il parser estrae non e' github.com.
     let deceptive: &[&str] = &[
         // '?@' : '@github.com' e' QUERY, l'autorita' reale e' 127.0.0.1:9.
@@ -1379,7 +1379,7 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
         "https://127.0.0.1:9?#@github.com/openai/codex.git",
         "https://127.0.0.1:9#?@github.com/openai/codex.git",
         // '@' dopo '?' con un path reale prima della query: l'autorita' reale
-        // 127.0.0.1 resta visibile nel canonical (motivo osservabile).
+        // 127.0.0.1 resta visible nel canonical (motivo osservabile).
         "https://127.0.0.1:9/openai/codex?@github.com/openai/codex.git",
         // host atteso che compare nel PATH, non nell'autorita'.
         "https://evil.example.com/github.com/openai/codex.git",
@@ -1409,19 +1409,19 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
 
     // Una singola credenziale userinfo e URL onesti con query/fragment: NON
     // sono inganni. Una query/fragment dopo il path non cambia il repo. Il
-    // gate non deve over-restringere e rifiutare un remote onesto: un falso
+    // gate non deve over-restringere e rifiutare un remote onesto: un false
     // positivo costa una verifica umana, ma accusare l'innocente erode il
     // guardiano quanto fidarsi del colpevole.
     //
     // I quattro casi con ".git" PRIMA di query/fragment sono la forma
-    // completa, non un caso in piu': un falso positivo trovato dall'audit
+    // completa, non un caso in piu': un false positivo trovato dall'audit
     // (riprodotto: vedi il fix dello strip ".git" in canonical_remote) —
     // "https://github.com/openai/codex.git?foo=bar" veniva RIFIUTATO,
-    // accusato di puntare a un repo diverso ("...codex.git" != "...codex"),
+    // accused of pointing at a different repo ("...codex.git" != "...codex"),
     // mentre punta esattamente al repository atteso. Lo strip di ".git"
     // avveniva sull'URL grezzo intero, prima ancora di delimitare
     // l'autorita': con query o fragment in coda l'URL non finisce piu' per
-    // ".git" e lo strip non aveva effetto. Questi casi erano stati tolti dal
+    // ".git" and the strip had no effect. These cases had been removed from
     // test in una consegna precedente per evitare la combinazione invece di
     // correggere il parser — il test era stato piegato al difetto. Restano
     // qui nella forma completa.
@@ -1455,7 +1455,7 @@ fn url_ingannevole_autorita_reale_non_attesa_viene_rifiutato() {
 // (git_authority_for, sopra). E' rosso di suo se e solo se emerge una vera
 // divergenza — non era mai successo finora nello sviluppo di questo file,
 // ma la proprieta' era comunque non verificata: la conformita' RFC 3986
-// veniva controllata contro un'attesa scritta a mano nel test, mai contro
+// veniva againstllata against un'attesa scritta a mano nel test, mai against
 // Git.
 #[test]
 fn canonical_remote_concorda_con_git_sullautorita() {
@@ -1503,7 +1503,7 @@ fn canonical_remote_concorda_con_git_sullautorita() {
         // github.com/openai/codex) venivano rifiutati, accusati di puntare
         // a un repo diverso. Qui e' il primo caso in cui parser e Git
         // divergevano davvero — non un'ipotesi caduta alla misura come il
-        // caso backslash, un vero falso positivo. Vedi il fix dello strip
+        // caso backslash, un vero false positivo. Vedi il fix dello strip
         // ".git" in canonical_remote.
         "https://github.com/openai/codex.git?foo=bar",
         "https://github.com/openai/codex.git#readme",
@@ -1573,7 +1573,7 @@ fn canonical_remote_concorda_con_git_sullautorita() {
             strip_port(&git_host),
             expected_host,
             "se Git avesse un'opinione su questo URL, non deve MAI essere \
-             l'host atteso (altrimenti rifiutarlo sarebbe un falso negativo, \
+             l'host atteso (altrimenti rifiutarlo sarebbe un false negativo, \
              non prudenza): {git_host:?}"
         ),
         None => {
@@ -1659,7 +1659,7 @@ fn un_binario_inatteso_in_testo_fa_fallire_non_essere_saltato() {
 
 /// Rimuove directory scratch alla fine del test (anche su panic): il fixture
 /// e' completamente autocontenuto, il repo reale non viene toccato e nessuno
-/// stato resta in giro ("disattiva e ripristina nello stesso comando").
+/// stato resta in giro ("disattiva e ripristina nello stesso command").
 struct Scratch {
     dirs: Vec<PathBuf>,
 }
@@ -1836,8 +1836,8 @@ fn ref_stale_con_url_corretto_cade_invece_di_dare_zero_colpe() {
 // morto:
 // 1. la radice si trova risalendo da QUALUNQUE punto del repo (cwd runtime);
 // 2. ogni radice restituita ha un `.git` VERO — mai un'ipotesi;
-// 3. quando la radice non c'e', il fallimento PARLA: fonti provate, causa
-//    probabile, rimedio. Un panic senza rimedio in questa posizione si legge
+// 3. quando la radice non c'e', il fallimento PARLA: fonti tried, causa
+//    probable, rimedio. Un panic senza rimedio in questa posizione si legge
 //    come difetto di sanificazione — la caccia sbagliata.
 #[test]
 fn la_radice_e_runtime_e_il_fallimento_parla() {
@@ -1857,7 +1857,7 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
 
     // (2) mai un'ipotesi: se la ricerca restituisce qualcosa, ha un .git
     // VERO sopra. Da una dir senza .git (fino in cima, su una macchina
-    // normale) e' None; l'asserzione vale comunque su macchine insolite —
+    // normal) e' None; l'asserzione vale comunque su machines insolite —
     // la proprieta' e' la post-condizione, non il caso particolare.
     let fuori = std::env::temp_dir().join(format!("fork-gate-nogit-{pid}"));
     let _ = fs::remove_dir_all(&fuori);
@@ -1876,7 +1876,7 @@ fn la_radice_e_runtime_e_il_fallimento_parla() {
     );
     for (perche, pezzo) in [
         (
-            "la causa probabile (binario di un worktree rimosso)",
+            "la causa probable (binario di un worktree rimosso)",
             "worktree",
         ),
         ("il rimedio (ricompilare)", "cargo clean -p fork-gate"),

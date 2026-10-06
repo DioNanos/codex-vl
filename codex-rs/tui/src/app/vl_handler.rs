@@ -321,8 +321,8 @@ impl App {
                 self.handle_vivling_expression_finished(vivling_id, result);
             }
             VlEvent::SuggestionReady { suggestion } => {
-                // Audit UX: mostra id + target + tipo, cosi l'utente vede ESATTAMENTE
-                // quale loop e quale comando confermare prima di applicare.
+                // UX audit: show id + target + kind, so the user sees exactly
+                // which loop and which command to confirm before applying.
                 let id = suggestion.id.clone();
                 let label = suggestion.loop_label.clone();
                 let kind = suggestion.kind.kind_label();
@@ -382,11 +382,11 @@ impl App {
         Ok(AppRunControl::Continue)
     }
 
-    /// Applica una suggestion confermata dall'utente (`/loop apply`).
-    /// Mappa la suggestion in un LoopCommandRequest non-distruttivo e lo
-    /// instrada come un normale comando loop. I kind senza azione automatica
-    /// (Unblock/Split) o le proposal invalida producono solo un messaggio:
-    /// NESSUNA azione viene mai presa senza il comando utente esplicito.
+    /// Apply a suggestion the user confirmed (`/loop apply`).
+    /// Map the suggestion to a non-destructive LoopCommandRequest and route
+    /// it like a normal loop command. Kinds with no automatic action
+    /// (Unblock/Split), or invalid proposals, only produce a message:
+    /// NO action is ever taken without the explicit user command.
     pub(super) async fn apply_loop_suggestion(&mut self, id: &str) {
         let Some(sugg) = self.vivling_context_bus.take_suggestion(id) else {
             self.chat_widget
@@ -395,7 +395,7 @@ impl App {
         };
         let Some(thread_id) = self.chat_widget.thread_id() else {
             self.chat_widget.add_info_message(
-                "Nessun thread attivo: impossibile applicare la suggestion".to_string(),
+                "No active thread: cannot apply the suggestion".to_string(),
                 None,
             );
             return;

@@ -44,7 +44,9 @@ Bounds: $a\lesssim b\gtrsim c$; operators: $a\oplus b\otimes c\odot d$.
 Sets: $A\supseteq B\supset C\ni x$, $A\setminus B=\varnothing$.
 Logic: $\neg P\land Q\lor R\implies S\iff T\impliedby U$, $\nexists x$.
 Arrows: $a\leftrightarrow b\mapsto c\Leftarrow d$, $\uparrow\downarrow\updownarrow$.
-Integrals: $\iint f$, $\iiint g$, $\oint h$.
+Integrals: $\iint f$, $\iiint g$, $\"
+        r"oint" // codespell:ignore
+        r" h$.
 Collections: $\coprod A$, $\bigcup B$, $\bigcap C$.
 Punctuation: $x\prime$, $a\circ b\bullet c$, $\vdots\ddots$.",
         /*width*/ 80

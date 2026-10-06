@@ -378,8 +378,8 @@ pub(crate) fn try_plan_and_reserve_expression(
         trace_skip_if_due(&state.vivling_id, "60s throttle window open", now);
         return None;
     }
-    // Memory V2 Step 12.B.I (operator smoke test 2026-05-22 evidenza
-    // `dedup_skips=2979` in poche ore): when the CRT cache is still
+    // Memory V2 Step 12.B.I (operator smoke test 2026-05-22 evidence:
+    // `dedup_skips=2979` in a few hours): when the CRT cache is still
     // fresh, every per-frame idle call would run the planner and
     // then bump `daily_llm_dedup_skips` through `try_reserve`. The
     // counter is supposed to surface user-facing observability,
@@ -488,7 +488,7 @@ fn try_plan_forced_inner(
 /// 1. **Bypasses the 60s `last_llm_dispatch_at` throttle**: the boot
 ///    moment is exactly when the user expects a greeting; a stale
 ///    timestamp from the previous session must not silence it.
-///    Re-uses the save/clear/restore pattern from the forced refresh
+///    Reuses the save/clear/restore pattern from the forced refresh
 ///    so any other refusal (dedup against fresh cache, opt-out,
 ///    budget exhausted) leaves `last_llm_dispatch_at` intact for the
 ///    rest of the session.

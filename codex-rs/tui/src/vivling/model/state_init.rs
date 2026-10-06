@@ -9,8 +9,8 @@ const ADULT_SEED_ORIGIN: &str = "adult_seed_v1";
 const EARLY_SEED_ORIGIN: &str = "early_seed_v1";
 
 const NAMES: &[&str] = &[
-    "Nilo", "Kira", "Moro", "Luma", "Pax", "Rin", "Taro", "Vera", "Sumi", "Nox", "Iko", "Mina",
-    "Zed", "Ari", "Tika", "Juno",
+    "Nilo", "Kira", "Moro", "Luma", "Pax", "Rin", // codespell:ignore
+    "Taro", "Vera", "Sumi", "Nox", "Iko", "Mina", "Zed", "Ari", "Tika", "Juno",
 ];
 
 const BABY_GREETINGS: &[&str] = &[

@@ -173,8 +173,8 @@ async fn check_explicit_update(fault: LifecycleFault) -> Vec<LifecycleReport> {
             std::os::unix::fs::symlink(&package, root.join("current")).unwrap();
             std::fs::remove_file(root.join("auto-update-version")).unwrap();
         }
-        // Baseline raccolta come risultato: un errore qui esclude i trigger
-        // ma il cleanup dei processi avviati gira comunque.
+        // Baseline collected as a result: an error here excludes the triggers
+        // but cleanup of the processes that were started still runs.
         let baseline = (|| -> Result<(std::path::PathBuf, Option<Vec<u8>>, Vec<u8>), String> {
             let previous = root
                 .join("current")
@@ -326,7 +326,7 @@ async fn check_explicit_update(fault: LifecycleFault) -> Vec<LifecycleReport> {
                         return Err(format!("manca il rifiuto disabled: {message}"));
                     }
                     if !message.contains("@mmmbuto/codex-vl@latest") {
-                        return Err(format!("manca il nome del pacchetto npm: {message}"));
+                        return Err(format!("missing the npm package name: {message}"));
                     }
                     if !http.requested_urls().is_empty() {
                         return Err(format!(
@@ -606,8 +606,8 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     .expect("managed binary");
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
         .expect("executable binary");
-    // Manifest della variante accanto a bin/: il controllo L1 del daemon
-    // accetta questa selezione solo con variant codex-vl.
+    // Variant manifest next to bin/: the daemon L1 check
+    // accepts this selection only with the codex-vl variant.
     std::fs::write(
         standalone.join("releases").join(&release).join("codex-package.json"),
         format!(
@@ -890,11 +890,11 @@ async fn daemon_start_and_restart_preserve_launch_features() {
         "#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex 1.0.0; exit; fi\nif [ \"$3\" = --help ]; then exit; fi\nprintf '%s\\n' \"$@\" > '{}'\nexec sleep 30\n",
         args_path.display(),
     )).unwrap();
-        // Coordinamento con risultato esplicito: lo start gira in un task e
-        // il control server monta al primo segno di lancio (args scritti).
-        // NESSUN assert prima del cleanup: errori e panic del task restano
-        // dati raccolti, e la valutazione arriva dopo la fase comune di
-        // cleanup (daemon fermato, control abortito).
+        // Coordination with an explicit result: start runs in a task and
+        // the control server comes up at the first sign of launch (args written).
+        // NO assert before cleanup: task errors and panics stay
+        // collected data, and the verdict comes after the shared cleanup
+        // phase (daemon stopped, control aborted).
         let start_daemon = daemon.clone();
         let start_features = features.clone();
         let mut start_task = tokio::spawn(async move { start_daemon.start(&start_features).await });
@@ -923,8 +923,8 @@ async fn daemon_start_and_restart_preserve_launch_features() {
             }
             handle = &mut control => {
                 control_result = Some(handle);
-                // Il control e` scaduto senza vedere gli args: lo start viene
-                // atteso con un limite proprio e arrestato se esce dal tempo.
+                // The control timed out without seeing the args: start is
+                // awaited with its own limit and stopped if it runs out of time.
                 started_result = Some(match tokio::time::timeout(
                     Duration::from_secs(/*secs*/ 5),
                     &mut start_task,
@@ -951,8 +951,8 @@ async fn daemon_start_and_restart_preserve_launch_features() {
             }
         }
 
-        // Fase di verifica: raccolta in un risultato, con ? al posto degli
-        // assert, cosi' il cleanup sotto gira anche su fallimento.
+        // Verification phase: collected into a result, with ? instead of
+        // asserts, so the cleanup below still runs on failure.
         let checks: Result<(), String> = async {
             let _control = control_result
                 .as_ref()
@@ -1456,7 +1456,7 @@ async fn check_manual_update_restart(local_package: bool, fault: RequestFault) -
                 return Err(format!("manca il rifiuto disabled: {message}"));
             }
             if !message.contains("@mmmbuto/codex-vl@latest") {
-                return Err(format!("manca il nome del pacchetto npm: {message}"));
+                return Err(format!("missing the npm package name: {message}"));
             }
         }
 
@@ -1676,11 +1676,11 @@ Test-Installer
 #[cfg(unix)]
 #[tokio::test]
 async fn update_rejects_a_package_root_change_during_download() {
-    // La guardia fork precede qualunque HTTP: il falso client conta le
-    // richieste e non deve mai essere interrogato. Se il download partisse,
-    // il finto installer proverebbe a rimuovere il current del fork (la
-    // mutazione sentinella che il percorso reale dovrebbe rilevare): il
-    // rischio evitato resta esplicito nel corpo del get.
+    // The fork guard runs before any HTTP: the fake client counts
+    // requests and must never be queried. If the download started,
+    // the fake installer would try to remove the fork's current (the
+    // sentinel mutation the real path should detect): the avoided
+    // risk stays explicit in the body of get.
     struct CountingInstaller {
         requested_urls: Mutex<Vec<String>>,
         fork_current: PathBuf,
@@ -1861,10 +1861,10 @@ async fn daemon_owned_updates_require_and_request_an_isolated_installer() {
         }
     }
 
-    // RestoreProduction con marker assente: il trigger raggiunge la guardia
-    // (la selezione e` dentro releases e supported dal trigger) e il rifiuto
-    // e` disabled con il nome del pacchetto npm. Il pin resta assente e
-    // nessun root upstream nasce.
+    // RestoreProduction with the marker absent: the trigger reaches the guard
+    // (the selection is inside releases and supported by the trigger) and the
+    // refusal is disabled, with the npm package name. The pin stays absent and
+    // no upstream root is created.
     let restore = FakeInstallerHttp::new(InstallerResponse::Success(
         b"# CODEX_INSTALL_IF_CURRENT CODEX_INSTALL_DAEMON_ONLY\nexit 0\n".to_vec(),
     ));

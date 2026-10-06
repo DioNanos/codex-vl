@@ -1186,10 +1186,10 @@ impl ChatWidget {
         std::time::Duration::from_secs(secs)
     }
 
-    /// Watchdog diagnostico del latch pending-start (mai auto-clear): con un
-    /// latch alto e nessun turno in corso oltre la soglia, avvisa e mostra lo
-    /// stato nel footer. Il core silente è un difetto app-server: la TUI lo
-    /// rende visibile, non lo maschera.
+    /// Diagnostic watchdog for the pending-start latch (never auto-clears):
+    /// when the latch stays high and no turn is in progress past the
+    /// threshold, warn and show the state in the footer. A silent core is an
+    /// app-server defect: the TUI makes it visible, it does not hide it.
     pub(crate) fn check_pending_start_watchdog_with(&mut self, threshold: std::time::Duration) {
         if threshold.is_zero() {
             return;

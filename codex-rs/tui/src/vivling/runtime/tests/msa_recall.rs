@@ -103,10 +103,10 @@ fn recall_saturation_resets_and_recovers() {
 
 fn rich_source_with(marker: &str) -> String {
     format!(
-        "Analisi completa del bug nel modulo websocket: la backoff window cresceva senza \
-         limite perche' il moltiplicatore non veniva azzerato dopo un successo. Il fix vive \
-         nella funzione di reconnect e il marcatore distintivo del dettaglio e' {marker}, \
-         che si trova ben oltre il taglio dei centoventi caratteri del summary."
+        "Full analysis of the bug in the websocket module: the backoff window grew without \
+         a limit because the multiplier was not reset after a success. The fix lives \
+         in the reconnect function and the distinctive marker of the detail is {marker}, \
+         which sits well past the one-hundred-twenty character cut of the summary."
     )
 }
 
@@ -153,7 +153,7 @@ fn rich_capsule_detail_recallable_beyond_truncation() {
     // (c) la query sul contenuto del detail trova il documento e la sezione
     // di recall porta il marcatore al brain.
     let section = msa
-        .recall_section(vid, "marcatore distintivo SMERALDO99 reconnect")
+        .recall_section(vid, "distinctive marker SMERALDO99 reconnect")
         .expect("injection section");
     assert!(section.contains("SMERALDO99"), "{section}");
     assert!(section.contains("detail:"), "{section}");

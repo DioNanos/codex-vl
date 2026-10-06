@@ -52,15 +52,15 @@ fn expression_gate_is_singular_and_orthogonal_to_phase() {
     use crate::vivling::runtime::ExpressionKind;
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = configured_vivling(temp.path());
-    // ortogonale: un task in corso non blocca l'apertura di un dispatch
+    // orthogonal: a running task does not block opening a dispatch
     vivling.set_task_running(true);
     assert!(vivling.try_begin_expression(ExpressionKind::Crt));
     assert!(vivling.expression_in_flight());
-    // singolo: secondo dispatch mentre uno è in volo → skip
+    // singular: a second dispatch while one is in flight → skip
     assert!(!vivling.try_begin_expression(ExpressionKind::Assist));
-    // task ancora running: il gate non ha toccato la fase
+    // task still running: the gate did not touch the phase
     assert!(vivling.is_task_running());
-    // clear (fail-safe) riapre
+    // clear (fail-safe) opens it again
     vivling.finish_expression();
     assert!(!vivling.expression_in_flight());
     assert!(vivling.try_begin_expression(ExpressionKind::Bootstrap));

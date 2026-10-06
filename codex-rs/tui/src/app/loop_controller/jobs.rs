@@ -1128,10 +1128,10 @@ pub(super) async fn run_command_request(
                 None,
             )
         }
-        // `/loop apply`/`/loop dismiss`: puro routing ad eventi
-        // Vivling. Nessun tocco allo state DB qui; l'applicazione effettiva
-        // (map_to_command + run_command_request ricorsivo) avviene nel
-        // handler ApplyLoopSuggestion, sempre gated dal comando utente.
+        // `/loop apply` / `/loop dismiss`: pure routing to Vivling
+        // events. No write to the state DB here; the real apply
+        // (map_to_command + recursive run_command_request) happens in the
+        // ApplyLoopSuggestion handler, always gated by the user command.
         LoopCommandRequest::Apply { suggestion_id } => {
             app.app_event_tx
                 .send_vl(crate::vl::VlEvent::ApplyLoopSuggestion { suggestion_id });

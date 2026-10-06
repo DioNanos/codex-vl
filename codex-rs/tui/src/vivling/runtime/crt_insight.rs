@@ -329,7 +329,9 @@ fn compact_summary(raw: &str) -> Option<String> {
             "merge: protect vl hooks"
         } else if lower.contains("verif") || lower.contains("verified") {
             "verify before widening"
-        } else if lower.contains("complet") || lower.contains("done") {
+        } else if lower.contains("complet") // codespell:ignore
+            || lower.contains("done")
+        {
             "done - check fallout"
         } else if lower.contains("loop") {
             "loop: verify next wake"

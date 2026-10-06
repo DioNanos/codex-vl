@@ -561,15 +561,15 @@ pub fn validate_model_infos(models: &[ModelInfo]) -> Result<(), ModelMessageText
     models.iter().try_for_each(validate_model_messages)
 }
 
-/// Divide un catalogo GIA' analizzato in due: i modelli che passano il controllo
-/// sulla dimensione dei messaggi e quelli che non lo passano.
+/// Split an already parsed catalog in two: the models that pass the check
+/// on message size, and those that do not.
 ///
-/// Il controllo resta dov'e' — e' una protezione contro un campo fuori misura —
-/// ma smette di decidere per TUTTA la risposta. Prima viveva dentro la
-/// deserializzazione: un solo modello con un messaggio troppo lungo rendeva
-/// illeggibile l'intero catalogo, il chiamante ripiegava sull'elenco compilato
-/// nel binario e i modelli NUOVI sparivano dal selettore mentre i vecchi
-/// restavano. Una voce malformata deve nascondere SE STESSA, non le altre.
+/// The check stays where it is — it is a guard against an oversized field —
+/// but it no longer decides the WHOLE response. It used to live inside
+/// deserialization: one model with a message that was too long made the
+/// entire catalog unreadable, the caller fell back to the list compiled
+/// into the binary, and NEW models disappeared from the picker while the old
+/// ones remained. A malformed entry must hide ITSELF, not the others.
 pub fn partition_model_infos(
     models: Vec<ModelInfo>,
 ) -> (Vec<ModelInfo>, Vec<ModelMessageTextTooLong>) {

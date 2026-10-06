@@ -88,22 +88,22 @@ impl Vivling {
     }
 
     pub(crate) fn set_task_running(&mut self, running: bool) {
-        // Step 12.C — la FSM di fase è ora sorgente di verità (flag legacy rimosso).
+        // Step 12.C — the phase FSM is now the source of truth (legacy flag removed).
         {
             let phase = &mut self.shadow.lifecycle;
-            phase.set_available(); // configure() precede sempre un task
+            phase.set_available(); // configure() always precedes a task
             if running {
-                // codex-vl — regressione presa da
-                // footer_pose_animates_while_visible_and_idle: la FSM entra in
-                // task PRIMA di mark_recent_activity, che già vedeva
-                // is_task_running()=true e non seminava mai il clock della
-                // pose (frame congelato). Il seed avviene qui, all'inizio
-                // del task: il clock di animazione parte con la FSM.
+                // codex-vl — regression taken from
+                // footer_pose_animates_while_visible_and_idle: the FSM enters
+                // task BEFORE mark_recent_activity, which already saw
+                // is_task_running()=true and never seeded the pose
+                // clock (frozen frame). The seed happens here, at the start
+                // of the task: the animation clock starts with the FSM.
                 let now = std::time::Instant::now();
                 let started_transition = phase.begin_task(now);
                 if started_transition {
-                    // Idempotente: true→true (task già in corso) non riazzera
-                    // il clock della pose; solo la transizione reale lo semina.
+                    // Idempotent: true→true (task already running) does not reset
+                    // the pose clock; only a real transition seeds it.
                     self.shadow.active_started_at = Some(now);
                 }
             } else {
@@ -117,7 +117,7 @@ impl Vivling {
         }
     }
 
-    /// Step 12.C — lettura della fase (Task 4 sposterà i call-site qui).
+    /// Step 12.C — read the phase (Task 4 will move the call sites here).
     pub(crate) fn is_task_running(&self) -> bool {
         self.shadow.lifecycle.is_task_running()
     }
