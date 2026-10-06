@@ -58,6 +58,8 @@ def main() -> int:
     used_optional_dependency_exceptions: set[tuple[str, str, str]] = set()
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]] = set()
     used_lints_exceptions: set[str] = set()
+    used_top_level_name_exceptions: set[str] = set()
+    used_utility_name_exceptions: set[str] = set()
     failures_by_path: dict[str, list[str]] = {}
 
     for path in manifests_to_verify():
@@ -68,6 +70,8 @@ def main() -> int:
             used_optional_dependency_exceptions,
             used_internal_dependency_feature_exceptions,
             used_lints_exceptions,
+            used_top_level_name_exceptions,
+            used_utility_name_exceptions,
         ):
             failures_by_path[manifest_key(path)] = errors
 
@@ -77,6 +81,8 @@ def main() -> int:
         used_optional_dependency_exceptions,
         used_internal_dependency_feature_exceptions,
         used_lints_exceptions,
+        used_top_level_name_exceptions,
+        used_utility_name_exceptions,
     )
 
     if not failures_by_path:
@@ -131,6 +137,8 @@ def manifest_errors(
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
     used_lints_exceptions: set[str],
+    used_top_level_name_exceptions: set[str],
+    used_utility_name_exceptions: set[str],
 ) -> list[str]:
     manifest = load_manifest(path)
     package = manifest.get("package")
@@ -158,7 +166,15 @@ def manifest_errors(
         expected_name = expected_package_name(path)
         if expected_name is not None:
             actual_name = package.get("name")
-            if actual_name != expected_name:
+            stale_name_exception = record_name_exception(
+                path,
+                actual_name,
+                used_top_level_name_exceptions,
+                used_utility_name_exceptions,
+            )
+            if stale_name_exception is not None:
+                errors.append(stale_name_exception)
+            elif actual_name != expected_name:
                 errors.append(
                     f"set `[package].name` to `{expected_name}` (found `{actual_name}`)"
                 )
@@ -239,17 +255,73 @@ def manifest_errors(
     return errors
 
 
+def conventional_package_name(directory: str, *, utility: bool) -> str:
+    if utility:
+        return f"codex-utils-{directory}"
+    if directory.startswith("codex-"):
+        return directory
+    return f"codex-{directory}"
+
+
 def expected_package_name(path: Path) -> str | None:
     parts = path.relative_to(CARGO_RS_ROOT).parts
     if len(parts) == 2 and parts[1] == "Cargo.toml":
         directory = parts[0]
         return TOP_LEVEL_NAME_EXCEPTIONS.get(
-            directory,
-            directory if directory.startswith("codex-") else f"codex-{directory}",
+            directory, conventional_package_name(directory, utility=False)
         )
     if len(parts) == 3 and parts[0] == "utils" and parts[2] == "Cargo.toml":
         directory = parts[1]
-        return UTILITY_NAME_EXCEPTIONS.get(directory, f"codex-utils-{directory}")
+        return UTILITY_NAME_EXCEPTIONS.get(
+            directory, conventional_package_name(directory, utility=True)
+        )
+    return None
+
+
+def name_exception_for(path: Path) -> tuple[str, str, str] | None:
+    parts = path.relative_to(CARGO_RS_ROOT).parts
+    if len(parts) == 2 and parts[1] == "Cargo.toml":
+        directory = parts[0]
+        if directory not in TOP_LEVEL_NAME_EXCEPTIONS:
+            return None
+        return (
+            "top",
+            directory,
+            conventional_package_name(directory, utility=False),
+        )
+    if len(parts) == 3 and parts[0] == "utils" and parts[2] == "Cargo.toml":
+        directory = parts[1]
+        if directory not in UTILITY_NAME_EXCEPTIONS:
+            return None
+        return (
+            "utility",
+            directory,
+            conventional_package_name(directory, utility=True),
+        )
+    return None
+
+
+def record_name_exception(
+    path: Path,
+    actual_name: object,
+    used_top_level_name_exceptions: set[str],
+    used_utility_name_exceptions: set[str],
+) -> str | None:
+    located = name_exception_for(path)
+    if located is None:
+        return None
+    kind, directory, conventional = located
+    if kind == "top":
+        used_top_level_name_exceptions.add(directory)
+        map_name = "TOP_LEVEL_NAME_EXCEPTIONS"
+    else:
+        used_utility_name_exceptions.add(directory)
+        map_name = "UTILITY_NAME_EXCEPTIONS"
+    if actual_name == conventional:
+        return (
+            "remove the stale name exception from "
+            f"`{map_name}`; `[package].name` is already `{conventional}`"
+        )
     return None
 
 
@@ -353,7 +425,27 @@ def add_unused_exception_errors(
     used_optional_dependency_exceptions: set[tuple[str, str, str]],
     used_internal_dependency_feature_exceptions: set[tuple[str, str, str]],
     used_lints_exceptions: set[str],
+    used_top_level_name_exceptions: set[str],
+    used_utility_name_exceptions: set[str],
 ) -> None:
+    for directory in sorted(
+        set(TOP_LEVEL_NAME_EXCEPTIONS) - used_top_level_name_exceptions
+    ):
+        add_failure(
+            failures_by_path,
+            f"codex-rs/{directory}/Cargo.toml",
+            "remove the stale name exception from `TOP_LEVEL_NAME_EXCEPTIONS`",
+        )
+
+    for directory in sorted(
+        set(UTILITY_NAME_EXCEPTIONS) - used_utility_name_exceptions
+    ):
+        add_failure(
+            failures_by_path,
+            f"codex-rs/utils/{directory}/Cargo.toml",
+            "remove the stale name exception from `UTILITY_NAME_EXCEPTIONS`",
+        )
+
     for path_key in sorted(set(LINTS_EXCEPTIONS) - used_lints_exceptions):
         add_failure(
             failures_by_path,
