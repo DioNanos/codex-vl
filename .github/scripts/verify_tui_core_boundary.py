@@ -19,6 +19,14 @@ FORBIDDEN_SOURCE_PATTERNS = (
     re.compile(r"\buse\s+codex_core\b"),
     re.compile(r"\bextern\s+crate\s+codex_core\b"),
 )
+# fork: the Vivling background runtime still links codex-core directly; tracked for migration behind legacy_core
+ALLOWED_MANIFEST_CORE_DEP = {
+    "codex-rs/tui/Cargo.toml",
+}
+# fork: the Vivling background runtime still links codex-core directly; tracked for migration behind legacy_core
+ALLOWED_SOURCE_FILES = {
+    "codex-rs/tui/src/app/vivling_background.rs",
+}
 
 
 def main() -> int:
@@ -42,15 +50,42 @@ def main() -> int:
 
 
 def manifest_failures() -> list[str]:
-    manifest = tomllib.loads(TUI_MANIFEST.read_text())
     failures = []
-    for section_name, dependencies in dependency_sections(manifest):
-        if FORBIDDEN_PACKAGE in dependencies:
+    manifest_rel = relative_path(TUI_MANIFEST)
+    if TUI_MANIFEST.is_file():
+        manifest = tomllib.loads(TUI_MANIFEST.read_text())
+        for section_name, dependencies in dependency_sections(manifest):
+            if FORBIDDEN_PACKAGE not in dependencies:
+                continue
+            if manifest_rel in ALLOWED_MANIFEST_CORE_DEP:
+                continue
             failures.append(
-                f"{relative_path(TUI_MANIFEST)} declares `{FORBIDDEN_PACKAGE}` "
+                f"{manifest_rel} declares `{FORBIDDEN_PACKAGE}` "
                 f"in `[{section_name}]`"
             )
+    elif manifest_rel not in ALLOWED_MANIFEST_CORE_DEP:
+        failures.append(f"{manifest_rel} is missing")
+
+    for allowed in sorted(ALLOWED_MANIFEST_CORE_DEP):
+        path = ROOT / allowed
+        if not path.is_file():
+            failures.append(
+                f"stale `ALLOWED_MANIFEST_CORE_DEP` entry `{allowed}` does not exist"
+            )
+        elif not manifest_declares_core(path):
+            failures.append(
+                "stale `ALLOWED_MANIFEST_CORE_DEP` entry "
+                f"`{allowed}` no longer declares `{FORBIDDEN_PACKAGE}`"
+            )
     return failures
+
+
+def manifest_declares_core(path: Path) -> bool:
+    manifest = tomllib.loads(path.read_text())
+    return any(
+        FORBIDDEN_PACKAGE in dependencies
+        for _section_name, dependencies in dependency_sections(manifest)
+    )
 
 
 def dependency_sections(manifest: dict) -> list[tuple[str, dict]]:
@@ -73,14 +108,37 @@ def dependency_sections(manifest: dict) -> list[tuple[str, dict]]:
 
 def source_failures() -> list[str]:
     failures = []
+    imported: set[str] = set()
     for path in sorted(TUI_ROOT.glob("**/*.rs")):
-        text = path.read_text()
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if any(pattern.search(line) for pattern in FORBIDDEN_SOURCE_PATTERNS):
-                failures.append(
-                    f"{relative_path(path)}:{line_number} imports `codex_core`"
-                )
+        rel = relative_path(path)
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            if not line_imports_core(line):
+                continue
+            if rel in ALLOWED_SOURCE_FILES:
+                imported.add(rel)
+                continue
+            failures.append(f"{rel}:{line_number} imports `codex_core`")
+
+    for allowed in sorted(ALLOWED_SOURCE_FILES):
+        path = ROOT / allowed
+        if not path.is_file():
+            failures.append(
+                f"stale `ALLOWED_SOURCE_FILES` entry `{allowed}` does not exist"
+            )
+        elif allowed not in imported and not file_imports_core(path):
+            failures.append(
+                "stale `ALLOWED_SOURCE_FILES` entry "
+                f"`{allowed}` no longer imports `codex_core`"
+            )
     return failures
+
+
+def line_imports_core(line: str) -> bool:
+    return any(pattern.search(line) for pattern in FORBIDDEN_SOURCE_PATTERNS)
+
+
+def file_imports_core(path: Path) -> bool:
+    return any(line_imports_core(line) for line in path.read_text().splitlines())
 
 
 def relative_path(path: Path) -> str:
