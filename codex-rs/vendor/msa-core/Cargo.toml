@@ -8,6 +8,9 @@ description = "MSA-flavor retrieval engine library: chunking, tantivy BM25, and 
 [lib]
 doctest = false
 
+[lints]
+workspace = true
+
 [features]
 default = []
 embeddings = ["dep:reqwest"]

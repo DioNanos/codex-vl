@@ -27,8 +27,21 @@ UTILITY_NAME_EXCEPTIONS = {
 }
 MANIFEST_FEATURE_EXCEPTIONS = {
     "codex-rs/v8-poc/Cargo.toml": {"sandbox": ("v8/v8_enable_sandbox",)},
+    # Permanent fork test gates and the embeddings flag, not a temporary migration.
+    "codex-rs/app-server/Cargo.toml": {"d174-test-fixture": ()},
+    "codex-rs/tui/Cargo.toml": {
+        "identity-gate-test": (),
+        "legacy_tui_tests": (),
+    },
+    "codex-rs/vendor/msa-core/Cargo.toml": {
+        "default": (),
+        "embeddings": ("dep:reqwest",),
+    },
 }
-OPTIONAL_DEPENDENCY_EXCEPTIONS = set()
+# Permanent fork test gates and the embeddings flag, not a temporary migration.
+OPTIONAL_DEPENDENCY_EXCEPTIONS = {
+    ("codex-rs/vendor/msa-core/Cargo.toml", "dependencies", "reqwest"),
+}
 INTERNAL_DEPENDENCY_FEATURE_EXCEPTIONS = {}
 
 

@@ -290,7 +290,7 @@ codex-tui = { path = "tui" }
 codex-uds = { path = "uds" }
 codex-vivling-core = { path = "vivling-core" }
 codex-vivling-memory-agent = { path = "vivling-memory-agent" }
-msa-core = { path = "vendor/msa-core", default-features = false }
+msa-core = { path = "vendor/msa-core" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }
 codex-utils-approval-presets = { path = "utils/approval-presets" }
 codex-utils-audio = { path = "utils/audio" }

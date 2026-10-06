@@ -1,8 +1,8 @@
 [package]
-name = "fork-gate"
-version = "0.0.0"
-edition = "2024"
-license = "Apache-2.0"
+name = "codex-fork-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
 description = "Gate di sanificazione pre-publish per il fork codex-vl (test-only)."
 
@@ -10,3 +10,6 @@ description = "Gate di sanificazione pre-publish per il fork codex-vl (test-only
 test = false
 doctest = false
 path = "src/lib.rs"
+
+[lints]
+workspace = true
