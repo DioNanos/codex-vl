@@ -75,15 +75,20 @@ jobs:
           # the payload, and the postinstall must both provision rg and check
           # the full layout before it exits.
           grep -qx "package/scripts/rg-manifest" "${RUNNER_TEMP}/package-files.txt"
-          rg_manifest="$(tar -xOf "${PACK_OUTPUT}" package/scripts/rg-manifest)"
-          rg_digest="$(printf '%s' "${rg_manifest}" | tail -n +2 | python3 -c 'import json,sys; print(json.load(sys.stdin)["platforms"]["macos-aarch64"]["digest"])')"
+          tar -xOf "${PACK_OUTPUT}" package/scripts/postinstall_darwin_build.js \
+            > "${RUNNER_TEMP}/postinstall_darwin_build.js"
+          tar -xOf "${PACK_OUTPUT}" package/scripts/rg-manifest \
+            > "${RUNNER_TEMP}/rg-manifest"
+          # Never `... | grep -q` here: grep -q exits at the first match, the
+          # writer takes SIGPIPE (141), and `set -o pipefail` fails the step on a
+          # correct payload. Read the extracted files directly instead.
+          rg_digest="$(python3 -c 'import json,sys; body=open(sys.argv[1]).read().split("\n",1)[1]; print(json.loads(body)["platforms"]["macos-aarch64"]["digest"])' "${RUNNER_TEMP}/rg-manifest")"
           if [ -z "${rg_digest}" ]; then
             echo "macOS ripgrep manifest carries no macos-aarch64 digest" >&2
             exit 1
           fi
-          postinstall="$(tar -xOf "${PACK_OUTPUT}" package/scripts/postinstall_darwin_build.js)"
           for needle in "codex-path/rg" "provisionRipgrep" "verifyPackageLayout" "rg-manifest"; do
-            if ! printf '%s' "${postinstall}" | grep -qF "${needle}"; then
+            if ! grep -qF -- "${needle}" "${RUNNER_TEMP}/postinstall_darwin_build.js"; then
               echo "macOS postinstall does not reference ${needle}" >&2
               exit 1
             fi
