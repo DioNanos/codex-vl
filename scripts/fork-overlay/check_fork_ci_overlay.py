@@ -8,7 +8,9 @@ postmerge permissions (E) and the result aggregators (F).
 
 import json
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -52,6 +54,62 @@ NO_PRIVATE_RUNNER = [
 ]
 FORBIDDEN = re.compile(r"macos-15-xlarge|-runners\b")
 
+NEEDS_RESULT = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
+SAFE_LINE = re.compile(
+    r"^(#.*|echo .*|exit [0-9]+|fi|(if )?\[\[ .* \]\](;| then|; then| \|\| .*)?)$"
+)
+
+
+def run_step(script, results, env):
+    """Run the step with every needs.<job>.result replaced by results[job]."""
+    text = NEEDS_RESULT.sub(lambda m: results.get(m.group(1), "success"), script)
+    if "${{" in text:
+        return None
+    return subprocess.run(
+        ["bash", "-c", text],
+        env={"PATH": "/usr/bin:/bin", **env},
+        cwd=tempfile.gettempdir(),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
+def check_aggregator_step(name, agg, step, off_jobs):
+    script = str(step.get("run", ""))
+    mentioned = [j for j in off_jobs if f"needs.{j}.result" in script]
+    if not mentioned:
+        return []
+    for line in (ln.strip() for ln in script.splitlines()):
+        if line and not SAFE_LINE.match(line):
+            return [
+                f"{name}: job '{agg}' has a command the guard does not run: {line[:60]!r}; extend the guard"
+            ]
+    env = {key: "true" for key in (step.get("env") or {})}
+    skipped = {j: "skipped" for j in off_jobs}
+    errs = []
+    ran = run_step(script, skipped, env)
+    if ran is None:
+        return [f"{name}: job '{agg}' uses an expression the guard cannot resolve"]
+    if ran.returncode != 0:
+        errs.append(
+            f"{name}: job '{agg}' rejects 'skipped' for a disabled job "
+            f"(exit {ran.returncode}: {(ran.stdout.strip().splitlines() or [''])[-1][:80]})"
+        )
+    for job in mentioned:
+        if not any(
+            f"needs.{job}.result" in ln and ln.strip().startswith("[[")
+            for ln in script.splitlines()
+        ):
+            continue  # only echoed: nothing is asserted about this job
+        ran = run_step(script, {**skipped, job: "failure"}, env)
+        if ran is not None and ran.returncode == 0:
+            errs.append(
+                f"{name}: job '{agg}' accepts a failed '{job}'; the assertion is not enforced"
+            )
+    return errs
+
 
 def main(root):
     wf = Path(root) / ".github/workflows"
@@ -92,30 +150,17 @@ def main(root):
     pm = yaml.safe_load(load("postmerge-ci.yml"))["jobs"]["rust-ci-full"]
     if (pm.get("permissions") or {}).get("actions") != "write":
         errs.append("postmerge-ci.yml: rust-ci-full lacks permissions.actions: write")
-    # F: an aggregator assertion on a disabled job must accept `skipped`.
-    # Parsed per assertion line, not counted: a strict assertion keeps the
-    # aggregator red while every other marker is still in place.
+    # F: the aggregator step must accept `skipped` for every disabled job and
+    # must still fail when such a job fails. The step is run, not pattern
+    # matched, in an isolated shell, so an operator slip such as `&&` for `||`
+    # cannot hide behind the right words being present.
     for name, jobs in OFF_JOBS.items():
         y = yaml.safe_load(load(name))
         for agg, spec in y["jobs"].items():
+            if agg in jobs:
+                continue  # a disabled job never runs, so its own steps are not judged
             for step in spec.get("steps") or []:
-                for line in str(step.get("run", "")).splitlines():
-                    if not line.strip().startswith("[["):
-                        continue
-                    for j in jobs:
-                        ref = "needs." + j + ".result"
-                        if ref not in line:
-                            continue
-                        ok = re.search(
-                            r"\$\{\{\s*"
-                            + re.escape(ref)
-                            + r"\s*\}\}'\s*==\s*'skipped'",
-                            line,
-                        )
-                        if not ok:
-                            errs.append(
-                                f"{name}: job '{agg}' asserts '{j}' without accepting 'skipped'"
-                            )
+                errs.extend(check_aggregator_step(name, agg, step, jobs))
     for e in errs:
         print("FAIL:", e)
     print(
