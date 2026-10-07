@@ -111,7 +111,40 @@ function rgPlan(manifest, platformKey = RG_PLATFORM_KEY) {
   };
 }
 
+// Not every tool answers `--version`: macOS `codesign` exits 2 on it, so asking
+// for a version to decide whether a command exists reports a false negative.
+// Ask the shell for the executable instead (the tool is never invoked).
+function commandInPath(command, { run = spawnSync, env = process.env } = {}) {
+  if (!/^[\w.+-]+$/.test(command)) {
+    throw new Error(`unsafe command name: ${command}`);
+  }
+  const result = run("/bin/sh", ["-c", `command -v ${command}`], {
+    encoding: "utf8",
+    env,
+  });
+  if (result.status !== 0) return null;
+  const found = String(result.stdout || "").trim().split("\n")[0];
+  return found && existsSync(found) ? found : null;
+}
+
+const CODESIGN_PATH = "/usr/bin/codesign";
+
+function findCodesign({ run = spawnSync, env = process.env } = {}) {
+  return (
+    commandInPath("codesign", { run, env }) ||
+    (existsSync(CODESIGN_PATH) ? CODESIGN_PATH : null)
+  );
+}
+
+// tar on macOS is bsdtar; either one writes a member to stdout with -xOf.
+function findArchiveTool({ run = spawnSync, env = process.env } = {}) {
+  return commandInPath("tar", { run, env }) || commandInPath("bsdtar", { run, env });
+}
+
 function downloadWithCurl(url, dest) {
+  if (!commandInPath("curl")) {
+    throw new Error("curl is not available: cannot download the pinned ripgrep");
+  }
   const result = spawnSync("curl", ["-fsSL", url, "-o", dest], { stdio: "inherit" });
   if (result.status !== 0) {
     throw new Error(`download failed for ${url}`);
@@ -119,16 +152,52 @@ function downloadWithCurl(url, dest) {
 }
 
 function findSystemRipgrep() {
-  const result = spawnSync("sh", ["-c", "command -v rg"], { encoding: "utf8" });
-  if (result.status !== 0) return null;
-  const found = String(result.stdout || "").trim();
-  return found && existsSync(found) ? found : null;
+  return commandInPath("rg");
 }
 
-function codesignAdhoc(target) {
-  if (os.platform() !== "darwin" || !hasCommand("codesign")) return false;
-  const result = spawnSync("codesign", ["-s", "-", "--force", target], { stdio: "pipe" });
-  return result.status === 0;
+function extractArchiveMember(archive, member, dest, { run = spawnSync } = {}) {
+  const archiveTool = findArchiveTool();
+  if (!archiveTool) {
+    throw new Error("neither tar nor bsdtar is available to extract ripgrep");
+  }
+  const extracted = run(archiveTool, ["-xOf", archive, member], {
+    maxBuffer: 128 * 1024 * 1024,
+  });
+  if (extracted.status !== 0) {
+    throw new Error(`failed to extract ${member} from ${path.basename(archive)}`);
+  }
+  writeFileSync(dest, extracted.stdout);
+}
+
+// The ad-hoc signature is hardening, not a condition for the binary to run:
+// a file extracted from a tarball carries no quarantine attribute. So a missing
+// or failing codesign is a loud warning - never a silent skip, and never a
+// reason to throw away a finished 10-30 minute build.
+function codesignAdhoc(target, {
+  platform = os.platform(),
+  find = findCodesign,
+  run = spawnSync,
+  log = (message) => console.log(`[codex-vl] ${message}`),
+  warn = (message) => console.warn(`[codex-vl] ${message}`),
+} = {}) {
+  if (platform !== "darwin") return false;
+  const codesign = find();
+  if (!codesign) {
+    warn("codesign not found: codex-path/rg stays unsigned");
+    return false;
+  }
+  const sign = run(codesign, ["-s", "-", "-f", target], { stdio: "pipe" });
+  if (sign.status !== 0) {
+    warn(`codesign failed for ${target}: the file stays unsigned`);
+    return false;
+  }
+  const verify = run(codesign, ["-v", target], { stdio: "pipe" });
+  if (verify.status !== 0) {
+    warn(`codesign verification failed for ${target}: the signature is not trusted`);
+    return false;
+  }
+  log(`ad-hoc signed ${path.basename(target)}`);
+  return true;
 }
 
 // Pinned download first (reproducible, digest-verified), system ripgrep only as
@@ -140,6 +209,7 @@ function provisionRipgrep({
   platformKey = RG_PLATFORM_KEY,
   download = downloadWithCurl,
   findSystemRg = findSystemRipgrep,
+  codesign = codesignAdhoc,
   log = (message) => console.log(`[codex-vl] ${message}`),
   warn = (message) => console.warn(`[codex-vl] ${message}`),
 } = {}) {
@@ -166,13 +236,7 @@ function provisionRipgrep({
     if (plan.digest && digest !== plan.digest) {
       throw new Error(`ripgrep checksum mismatch: expected ${plan.digest}, got ${digest}`);
     }
-    const extracted = spawnSync("tar", ["-xOf", archive, plan.member], {
-      maxBuffer: 128 * 1024 * 1024,
-    });
-    if (extracted.status !== 0) {
-      throw new Error(`failed to extract ${plan.member} from ${path.basename(archive)}`);
-    }
-    writeFileSync(dest, extracted.stdout);
+    extractArchiveMember(archive, plan.member, dest);
     rmSync(archive, { force: true });
   } else {
     const systemRg = findSystemRg();
@@ -187,9 +251,7 @@ function provisionRipgrep({
   }
 
   chmodSync(dest, 0o755);
-  if (codesignAdhoc(dest)) {
-    log("ad-hoc signed codex-path/rg");
-  }
+  codesign(dest, { log, warn });
   return dest;
 }
 
@@ -418,4 +480,7 @@ module.exports = {
   provisionRipgrep,
   verifyPackageLayout,
   readRgManifest,
+  findCodesign,
+  codesignAdhoc,
+  commandInPath,
 };

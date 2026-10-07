@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -63,6 +64,13 @@ before(() => {
     "postinstall_darwin_build.js must export provisionRipgrep (and not run the " +
       `build when required as a library); stdout=${JSON.stringify(probe.stdout)}`,
   );
+  for (const name of ["verifyPackageLayout", "findCodesign", "codesignAdhoc"]) {
+    assert.match(
+      probe.stdout || "",
+      new RegExp(name),
+      `postinstall_darwin_build.js must export ${name}`,
+    );
+  }
   postinstall = createRequire(import.meta.url)(scriptCopy);
 });
 
@@ -219,4 +227,102 @@ test("A: il manifest senza la voce macos-aarch64 non passa per il download", () 
     /no ripgrep available/,
   );
   assert.equal(warnings.some((w) => /macos-aarch64/.test(w)), true);
+});
+
+// --- firma ad hoc -----------------------------------------------------------
+// `codesign` non ha `--version`: su macOS risponde 2. Chiedere la versione per
+// decidere se il tool c'è lo dichiara assente e la firma non viene mai tentata.
+test("il rilevamento di codesign non gli chiede --version", () => {
+  const bindir = mkdtempSync(path.join(scratch, "bin-"));
+  const fake = path.join(bindir, "codesign");
+  writeFileSync(
+    fake,
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then exit 2; fi\nexit 0\n',
+  );
+  chmodSync(fake, 0o755);
+  const env = { ...process.env, PATH: `${bindir}:${process.env.PATH ?? ""}` };
+  assert.equal(postinstall.findCodesign({ env }), fake);
+  assert.equal(
+    postinstall.findCodesign({ env: { ...process.env, PATH: "/nonexistent" } }),
+    null,
+  );
+});
+
+test("firma ad hoc: codesign -s - -f, poi verifica con -v", () => {
+  const calls = [];
+  const warnings = [];
+  const signed = postinstall.codesignAdhoc("/tmp/rg-target", {
+    platform: "darwin",
+    find: () => "/usr/bin/codesign",
+    run: (command, args) => {
+      calls.push([command, ...args]);
+      return { status: 0 };
+    },
+    log: () => {},
+    warn: (message) => warnings.push(message),
+  });
+  assert.equal(signed, true);
+  assert.deepEqual(calls, [
+    ["/usr/bin/codesign", "-s", "-", "-f", "/tmp/rg-target"],
+    ["/usr/bin/codesign", "-v", "/tmp/rg-target"],
+  ]);
+  assert.deepEqual(warnings, []);
+});
+
+test("macOS senza codesign: avviso esplicito, nessuna firma", () => {
+  const warnings = [];
+  const signed = postinstall.codesignAdhoc("/tmp/rg-target", {
+    platform: "darwin",
+    find: () => null,
+    run: () => ({ status: 0 }),
+    log: () => {},
+    warn: (message) => warnings.push(message),
+  });
+  assert.equal(signed, false);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /codesign not found/i);
+});
+
+test("firma fallita o non verificata: avviso, mai silenzio", () => {
+  const fallita = [];
+  assert.equal(
+    postinstall.codesignAdhoc("/tmp/rg-target", {
+      platform: "darwin",
+      find: () => "/usr/bin/codesign",
+      run: () => ({ status: 1 }),
+      log: () => {},
+      warn: (message) => fallita.push(message),
+    }),
+    false,
+  );
+  assert.match(fallita.join(" "), /codesign failed/i);
+
+  const nonVerificata = [];
+  let call = 0;
+  assert.equal(
+    postinstall.codesignAdhoc("/tmp/rg-target", {
+      platform: "darwin",
+      find: () => "/usr/bin/codesign",
+      run: () => ({ status: call++ === 0 ? 0 : 1 }),
+      log: () => {},
+      warn: (message) => nonVerificata.push(message),
+    }),
+    false,
+  );
+  assert.match(nonVerificata.join(" "), /verification failed/i);
+});
+
+test("fuori da macOS la firma è un no-op silenzioso", () => {
+  const warnings = [];
+  assert.equal(
+    postinstall.codesignAdhoc("/tmp/rg-target", {
+      platform: "linux",
+      find: () => "/usr/bin/codesign",
+      run: () => ({ status: 0 }),
+      log: () => {},
+      warn: (message) => warnings.push(message),
+    }),
+    false,
+  );
+  assert.deepEqual(warnings, []);
 });
