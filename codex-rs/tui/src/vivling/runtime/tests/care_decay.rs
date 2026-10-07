@@ -1,4 +1,4 @@
-//! codex-vl care decay slowdown (Fase 4 iter 9) — integration tests.
+//! codex-vl care decay slowdown (Phase 4 iter 9) — integration tests.
 //!
 //! These tests pin the explicit `last_seen_at` contract described in
 //! the care-decay slowdown design section 3.1.

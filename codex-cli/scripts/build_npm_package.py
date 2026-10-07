@@ -288,6 +288,8 @@ def prepare_staging_dir(staging_dir: Path | None) -> tuple[Path, bool]:
 
 
 _RELATIVE_IMPORT_RE = re.compile(r"""from\s+["'](\./[^"']+\.js)["']""")
+
+
 def assert_staged_relative_imports_resolve(staging_dir: Path) -> None:
     """Fail closed when a staged launcher imports a file we did not stage.
 
@@ -324,10 +326,14 @@ def stage_sources(
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex.js", bin_dir / "codex.js")
-        shutil.copy2(CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js")
+        shutil.copy2(
+            CODEX_CLI_ROOT / "bin" / "codex-exec.js", bin_dir / "codex-exec.js"
+        )
         # The launcher imports this helper; staging it explicitly is what keeps a
         # published main package runnable (see stage_relative_import_guard).
-        shutil.copy2(CODEX_CLI_ROOT / "bin" / "identity_fds.js", bin_dir / "identity_fds.js")
+        shutil.copy2(
+            CODEX_CLI_ROOT / "bin" / "identity_fds.js", bin_dir / "identity_fds.js"
+        )
         assert_staged_relative_imports_resolve(staging_dir)
         scripts_dir = staging_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -380,7 +386,9 @@ def stage_sources(
         if package == "codex-darwin-arm64":
             stage_darwin_source_build_payload(staging_dir)
             package_json["files"] = ["codex-rs", "scripts", "vendor", "LICENSE"]
-            package_json["scripts"] = {"postinstall": "node scripts/postinstall_darwin_build.js"}
+            package_json["scripts"] = {
+                "postinstall": "node scripts/postinstall_darwin_build.js"
+            }
 
         engines = codex_package_json.get("engines")
         if isinstance(engines, dict):
@@ -561,7 +569,9 @@ def copy_native_binaries(
                     f"Missing native component '{component}' in vendor source: {src_component_dir}"
                 )
 
-            dest_component_dir = dest_target_dir / COMPONENT_DEST_DIR.get(component, component)
+            dest_component_dir = dest_target_dir / COMPONENT_DEST_DIR.get(
+                component, component
+            )
             if dest_component_dir.exists():
                 shutil.rmtree(dest_component_dir)
             shutil.copytree(src_component_dir, dest_component_dir)
@@ -605,7 +615,9 @@ def assert_tarball_contains_native_payload(tarball_path: Path, package: str) -> 
             f"{tarball_path.name} is missing required native payload: "
             + ", ".join(missing)
         )
-    print(f"native payload verified inside {tarball_path.name}: {len(expected)} entries")
+    print(
+        f"native payload verified inside {tarball_path.name}: {len(expected)} entries"
+    )
 
 
 def write_codex_package_manifest(
@@ -713,7 +725,9 @@ def validate_codex_package_dir(package_dir: Path) -> None:
     ]
     if missing_files:
         missing = ", ".join(missing_files)
-        raise RuntimeError(f"Missing files in Codex package directory {package_dir}: {missing}")
+        raise RuntimeError(
+            f"Missing files in Codex package directory {package_dir}: {missing}"
+        )
 
 
 def normalize_npm_pack_output(parsed: object) -> list[dict]:

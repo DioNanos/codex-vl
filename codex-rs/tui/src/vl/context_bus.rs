@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn no_autonomy_suggestion_pending_until_explicit_apply() {
         let mut bus = VivlingContextBus::default();
-        // SuggestionReady equivalente: suggestion nel bus, NESSUN comando.
+        // SuggestionReady equivalent: the suggestion is in the bus, NO command.
         bus.push_suggestion(sugg("a", "build", VivlingSuggestionKind::Disable));
         assert_eq!(bus.pending_suggestions.len(), 1);
 
@@ -155,7 +155,7 @@ mod tests {
         assert!(dismissed.is_some());
         assert!(bus.pending_suggestions.is_empty());
 
-        // /loop apply path: take + map_to_command genera il comando.
+        // /loop apply path: take + map_to_command produces the command.
         bus.push_suggestion(sugg("b", "build", VivlingSuggestionKind::Disable));
         let for_apply = bus.take_suggestion("b").expect("present");
         let cmd = super::super::suggestions::map_to_command(&for_apply, false);

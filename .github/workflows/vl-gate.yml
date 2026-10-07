@@ -3,13 +3,13 @@ name: vl-gate
 on:
   push:
     branches:
-      - 'ci/**'
+      - "ci/**"
   workflow_dispatch:
     inputs:
       source_ref:
         description: Git SHA to validate; empty uses the pushed commit
         required: false
-        default: ''
+        default: ""
         type: string
 
 permissions:

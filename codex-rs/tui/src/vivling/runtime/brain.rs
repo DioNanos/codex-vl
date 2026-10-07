@@ -169,12 +169,12 @@ impl Vivling {
         })
     }
 
-    /// codex-vl — readiness eseguibile del Vivling, definizione unica
-    /// condivisa (delegation resolver, Manage gate, runtime foundation): fase wrapper
-    /// disponibile (non Unavailable) + stato Adult + brain abilitato.
-    /// `Ok(())` = runnable; `Err(reason)` porta la prima causa, per il log
-    /// per-tick e per i messaggi dei gate (i call-site mantengono i loro
-    /// testi originali).
+    /// codex-vl — executable readiness of the Vivling, one shared
+    /// definition (delegation resolver, Manage gate, runtime foundation): wrapper phase
+    /// available (not Unavailable) + Adult state + brain enabled.
+    /// `Ok(())` = runnable; `Err(reason)` carries the first cause, for the
+    /// per-tick log and for the gate messages (call sites keep their own
+    /// original text).
     pub(crate) fn vivling_runnable(
         &self,
         state: &VivlingState,
@@ -182,9 +182,9 @@ impl Vivling {
         Self::vivling_runnable_from(&self.shadow.lifecycle, state)
     }
 
-    /// Variante statica per i call-site che tengono `&mut self.state` e non
-    /// possono rideclinare `&self` (owner identity): la fase si clona prima
-    /// del mut-borrow.
+    /// Static variant for call sites that hold `&mut self.state` and cannot
+    /// reborrow `&self` (owner identity): the phase is cloned before the
+    /// mut borrow.
     pub(crate) fn vivling_runnable_from(
         lifecycle: &VivlingLifecyclePhase,
         state: &VivlingState,
@@ -493,7 +493,7 @@ impl Vivling {
             self.mark_recent_activity(ACTIVE_FOOTER_TAIL);
         })?;
 
-        // codex-vl lineage passive learning (Fase 4 iter 1A): after the
+        // codex-vl lineage passive learning (Phase 4 iter 1A): after the
         // active primary has updated its own distilled_summaries via
         // record_turn_completed → maybe_distill_memory →
         // rebuild_learning_profiles, propagate the new/refreshed

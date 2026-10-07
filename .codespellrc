@@ -3,4 +3,7 @@
 skip = .git*,vendor,*-lock.yaml,*.lock,.codespellrc,*test.ts,*.jsonl,frame*.txt,*.snap,*.snap.new
 check-hidden = true
 ignore-regex = ^\s*"image/\S+": ".*|\b(afterAll)\b
-ignore-words-list = ratatui,ser,iTerm,iterm2,iterm,te,TE,PASE,SEH
+# Data tokens kept on purpose: Italian gate and test strings, German
+# stopwords, a Spanish UI label, the TeX command oint, the name Rin, and
+# the search stem complet. An inline ignore must not split a literal.
+ignore-words-list = ratatui,ser,iTerm,iterm2,iterm,te,TE,PASE,SEH,alterato,applicabile,complet,contro,falso,historial,impossibile,ist,limite,nome,oint,probabile,Rin,rende,sie

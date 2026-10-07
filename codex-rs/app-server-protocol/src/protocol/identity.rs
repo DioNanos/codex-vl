@@ -5,7 +5,8 @@
 
 use crate::JsonSchema;
 use crate::TS;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashSet;
 
 pub const IDENTITY_EXTENSION: &str = "nexuscrew.identity.v1";

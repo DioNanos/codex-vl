@@ -1,10 +1,10 @@
-//! Step 12.C — Vivling lifecycle: FASE di dispatch (FSM) + tipo ExpressionKind.
+//! Step 12.C — Vivling lifecycle: dispatch phase (FSM) plus the ExpressionKind type.
 //!
-//! La FSM modella SOLO la fase mutuamente esclusiva del wrapper runtime.
-//! Il gate `expression_in_flight` è un asse ORTOGONALE (campo sul wrapper,
-//! Task 3): un dispatch di espressione async può restare in volo mentre il
-//! Vivling è in TaskRunning. Runtime-only: mai serializzato, nessun bump schema.
-//! Pacing animazione e latch one-shot restano fuori (vedi plan §scoping).
+//! The FSM models ONLY the mutually exclusive phase of the runtime wrapper.
+//! The `expression_in_flight` gate is an ORTHOGONAL axis (a field on the wrapper,
+//! Task 3): an async expression dispatch can stay in flight while the
+//! Vivling is TaskRunning. Runtime-only: never serialized, no schema bump.
+//! Animation pacing and the one-shot latch stay out (see plan §scoping).
 
 use std::time::Instant;
 

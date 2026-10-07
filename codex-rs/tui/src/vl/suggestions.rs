@@ -1,6 +1,6 @@
-//! FASE 5 Release 5A — modello + gating dei suggerimenti loop del Vivling.
-//! Pura logica: nessuna applicazione automatica, nessun side-effect. Le
-//! suggestion sono volatili (non persistite). Vedi plan §scoping.
+//! Phase 5 release 5A — model and gating for Vivling loop suggestions.
+//! Pure logic: no automatic apply, no side effects. Suggestions are
+//! volatile (not persisted). See plan §scoping.
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -88,9 +88,9 @@ impl SuggestionGate {
     }
 }
 
-/// Mapping sicuro suggestion -> comando loop (§5.3). Ritorna None per i
-/// kind che in 5A NON producono azione automatica (Unblock, Split) o per
-/// proposed_action mancante/invalido.
+/// Safe mapping from a suggestion to a loop command (§5.3). Returns None
+/// for kinds that in 5A do NOT produce an automatic action (Unblock, Split),
+/// or when proposed_action is missing or invalid.
 pub(crate) fn map_to_command(
     sugg: &VivlingLoopSuggestion,
     auto_remove_on_completion: bool,

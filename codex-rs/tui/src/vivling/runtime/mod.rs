@@ -97,11 +97,11 @@ pub(crate) const ACTIVE_FOOTER_FRAME_INTERVAL: Duration = Duration::from_millis(
 pub(crate) const ACTIVE_FOOTER_TAIL: Duration = Duration::from_secs(3);
 pub(crate) const ANIMATION_TEXT_TTL: Duration = Duration::from_secs(4);
 
-/// codex-vl — shadow state del wrapper. Step A: scritto a
-/// fianco dei campi legacy `Cell`/`RefCell` (che restano la fonte letta);
-/// la migrazione campo-per-campo lo rende l'unica fonte e appiattisce la
-/// `RefCell` (transitoria di questa fase). PRIVATO del modulo: il
-/// compilatore è il gate d'accesso, nessun commento a farlo rispettare.
+/// codex-vl — shadow state of the wrapper. Step A: written
+/// beside the legacy `Cell`/`RefCell` fields (which remain the source that is read);
+/// field-by-field migration makes it the only source and flattens the
+/// `RefCell` (temporary in this phase). PRIVATE to the module: the
+/// compiler is the access gate, no comment is needed to enforce that.
 #[derive(Debug, Clone)]
 struct ShadowState {
     lifecycle: VivlingLifecyclePhase,
@@ -149,10 +149,10 @@ pub(crate) struct Vivling {
     pub(crate) active_vivling_id: Option<String>,
     pub(crate) frame_requester: Option<FrameRequester>,
     pub(crate) animations_enabled: bool,
-    /// Step 12.C — fase di dispatch. Sorgente di verità per il task-running
-    /// (il flag legacy `task_running` è stato rimosso in questo step).
-    /// Step 12.C — gate ortogonale: un solo dispatch di espressione in volo
-    /// (race-safety per 12.D). NON è una fase: può coesistere con TaskRunning.
+    /// Step 12.C — dispatch phase. Source of truth for task-running
+    /// (the legacy `task_running` flag was removed in this step).
+    /// Step 12.C — orthogonal gate: a single expression dispatch in flight
+    /// (race-safety for 12.D). It is NOT a phase: it can coexist with TaskRunning.
     /// Short lifecycle text set by lifecycle tick. Baby CRT scripts prefer visual scenes.
     pub(crate) msa: Option<std::sync::Arc<VivlingMsa>>,
     /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
