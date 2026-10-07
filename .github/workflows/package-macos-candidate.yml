@@ -70,6 +70,29 @@ jobs:
           tar -tzf "${PACK_OUTPUT}" | sort | tee "${RUNNER_TEMP}/package-files.txt"
           grep -qx "package/codex-rs/Cargo.toml" "${RUNNER_TEMP}/package-files.txt"
           grep -qx "package/scripts/postinstall_darwin_build.js" "${RUNNER_TEMP}/package-files.txt"
+          # The source build cannot produce ripgrep, and the daemon refuses a
+          # package without codex-path/rg: the pinned manifest must travel with
+          # the payload, and the postinstall must both provision rg and check
+          # the full layout before it exits.
+          grep -qx "package/scripts/rg-manifest" "${RUNNER_TEMP}/package-files.txt"
+          tar -xOf "${PACK_OUTPUT}" package/scripts/postinstall_darwin_build.js \
+            > "${RUNNER_TEMP}/postinstall_darwin_build.js"
+          tar -xOf "${PACK_OUTPUT}" package/scripts/rg-manifest \
+            > "${RUNNER_TEMP}/rg-manifest"
+          # Never `... | grep -q` here: grep -q exits at the first match, the
+          # writer takes SIGPIPE (141), and `set -o pipefail` fails the step on a
+          # correct payload. Read the extracted files directly instead.
+          rg_digest="$(python3 -c 'import json,sys; body=open(sys.argv[1]).read().split("\n",1)[1]; print(json.loads(body)["platforms"]["macos-aarch64"]["digest"])' "${RUNNER_TEMP}/rg-manifest")"
+          if [ -z "${rg_digest}" ]; then
+            echo "macOS ripgrep manifest carries no macos-aarch64 digest" >&2
+            exit 1
+          fi
+          for needle in "codex-path/rg" "provisionRipgrep" "verifyPackageLayout" "rg-manifest"; do
+            if ! grep -qF -- "${needle}" "${RUNNER_TEMP}/postinstall_darwin_build.js"; then
+              echo "macOS postinstall does not reference ${needle}" >&2
+              exit 1
+            fi
+          done
           if tar -xOf "${PACK_OUTPUT}" package/vendor/aarch64-apple-darwin/codex/codex >/dev/null 2>&1; then
             echo "unexpected prebuilt macOS codex binary in package" >&2
             exit 1

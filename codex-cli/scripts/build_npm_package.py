@@ -484,6 +484,14 @@ def stage_darwin_source_build_payload(staging_dir: Path) -> None:
         CODEX_CLI_ROOT / "scripts" / "postinstall_darwin_build.js",
         scripts_dest / "postinstall_darwin_build.js",
     )
+    # The postinstall fetches ripgrep from the pinned DotSlash manifest, so the
+    # manifest travels with the package instead of the digest being retyped in
+    # the script. One source of truth for the macOS and the prebuilt linux
+    # payloads.
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "codex_package" / "rg",
+        scripts_dest / "rg-manifest",
+    )
 
     vendor_dest.mkdir(parents=True, exist_ok=True)
     keep = vendor_dest / ".gitkeep"
