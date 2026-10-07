@@ -70,6 +70,24 @@ jobs:
           tar -tzf "${PACK_OUTPUT}" | sort | tee "${RUNNER_TEMP}/package-files.txt"
           grep -qx "package/codex-rs/Cargo.toml" "${RUNNER_TEMP}/package-files.txt"
           grep -qx "package/scripts/postinstall_darwin_build.js" "${RUNNER_TEMP}/package-files.txt"
+          # The source build cannot produce ripgrep, and the daemon refuses a
+          # package without codex-path/rg: the pinned manifest must travel with
+          # the payload, and the postinstall must both provision rg and check
+          # the full layout before it exits.
+          grep -qx "package/scripts/rg-manifest" "${RUNNER_TEMP}/package-files.txt"
+          rg_manifest="$(tar -xOf "${PACK_OUTPUT}" package/scripts/rg-manifest)"
+          rg_digest="$(printf '%s' "${rg_manifest}" | tail -n +2 | python3 -c 'import json,sys; print(json.load(sys.stdin)["platforms"]["macos-aarch64"]["digest"])')"
+          if [ -z "${rg_digest}" ]; then
+            echo "macOS ripgrep manifest carries no macos-aarch64 digest" >&2
+            exit 1
+          fi
+          postinstall="$(tar -xOf "${PACK_OUTPUT}" package/scripts/postinstall_darwin_build.js)"
+          for needle in "codex-path/rg" "provisionRipgrep" "verifyPackageLayout" "rg-manifest"; do
+            if ! printf '%s' "${postinstall}" | grep -qF "${needle}"; then
+              echo "macOS postinstall does not reference ${needle}" >&2
+              exit 1
+            fi
+          done
           if tar -xOf "${PACK_OUTPUT}" package/vendor/aarch64-apple-darwin/codex/codex >/dev/null 2>&1; then
             echo "unexpected prebuilt macOS codex binary in package" >&2
             exit 1
