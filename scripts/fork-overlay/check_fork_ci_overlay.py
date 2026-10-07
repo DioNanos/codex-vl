@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Fail if any marker of the fork CI overlay is missing from .github/workflows."""
+"""Fail if any marker of the fork CI overlay is missing from .github/workflows.
+
+Checks: disabled jobs (A), restore comments (B), no paid or private runner in
+the matrix or runs-on of the guarded files (C), the blocking gate (D), the
+postmerge permissions (E) and the result aggregators (F).
+"""
 
 import json
 import re
@@ -64,9 +69,18 @@ def main(root):
     for name in NO_PRIVATE_RUNNER:
         y = yaml.safe_load(load(name))
         for j, v in y["jobs"].items():
-            if FORBIDDEN.search(json.dumps(v, default=str)):
+            where = json.dumps(
+                {
+                    "runs-on": v.get("runs-on"),
+                    "matrix": (v.get("strategy") or {}).get("matrix"),
+                },
+                default=str,
+            )
+            if FORBIDDEN.search(where):
+                state = "disabled" if v.get("if") is False else "active"
                 errs.append(
-                    f"{name}: job '{j}' is active and uses a paid macOS runner or a private runner group"
+                    f"{name}: job '{j}' ({state}) has a paid macOS runner or a private "
+                    "runner group in runs-on or matrix; the leg must stay commented out"
                 )
     needs = yaml.safe_load(load("blocking-ci.yml"))["jobs"]
     gate = next(v for v in needs.values() if isinstance(v, dict) and "needs" in v)
@@ -78,6 +92,30 @@ def main(root):
     pm = yaml.safe_load(load("postmerge-ci.yml"))["jobs"]["rust-ci-full"]
     if (pm.get("permissions") or {}).get("actions") != "write":
         errs.append("postmerge-ci.yml: rust-ci-full lacks permissions.actions: write")
+    # F: an aggregator assertion on a disabled job must accept `skipped`.
+    # Parsed per assertion line, not counted: a strict assertion keeps the
+    # aggregator red while every other marker is still in place.
+    for name, jobs in OFF_JOBS.items():
+        y = yaml.safe_load(load(name))
+        for agg, spec in y["jobs"].items():
+            for step in spec.get("steps") or []:
+                for line in str(step.get("run", "")).splitlines():
+                    if not line.strip().startswith("[["):
+                        continue
+                    for j in jobs:
+                        ref = "needs." + j + ".result"
+                        if ref not in line:
+                            continue
+                        ok = re.search(
+                            r"\$\{\{\s*"
+                            + re.escape(ref)
+                            + r"\s*\}\}'\s*==\s*'skipped'",
+                            line,
+                        )
+                        if not ok:
+                            errs.append(
+                                f"{name}: job '{agg}' asserts '{j}' without accepting 'skipped'"
+                            )
     for e in errs:
         print("FAIL:", e)
     print(
