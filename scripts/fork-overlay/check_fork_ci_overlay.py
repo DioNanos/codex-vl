@@ -8,9 +8,7 @@ postmerge permissions (E) and the result aggregators (F).
 
 import json
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import yaml
@@ -54,59 +52,54 @@ NO_PRIVATE_RUNNER = [
 ]
 FORBIDDEN = re.compile(r"macos-15-xlarge|-runners\b")
 
-NEEDS_RESULT = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
-SAFE_LINE = re.compile(
-    r"^(#.*|echo .*|exit [0-9]+|fi|(if )?\[\[ .* \]\](;| then|; then| \|\| .*)?)$"
+# The aggregator step is judged by matching each line against the closed set of
+# forms it has today, never by running it: the guard runs on our machines after
+# every upstream merge and must not execute anything that comes from a workflow.
+_JOB = r"[A-Za-z0-9_-]+"
+_COND = r"\"\$\{NEEDS_CHANGED_OUTPUTS_[A-Z_]+\}\" (?:==|!=) 'true'"
+LINE_TEMPLATES = [
+    re.compile(r"#.*"),
+    re.compile(r"exit 0"),
+    re.compile(r"fi"),
+    re.compile(rf"if \[\[ {_COND}(?: (?:&&|\|\|) {_COND})* \]\]; then"),
+    re.compile(r"echo '[A-Za-z0-9 ._>-]+'"),
+    re.compile(rf"echo \"[A-Za-z0-9 :_.-]+\$\{{\{{ needs\.{_JOB}\.result \}}\}}\""),
+]
+STRICT_ASSERT = re.compile(
+    rf"\[\[ '\$\{{\{{ needs\.(?P<job>{_JOB})\.result \}}\}}' == 'success' \]\]"
+    r" \|\| \{ echo '(?P=job) failed'; exit 1; \}"
 )
-
-
-def run_step(script, results, env):
-    """Run the step with every needs.<job>.result replaced by results[job]."""
-    text = NEEDS_RESULT.sub(lambda m: results.get(m.group(1), "success"), script)
-    if "${{" in text:
-        return None
-    return subprocess.run(
-        ["bash", "-c", text],
-        env={"PATH": "/usr/bin:/bin", **env},
-        cwd=tempfile.gettempdir(),
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
+SKIP_ASSERT = re.compile(
+    rf"\[\[ '\$\{{\{{ needs\.(?P<job>{_JOB})\.result \}}\}}' == 'success'"
+    r" \|\| '\$\{\{ needs\.(?P=job)\.result \}\}' == 'skipped' \]\]"
+    r" \|\| \{ echo '(?P=job) failed'; exit 1; \}"
+)
 
 
 def check_aggregator_step(name, agg, step, off_jobs):
     script = str(step.get("run", ""))
-    mentioned = [j for j in off_jobs if f"needs.{j}.result" in script]
-    if not mentioned:
+    if not any(f"needs.{j}.result" in script for j in off_jobs):
         return []
-    for line in (ln.strip() for ln in script.splitlines()):
-        if line and not SAFE_LINE.match(line):
-            return [
-                f"{name}: job '{agg}' has a command the guard does not run: {line[:60]!r}; extend the guard"
-            ]
-    env = {key: "true" for key in (step.get("env") or {})}
-    skipped = {j: "skipped" for j in off_jobs}
     errs = []
-    ran = run_step(script, skipped, env)
-    if ran is None:
-        return [f"{name}: job '{agg}' uses an expression the guard cannot resolve"]
-    if ran.returncode != 0:
-        errs.append(
-            f"{name}: job '{agg}' rejects 'skipped' for a disabled job "
-            f"(exit {ran.returncode}: {(ran.stdout.strip().splitlines() or [''])[-1][:80]})"
-        )
-    for job in mentioned:
-        if not any(
-            f"needs.{job}.result" in ln and ln.strip().startswith("[[")
-            for ln in script.splitlines()
-        ):
-            continue  # only echoed: nothing is asserted about this job
-        ran = run_step(script, {**skipped, job: "failure"}, env)
-        if ran is not None and ran.returncode == 0:
+    for raw in script.splitlines():
+        line = re.sub(r"\s+", " ", raw.strip())
+        if not line:
+            continue
+        strict = STRICT_ASSERT.fullmatch(line)
+        skip = SKIP_ASSERT.fullmatch(line)
+        if strict:
+            if strict["job"] in off_jobs:
+                errs.append(
+                    f"{name}: job '{agg}' requires 'success' from the disabled job '{strict['job']}'"
+                )
+        elif skip:
+            if skip["job"] not in off_jobs:
+                errs.append(
+                    f"{name}: job '{agg}' accepts 'skipped' from '{skip['job']}', which is not disabled"
+                )
+        elif not any(tpl.fullmatch(line) for tpl in LINE_TEMPLATES):
             errs.append(
-                f"{name}: job '{agg}' accepts a failed '{job}'; the assertion is not enforced"
+                f"{name}: job '{agg}' has a line outside the known forms: {line[:90]!r}"
             )
     return errs
 
@@ -150,10 +143,9 @@ def main(root):
     pm = yaml.safe_load(load("postmerge-ci.yml"))["jobs"]["rust-ci-full"]
     if (pm.get("permissions") or {}).get("actions") != "write":
         errs.append("postmerge-ci.yml: rust-ci-full lacks permissions.actions: write")
-    # F: the aggregator step must accept `skipped` for every disabled job and
-    # must still fail when such a job fails. The step is run, not pattern
-    # matched, in an isolated shell, so an operator slip such as `&&` for `||`
-    # cannot hide behind the right words being present.
+    # F: every line of an aggregator step that names a disabled job must be one
+    # of the known forms, and a disabled job may only be asserted with the form
+    # that accepts `skipped`. Nothing is executed.
     for name, jobs in OFF_JOBS.items():
         y = yaml.safe_load(load(name))
         for agg, spec in y["jobs"].items():
