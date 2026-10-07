@@ -55,13 +55,29 @@ FORBIDDEN = re.compile(r"macos-15-xlarge|-runners\b")
 # The aggregator step is judged by matching each line against the closed set of
 # forms it has today, never by running it: the guard runs on our machines after
 # every upstream merge and must not execute anything that comes from a workflow.
+# Structure counts as much as lines: the conditions are the three known ones, an
+# assertion about a disabled job must not sit inside any condition, and `exit 0`
+# is only the one that follows the "no relevant changes" echo inside its own
+# condition. Anything else (else, elif, a stray exit, an unclosed if) is red.
 _JOB = r"[A-Za-z0-9_-]+"
-_COND = r"\"\$\{NEEDS_CHANGED_OUTPUTS_[A-Z_]+\}\" (?:==|!=) 'true'"
+IF_NO_CHANGE = (
+    "if [[ \"${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}\" != 'true'"
+    " && \"${NEEDS_CHANGED_OUTPUTS_CODEX}\" != 'true'"
+    " && \"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}\" != 'true' ]]; then"
+)
+KNOWN_IFS = {
+    IF_NO_CHANGE,
+    "if [[ \"${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE}\" == 'true' ]]; then",
+    (
+        "if [[ \"${NEEDS_CHANGED_OUTPUTS_CODEX}\" == 'true'"
+        " || \"${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}\" == 'true' ]]; then"
+    ),
+}
+# Only rust-ci.yml has these conditions today; no other workflow may grow them.
+IFS_ALLOWED_IN = {"rust-ci.yml"}
+NO_CHANGE_ECHO = "echo 'No relevant changes -> CI not required.'"
 LINE_TEMPLATES = [
     re.compile(r"#.*"),
-    re.compile(r"exit 0"),
-    re.compile(r"fi"),
-    re.compile(rf"if \[\[ {_COND}(?: (?:&&|\|\|) {_COND})* \]\]; then"),
     re.compile(r"echo '[A-Za-z0-9 ._>-]+'"),
     re.compile(rf"echo \"[A-Za-z0-9 :_.-]+\$\{{\{{ needs\.{_JOB}\.result \}}\}}\""),
 ]
@@ -81,26 +97,43 @@ def check_aggregator_step(name, agg, step, off_jobs):
     if not any(f"needs.{j}.result" in script for j in off_jobs):
         return []
     errs = []
+    stack = []
+    previous = ""
     for raw in script.splitlines():
         line = re.sub(r"\s+", " ", raw.strip())
         if not line:
             continue
+        where = f"{name}: job '{agg}'"
         strict = STRICT_ASSERT.fullmatch(line)
         skip = SKIP_ASSERT.fullmatch(line)
-        if strict:
-            if strict["job"] in off_jobs:
+        if line in KNOWN_IFS and name in IFS_ALLOWED_IN:
+            stack.append(line)
+        elif line == "fi":
+            if stack:
+                stack.pop()
+            else:
+                errs.append(f"{where} has a `fi` with no matching known condition")
+        elif line == "exit 0":
+            if not (stack == [IF_NO_CHANGE] and previous == NO_CHANGE_ECHO):
+                errs.append(f"{where} has an `exit 0` outside the no-change condition")
+        elif strict or skip:
+            job = (strict or skip)["job"]
+            if strict and job in off_jobs:
+                errs.append(f"{where} requires 'success' from the disabled job '{job}'")
+            if skip and job not in off_jobs:
                 errs.append(
-                    f"{name}: job '{agg}' requires 'success' from the disabled job '{strict['job']}'"
+                    f"{where} accepts 'skipped' from '{job}', which is not disabled"
                 )
-        elif skip:
-            if skip["job"] not in off_jobs:
+            if job in off_jobs and stack:
                 errs.append(
-                    f"{name}: job '{agg}' accepts 'skipped' from '{skip['job']}', which is not disabled"
+                    f"{where} asserts the disabled job '{job}' inside a condition"
                 )
         elif not any(tpl.fullmatch(line) for tpl in LINE_TEMPLATES):
-            errs.append(
-                f"{name}: job '{agg}' has a line outside the known forms: {line[:90]!r}"
-            )
+            errs.append(f"{where} has a line outside the known forms: {line[:90]!r}")
+        if not line.startswith("#"):
+            previous = line
+    if stack:
+        errs.append(f"{name}: job '{agg}' leaves a condition unclosed")
     return errs
 
 
