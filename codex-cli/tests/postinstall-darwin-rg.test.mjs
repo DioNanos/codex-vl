@@ -494,3 +494,59 @@ test("outside macOS the signature is a silent no-op", () => {
   );
   assert.deepEqual(warnings, []);
 });
+
+// --- R5: the download must not leave the install hanging ---------------------
+// A slow network must not stall the install: curl runs with a bounded connect
+// time, a bounded total time and retries, and once those are exhausted the
+// declared fallback takes over.
+test("R5: curl runs with retries and timeouts, and a timeout ends in the fallback", () => {
+  const bindir = mkdtempSync(path.join(scratch, "curl-"));
+  const argvFile = path.join(bindir, "argv.txt");
+  const fakeCurl = path.join(bindir, "curl");
+  writeFileSync(
+    fakeCurl,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\n` +
+      'echo "curl: (28) Operation timed out after 300001 milliseconds" >&2\n' +
+      "exit 28\n",
+  );
+  chmodSync(fakeCurl, 0o755);
+
+  const fixture = ripgrepFixture();
+  const packageDir = emptyPackageDir();
+  const systemRg = path.join(packageDir, "system-rg");
+  writeFileSync(systemRg, "#!/bin/sh\necho 'ripgrep 14.0.0'\n");
+  const warnings = [];
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bindir}:${previousPath ?? ""}`;
+  try {
+    const dest = postinstall.provisionRipgrep({
+      packageDir,
+      manifestPath: fixture.manifestPath,
+      findSystemRg: () => systemRg,
+      log: () => {},
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(readFileSync(dest, "utf8"), readFileSync(systemRg, "utf8"));
+    assert.equal(
+      warnings.length,
+      1,
+      `unexpected warnings: ${JSON.stringify(warnings)}`,
+    );
+    assert.match(warnings[0], /download failed/);
+    assert.match(warnings[0], /system ripgrep/);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+
+  const argv = readFileSync(argvFile, "utf8").split("\n");
+  for (const [flag, value] of [
+    ["--retry", "3"],
+    ["--connect-timeout", "30"],
+    ["--max-time", "300"],
+  ]) {
+    const at = argv.indexOf(flag);
+    assert.notEqual(at, -1, `curl must be called with ${flag}`);
+    assert.equal(argv[at + 1], value, `${flag} must be ${value}`);
+  }
+  assert.equal(argv.includes(RG_URL), true, "curl must be given the pinned URL");
+});

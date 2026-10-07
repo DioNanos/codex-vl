@@ -174,13 +174,28 @@ function findArchiveTool({ run = spawnSync, env = process.env } = {}) {
   return commandInPath("tar", { run, env }) || commandInPath("bsdtar", { run, env });
 }
 
+// Bounded on purpose: a slow network must not leave the install hanging. Three
+// retries, 30 s to connect, 300 s in total. Once those are exhausted the caller
+// treats it as a failed download and falls back to the system ripgrep.
+const CURL_ARGS = [
+  "-fsSL",
+  "--retry",
+  "3",
+  "--retry-delay",
+  "2",
+  "--connect-timeout",
+  "30",
+  "--max-time",
+  "300",
+];
+
 function downloadWithCurl(url, dest) {
   if (!commandInPath("curl")) {
     throw new Error("curl is not available: cannot download the pinned ripgrep");
   }
-  const result = spawnSync("curl", ["-fsSL", url, "-o", dest], { stdio: "inherit" });
+  const result = spawnSync("curl", [...CURL_ARGS, url, "-o", dest], { stdio: "inherit" });
   if (result.status !== 0) {
-    throw new Error(`download failed for ${url}`);
+    throw new Error(`download failed for ${url} (curl exited with ${result.status})`);
   }
 }
 
