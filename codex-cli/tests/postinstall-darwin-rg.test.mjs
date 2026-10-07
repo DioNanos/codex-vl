@@ -1,7 +1,8 @@
 // The macOS postinstall ships inside a package whose package.json declares no
-// "type", so it is CommonJS — while codex-cli/package.json here is "type":
-// "module". Copy the script next to a CommonJS package.json to load it as a
-// library. Network and platform are injected: these tests never build anything.
+// "type", so it is CommonJS - while codex-cli/package.json here is
+// "type": "module". Copy the script next to a CommonJS package.json to load it
+// as a library. The network and the platform are injected: these tests never
+// build anything.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -42,12 +43,14 @@ copyFileSync(scriptSource, scriptCopy);
 writeFileSync(path.join(scratch, "package.json"), '{"type":"commonjs"}\n');
 
 const RG_MEMBER = "ripgrep-15.2.0-aarch64-apple-darwin/rg";
-const RG_URL = "https://example.invalid/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz";
+const RG_URL =
+  "https://example.invalid/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz";
+const quiet = { log: () => {}, warn: () => {} };
 
 let postinstall;
 
 before(() => {
-  // Older revisions run the whole build at module scope — and exit on a
+  // Older revisions run the whole build at module scope - and exit on a
   // non-darwin host, which would silently kill this runner. Probe the exported
   // API in a child process so a regression is a readable failure instead.
   const probe = spawnSync(
@@ -58,24 +61,47 @@ before(() => {
     ],
     { encoding: "utf8" },
   );
-  assert.match(
-    probe.stdout || "",
-    /provisionRipgrep/,
-    "postinstall_darwin_build.js must export provisionRipgrep (and not run the " +
-      `build when required as a library); stdout=${JSON.stringify(probe.stdout)}`,
-  );
-  for (const name of ["verifyPackageLayout", "findCodesign", "codesignAdhoc"]) {
+  for (const name of [
+    "provisionRipgrep",
+    "verifyPackageLayout",
+    "packageLayoutFailure",
+    "readRgManifest",
+    "findCodesign",
+    "codesignAdhoc",
+  ]) {
     assert.match(
       probe.stdout || "",
       new RegExp(name),
-      `postinstall_darwin_build.js must export ${name}`,
+      `postinstall_darwin_build.js must export ${name}, and must not run the ` +
+        `build when required as a library; stdout=${JSON.stringify(probe.stdout)}`,
     );
   }
   postinstall = createRequire(import.meta.url)(scriptCopy);
 });
 
+function manifestEntry(overrides = {}) {
+  return {
+    size: 1764284,
+    hash: "sha256",
+    digest: "3".repeat(64),
+    format: "tar.gz",
+    path: RG_MEMBER,
+    providers: [{ url: RG_URL }],
+    ...overrides,
+  };
+}
+
+function writeManifest(dir, platforms, name = "rg-manifest") {
+  const manifestPath = path.join(dir, name);
+  writeFileSync(
+    manifestPath,
+    `#!/usr/bin/env dotslash\n${JSON.stringify({ name: "rg", platforms }, null, 2)}\n`,
+  );
+  return manifestPath;
+}
+
 // A real tar.gz fixture: extraction runs for real, only the download is faked.
-function ripgrepFixture({ digest } = {}) {
+function ripgrepFixture({ digest, size } = {}) {
   const dir = mkdtempSync(path.join(scratch, "fixture-"));
   const payload = path.join(dir, "payload");
   mkdirSync(path.join(payload, path.dirname(RG_MEMBER)), { recursive: true });
@@ -86,43 +112,43 @@ function ripgrepFixture({ digest } = {}) {
   const archive = path.join(dir, "ripgrep.tar.gz");
   execFileSync("tar", ["-czf", archive, "-C", payload, path.dirname(RG_MEMBER)]);
   const bytes = readFileSync(archive);
-  const manifestPath = path.join(dir, "rg-manifest");
-  writeFileSync(
-    manifestPath,
-    [
-      "#!/usr/bin/env dotslash",
-      JSON.stringify(
-        {
-          name: "rg",
-          platforms: {
-            "macos-aarch64": {
-              size: bytes.length,
-              hash: "sha256",
-              digest:
-                digest ?? createHash("sha256").update(bytes).digest("hex"),
-              format: "tar.gz",
-              path: RG_MEMBER,
-              providers: [{ url: RG_URL }],
-            },
-          },
-        },
-        null,
-        2,
-      ),
-      "",
-    ].join("\n"),
-  );
-  return { dir, archive, manifestPath };
+  return {
+    dir,
+    archive,
+    manifestPath: writeManifest(dir, {
+      "macos-aarch64": manifestEntry({
+        size: size ?? bytes.length,
+        digest: digest ?? createHash("sha256").update(bytes).digest("hex"),
+      }),
+    }),
+  };
 }
 
 function emptyPackageDir() {
-  const packageDir = mkdtempSync(path.join(scratch, "package-"));
+  return mkdtempSync(path.join(scratch, "package-"));
+}
+
+// A layout the daemon accepts: four regular files, the three programs
+// executable.
+function completePackageDir() {
+  const packageDir = emptyPackageDir();
+  mkdirSync(path.join(packageDir, "bin"), { recursive: true });
+  mkdirSync(path.join(packageDir, "codex-path"), { recursive: true });
+  writeFileSync(path.join(packageDir, "codex-package.json"), "{}");
+  for (const relative of [
+    "bin/codex",
+    "bin/codex-code-mode-host",
+    "codex-path/rg",
+  ]) {
+    writeFileSync(path.join(packageDir, relative), "#!/bin/sh\n");
+    chmodSync(path.join(packageDir, relative), 0o755);
+  }
   return packageDir;
 }
 
-const quiet = { log: () => {}, warn: () => {} };
+// --- pinned download --------------------------------------------------------
 
-test("A: dal manifest DotSlash, rg finisce in codex-path/ eseguibile", () => {
+test("A: from the DotSlash manifest, rg lands in codex-path/ executable", () => {
   const fixture = ripgrepFixture();
   const packageDir = emptyPackageDir();
   const requested = [];
@@ -138,10 +164,10 @@ test("A: dal manifest DotSlash, rg finisce in codex-path/ eseguibile", () => {
   assert.deepEqual(requested, [RG_URL]);
   assert.equal(dest, path.join(packageDir, "codex-path", "rg"));
   assert.match(readFileSync(dest, "utf8"), /ripgrep 15\.2\.0/);
-  assert.equal(statSync(dest).mode & 0o111, 0o111, "rg deve essere eseguibile");
+  assert.equal(statSync(dest).mode & 0o111, 0o111, "rg must be executable");
 });
 
-test("A: sha256 sbagliato -> errore e nessun rg lasciato in codex-path/", () => {
+test("A: a wrong sha256 is an error and leaves no rg behind", () => {
   const fixture = ripgrepFixture({ digest: "0".repeat(64) });
   const packageDir = emptyPackageDir();
   assert.throws(
@@ -157,49 +183,103 @@ test("A: sha256 sbagliato -> errore e nessun rg lasciato in codex-path/", () => 
   assert.equal(existsSync(path.join(packageDir, "codex-path", "rg")), false);
 });
 
-test("guardia: elenca esattamente i requisiti che il daemon pretende", () => {
+test("A: a size mismatch is an error", () => {
+  const fixture = ripgrepFixture({ size: 12 });
   const packageDir = emptyPackageDir();
-  mkdirSync(path.join(packageDir, "bin"), { recursive: true });
-  writeFileSync(path.join(packageDir, "bin", "codex"), "");
-  writeFileSync(path.join(packageDir, "codex-package.json"), "{}");
-  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), [
-    "bin/codex-code-mode-host",
-    "codex-path/rg",
-  ]);
-
-  writeFileSync(path.join(packageDir, "bin", "codex-code-mode-host"), "");
-  mkdirSync(path.join(packageDir, "codex-path"), { recursive: true });
-  writeFileSync(path.join(packageDir, "codex-path", "rg"), "");
-  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), []);
+  assert.throws(
+    () =>
+      postinstall.provisionRipgrep({
+        packageDir,
+        manifestPath: fixture.manifestPath,
+        download: (_url, to) => copyFileSync(fixture.archive, to),
+        ...quiet,
+      }),
+    /size mismatch/,
+  );
 });
 
-test("B: manifest assente -> rg di sistema, con avviso (versione non pinnata)", () => {
+// --- R1: integrity metadata is mandatory, never silently skipped -------------
+
+for (const [label, entry] of [
+  ["without size", manifestEntry({ size: undefined })],
+  ["without digest", manifestEntry({ digest: undefined })],
+  ["with size 0", manifestEntry({ size: 0 })],
+  ["with a non-numeric size", manifestEntry({ size: "1764284" })],
+  ["with a digest that is not a sha256", manifestEntry({ digest: "abc" })],
+]) {
+  test(`R1: a manifest entry ${label} is an error, and no fallback hides it`, () => {
+    const packageDir = emptyPackageDir();
+    const manifestPath = writeManifest(packageDir, { "macos-aarch64": entry });
+    let downloaded = false;
+    assert.throws(
+      () =>
+        postinstall.provisionRipgrep({
+          packageDir,
+          manifestPath,
+          download: () => {
+            downloaded = true;
+          },
+          findSystemRg: () => "/usr/bin/rg",
+          ...quiet,
+        }),
+      /ripgrep manifest/,
+    );
+    assert.equal(downloaded, false, "an invalid entry must not reach the network");
+  });
+}
+
+test("R1: without a provider URL the entry is an error", () => {
+  const packageDir = emptyPackageDir();
+  const manifestPath = writeManifest(packageDir, {
+    "macos-aarch64": manifestEntry({ providers: [] }),
+  });
+  assert.throws(
+    () =>
+      postinstall.provisionRipgrep({
+        packageDir,
+        manifestPath,
+        findSystemRg: () => "/usr/bin/rg",
+        ...quiet,
+      }),
+    /ripgrep manifest/,
+  );
+});
+
+// --- R3: the fallback is for a failed download, not for bad metadata --------
+
+test("R3: a network failure falls back to the system rg, with a warning", () => {
+  const fixture = ripgrepFixture();
   const packageDir = emptyPackageDir();
   const systemRg = path.join(packageDir, "system-rg");
   writeFileSync(systemRg, "#!/bin/sh\necho 'ripgrep 14.0.0'\n");
   const warnings = [];
   const dest = postinstall.provisionRipgrep({
     packageDir,
-    manifestPath: path.join(packageDir, "no-such-manifest"),
+    manifestPath: fixture.manifestPath,
+    download: () => {
+      throw new Error("curl: (6) Could not resolve host");
+    },
     findSystemRg: () => systemRg,
     log: () => {},
     warn: (message) => warnings.push(message),
   });
   assert.equal(readFileSync(dest, "utf8"), readFileSync(systemRg, "utf8"));
-  // Due avvisi distinti: il manifest non si legge, e la versione che si usa
-  // non è pinnata dal pacchetto.
-  assert.equal(warnings.length, 2, `avvisi inattesi: ${JSON.stringify(warnings)}`);
-  assert.match(warnings[0], /manifest unavailable/);
-  assert.match(warnings[1], /system ripgrep/);
+  assert.equal(warnings.length, 1, `unexpected warnings: ${JSON.stringify(warnings)}`);
+  assert.match(warnings[0], /download failed/);
+  assert.match(warnings[0], /system ripgrep/);
 });
 
-test("B: manifest assente e nessun rg di sistema -> errore chiaro", () => {
+test("R3: a network failure without a system rg is a clear error", () => {
+  const fixture = ripgrepFixture();
   const packageDir = emptyPackageDir();
   assert.throws(
     () =>
       postinstall.provisionRipgrep({
         packageDir,
-        manifestPath: path.join(packageDir, "no-such-manifest"),
+        manifestPath: fixture.manifestPath,
+        download: () => {
+          throw new Error("curl: (6) Could not resolve host");
+        },
         findSystemRg: () => null,
         ...quiet,
       }),
@@ -207,32 +287,120 @@ test("B: manifest assente e nessun rg di sistema -> errore chiaro", () => {
   );
 });
 
-test("A: il manifest senza la voce macos-aarch64 non passa per il download", () => {
+test("R3: a missing manifest is an error, never a fallback", () => {
+  const packageDir = emptyPackageDir();
+  let fellBack = false;
+  assert.throws(
+    () =>
+      postinstall.provisionRipgrep({
+        packageDir,
+        manifestPath: path.join(packageDir, "no-such-manifest"),
+        findSystemRg: () => {
+          fellBack = true;
+          return "/usr/bin/rg";
+        },
+        ...quiet,
+      }),
+    /ripgrep manifest/,
+  );
+  assert.equal(fellBack, false);
+});
+
+test("R3: broken JSON is an error, never a fallback", () => {
   const packageDir = emptyPackageDir();
   const manifestPath = path.join(packageDir, "rg-manifest");
-  writeFileSync(
-    manifestPath,
-    `#!/usr/bin/env dotslash\n${JSON.stringify({ name: "rg", platforms: {} })}\n`,
-  );
-  const warnings = [];
+  writeFileSync(manifestPath, "#!/usr/bin/env dotslash\n{ not json\n");
   assert.throws(
     () =>
       postinstall.provisionRipgrep({
         packageDir,
         manifestPath,
-        findSystemRg: () => null,
-        log: () => {},
-        warn: (message) => warnings.push(message),
+        findSystemRg: () => "/usr/bin/rg",
+        ...quiet,
       }),
-    /no ripgrep available/,
+    /ripgrep manifest/,
   );
-  assert.equal(warnings.some((w) => /macos-aarch64/.test(w)), true);
 });
 
-// --- firma ad hoc -----------------------------------------------------------
-// `codesign` non ha `--version`: su macOS risponde 2. Chiedere la versione per
-// decidere se il tool c'è lo dichiara assente e la firma non viene mai tentata.
-test("il rilevamento di codesign non gli chiede --version", () => {
+test("R3: a manifest without the macos-aarch64 entry is an error, and never downloads", () => {
+  const packageDir = emptyPackageDir();
+  const manifestPath = writeManifest(packageDir, {});
+  let downloaded = false;
+  assert.throws(
+    () =>
+      postinstall.provisionRipgrep({
+        packageDir,
+        manifestPath,
+        download: () => {
+          downloaded = true;
+        },
+        findSystemRg: () => "/usr/bin/rg",
+        ...quiet,
+      }),
+    /ripgrep manifest/,
+  );
+  assert.equal(downloaded, false);
+});
+
+// --- R2: the guard is the daemon's predicate, not just exists ---------------
+
+test("R2: the guard lists exactly what the daemon refuses", () => {
+  const packageDir = emptyPackageDir();
+  mkdirSync(path.join(packageDir, "bin"), { recursive: true });
+  writeFileSync(path.join(packageDir, "bin", "codex"), "#!/bin/sh\n");
+  chmodSync(path.join(packageDir, "bin", "codex"), 0o755);
+  writeFileSync(path.join(packageDir, "codex-package.json"), "{}");
+  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), [
+    "bin/codex-code-mode-host",
+    "codex-path/rg",
+  ]);
+
+  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir: completePackageDir() }), []);
+});
+
+test("R2: a directory where a file is expected is not a package", () => {
+  const packageDir = completePackageDir();
+  rmSync(path.join(packageDir, "bin", "codex"), { force: true });
+  mkdirSync(path.join(packageDir, "bin", "codex"), { recursive: true });
+  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), ["bin/codex"]);
+});
+
+test("R2: a program without the executable bit is refused, like the daemon", () => {
+  const packageDir = completePackageDir();
+  chmodSync(path.join(packageDir, "codex-path", "rg"), 0o644);
+  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), [
+    "codex-path/rg",
+  ]);
+
+  // codex-package.json is a manifest, not a program: no executable bit needed.
+  const onlyManifest = completePackageDir();
+  chmodSync(path.join(onlyManifest, "codex-package.json"), 0o644);
+  assert.deepEqual(postinstall.verifyPackageLayout({ packageDir: onlyManifest }), []);
+});
+
+test("R1: a provisioning error fails the package even when every path exists", () => {
+  const packageDir = completePackageDir();
+  assert.equal(
+    postinstall.packageLayoutFailure({ packageDir, provisionError: null }),
+    null,
+  );
+  const failure = postinstall.packageLayoutFailure({
+    packageDir,
+    provisionError: new Error("ripgrep checksum mismatch: expected 00, got ff"),
+  });
+  assert.notEqual(failure, null, "a checksum mismatch must never end in success");
+  assert.match(failure, /checksum mismatch/);
+
+  const incomplete = postinstall.packageLayoutFailure({
+    packageDir: emptyPackageDir(),
+    provisionError: null,
+  });
+  assert.match(incomplete, /incomplete macOS package layout/);
+});
+
+// --- ad-hoc signing ---------------------------------------------------------
+
+test("codesign detection does not ask it for --version", () => {
   const bindir = mkdtempSync(path.join(scratch, "bin-"));
   const fake = path.join(bindir, "codesign");
   writeFileSync(
@@ -248,7 +416,7 @@ test("il rilevamento di codesign non gli chiede --version", () => {
   );
 });
 
-test("firma ad hoc: codesign -s - -f, poi verifica con -v", () => {
+test("the ad-hoc signature is codesign -s - -f, then verified with -v", () => {
   const calls = [];
   const warnings = [];
   const signed = postinstall.codesignAdhoc("/tmp/rg-target", {
@@ -269,7 +437,7 @@ test("firma ad hoc: codesign -s - -f, poi verifica con -v", () => {
   assert.deepEqual(warnings, []);
 });
 
-test("macOS senza codesign: avviso esplicito, nessuna firma", () => {
+test("macOS without codesign: an explicit warning, no signature", () => {
   const warnings = [];
   const signed = postinstall.codesignAdhoc("/tmp/rg-target", {
     platform: "darwin",
@@ -283,21 +451,21 @@ test("macOS senza codesign: avviso esplicito, nessuna firma", () => {
   assert.match(warnings[0], /codesign not found/i);
 });
 
-test("firma fallita o non verificata: avviso, mai silenzio", () => {
-  const fallita = [];
+test("a failed or unverified signature warns, and never stays silent", () => {
+  const failed = [];
   assert.equal(
     postinstall.codesignAdhoc("/tmp/rg-target", {
       platform: "darwin",
       find: () => "/usr/bin/codesign",
       run: () => ({ status: 1 }),
       log: () => {},
-      warn: (message) => fallita.push(message),
+      warn: (message) => failed.push(message),
     }),
     false,
   );
-  assert.match(fallita.join(" "), /codesign failed/i);
+  assert.match(failed.join(" "), /codesign failed/i);
 
-  const nonVerificata = [];
+  const unverified = [];
   let call = 0;
   assert.equal(
     postinstall.codesignAdhoc("/tmp/rg-target", {
@@ -305,14 +473,14 @@ test("firma fallita o non verificata: avviso, mai silenzio", () => {
       find: () => "/usr/bin/codesign",
       run: () => ({ status: call++ === 0 ? 0 : 1 }),
       log: () => {},
-      warn: (message) => nonVerificata.push(message),
+      warn: (message) => unverified.push(message),
     }),
     false,
   );
-  assert.match(nonVerificata.join(" "), /verification failed/i);
+  assert.match(unverified.join(" "), /verification failed/i);
 });
 
-test("fuori da macOS la firma è un no-op silenzioso", () => {
+test("outside macOS the signature is a silent no-op", () => {
   const warnings = [];
   assert.equal(
     postinstall.codesignAdhoc("/tmp/rg-target", {

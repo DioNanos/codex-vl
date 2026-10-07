@@ -7,6 +7,7 @@ const {
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } = require("node:fs");
 const { createHash } = require("node:crypto");
@@ -78,36 +79,68 @@ function appendRustflags(env, flags) {
 // next to this script as scripts/rg-manifest.
 const RG_MANIFEST_REL = path.join("scripts", "rg-manifest");
 const RG_PLATFORM_KEY = "macos-aarch64";
+// The daemon validates a regular file for every entry, and the executable bit
+// for the programs (app-server-daemon prepare_install.rs validate_package).
 const PACKAGE_REQUIREMENTS = [
-  "codex-package.json",
-  "bin/codex",
-  "bin/codex-code-mode-host",
-  "codex-path/rg",
+  { relative: "codex-package.json", program: false },
+  { relative: "bin/codex", program: true },
+  { relative: "bin/codex-code-mode-host", program: true },
+  { relative: "codex-path/rg", program: true },
 ];
 
 function readRgManifest(manifestPath) {
-  const text = readFileSync(manifestPath, "utf8");
+  let text;
+  try {
+    text = readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    throw new Error(`ripgrep manifest is not readable at ${manifestPath}: ${error.message}`);
+  }
   // The manifest is a DotSlash script: it carries a shebang line that
   // JSON.parse cannot see.
   const body = text.startsWith("#!") ? text.slice(text.indexOf("\n") + 1) : text;
-  return JSON.parse(body);
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    throw new Error(`ripgrep manifest at ${manifestPath} is not valid JSON: ${error.message}`);
+  }
 }
 
+// Every field the integrity check needs is mandatory. A missing or malformed
+// size or digest must be an error - never a check that is silently skipped.
 function rgPlan(manifest, platformKey = RG_PLATFORM_KEY) {
   const entry = manifest && manifest.platforms ? manifest.platforms[platformKey] : null;
   if (!entry) {
     throw new Error(`ripgrep manifest has no '${platformKey}' entry`);
   }
-  const url = entry.providers && entry.providers[0] ? entry.providers[0].url : null;
-  if (!url) {
+  const provider = entry.providers && entry.providers[0] ? entry.providers[0] : null;
+  if (!provider || typeof provider.url !== "string" || provider.url.length === 0) {
     throw new Error(`ripgrep manifest entry '${platformKey}' declares no download URL`);
   }
+  if (!Number.isInteger(entry.size) || entry.size <= 0) {
+    throw new Error(
+      `ripgrep manifest entry '${platformKey}' has no usable size: ${JSON.stringify(entry.size)}`,
+    );
+  }
+  if (entry.hash && entry.hash !== "sha256") {
+    throw new Error(
+      `ripgrep manifest entry '${platformKey}' uses an unsupported hash: ${entry.hash}`,
+    );
+  }
+  if (typeof entry.digest !== "string" || !/^[0-9a-f]{64}$/.test(entry.digest)) {
+    throw new Error(
+      `ripgrep manifest entry '${platformKey}' has no usable sha256 digest: ` +
+        JSON.stringify(entry.digest),
+    );
+  }
+  if (typeof entry.path !== "string" || entry.path.length === 0) {
+    throw new Error(`ripgrep manifest entry '${platformKey}' declares no archive member`);
+  }
   return {
-    url,
-    size: entry.size || 0,
-    hash: entry.hash || "sha256",
-    digest: entry.digest || "",
-    member: entry.path || "rg",
+    url: provider.url,
+    size: entry.size,
+    hash: "sha256",
+    digest: entry.digest,
+    member: entry.path,
   };
 }
 
@@ -200,9 +233,12 @@ function codesignAdhoc(target, {
   return true;
 }
 
-// Pinned download first (reproducible, digest-verified), system ripgrep only as
-// a declared fallback: an unpinned rg is better than a package the daemon
-// refuses to install, but it must say so.
+// Pinned download first (reproducible, digest-verified). The system ripgrep is
+// the declared fallback for a download that cannot happen - offline, or the
+// release asset unreachable - and it says so. Anything else (a manifest that is
+// missing or unreadable, an entry without usable integrity metadata, a size or
+// a digest that does not match) is an error: an unverifiable package is not
+// installed quietly.
 function provisionRipgrep({
   packageDir,
   manifestPath,
@@ -217,28 +253,21 @@ function provisionRipgrep({
   const dest = path.join(pathDir, "rg");
   mkdirSync(pathDir, { recursive: true });
 
-  let plan = null;
-  try {
-    plan = rgPlan(readRgManifest(manifestPath), platformKey);
-  } catch (error) {
-    warn(`ripgrep manifest unavailable (${error.message}): falling back to the system ripgrep`);
-  }
+  // Bad metadata, a missing entry and a broken manifest are hard errors: the
+  // fallback exists for a download that cannot happen, not to paper over a
+  // package whose integrity cannot be verified.
+  const plan = rgPlan(readRgManifest(manifestPath), platformKey);
 
-  if (plan) {
-    const archive = path.join(pathDir, path.basename(new URL(plan.url).pathname));
+  const archive = path.join(pathDir, path.basename(new URL(plan.url).pathname));
+  let downloadError = null;
+  try {
     log(`downloading ripgrep for ${platformKey} from ${plan.url}`);
     download(plan.url, archive);
-    const bytes = readFileSync(archive);
-    if (plan.size && bytes.length !== plan.size) {
-      throw new Error(`ripgrep archive size mismatch: expected ${plan.size}, got ${bytes.length}`);
-    }
-    const digest = createHash(plan.hash).update(bytes).digest("hex");
-    if (plan.digest && digest !== plan.digest) {
-      throw new Error(`ripgrep checksum mismatch: expected ${plan.digest}, got ${digest}`);
-    }
-    extractArchiveMember(archive, plan.member, dest);
-    rmSync(archive, { force: true });
-  } else {
+  } catch (error) {
+    downloadError = error;
+  }
+
+  if (downloadError) {
     const systemRg = findSystemRg();
     if (!systemRg) {
       throw new Error(
@@ -246,8 +275,22 @@ function provisionRipgrep({
           "Install ripgrep (for example: brew install ripgrep) and reinstall this package.",
       );
     }
-    warn(`using the system ripgrep at ${systemRg}: its version is not pinned by this package`);
+    warn(
+      `ripgrep download failed (${downloadError.message}): falling back to the system ` +
+        `ripgrep at ${systemRg}, whose version is not pinned by this package`,
+    );
     copyFileSync(systemRg, dest);
+  } else {
+    const bytes = readFileSync(archive);
+    if (bytes.length !== plan.size) {
+      throw new Error(`ripgrep archive size mismatch: expected ${plan.size}, got ${bytes.length}`);
+    }
+    const digest = createHash(plan.hash).update(bytes).digest("hex");
+    if (digest !== plan.digest) {
+      throw new Error(`ripgrep checksum mismatch: expected ${plan.digest}, got ${digest}`);
+    }
+    extractArchiveMember(archive, plan.member, dest);
+    rmSync(archive, { force: true });
   }
 
   chmodSync(dest, 0o755);
@@ -255,10 +298,34 @@ function provisionRipgrep({
   return dest;
 }
 
-// The exact list the daemon validates. Keep it in one place so the install-time
-// guard and the daemon cannot drift apart silently.
-function verifyPackageLayout({ packageDir, exists = existsSync } = {}) {
-  return PACKAGE_REQUIREMENTS.filter((relative) => !exists(path.join(packageDir, relative)));
+// The exact list the daemon validates, with the daemon's own predicate: a
+// regular file, and for the programs the executable bit. Keep it in one place
+// so the install-time guard and the daemon cannot drift apart silently.
+function verifyPackageLayout({ packageDir, stat = statSync } = {}) {
+  return PACKAGE_REQUIREMENTS.filter(({ relative, program }) => {
+    let info;
+    try {
+      info = stat(path.join(packageDir, relative));
+    } catch {
+      return true;
+    }
+    if (!info.isFile()) return true;
+    return program && (info.mode & 0o111) === 0;
+  }).map(({ relative }) => relative);
+}
+
+// One place decides whether the package is installable. A failed integrity or
+// provisioning step must fail the install even when every path is already
+// there - otherwise a checksum mismatch ends in "layout complete".
+function packageLayoutFailure({ packageDir, provisionError = null } = {}) {
+  if (provisionError) {
+    return `ripgrep provisioning failed: ${provisionError.message}`;
+  }
+  const missing = verifyPackageLayout({ packageDir });
+  if (missing.length > 0) {
+    return `incomplete macOS package layout, missing: ${missing.join(", ")}`;
+  }
+  return null;
 }
 
 function main() {
@@ -458,18 +525,17 @@ function main() {
     provisionError = error;
   }
 
-  const missing = verifyPackageLayout({ packageDir: vendorTargetDir });
-  if (missing.length > 0) {
-    if (provisionError) {
-      console.error(`[codex-vl] ripgrep provisioning failed: ${provisionError.message}`);
-    }
+  const failure = packageLayoutFailure({ packageDir: vendorTargetDir, provisionError });
+  if (failure) {
     fail(
-      `incomplete macOS package layout, missing: ${missing.join(", ")}. ` +
-        "Reinstall with: npm install -g @mmmbuto/codex-vl@latest " +
+      `${failure}. Reinstall with: npm install -g @mmmbuto/codex-vl@latest ` +
         "--allow-scripts=@mmmbuto/codex-vl --foreground-scripts",
     );
   }
-  console.log(`[codex-vl] package layout complete: ${PACKAGE_REQUIREMENTS.join(", ")}`);
+  console.log(
+    `[codex-vl] package layout complete: ` +
+      PACKAGE_REQUIREMENTS.map(({ relative }) => relative).join(", "),
+  );
 }
 
 if (require.main === module) {
@@ -479,6 +545,7 @@ if (require.main === module) {
 module.exports = {
   provisionRipgrep,
   verifyPackageLayout,
+  packageLayoutFailure,
   readRgManifest,
   findCodesign,
   codesignAdhoc,
