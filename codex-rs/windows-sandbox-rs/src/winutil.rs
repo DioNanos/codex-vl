@@ -37,7 +37,7 @@ pub(crate) fn current_account_name() -> Result<String> {
     // Sandbox launchers can filter USERNAME, so resolve the caller from its Windows token.
     let mut account = [0; (DNLEN + UNLEN + 2) as usize];
     let mut length = account.len() as u32;
-    if unsafe { GetUserNameExW(NameSamCompatible, account.as_mut_ptr(), &mut length) } == 0 {
+    if !unsafe { GetUserNameExW(NameSamCompatible, account.as_mut_ptr(), &mut length) } {
         return Err(std::io::Error::last_os_error()).context("resolve current Windows account");
     }
     Ok(String::from_utf16(&account[..length as usize])?)

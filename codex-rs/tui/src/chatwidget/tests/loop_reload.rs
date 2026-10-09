@@ -15,6 +15,7 @@ fn drain_reload(events: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>) -> 
 
 fn aborted_interrupt_event(chat: &ChatWidget) -> codex_protocol::protocol::TurnAbortedEvent {
     codex_protocol::protocol::TurnAbortedEvent {
+        root_turn_id: None,
         turn_id: chat.turn_lifecycle.last_turn_id.clone(),
         reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
         error: None,

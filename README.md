@@ -31,6 +31,13 @@ Install the latest release on Linux x64, Linux arm64, or Termux arm64.
 npm install -g @mmmbuto/codex-vl@latest --allow-scripts=@mmmbuto/codex-vl
 ```
 
+On Termux, also install ripgrep (the Android package resolves `rg` from PATH
+and does not bundle it):
+
+```bash
+pkg install ripgrep
+```
+
 Check the installed version.
 
 ```bash
@@ -140,15 +147,33 @@ optional rustup target) and prints actionable hints when something is missing.
   `libc++_shared.so` next to the binaries (`RUNPATH=$ORIGIN`), since Termux has
   no system copy.
 
-**Realtime voice/audio (removed upstream):**
+## Voice
 
-Upstream OpenAI Codex removed the experimental TUI realtime voice/audio feature
-in `rust-v0.140.0` (openai/codex#27801). Codex VL no longer ships it on any
-platform. The Android cpal/oboe enablement this fork used to carry - never
-usable from a plain Termux CLI anyway, since the audio backend (cpal -> oboe ->
-`ndk-context`) needs an Android `JavaVM`/`Activity` a command-line process does
-not have - was dropped along with it. A Termux-native audio backend remains a
-possible future direction, not a current capability.
+`/voice` starts a realtime voice conversation over WebRTC. The CLI spawns a
+packaged helper (`codex-voice-host`) that owns the microphone and the speakers
+and decodes audio with a private GStreamer runtime carried inside the package
+itself (`codex-resources/voice`). Codex VL ships that runtime on macOS arm64 and
+on glibc Linux (x64 and arm64), so `/voice` works wherever there is a
+microphone. Voice audio goes to the realtime voice backend, exactly as in
+upstream Codex.
+
+Prerequisites by platform:
+
+- **macOS arm64** - a microphone, and Microphone permission for the terminal or
+  editor running the CLI (System Settings -> Privacy & Security ->
+  Microphone). The runtime travels with the package; there is nothing else to
+  install.
+- **Linux x64 / arm64 (glibc)** - a working audio stack (ALSA or PulseAudio)
+  with both an input and an output device. No GStreamer package is needed on the
+  host: the bundle loads its own plugin directory. The Linux CLI is linked
+  against musl while the voice helper is a glibc binary, so `/voice` needs a
+  glibc host (Debian, Ubuntu, Fedora, ...); it is not available on musl-only
+  systems such as Alpine.
+- **Android / Termux** - not available. The platform gate rejects it, and the
+  private GStreamer runtime does not exist there.
+- **Servers and headless hosts** - `/voice` stays hidden when the runtime is
+  missing, and reports a clear error when the runtime is present but no
+  microphone can be opened.
 
 Vivling behavior is still experimental. It is intended to become a workflow
 assistant over time, but the current public surface is deliberately small.
@@ -235,11 +260,9 @@ native packages plus the macOS arm64 source-build package.
 
 ## Roadmap
 
-- **Termux-native audio** (parked): upstream removed the realtime voice feature
-  in `rust-v0.140.0` (openai/codex#27801), so this is on hold unless realtime
-  voice returns upstream. If it does, a Termux-native backend (PulseAudio /
-  `termux-api`) would be needed, since cpal's Android AAudio path cannot
-  initialize in a plain CLI.
+- **Termux-native audio** (parked): `/voice` is shipped on macOS and glibc
+  Linux; Termux needs its own audio backend (PulseAudio or `termux-api`)
+  because the Android audio path cannot initialize in a plain CLI process.
 
 ## Status
 

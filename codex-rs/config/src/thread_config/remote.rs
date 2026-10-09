@@ -195,6 +195,7 @@ fn model_provider_from_proto(
         supports_websockets: provider.supports_websockets,
         namespace_tools: None,
         supports_standalone_web_search: provider.supports_standalone_web_search,
+        capabilities: None,
         include_internal_metadata: false,
     };
     Ok((id, info))
@@ -228,6 +229,7 @@ fn model_provider_to_proto(
         namespace_tools: _,
         supports_standalone_web_search,
         include_internal_metadata: _,
+        capabilities: _,
     } = provider;
 
     proto::ModelProvider {
@@ -567,6 +569,7 @@ mod tests {
             supports_websockets: true,
             gateway_oauth: None,
             aws: None,
+            capabilities: None,
             namespace_tools: None,
             supports_standalone_web_search: true,
             include_internal_metadata: false,

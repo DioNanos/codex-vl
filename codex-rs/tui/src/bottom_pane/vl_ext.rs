@@ -608,16 +608,24 @@ mod tests {
 
     #[test]
     fn render_body_invokes_codex_vl_push_render_extras() {
-        // codex-vl: upstream 0.156 renamed the render entry point from
-        // `as_renderable_with_composer_right_reserve` to
-        // `as_renderable_with_options(ComposerRenderOptions)`; the fork
-        // invariant is that THE render entry point (whatever its name)
-        // publishes the Vivling sidebar + strip via the thin bridge.
-        let body = extract_fn_body(MOD_SOURCE, "as_renderable_with_options")
+        // codex-vl: upstream 0.156 renamed the render entry point to
+        // `as_renderable_with_options(ComposerRenderOptions)`, and 0.162 moved
+        // its body into `renderable_for_views`. The fork invariant is that the
+        // render entry point reaches a body that publishes the Vivling sidebar
+        // and strip via the thin bridge: pin both hops so neither can be
+        // dropped without this test noticing.
+        let entry = extract_fn_body(MOD_SOURCE, "as_renderable_with_options")
             .expect("as_renderable_with_options must exist in bottom_pane/mod.rs");
         assert!(
+            entry.contains("self.renderable_for_views("),
+            "as_renderable_with_options must render through renderable_for_views, \
+             which owns the Vivling bridge. Body was:\n{entry}",
+        );
+        let body = extract_fn_body(MOD_SOURCE, "renderable_for_views")
+            .expect("renderable_for_views must exist in bottom_pane/mod.rs");
+        assert!(
             body.contains("self.codex_vl_push_render_extras("),
-            "as_renderable_with_options must call \
+            "renderable_for_views must call \
              self.codex_vl_push_render_extras(&mut flex2) to publish the \
              Vivling sidebar + strip in the render path. Body was:\n{body}",
         );

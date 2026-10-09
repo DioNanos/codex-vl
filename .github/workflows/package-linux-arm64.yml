@@ -164,6 +164,25 @@ jobs:
           # here instead would compile a far larger graph in a second profile for
           # no more truth.
           python3 scripts/check_v8_sandbox.py "$RUSTY_V8_ARCHIVE"
+      - name: Build voice runtime for aarch64-unknown-linux-musl
+        shell: bash
+        env:
+          VOICE_WORK: ${{ runner.temp }}/voice-aarch64-unknown-linux-musl
+        run: |
+          set -euo pipefail
+          # cmake builds the Opus copy the helper links statically, ALSA headers are
+          # what cpal needs on Linux. The GStreamer runtime is not rebuilt here: it
+          # comes from the pinned upstream package for this target, digest-checked.
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake libasound2-dev gcc-aarch64-linux-gnu
+          python3 codex-cli/scripts/stage_voice_runtime.py stage \
+            --app-target aarch64-unknown-linux-musl \
+            --work "$VOICE_WORK"
+          python3 codex-cli/scripts/stage_voice_runtime.py build \
+            --work "$VOICE_WORK" \
+            --voice-target aarch64-unknown-linux-gnu \
+            --build-commit "$(git rev-parse HEAD)"
+          echo "VOICE_WORK=$VOICE_WORK" >> "$GITHUB_ENV"
       - name: Stage Linux arm64 npm package
         run: |
           set -euo pipefail
@@ -184,10 +203,20 @@ jobs:
           cp codex-rs/target/aarch64-unknown-linux-musl/release/bwrap "$vendor/codex-resources/bwrap"
           chmod 755 "$vendor/codex-resources/bwrap"
           "$vendor/path/rg" --version | grep -q '^ripgrep '
+          python3 codex-cli/scripts/stage_voice_runtime.py assemble \
+            --work "$VOICE_WORK" \
+            --app-binary codex-rs/target/aarch64-unknown-linux-musl/release/codex \
+            --app-target aarch64-unknown-linux-musl \
+            --voice-target aarch64-unknown-linux-gnu \
+            --helper "$VOICE_WORK/helper/codex-voice-host" \
+            --build-commit "$(git rev-parse HEAD)" \
+            --release-version "$RELEASE_VERSION" \
+            --output "$vendor/codex-resources/voice"
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-linux-arm64 \
             --release-version "$RELEASE_VERSION" \
             --vendor-src "$root/vendor" \
+            --voice-dir "$vendor/codex-resources/voice" \
             --staging-dir "$root/staging" \
             --pack-output "$out/codex-npm-linux-arm64-$RELEASE_VERSION.tgz"
           find "$root" -maxdepth 5 -type f -print
@@ -211,6 +240,24 @@ jobs:
           fi
           rm -rf "$tmp"
           echo "clean: no CI checkout path in $tgz"
+      - name: Verify the voice runtime inside the packed tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          tgz="$HOME/.local/share/build-artifacts/codex-vl/${GITHUB_SHA}/linux-arm64/npm/codex-npm-linux-arm64-$RELEASE_VERSION.tgz"
+          test -f "$tgz"
+          entries="$(tar tzf "$tgz")"
+          grep -qx "package/vendor/aarch64-unknown-linux-musl/codex-resources/voice/bin/codex-voice-host" <<<"$entries"
+          grep -qx "package/vendor/aarch64-unknown-linux-musl/codex-resources/voice/lib/libgstreamer-1.0.so.0" <<<"$entries"
+          tmp="$(mktemp -d)"
+          tar xzf "$tgz" -C "$tmp"
+          # Re-hash every voice digest and run the helper's --build-commit: the run
+          # also proves the $ORIGIN/../lib runpath resolves inside the package.
+          python3 codex-cli/scripts/stage_voice_runtime.py verify \
+            --voice-dir "$tmp/package/vendor/aarch64-unknown-linux-musl/codex-resources/voice" \
+            --voice-target aarch64-unknown-linux-gnu \
+            --build-commit "$(git rev-parse HEAD)"
+          rm -rf "$tmp"
       - name: Upload Linux arm64 npm package
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:

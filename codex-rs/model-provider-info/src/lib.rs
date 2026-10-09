@@ -31,7 +31,10 @@ use std::sync::PoisonError;
 use std::sync::RwLock;
 use std::time::Duration;
 
+mod capabilities;
 mod gateway_oauth;
+pub use capabilities::ModelProviderCapabilities;
+pub use capabilities::RemoteCompactionSupport;
 pub use gateway_oauth::GatewayOAuthConfig;
 pub use gateway_oauth::GatewayOAuthDelivery;
 
@@ -161,6 +164,9 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Optional API capability overrides for a custom Responses-compatible provider.
+    /// Unspecified capabilities retain their existing provider defaults.
+    pub capabilities: Option<ModelProviderCapabilities>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, RedactedString>>,
     /// Additional HTTP headers to include in requests to this provider where
@@ -562,6 +568,7 @@ other non-default provider fields are not supported"
             supports_websockets: true,
             namespace_tools: None,
             supports_standalone_web_search: true,
+            capabilities: None,
             include_internal_metadata: true,
         }
     }
@@ -602,6 +609,7 @@ other non-default provider fields are not supported"
             supports_websockets: false,
             namespace_tools: None,
             supports_standalone_web_search: false,
+            capabilities: None,
             include_internal_metadata: false,
         }
     }
@@ -776,6 +784,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         supports_websockets: false,
         namespace_tools: None,
         supports_standalone_web_search: false,
+        capabilities: None,
         include_internal_metadata: false,
     }
 }

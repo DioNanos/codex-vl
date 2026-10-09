@@ -24,8 +24,71 @@ permissions:
   contents: read
 
 jobs:
+  voice-darwin-arm64:
+    name: Build macOS voice runtime
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build the voice runtime
+        shell: bash
+        env:
+          VOICE_WORK: ${{ runner.temp }}/voice-aarch64-apple-darwin
+        run: |
+          set -euo pipefail
+          # The GStreamer runtime is taken from the pinned upstream package for
+          # this target (digest-checked); only the helper is compiled here. It
+          # must be our build: the control protocol handshakes on the build
+          # commit, so an upstream helper is rejected by our app.
+          brew list pkg-config >/dev/null 2>&1 || brew install pkg-config
+          python3 codex-cli/scripts/stage_voice_runtime.py stage \
+            --app-target aarch64-apple-darwin \
+            --work "$VOICE_WORK"
+          python3 codex-cli/scripts/stage_voice_runtime.py build \
+            --work "$VOICE_WORK" \
+            --voice-target aarch64-apple-darwin \
+            --build-commit "$(git rev-parse HEAD)"
+
+      - name: Assemble the voice directory
+        shell: bash
+        env:
+          VOICE_WORK: ${{ runner.temp }}/voice-aarch64-apple-darwin
+        run: |
+          set -euo pipefail
+          # No --app-binary: this package compiles its app on the user's Mac at
+          # install time, so the manifest records only the shipped runtime.
+          python3 codex-cli/scripts/stage_voice_runtime.py assemble \
+            --work "$VOICE_WORK" \
+            --app-target aarch64-apple-darwin \
+            --voice-target aarch64-apple-darwin \
+            --helper "${VOICE_WORK}/helper/codex-voice-host" \
+            --build-commit "$(git rev-parse HEAD)" \
+            --release-version "0.0.0-source-build" \
+            --output "${VOICE_WORK}/voice"
+          python3 codex-cli/scripts/stage_voice_runtime.py verify \
+            --voice-dir "${VOICE_WORK}/voice" \
+            --voice-target aarch64-apple-darwin \
+            --build-commit "$(git rev-parse HEAD)"
+
+      - name: Upload the macOS voice runtime
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: codex-vl-darwin-arm64-voice
+          path: ${{ runner.temp }}/voice-aarch64-apple-darwin/voice
+          if-no-files-found: error
+
   package-darwin-arm64:
     name: Package macOS arm64 source build
+    needs: voice-darwin-arm64
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -50,6 +113,12 @@ jobs:
           fi
           echo "RELEASE_VERSION=${version}" >> "$GITHUB_ENV"
 
+      - name: Download the macOS voice runtime
+        uses: actions/download-artifact@v7
+        with:
+          name: codex-vl-darwin-arm64-voice
+          path: ${{ runner.temp }}/voice-aarch64-apple-darwin
+
       - name: Stage npm package
         shell: bash
         run: |
@@ -59,6 +128,7 @@ jobs:
           python3 codex-cli/scripts/build_npm_package.py \
             --package codex-darwin-arm64 \
             --release-version "${RELEASE_VERSION}" \
+            --voice-dir "${RUNNER_TEMP}/voice-aarch64-apple-darwin" \
             --staging-dir "${stage_dir}" \
             --pack-output "${pack_output}"
           echo "PACK_OUTPUT=${pack_output}" >> "$GITHUB_ENV"
@@ -97,6 +167,23 @@ jobs:
             echo "unexpected prebuilt macOS codex binary in package" >&2
             exit 1
           fi
+
+      - name: Verify the voice runtime inside the packed tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          entries="$(tar tzf "${PACK_OUTPUT}")"
+          grep -qx "package/vendor/aarch64-apple-darwin/codex-resources/voice/bin/codex-voice-host" <<<"$entries"
+          grep -qx "package/vendor/aarch64-apple-darwin/codex-resources/voice/lib/libgstreamer-1.0.0.dylib" <<<"$entries"
+          tmp="$(mktemp -d)"
+          tar xzf "${PACK_OUTPUT}" -C "$tmp"
+          # Digests only: this runner cannot execute an arm64 macOS helper.
+          python3 codex-cli/scripts/stage_voice_runtime.py verify \
+            --voice-dir "$tmp/package/vendor/aarch64-apple-darwin/codex-resources/voice" \
+            --voice-target aarch64-apple-darwin \
+            --build-commit "$(git rev-parse HEAD)" \
+            --skip-helper-exec
+          rm -rf "$tmp"
 
       - name: Upload macOS source-build package
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7

@@ -86,6 +86,12 @@ const PACKAGE_REQUIREMENTS = [
   { relative: "bin/codex", program: true },
   { relative: "bin/codex-code-mode-host", program: true },
   { relative: "codex-path/rg", program: true },
+  // The voice runtime ships inside this package (codex-resources/voice) and is
+  // only complete when the helper and the GStreamer library are both present:
+  // the app hides /voice otherwise, without any install-time error. Failing the
+  // install here keeps a package that lost the runtime from looking healthy.
+  { relative: "codex-resources/voice/bin/codex-voice-host", program: true },
+  { relative: "codex-resources/voice/lib/libgstreamer-1.0.0.dylib", program: false },
 ];
 
 function readRgManifest(manifestPath) {

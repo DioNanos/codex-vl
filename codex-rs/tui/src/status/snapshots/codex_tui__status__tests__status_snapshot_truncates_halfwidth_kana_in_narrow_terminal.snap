@@ -4,10 +4,9 @@ expression: sanitized
 ---
 /status
 
-  >_ OpenAI Codex (v0.160.0)
+  >_ OpenAI Codex (v0.162.0)
 
-  Visit
-  https://chatgpt.com/codex/settings/usage
+  Visit https://chatgpt.com/settings/usage
   for up-to-date
   information on rate limits and credits
 

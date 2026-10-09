@@ -128,21 +128,33 @@ function emptyPackageDir() {
   return mkdtempSync(path.join(scratch, "package-"));
 }
 
-// A layout the daemon accepts: four regular files, the three programs
-// executable.
+// A layout the daemon accepts: the regular files it validates, the programs
+// executable. The packaged voice runtime is part of that layout: without it the
+// CLI ships without /voice and the install must fail instead of looking healthy.
 function completePackageDir() {
   const packageDir = emptyPackageDir();
   mkdirSync(path.join(packageDir, "bin"), { recursive: true });
   mkdirSync(path.join(packageDir, "codex-path"), { recursive: true });
+  mkdirSync(path.join(packageDir, "codex-resources", "voice", "bin"), {
+    recursive: true,
+  });
+  mkdirSync(path.join(packageDir, "codex-resources", "voice", "lib"), {
+    recursive: true,
+  });
   writeFileSync(path.join(packageDir, "codex-package.json"), "{}");
   for (const relative of [
     "bin/codex",
     "bin/codex-code-mode-host",
     "codex-path/rg",
+    "codex-resources/voice/bin/codex-voice-host",
   ]) {
     writeFileSync(path.join(packageDir, relative), "#!/bin/sh\n");
     chmodSync(path.join(packageDir, relative), 0o755);
   }
+  writeFileSync(
+    path.join(packageDir, "codex-resources", "voice", "lib", "libgstreamer-1.0.0.dylib"),
+    "fixture",
+  );
   return packageDir;
 }
 
@@ -353,6 +365,8 @@ test("R2: the guard lists exactly what the daemon refuses", () => {
   assert.deepEqual(postinstall.verifyPackageLayout({ packageDir }), [
     "bin/codex-code-mode-host",
     "codex-path/rg",
+    "codex-resources/voice/bin/codex-voice-host",
+    "codex-resources/voice/lib/libgstreamer-1.0.0.dylib",
   ]);
 
   assert.deepEqual(postinstall.verifyPackageLayout({ packageDir: completePackageDir() }), []);

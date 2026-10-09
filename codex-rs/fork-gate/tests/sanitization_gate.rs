@@ -3,7 +3,7 @@
 // Gate di sanificazione pre-publish per il fork codex-vl.
 //
 // PERCHE' E' UN TEST E NON UNA CHECKLIST. La verifica prima di pubblicare
-// c'e' gia' — il grep anti-leak manuale nel MERGE_FEATURE_REGISTER, area
+// c'e' gia' — il grep anti-leak manuale nella fork feature checklist, area
 // "Fork identity and release safety" — ma la si fa a mente, ricostruendo
 // l'elenco dei motivi da cercare. Una lista scritta a mano copre cio' che
 // ricordi; un test copre cio' che c'e', e fallisce prima del publish invece

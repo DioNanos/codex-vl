@@ -86,6 +86,19 @@ PACKAGE_TARGET_FILTERS: dict[str, str] = {
 
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
 
+# codex-vl fork: desktop packages that must carry the private voice runtime.
+# The app hides /voice unless `codex-resources/voice` holds both the helper and
+# the GStreamer runtime (realtime-webrtc/src/session.rs), so a package staged
+# without it silently loses the feature. Android is excluded by design: the
+# platform gate rejects it and the runtime cannot exist there.
+PACKAGE_VOICE_TARGETS: dict[str, str] = {
+    "codex-linux-x64": "x86_64-unknown-linux-gnu",
+    "codex-linux-arm64": "aarch64-unknown-linux-gnu",
+    "codex-darwin-arm64": "aarch64-apple-darwin",
+}
+
+VOICE_HELPER_RELATIVE = "codex-resources/voice/bin/codex-voice-host"
+
 # codex-vl fork: workflow CI stages prebuilt binaries into
 # `vendor/<target>/codex-resources/bwrap`, `vendor/<target>/codex/` and
 # `vendor/<target>/path/rg` (legacy source layout, unchanged). This map
@@ -152,6 +165,15 @@ def parse_args() -> argparse.Namespace:
         "--pack-output",
         type=Path,
         help="Path where the generated npm tarball should be written.",
+    )
+    parser.add_argument(
+        "--voice-dir",
+        type=Path,
+        help=(
+            "Assembled codex-resources/voice directory (see "
+            "codex-cli/scripts/stage_voice_runtime.py). Required for packages "
+            "listed in PACKAGE_VOICE_TARGETS."
+        ),
     )
     parser.add_argument(
         "--vendor-src",
@@ -225,6 +247,12 @@ def main() -> int:
             )
             write_codex_package_manifest(staging_dir, package, release_version)
             validate_native_payload(staging_dir, package)
+            stage_voice_payload(staging_dir, package, args.voice_dir)
+
+        if package == "codex-darwin-arm64":
+            # The source package stages its payload in stage_sources(), which
+            # does not see the CLI arguments; the voice runtime is added here.
+            stage_voice_payload(staging_dir, package, args.voice_dir)
 
         if release_version:
             staging_dir_str = str(staging_dir)
@@ -266,6 +294,7 @@ def main() -> int:
         if args.pack_output is not None:
             output_path = run_npm_pack(staging_dir, args.pack_output)
             assert_tarball_contains_native_payload(output_path, package)
+            assert_tarball_contains_voice_payload(output_path, package, args.voice_dir)
             print(f"npm pack output written to {output_path}")
     finally:
         if created_temp:
@@ -528,6 +557,91 @@ def stage_codex_sdk_sources(staging_dir: Path) -> None:
     license_src = REPO_ROOT / "LICENSE"
     if license_src.exists():
         shutil.copy2(license_src, staging_dir / "LICENSE")
+
+
+def stage_voice_payload(
+    staging_dir: Path, package: str, voice_dir: Path | None
+) -> None:
+    """codex-vl fork: place the voice runtime into the staged package.
+
+    Fail-closed: a desktop package listed in PACKAGE_VOICE_TARGETS must carry
+    the runtime, otherwise `/voice` disappears from the shipped CLI without any
+    packaging error.
+    """
+    expected_voice_target = PACKAGE_VOICE_TARGETS.get(package)
+    if expected_voice_target is None:
+        if voice_dir is not None:
+            raise RuntimeError(
+                f"--voice-dir is not accepted for package '{package}': the "
+                "voice runtime is desktop-only (macOS and glibc Linux)."
+            )
+        return
+    if voice_dir is None:
+        raise RuntimeError(
+            f"Package '{package}' must carry the voice runtime for "
+            f"{expected_voice_target}; pass --voice-dir pointing at the "
+            "assembled codex-resources/voice directory."
+        )
+    voice_dir = voice_dir.resolve()
+    for relative in (
+        "bin/codex-voice-host",
+        "manifest.json",
+        "runtime.json",
+        "sources.json",
+        "NOTICE.md",
+    ):
+        if not (voice_dir / relative).is_file():
+            raise RuntimeError(f"voice directory is incomplete: {voice_dir / relative}")
+    manifest = json.loads((voice_dir / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("voiceTarget") != expected_voice_target:
+        raise RuntimeError(
+            "voice manifest target "
+            f"{manifest.get('voiceTarget')!r} does not match {expected_voice_target!r}"
+        )
+
+    target = CODEX_PLATFORM_PACKAGES[package]["target_triple"]
+    destination = staging_dir / "vendor" / target / "codex-resources" / "voice"
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(voice_dir, destination)
+    # File modes do not survive every artifact transport, and an npm tarball
+    # that ships a non-executable helper installs a package where /voice stays
+    # hidden. Set the bit here instead of trusting the input.
+    helper = destination / "bin" / "codex-voice-host"
+    helper.chmod(0o755)
+    if not helper.stat().st_mode & 0o111:
+        raise RuntimeError(f"voice helper is not executable: {helper}")
+    print(f"voice runtime staged for {package}: {destination}", flush=True)
+
+
+def assert_tarball_contains_voice_payload(
+    tarball_path: Path, package: str, voice_dir: Path | None
+) -> None:
+    """Prove the published archive really carries the voice runtime.
+
+    The staging checks can agree while `npm pack` drops the directory, so read
+    the finished archive: it is the only artifact that reaches users.
+    """
+    if package not in PACKAGE_VOICE_TARGETS:
+        return
+    if voice_dir is None:
+        raise RuntimeError(f"Package '{package}' was staged without the voice runtime.")
+    helper = f"package/vendor/{CODEX_PLATFORM_PACKAGES[package]['target_triple']}/{VOICE_HELPER_RELATIVE}"
+    runtime_library = (
+        "lib/libgstreamer-1.0.0.dylib"
+        if package == "codex-darwin-arm64"
+        else "lib/libgstreamer-1.0.so.0"
+    )
+    runtime = f"package/vendor/{CODEX_PLATFORM_PACKAGES[package]['target_triple']}/codex-resources/voice/{runtime_library}"
+    with tarfile.open(tarball_path, "r:gz") as archive:
+        present = set(archive.getnames())
+    missing = [entry for entry in (helper, runtime) if entry not in present]
+    if missing:
+        raise RuntimeError(
+            f"{tarball_path.name} is missing the voice runtime: " + ", ".join(missing)
+        )
+    print(f"voice runtime verified inside {tarball_path.name}")
 
 
 def copy_native_binaries(

@@ -17,7 +17,8 @@ export type ThreadStartParams = {model?: string | null, modelProvider?: string |
 approvalsReviewer?: ApprovalsReviewer | null, sandbox?: SandboxMode | null, config?: { [key in string]?: JsonValue } | null, serviceName?: string | null, baseInstructions?: string | null, developerInstructions?: string | null, /**
  * @deprecated `friendly` and `pragmatic` no longer select a style.
  */
-personality?: Personality | null, ephemeral?: boolean | null, sessionStartSource?: ThreadStartSource | null,  * codex-vl: client-declared capabilities for fork-owned dynamic tools
+personality?: Personality | null, ephemeral?: boolean | null, sessionStartSource?: ThreadStartSource | null, /**
+ * codex-vl: client-declared capabilities for fork-owned dynamic tools
  * on thread/start.
  */
 capabilities?: ThreadClientCapabilities | null, /**

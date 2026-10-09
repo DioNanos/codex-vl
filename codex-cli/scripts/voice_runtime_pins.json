@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "comment": [
+    "Pinned upstream voice runtime payloads consumed by stage_voice_runtime.py.",
+    "Each archive is the public Codex package for the app target; it carries the",
+    "private GStreamer runtime this fork re-uses unchanged (identical native source",
+    "pins live in third_party/voice/sources.json). The helper binary is NOT taken",
+    "from these archives: it is built from this repository, because the runtime",
+    "handshake binds the helper to the build commit of the app that spawns it.",
+    "Digests are the ones published in the upstream release SHA256SUMS file and are",
+    "verified before any archive is extracted."
+  ],
+  "release": "rust-v0.162.0",
+  "repository": "openai/codex",
+  "urlTemplate": "https://github.com/openai/codex/releases/download/rust-v0.162.0/{asset}",
+  "voicePath": "codex-resources/voice",
+  "assets": {
+    "x86_64-unknown-linux-musl": {
+      "asset": "codex-package-x86_64-unknown-linux-musl.tar.gz",
+      "sha256": "4f573944c1d2059109d75a2f4d0cc9c03697288224a5e407717a9de98fc010c5",
+      "voiceTarget": "x86_64-unknown-linux-gnu"
+    },
+    "aarch64-unknown-linux-musl": {
+      "asset": "codex-package-aarch64-unknown-linux-musl.tar.gz",
+      "sha256": "d47a5fa21e037a1b85729b88c238ff3da8a956fc9fb5ad3976714428e7fb2bda",
+      "voiceTarget": "aarch64-unknown-linux-gnu"
+    },
+    "aarch64-apple-darwin": {
+      "asset": "codex-package-aarch64-apple-darwin.tar.gz",
+      "sha256": "5809ee90a9c3b59d438bb2663aefa0b43d86f825438b65d4504b31f82343628b",
+      "voiceTarget": "aarch64-apple-darwin"
+    }
+  },
+  "alsaSource": {
+    "comment": [
+      "alsa-lib sources compiled statically into the Linux voice helper by",
+      "stage_voice_runtime.py, mirroring the upstream Bazel dependency",
+      "@alsa_lib 1.2.9.bcr.4 (MODULE.bazel). Unlike the GStreamer payload above,",
+      "alsa-lib is a build input only: the static object code ends up inside",
+      "bin/codex-voice-host and no alsa file ships in the runtime."
+    ],
+    "version": "1.2.9",
+    "url": "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.9.tar.bz2",
+    "sha256": "dc9c643fdc4ccfd0572cc685858dd41e08afb583f30460b317e4188275f615b2"
+  }
+}

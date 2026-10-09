@@ -10,8 +10,8 @@ Transcript row 33: content behind the menu
 › /model     choose what model and reasoning effort to use
   /memories  configure memory use and generation
   /mention   mention a file
-  /mcp       list MCP tools; use /mcp verbose for details or /mcp reload to
-             refresh
+  /mcp       list MCP tools; use /mcp verbose, /mcp login <name>, or /mcp reload
+             to refresh
 
 › /m
 

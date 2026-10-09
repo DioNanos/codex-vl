@@ -15,7 +15,7 @@ use crate::vl::VivlingLogKind;
 use crate::vl::VlEvent;
 use crate::vl::events::LoopCommandRequest;
 
-pub(super) const MCP_USAGE: &str = "Usage: /mcp [verbose|reload]";
+pub(super) const MCP_USAGE: &str = "Usage: /mcp [verbose | login <name> | reload]";
 
 /// `/mcp reload` — request a global MCP config reload through the app-server.
 ///
