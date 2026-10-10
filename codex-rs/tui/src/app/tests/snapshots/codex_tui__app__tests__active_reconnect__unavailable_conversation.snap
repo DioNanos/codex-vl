@@ -4,7 +4,7 @@ expression: "format!(\"{history}\\n{}\",\nrender_bottom_popup(&app.chat_widget,\
 ---
 • This conversation is unavailable. Its cached transcript and draft remain here; input is paused. Open the agent picker or return to the parent to continue.
 ⚠ A background Codex service is running v2.0.0, different from your Codex CLI
-  v0.162.0.
+  v0.162.1.
 › unavailable draft
 
   gpt-test default · /tmp/project
