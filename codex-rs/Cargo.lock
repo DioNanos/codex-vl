@@ -3938,7 +3938,7 @@ dependencies = [
  "codex-utils-plugins",
  "futures",
  "insta",
- "lru 0.18.2",
+ "lru 0.18.5",
  "pretty_assertions",
  "regex-lite",
  "rmcp",
@@ -5036,7 +5036,7 @@ dependencies = [
 name = "codex-utils-cache"
 version = "0.162.0"
 dependencies = [
- "lru 0.18.2",
+ "lru 0.18.5",
  "sha1 0.10.6",
  "tokio",
 ]
@@ -10257,9 +10257,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.2"
+version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
+checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
 dependencies = [
  "hashbrown 0.17.1",
 ]
@@ -12940,7 +12940,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "itertools 0.14.0",
  "kasuari",
- "lru 0.18.2",
+ "lru 0.18.5",
  "palette",
  "serde",
  "strum 0.28.0",
