@@ -158,6 +158,11 @@ pub(crate) struct Vivling {
     /// Resolved CRT effect toggles. Re-read from `<codex_home>/config.toml`
     /// when `configure()` is called with a new home.
     pub(crate) crt_config: crate::vl::crt::VivlingCrtConfig,
+    /// Strip layout chosen in `[vivling] layout` (`full` = classic
+    /// three-line CRT strip, `line` = single-row strip). Re-read from
+    /// `<codex_home>/config.toml` together with `crt_config`; `/vivling
+    /// layout` updates it at runtime.
+    pub(crate) ui_layout: crate::vl::crt::VivlingLayout,
     /// Per-render transition snapshot generator. Mutated inside `render()`.
     ///
     /// codex-vl: NOTA DI PERIMETRO — è l'unica eccezione
@@ -209,6 +214,7 @@ impl Clone for Vivling {
             animations_enabled: self.animations_enabled,
             msa: self.msa.clone(),
             crt_config: self.crt_config.clone(),
+            ui_layout: self.ui_layout,
             crt_animation_ledger: crate::vl::crt::CrtAnimationLedger::new(),
             shadow: self.shadow.clone(),
         }
