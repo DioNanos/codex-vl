@@ -276,6 +276,191 @@ async fn a_pending_tick_left_by_a_busy_tick_dispatches_on_reload_after_the_turn(
     Ok(())
 }
 
+/// A tick that lands on a busy turn must re-arm the safety timer with a
+/// backoff delay, not at delay zero: with the old scheduling every
+/// blocked refresh re-fired the past-due pending occurrence immediately,
+/// spinning the tick loop at full speed until the turn ended.
+#[tokio::test]
+async fn a_busy_tick_does_not_reschedule_at_delay_zero() -> anyhow::Result<()> {
+    let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir().expect("temporary Codex home should be created");
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    app.state_db = Some(state_db);
+
+    let thread_id = codex_protocol::ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.active_thread_id = Some(thread_id);
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(super::super::tests::test_thread_session(thread_id, cwd));
+
+    // The turn is running: the timer tick lands in the busy guard.
+    app.chat_widget.set_agent_turn_running_for_tests(true);
+
+    let now = super::state::loop_now_ms();
+    let occurrence_ms = now - 60_000;
+    app.state_db
+        .as_ref()
+        .expect("test state database")
+        .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
+            id: "job-busy-backoff".to_string(),
+            thread_id,
+            label: "busy-backoff".to_string(),
+            prompt_text: "child tick".to_string(),
+            goal_text: Some("wait out the turn without spinning".to_string()),
+            interval_seconds: 60,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: false,
+            created_by: "agent".to_string(),
+            next_run_ms: Some(occurrence_ms),
+            created_at_ms: now,
+            updated_at_ms: now,
+        })
+        .await?;
+
+    app.handle_vl_event(VlEvent::LoopTick {
+        thread_id,
+        job_id: "job-busy-backoff".to_string(),
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    while ops.try_recv().is_ok() {}
+
+    let db = app.state_db.clone().expect("test state database");
+    let job = db
+        .get_thread_loop_job_by_id(thread_id, "job-busy-backoff")
+        .await?
+        .expect("job survives the busy tick");
+    assert!(job.pending_tick, "a busy tick keeps the tick pending");
+
+    let blocked_retries = app
+        .chat_widget
+        .loop_job_blocked_retries("job-busy-backoff")
+        .expect("the busy tick must have re-armed the safety timer");
+    assert_eq!(blocked_retries, 1, "exactly one blocked re-arm after one busy tick");
+    let delay_ms = crate::chatwidget::loop_jobs::compute_loop_timer_delay(
+        &job,
+        blocked_retries,
+        super::state::loop_now_ms(),
+    );
+    assert!(
+        delay_ms > 0,
+        "a past-due pending tick must re-arm with a positive backoff delay, got {delay_ms}ms"
+    );
+    Ok(())
+}
+
+/// The backoff only paces the safety timer: the turn-end reload path
+/// must keep dispatching a pending tick immediately, even when the job
+/// has already accumulated blocked retries.
+#[tokio::test]
+async fn reload_after_turn_end_is_not_delayed_by_backoff() -> anyhow::Result<()> {
+    let (mut app, mut events, mut ops) = make_test_app_with_channels().await;
+    let codex_home = tempdir().expect("temporary Codex home should be created");
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    app.state_db = Some(state_db);
+
+    let thread_id = codex_protocol::ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.active_thread_id = Some(thread_id);
+    let cwd = app.config.cwd.to_path_buf();
+    app.chat_widget
+        .handle_thread_session(super::super::tests::test_thread_session(thread_id, cwd));
+
+    // The turn is running: the timer tick lands in the busy guard.
+    app.chat_widget.set_agent_turn_running_for_tests(true);
+
+    let now = super::state::loop_now_ms();
+    let occurrence_ms = now - 60_000;
+    app.state_db
+        .as_ref()
+        .expect("test state database")
+        .create_or_replace_thread_loop_job(codex_state::ThreadLoopJobCreateParams {
+            id: "job-reload-backoff".to_string(),
+            thread_id,
+            label: "reload-backoff".to_string(),
+            prompt_text: "child tick".to_string(),
+            goal_text: Some("dispatch as soon as the turn ends".to_string()),
+            interval_seconds: 60,
+            enabled: true,
+            run_policy: "queue_one".to_string(),
+            auto_remove_on_completion: false,
+            created_by: "agent".to_string(),
+            next_run_ms: Some(occurrence_ms),
+            created_at_ms: now,
+            updated_at_ms: now,
+        })
+        .await?;
+
+    app.handle_vl_event(VlEvent::LoopTick {
+        thread_id,
+        job_id: "job-reload-backoff".to_string(),
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    while ops.try_recv().is_ok() {}
+
+    let blocked_retries = app
+        .chat_widget
+        .loop_job_blocked_retries("job-reload-backoff")
+        .expect("the busy tick must have re-armed the safety timer");
+    assert!(blocked_retries >= 1, "the backoff ladder must be armed before the turn ends");
+
+    // Real turn-end boundary: the turn state clears and the boundary
+    // event (already proven to be emitted by the chatwidget loop_reload
+    // tests) reaches the handler.
+    app.chat_widget.set_agent_turn_running_for_tests(false);
+    while let Ok(event) = events.try_recv() {
+        if let AppEvent::Vl(VlEvent::ReloadLoopJobs { .. }) = event {
+            // The runtime loop would feed this back to `handle_vl_event`;
+            // handled explicitly below.
+        }
+    }
+
+    app.handle_vl_event(VlEvent::ReloadLoopJobs { thread_id })
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+
+    let db = app.state_db.clone().expect("test state database");
+    let job = db
+        .get_thread_loop_job_by_id(thread_id, "job-reload-backoff")
+        .await?
+        .expect("job survives the reload");
+    assert_eq!(
+        job.last_status.as_deref(),
+        Some("submitted"),
+        "the pending tick must dispatch on reload despite the armed backoff"
+    );
+    assert!(!job.pending_tick, "a dispatched tick is no longer pending");
+    assert_eq!(
+        app.chat_widget
+            .loop_job_blocked_retries("job-reload-backoff")
+            .expect("the reload refreshes the scheduled runtime"),
+        0,
+        "a dispatched row resets the blocked-retry ladder"
+    );
+    let mut dispatched = 0;
+    while let Ok(op) = ops.try_recv() {
+        if let crate::app_command::AppCommand::UserTurn { .. } = op {
+            dispatched += 1;
+        }
+    }
+    assert!(
+        dispatched >= 1,
+        "the reload must submit the loop prompt as a user turn"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn loop_delegate_brain_off_during_turn_reports_error_and_continues() -> anyhow::Result<()> {
     let (mut app, mut events, thread_id, _codex_home) = app_for_loop_owner_slash_test().await?;

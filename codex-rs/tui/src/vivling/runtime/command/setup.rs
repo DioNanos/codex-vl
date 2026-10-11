@@ -5,6 +5,7 @@ use crate::vl::crt::CrtAnimationLedger;
 use crate::vl::crt::FrameTarget;
 use crate::vl::crt::PacingProbe;
 use crate::vl::crt::VivlingCrtConfig;
+use crate::vl::crt::VivlingLayout;
 
 impl Vivling {
     pub(crate) fn unavailable() -> Self {
@@ -17,6 +18,7 @@ impl Vivling {
             animations_enabled: false,
             msa: None,
             crt_config: VivlingCrtConfig::default(),
+            ui_layout: VivlingLayout::default(),
             crt_animation_ledger: CrtAnimationLedger::new(),
             shadow: ShadowState::with_lifecycle(VivlingLifecyclePhase::Unavailable),
         }
@@ -38,6 +40,7 @@ impl Vivling {
         let codex_home = codex_home.to_path_buf();
         let needs_reload = self.codex_home.as_ref() != Some(&codex_home);
         self.crt_config = VivlingCrtConfig::load_from_codex_home(&codex_home);
+        self.ui_layout = VivlingLayout::load_from_codex_home(&codex_home);
         self.codex_home = Some(codex_home);
         self.auth_mode = auth_mode;
         if self.msa.is_none() {
@@ -63,6 +66,22 @@ impl Vivling {
         }
         // Step 12.C — mark configured: Unavailable -> Idle (idempotente).
         self.shadow.lifecycle.set_available();
+    }
+
+    /// Switch the strip layout at runtime (`/vivling layout`) and
+    /// persist the choice in `[vivling] layout` in the codex-home
+    /// `config.toml`. The config write is a minimal in-place edit that
+    /// preserves comments and every other key; a failed write downgrades
+    /// to a warning and keeps the runtime switch (the strip changes on the
+    /// next rendered frame without a restart).
+    pub(crate) fn apply_ui_layout(&mut self, layout: VivlingLayout) {
+        if let Some(codex_home) = self.codex_home.as_ref()
+            && let Err(err) = VivlingLayout::save_layout_to_codex_home(codex_home, layout)
+        {
+            tracing::warn!("failed to persist the vivling layout: {err}");
+        }
+        self.ui_layout = layout;
+        self.request_frame();
     }
 
     fn maybe_backfill_msa_index(&self) {

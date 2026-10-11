@@ -165,3 +165,60 @@ fn status_and_card_include_individual_gene_surface() {
     assert!(rendered.contains("Temperament patient, curious, cautious"));
     assert!(rendered.contains("brain potential high"));
 }
+
+#[test]
+fn line_layout_uses_a_single_row() {
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+    vivling.configure_runtime(FrameRequester::test_dummy(), true);
+    vivling.set_task_running(true);
+    assert_eq!(vivling.desired_height(80), 1);
+    // Below the strip minimum width the strip stays hidden.
+    assert_eq!(vivling.desired_height(11), 0);
+}
+
+#[test]
+fn line_layout_renders_within_80_and_60_columns() {
+    for width in [60, 80] {
+        let mut vivling = Vivling::unavailable();
+        vivling.state = Some(seeded_state());
+        vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+        vivling.configure_runtime(FrameRequester::test_dummy(), true);
+        vivling.set_task_running(true);
+
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        vivling.render(area, &mut buf);
+        let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            rendered.chars().count() <= width as usize,
+            "row exceeds {width} columns: {rendered:?}"
+        );
+        assert!(
+            rendered.contains('●') || rendered.contains('·'),
+            "the status dot must be present in {rendered:?}"
+        );
+    }
+}
+
+#[test]
+fn line_layout_blinks_slowly_with_animations() {
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+    vivling.configure_runtime(FrameRequester::test_dummy(), true);
+    assert_eq!(
+        vivling.schedule_animation_wake(Instant::now()),
+        Some(std::time::Duration::from_millis(1000))
+    );
+}
+
+#[test]
+fn line_layout_schedules_no_frame_without_animations() {
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+    vivling.configure_runtime(FrameRequester::test_dummy(), false);
+    assert_eq!(vivling.schedule_animation_wake(Instant::now()), None);
+}
