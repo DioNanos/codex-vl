@@ -24,12 +24,68 @@ fn epoch_millis_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Initial delay of the blocked-tick retry ladder, in milliseconds. A
+/// pending tick whose occurrence is already past due cannot dispatch
+/// (busy user turn, review mode, side conversation, stuck claim, invalid
+/// runner model): instead of re-arming at delay zero and re-firing on
+/// every refresh, the safety timer backs off, doubling the delay on each
+/// consecutive blocked re-arm.
+const BLOCKED_RETRY_INITIAL_DELAY_MS: u64 = 1_000;
+/// Saturation point of the doubling shift: `1s << 6` already exceeds the
+/// cap, so every attempt past this one maps to the cap (no overflow).
+const BLOCKED_RETRY_MAX_SHIFT: u32 = 6;
+/// Upper bound of the retry ladder: at most one safety retry per minute.
+const BLOCKED_RETRY_DELAY_CAP_MS: u64 = 60_000;
+/// The retry attempt at which the ladder first hits the cap; warn once
+/// here so a permanently blocked job stays visible instead of silently
+/// settling at one retry per minute.
+const BLOCKED_RETRY_CAP_ATTEMPT: u32 = BLOCKED_RETRY_MAX_SHIFT;
+
+/// Delay before the next safety retry for a loop job whose tick stays
+/// blocked, as a function of the number of consecutive blocked re-arms:
+/// 1s, 2s, 4s, ... capped at 60s. Pure so the scheduling decision can be
+/// tested without a clock.
+fn blocked_retry_delay_ms(attempt: u32) -> u64 {
+    let shift = attempt.min(BLOCKED_RETRY_MAX_SHIFT);
+    (BLOCKED_RETRY_INITIAL_DELAY_MS << shift).min(BLOCKED_RETRY_DELAY_CAP_MS)
+}
+
+/// Timer delay, in milliseconds, used to (re-)arm a loop job, derived
+/// from the persisted row, the in-memory blocked-retry count, and the
+/// current time. A past-due pending tick is a blocked retry — the
+/// previous dispatch of that occurrence was refused — so the delay comes
+/// from the backoff ladder and is never zero, whatever the blocking
+/// cause was. Everything else schedules a plain one-shot timer to
+/// `next_run_ms` (zero when the occurrence is already due).
+pub(crate) fn compute_loop_timer_delay(
+    job: &codex_state::ThreadLoopJob,
+    blocked_retries: u32,
+    now_ms: i64,
+) -> u64 {
+    let Some(next_run_ms) = job.next_run_ms else {
+        // Callers arm no timer without an occurrence; keep the helper
+        // total for direct use in tests.
+        return 0;
+    };
+    if job.pending_tick && next_run_ms <= now_ms {
+        blocked_retry_delay_ms(blocked_retries)
+    } else {
+        (next_run_ms - now_ms).max(0) as u64
+    }
+}
+
 /// Runtime wrapper around a persisted `ThreadLoopJob` while it is scheduled
 /// in this `ChatWidget`. Includes the spawned timer task (if any) so the
 /// widget can abort it on thread switch or shutdown.
 pub(crate) struct LoopJobRuntime {
     pub(crate) job: codex_state::ThreadLoopJob,
     pub(crate) task: Option<tokio::task::JoinHandle<()>>,
+    /// Consecutive blocked re-arms of this job (a past-due pending tick
+    /// that could not dispatch). In-memory only: preserved across
+    /// refreshes for the same job id, reset when a refreshed row is no
+    /// longer pending, dropped on thread switch or restart so a fresh
+    /// process restarts the ladder at the bottom.
+    pub(crate) blocked_retries: u32,
 }
 
 impl ChatWidget {
@@ -129,6 +185,7 @@ impl ChatWidget {
             let mut runtime = self.loop_jobs.remove(&key).unwrap_or(LoopJobRuntime {
                 job: job.clone(),
                 task: None,
+                blocked_retries: 0,
             });
             if let Some(task) = runtime.task.take() {
                 task.abort();
@@ -248,7 +305,31 @@ impl ChatWidget {
         let Some(next_run_ms) = runtime.job.next_run_ms else {
             return;
         };
-        let delay_ms = (next_run_ms - epoch_millis_now()).max(0) as u64;
+        let now_ms = epoch_millis_now();
+        let blocked_retry = runtime.job.pending_tick && next_run_ms <= now_ms;
+        let delay_ms = compute_loop_timer_delay(&runtime.job, runtime.blocked_retries, now_ms);
+        if blocked_retry {
+            // The previous dispatch of this occurrence was blocked (busy
+            // user turn, review mode, side conversation, ...): re-arm on
+            // the backoff ladder. A zero delay here would let the
+            // refresh/timer pair re-fire the tick at every iteration
+            // until the turn ends.
+            let attempt = runtime.blocked_retries;
+            if attempt == BLOCKED_RETRY_CAP_ATTEMPT {
+                tracing::warn!(
+                    job_id = %runtime.job.id,
+                    label = %runtime.job.label,
+                    delay_ms,
+                    "loop job tick still blocked; retry delay reached its cap"
+                );
+            }
+            runtime.blocked_retries = attempt.saturating_add(1);
+        } else if !runtime.job.pending_tick {
+            // The refreshed row is no longer pending (dispatched, expired,
+            // or disarmed): the blocked episode is over and the next one
+            // restarts the ladder from the bottom.
+            runtime.blocked_retries = 0;
+        }
         let thread_id = runtime.job.thread_id;
         let job_id = runtime.job.id.clone();
         let tx = self.app_event_tx.clone();
@@ -256,6 +337,15 @@ impl ChatWidget {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             tx.send_vl(crate::vl::VlEvent::LoopTick { thread_id, job_id });
         }));
+    }
+
+    /// Test-only seam: the blocked-retry counter of a scheduled job, so
+    /// loop-controller level tests can pin the backoff behavior.
+    #[cfg(test)]
+    pub(crate) fn loop_job_blocked_retries(&self, job_id: &str) -> Option<u32> {
+        self.loop_jobs
+            .get(job_id)
+            .map(|runtime| runtime.blocked_retries)
     }
 
     pub(super) fn abort_all_loop_job_tasks(&mut self) {
@@ -308,6 +398,15 @@ mod tests {
         }
     }
 
+    fn main_owner(thread_id: ThreadId) -> codex_state::ThreadLoopOwner {
+        codex_state::ThreadLoopOwner {
+            thread_id,
+            owner_kind: codex_state::THREAD_LOOP_OWNER_KIND_MAIN.to_string(),
+            owner_vivling_id: None,
+            updated_at_ms: 1,
+        }
+    }
+
     #[tokio::test]
     async fn main_runner_schedules_and_submits_a_main_turn() {
         let (mut widget, _events, mut ops) = make_chatwidget_manual(None).await;
@@ -335,5 +434,103 @@ mod tests {
                 UserInput::Text { text, .. } if text.contains("\nowner: main")
             )
         }));
+    }
+
+    #[test]
+    fn blocked_retry_delay_grows_and_caps() {
+        assert_eq!(blocked_retry_delay_ms(0), 1_000);
+        assert_eq!(blocked_retry_delay_ms(1), 2_000);
+        assert_eq!(blocked_retry_delay_ms(2), 4_000);
+        assert_eq!(blocked_retry_delay_ms(5), 32_000);
+        assert_eq!(blocked_retry_delay_ms(6), 60_000);
+        assert_eq!(blocked_retry_delay_ms(7), 60_000);
+        assert_eq!(blocked_retry_delay_ms(u32::MAX), 60_000);
+    }
+
+    #[test]
+    fn backoff_applies_to_every_blocked_cause() {
+        let thread_id = ThreadId::new();
+        let now_ms = 5_000_000;
+        let mut job = test_job(thread_id, Some(now_ms - 60_000));
+        job.pending_tick = true;
+        // Every blocked cause (busy turn, review mode, side conversation,
+        // stuck claim, invalid runner model, missing owner) persists the
+        // same row shape: a past-due occurrence with the tick still
+        // pending. The scheduling decision must key only on that shape,
+        // whatever `last_status` names the cause.
+        for status in [
+            "pending_busy",
+            "skipped_busy",
+            "blocked_review",
+            "blocked_side",
+            "blocked_owner",
+            "invalid_runner_model",
+        ] {
+            job.last_status = Some(status.to_string());
+            assert_eq!(
+                compute_loop_timer_delay(&job, 0, now_ms),
+                1_000,
+                "the first retry must start at the ladder bottom for {status}"
+            );
+            assert_eq!(
+                compute_loop_timer_delay(&job, 2, now_ms),
+                4_000,
+                "the ladder must grow for {status}"
+            );
+        }
+        // A future occurrence is a normal timer, untouched by the counter.
+        job.next_run_ms = Some(now_ms + 30_000);
+        assert_eq!(compute_loop_timer_delay(&job, 5, now_ms), 30_000);
+        // A past-due row that is no longer pending is an ordinary due
+        // tick (delay zero; the dispatch itself reschedules it), not a
+        // blocked retry, whatever the counter holds.
+        job.pending_tick = false;
+        job.next_run_ms = Some(now_ms - 60_000);
+        assert_eq!(compute_loop_timer_delay(&job, 5, now_ms), 0);
+    }
+
+    #[tokio::test]
+    async fn pending_past_due_tick_re_arms_with_backoff_not_zero() {
+        let (mut widget, _events, _ops) = make_chatwidget_manual(None).await;
+        let thread_id = ThreadId::new();
+        widget.thread_id = Some(thread_id);
+
+        let now_ms = epoch_millis_now();
+        let mut job = test_job(thread_id, Some(now_ms - 60_000));
+        job.pending_tick = true;
+        job.last_status = Some("pending_busy".to_string());
+
+        // Refresh cycles of a blocked loop: each refresh re-arms the
+        // safety timer on the backoff ladder (never at delay zero, the
+        // old behavior) and the counter must survive the runtime reuse
+        // keyed by job id.
+        widget.replace_loop_jobs_with_owner(thread_id, vec![job.clone()], main_owner(thread_id));
+        assert_eq!(
+            widget.loop_jobs["job-main"].blocked_retries, 1,
+            "the first blocked re-arm consumes ladder step 0 and bumps the counter"
+        );
+        assert_eq!(
+            compute_loop_timer_delay(&job, 0, now_ms),
+            1_000,
+            "the first blocked re-arm must wait one second, not zero"
+        );
+
+        widget.replace_loop_jobs_with_owner(thread_id, vec![job.clone()], main_owner(thread_id));
+        assert_eq!(widget.loop_jobs["job-main"].blocked_retries, 2);
+        widget.replace_loop_jobs_with_owner(thread_id, vec![job.clone()], main_owner(thread_id));
+        assert_eq!(widget.loop_jobs["job-main"].blocked_retries, 3);
+        assert_eq!(
+            compute_loop_timer_delay(&job, 2, now_ms),
+            4_000,
+            "the third blocked refresh must sit on the third ladder step"
+        );
+
+        // A refreshed row that is no longer pending (dispatched, expired,
+        // or disarmed) ends the blocked episode: the ladder restarts at
+        // the bottom for the next one.
+        let mut settled = job.clone();
+        settled.pending_tick = false;
+        widget.replace_loop_jobs_with_owner(thread_id, vec![settled], main_owner(thread_id));
+        assert_eq!(widget.loop_jobs["job-main"].blocked_retries, 0);
     }
 }

@@ -55,6 +55,25 @@ pub(super) fn dispatch_loop_with_args(cw: &mut ChatWidget, trimmed: &str) {
 
 /// `/vivling [args]` — full Vivling action dispatch.
 pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
+    if let Some(rest) = args.trim().strip_prefix("layout") {
+        let choice = rest.trim();
+        if choice.is_empty() {
+            cw.add_info_message("Usage: /vivling layout <full|line>".to_string(), None);
+            return;
+        }
+        if !crate::vl::crt::VivlingLayout::is_known_value(choice) {
+            cw.add_error_message("Unknown Vivling layout; use \"full\" or \"line\".".to_string());
+            return;
+        }
+        let layout = crate::vl::crt::VivlingLayout::parse(choice);
+        cw.bottom_pane.apply_vivling_layout(layout);
+        cw.add_info_message(
+            format!("Vivling layout set to {}.", layout.as_config_value()),
+            None,
+        );
+        cw.request_redraw();
+        return;
+    }
     if let Some(rest) = args.trim().strip_prefix("loop-strategy") {
         let mut parts = rest.split_whitespace();
         let (Some(label), Some(strategy), None) = (parts.next(), parts.next(), parts.next()) else {
