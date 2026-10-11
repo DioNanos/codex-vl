@@ -1,0 +1,186 @@
+name: tui-tests-probe
+
+# One-off probe (round 1c): run the codex-tui and codex-cli tests that the vl-gate only compiles, three
+# consecutive times on the candidate tree and once on the tree before the merge (the baseline shows
+# the failures that were already there). The daemon_startup legs run the focused serial pass straight
+# from the tree: the fork package and state paths are fixed in the test fixture itself, so nothing is
+# patched at run time and RUST_BACKTRACE stays unset. Runs on refs named ci/probe-tui-* (never merged)
+# or by hand.
+on:
+  push:
+    branches:
+      - "ci/probe-tui-**"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git SHA to validate; empty uses the pushed commit
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_MIN_STACK: "8388608"
+  # Hosted runners have ~14 GB free; dropping dev debug info keeps the link step small.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  crate-tests:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: codex-tui candidate x3
+            crate: codex-tui
+            ref: ""
+            reps: 3
+            min_ok: 6000
+            patterns: "daemon_startup_tests async_questions vivling manage_loops goal loop_controller suite::daemon_compatibility manager_dependency_regression"
+            args: "--lib --bins --test all --test manager_dependency_regression --test fork_identity_pins"
+            prep: "cargo build -p codex-cli --bin codex --locked"
+          - name: codex-tui baseline x1
+            crate: codex-tui
+            ref: "c6968428517a5d0beded14a8fd141da57a35b9f3"
+            reps: 1
+            min_ok: 6000
+            patterns: "daemon_startup_tests async_questions vivling manage_loops goal loop_controller suite::daemon_compatibility manager_dependency_regression"
+            args: "--lib --bins --test all --test manager_dependency_regression --test fork_identity_pins"
+            prep: "cargo build -p codex-cli --bin codex --locked"
+          - name: codex-cli candidate x3
+            crate: codex-cli
+            ref: ""
+            reps: 3
+            min_ok: 300
+            patterns: ""
+            args: "--lib --bins --test daemon_startup"
+            prep: ""
+          - name: codex-cli baseline x1
+            crate: codex-cli
+            ref: "c6968428517a5d0beded14a8fd141da57a35b9f3"
+            reps: 1
+            min_ok: 300
+            patterns: ""
+            args: "--lib --bins --test daemon_startup"
+            prep: ""
+          - name: codex-cli daemon_startup focused candidate x3
+            crate: codex-cli
+            ref: ""
+            reps: 3
+            min_ok: 3
+            patterns: ""
+            args: "--test daemon_startup -- --nocapture --test-threads=1"
+            prep: ""
+          - name: codex-cli daemon_startup focused baseline x1
+            crate: codex-cli
+            ref: "c6968428517a5d0beded14a8fd141da57a35b9f3"
+            reps: 1
+            min_ok: 3
+            patterns: ""
+            args: "--test daemon_startup -- --nocapture --test-threads=1"
+            prep: ""
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ matrix.ref || inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install the system libraries the build scripts look for
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Prepare (probe-only changes, never committed)
+        if: matrix.prep != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ matrix.prep }}
+      - name: Build the test binaries once
+        run: |
+          set -euo pipefail
+          cargo test -p "${{ matrix.crate }}" --locked --no-run ${{ matrix.args }}
+          df -h /
+      - name: Run the tests (consecutive runs, same environment)
+        shell: bash
+        run: |
+          # GitHub runs bash with -e: without this the loop stops at the first red cargo test.
+          set +e
+          set -uo pipefail
+          for i in $(seq 1 "${{ matrix.reps }}"); do
+            echo "=== run $i of ${{ matrix.reps }} ($(date -u +%T))"
+            cargo test -p "${{ matrix.crate }}" --locked --no-fail-fast ${{ matrix.args }} 2>&1 \
+              | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee "run-$i.out"
+            rc="${PIPESTATUS[0]}"
+            echo "cargo exit (run $i): ${rc}"
+          done
+      - name: Summary, stability and coverage guards
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          {
+            echo "### ${{ matrix.name }}"
+            for f in run-*.out; do
+              echo "**$f**"; echo '```'
+              grep -hE '^test result:' "$f" || echo "no test result lines"
+              echo '```'
+              echo "failed tests:"; echo '```'
+              grep -hE '^test .* \.\.\. FAILED$' "$f" | sed -E 's/^test (.*) \.\.\. FAILED$/\1/' | sort || true
+              echo '```'
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # The failed set must be identical across the consecutive runs (a difference is a flaky test).
+          first=""; idx=0
+          for f in $(ls run-*.out | sort); do
+            idx=$((idx + 1))
+            cur="$(grep -hE '^test .* \.\.\. FAILED$' "$f" | sort || true)"
+            if [ "$idx" -eq 1 ]; then first="$cur"; elif [ "$cur" != "$first" ]; then echo "UNSTABLE: $f fails a different set than run-1.out"; fail=1; fi
+          done
+          n_runs="$(ls run-*.out 2>/dev/null | wc -l)"
+          [ "$n_runs" -eq "${{ matrix.reps }}" ] || { echo "expected ${{ matrix.reps }} runs, found $n_runs"; fail=1; }
+          # A filtered-out or not-compiled area must not look green: each area has to have run something.
+          for pat in ${{ matrix.patterns }}; do
+            n="$(cat run-*.out | grep -cE "^test .*${pat}.* \.\.\. (ok|FAILED)$" || true)"
+            echo "ran ${pat}: ${n}"
+            [ "${n}" -gt 0 ] || { echo "NO TEST RAN for ${pat}"; fail=1; }
+          done
+          for f in run-*.out; do
+            n="$(grep -cE '^test .* \.\.\. ok$' "$f" || true)"
+            echo "$f: tests ok = ${n} (minimum ${{ matrix.min_ok }})"
+            [ "${n}" -ge "${{ matrix.min_ok }}" ] || { echo "TOO FEW TESTS RAN in $f"; fail=1; }
+          done
+          nfail="$(cat run-*.out | grep -cE '^test .* \.\.\. FAILED$' || true)"
+          echo "failing test lines over all runs: ${nfail}"
+          # Red means there is something to read; the baseline leg tells which failures were already there.
+          [ "${nfail}" -eq 0 ] || fail=1
+          exit "${fail}"
