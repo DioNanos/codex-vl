@@ -3,5 +3,12 @@ source: tui/tests/suite/focus_palette.rs
 assertion_line: 484
 expression: failure.trim()
 ---
-Error: daemon executable not found at [CODEX_HOME]/packages/app-server-daemon/current/bin/codex; repair the existing installation, or run `codex app-server daemon start` to install a missing daemon
+Error: codex-vl fork: managed standalone install not found at [CODEX_HOME]/packages/app-server-daemon-vl/current/bin/codex
+
+This command requires the standalone install layout, but the codex-vl fork does not currently ship its own standalone installer. The supported install/update path for the fork is the npm package `@mmmbuto/codex-vl`.
+
+To install or update the fork, run:
+  npm install -g @mmmbuto/codex-vl@latest
+
+Note: do NOT run the upstream openai/codex install script. It would replace the codex-vl binary with the unrelated upstream codex and remove every codex-vl feature.
 To work without the background server, rerun the same command with --no-daemon (including resume or fork and its arguments).

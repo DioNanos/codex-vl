@@ -355,6 +355,19 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Switch the Vivling strip layout at runtime and persist it in
+    /// the codex-home config.toml (delegated to the Vivling runtime).
+    /// The save result is propagated so the caller can report a failed
+    /// persistence to the user.
+    pub(crate) fn apply_vivling_layout(
+        &mut self,
+        layout: crate::vl::crt::VivlingLayout,
+    ) -> std::io::Result<()> {
+        let result = self.vivling.apply_ui_layout(layout);
+        self.request_redraw();
+        result
+    }
+
     pub(crate) fn scroll_vl_sidebar(&mut self, delta: i32) {
         self.vl_sidebar.scroll(delta);
         self.request_redraw();

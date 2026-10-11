@@ -4,6 +4,40 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.162.1-vl.1 - 2026-10-11 - Upstream rust-v0.162.1
+
+### Codex VL changes
+
+- Upstream `rust-v0.162.1`: multi-line asynchronous questions keep their line
+  breaks and complete hyperlink destinations instead of crashing the TUI
+  (#51866), and daemon feature compatibility checks apply only to explicit
+  command-line feature overrides (#52648).
+- Add a one-line Vivling layout next to the three-line CRT one. Switch with
+  `/vivling layout <full|line>`; the choice is persisted under `[vivling] layout`
+  in the Codex home `config.toml` with a structured TOML edit: comments and every
+  other key are kept, a config that cannot be parsed or whose `[vivling]` is not a
+  table is left untouched, and a failed save is reported while the layout still
+  applies for the session.
+- Re-arm blocked loop job ticks on a backoff ladder (one second doubling up to
+  one minute) instead of re-firing them on every refresh, so a busy turn no
+  longer makes a pending loop spin at full speed. The persisted occurrence
+  state is untouched; a warning is shown once when a job first settles at the
+  cap.
+- Clear a stale turn-start latch after a timeout: when the core never acknowledges
+  a message, the TUI warns, and after 60 seconds it stops holding the later
+  queued messages hostage and lets them flow again.
+- Keep the daemon startup test fixture on the fork state directory and package
+  manifest paths.
+- Carries the 0.162.0 line, which only ever existed as the GitHub pre-release
+  `v0.162.0-vl.1` and never reached npm: `daemon stop`
+  also stops the updater, the update loop ends when the fork refuses a
+  standalone update, a too-long socket path is reported with its limit, and
+  the updater pid record is removed when the updater exits. File locks keep
+  degrading on filesystems that do not implement them (Termux storage),
+  Android packages are accepted without a bundled ripgrep, and the packaged
+  voice runtime ships in the macOS arm64 and glibc Linux packages (the Linux
+  helper links alsa-lib statically).
+
 ## 0.160.0-vl.3 - 2026-10-05 - Upstream rust-v0.160.0
 
 ### Codex VL changes

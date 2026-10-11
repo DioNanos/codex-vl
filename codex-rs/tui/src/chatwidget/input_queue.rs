@@ -50,7 +50,8 @@ pub(super) struct InputQueueState {
     pub(super) submit_pending_steers_after_interrupt: bool,
     pub(super) suppress_queue_autosend: bool,
     /// Istante dell'ultima alzata del latch pending-start: alimenta il
-    /// watchdog diagnostico (mai auto-clear) in `pre_draw_tick`.
+    /// watchdog in `pre_draw_tick` (avviso oltre la soglia, auto-clear oltre
+    /// il timeout).
     pub(super) user_turn_pending_since: Option<std::time::Instant>,
     /// Debounce del warn del watchdog: un episodio, un avviso.
     pub(super) pending_start_warned: bool,

@@ -22,6 +22,7 @@ pub(crate) use animation::CrtAnimationLedger;
 pub(crate) use animation::FrameTarget;
 pub(crate) use animation::PacingProbe;
 pub(crate) use animation::VivlingCrtConfig;
+pub(crate) use animation::VivlingLayout;
 pub(crate) use scene::CrtScene;
 pub(crate) use scene::render_crt_scene;
 pub(crate) use surface::CrtSurface;

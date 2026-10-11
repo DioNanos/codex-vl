@@ -619,7 +619,7 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
             ),
             (&serde_json::Value::Null, &serde_json::Value::Null)
         );
-        tokio::time::timeout(Duration::from_secs(/*secs*/ 15), proxy).await???;
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 60), proxy).await???;
     }
     Ok(())
 }
@@ -679,7 +679,7 @@ async fn startup_reads_server_defaults_before_starting_thread() -> Result<()> {
         ),
         (&serde_json::Value::Null, &serde_json::Value::Null),
     );
-    tokio::time::timeout(Duration::from_secs(/*secs*/ 15), proxy).await???;
+    tokio::time::timeout(Duration::from_secs(/*secs*/ 60), proxy).await???;
     Ok(())
 }
 

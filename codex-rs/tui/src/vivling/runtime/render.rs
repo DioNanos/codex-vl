@@ -109,6 +109,10 @@ impl Renderable for Vivling {
         if area.height == 0 || area.width < VIVLING_STRIP_MIN_WIDTH {
             return;
         }
+        if self.ui_layout == crate::vl::crt::VivlingLayout::Line {
+            self.render_line_layout(area, buf, state, Instant::now());
+            return;
+        }
         let now = Instant::now();
         let sprite = self.current_sprite(state, now);
         let live_context = self.shadow.live_context.clone();
@@ -200,28 +204,148 @@ impl Renderable for Vivling {
         };
         surface.render(render_area, buf);
 
-        self.schedule_animation_wake(now);
+        let _ = self.schedule_animation_wake(now);
     }
 
     fn desired_height(&self, width: u16) -> u16 {
         if self.visible_state().is_none() || width < VIVLING_STRIP_MIN_WIDTH {
             return 0;
         }
-        VIVLING_STRIP_HEIGHT
+        match self.ui_layout {
+            crate::vl::crt::VivlingLayout::Line => 1,
+            crate::vl::crt::VivlingLayout::Full => VIVLING_STRIP_HEIGHT,
+        }
     }
 }
 
 impl Vivling {
-    fn schedule_animation_wake(&self, now: Instant) {
+    /// Single-row strip used by the `line` layout: one-line glyph,
+    /// truncated insight, short mood, and a slow-blinking dot as the only
+    /// animation (a fixed dim dot when animations are disabled).
+    fn render_line_layout(&self, area: Rect, buf: &mut Buffer, state: &VivlingState, now: Instant) {
+        let sprite_head = self
+            .current_sprite(state, now)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim_end()
+            .to_string();
+        let live_context = self.shadow.live_context.clone();
+        let bootstrap_pending = !self.shadow.crt_first_dispatch_completed;
+        let insight =
+            super::crt_insight::compute_insight(state, live_context.as_ref(), bootstrap_pending)
+                .or_else(|| self.current_animation_text_at(now))
+                .unwrap_or_default();
+        let mood = state.mood();
+        // Slow blink (2 s period) driven by the wall clock so it keeps its
+        // phase across redraws; a fixed dim dot when animations are off.
+        let blink_on = self.animations_enabled
+            && std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs() % 2 == 0)
+                .unwrap_or(true);
+        let dot = if blink_on { "●" } else { "·" };
+        let row = compose_line_layout_row(
+            area.width as usize,
+            &sprite_head,
+            insight.trim(),
+            mood.trim(),
+            dot,
+        );
+        let rendered = ratatui::text::Line::from(row);
+        ratatui::widgets::Paragraph::new(rendered).render(area, buf);
+        let _ = self.schedule_animation_wake(now);
+    }
+}
+
+/// Truncate `text` to at most `max_chars` characters, ending with an
+/// ellipsis when the text is cut.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Compose the single-row `line` layout: glyph, truncated insight, short
+/// mood, and the blinking dot in the last column. Everything is cut to fit
+/// `width` (character count; the CRT glyphs are ASCII so a char-based width
+/// matches the pane grid).
+fn compose_line_layout_row(
+    width: usize,
+    glyph: &str,
+    insight: &str,
+    mood: &str,
+    dot: &str,
+) -> String {
+    let width = width.max(1);
+    let glyph = glyph.trim_end();
+    let glyph_width = glyph.chars().count();
+    let dot_width = dot.chars().count();
+    if glyph_width + dot_width + 1 >= width {
+        // No room for anything but the glyph.
+        return truncate_chars(glyph, width);
+    }
+    // The blinking dot owns the last column.
+    let body_width = width - dot_width;
+    let mut row = String::from(glyph);
+    let mut used = glyph_width;
+    for text in [insight.trim(), mood.trim()] {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let text_width = text.chars().count();
+        let separators = 2;
+        if used + separators + text_width + dot_width <= body_width {
+            row.push_str("  ");
+            row.push_str(text);
+            used += separators + text_width;
+            continue;
+        }
+        // Not enough room for the whole text: fit a truncated piece (at
+        // least 4 characters, or skip it entirely).
+        let avail = body_width.saturating_sub(used + separators + dot_width + 1);
+        if avail >= 4 {
+            row.push_str("  ");
+            row.push_str(&truncate_chars(text, avail));
+        }
+        break;
+    }
+    while row.chars().count() + dot_width < body_width {
+        row.push(' ');
+    }
+    row.push_str(dot);
+    truncate_chars(&row, width)
+}
+
+impl Vivling {
+    /// Returns the wake delay actually scheduled (test hook), or `None`
+    /// when the current layout/animation set produces no wake.
+    pub(crate) fn schedule_animation_wake(&self, now: Instant) -> Option<Duration> {
         let Some(frame_requester) = &self.frame_requester else {
-            return;
+            return None;
         };
+        if self.ui_layout == crate::vl::crt::VivlingLayout::Line {
+            // The line layout blinks its status dot slowly; with animations
+            // disabled the dot is a fixed glyph and no frame is scheduled.
+            if !self.animations_enabled {
+                return None;
+            }
+            frame_requester.schedule_frame_in(Duration::from_millis(1000));
+            return Some(Duration::from_millis(1000));
+        }
         if !self.animations_enabled || !self.crt_config.any_animation_active() {
-            return;
+            return None;
         }
         let target = self.shadow.crt_frame_target;
         if !target.schedules_frames() {
-            return;
+            return None;
         }
         let ledger_wake = self.crt_animation_ledger.next_wake(now);
         let tick = target.tick();
@@ -238,6 +362,7 @@ impl Vivling {
         if let Some(d) = wake {
             frame_requester.schedule_frame_in(d);
         }
+        wake
     }
 }
 

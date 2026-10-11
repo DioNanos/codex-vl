@@ -19,6 +19,7 @@ pub(crate) mod ledger;
 pub(crate) mod transitions;
 
 pub(crate) use config::VivlingCrtConfig;
+pub(crate) use config::VivlingLayout;
 pub(crate) use frame_pacing::FrameTarget;
 pub(crate) use frame_pacing::PacingProbe;
 pub(crate) use ledger::CrtAnimationLedger;

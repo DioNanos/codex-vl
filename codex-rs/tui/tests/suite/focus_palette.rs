@@ -27,6 +27,11 @@ mod external_editor;
 #[path = "tui_mode_picker_tests.rs"]
 mod tui_mode_picker;
 
+/// Matches `STATE_DIR_NAME` and the managed package root name in
+/// `codex_app_server_daemon`: the fork renamed both from `app-server-daemon`
+/// so its daemon state and packages never mix with upstream's.
+const STATE_DIR_NAME: &str = "app-server-daemon-vl";
+
 #[test]
 fn focus_gained_with_unanswered_palette_queries_preserves_immediate_input() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
@@ -587,13 +592,7 @@ fn no_daemon_skips_startup_and_discovery() -> Result<()> {
         terminal.read_output(Duration::from_millis(/*millis*/ 200))?;
         terminal.write_input(b"\r")?;
         terminal.wait_for_screen("Model:")?;
-        ensure!(
-            !terminal
-                ._codex_home
-                .path()
-                .join("app-server-daemon")
-                .exists()
-        );
+        ensure!(!terminal._codex_home.path().join(STATE_DIR_NAME).exists());
         if let Some(listener) = listener {
             assert_eq!(
                 listener.accept().unwrap_err().kind(),
@@ -620,7 +619,14 @@ fn auto_daemon_start_failure_exits_with_manual_fallback_hint() -> Result<()> {
         contents.replace("features.daemon_auto_start = false\n", ""),
     )?;
     // An incomplete selected package must fail without installing a replacement.
-    std::fs::create_dir_all(home.path().join("packages/app-server-daemon/current"))?;
+    // The fork keeps its daemon packages under its own `-vl` root: staging the
+    // incomplete selection at upstream's path is ignored by the fork resolver
+    // and the run falls through to a different error, so the fixture must use
+    // the fork path.
+    std::fs::create_dir_all(
+        home.path()
+            .join(format!("packages/{STATE_DIR_NAME}/current")),
+    )?;
     let mut terminal = PtyCodex::start(
         workspace.path(),
         home,

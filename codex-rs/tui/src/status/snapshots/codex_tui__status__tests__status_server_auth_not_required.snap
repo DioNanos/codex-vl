@@ -4,7 +4,7 @@ expression: rendered
 ---
 /status
 
-  >_ OpenAI Codex (v0.162.0)
+  >_ OpenAI Codex (v0.162.1)
 
   Model:           gpt-5.6-sol (reasoning none, summaries auto)
   Model provider:  server-ollama

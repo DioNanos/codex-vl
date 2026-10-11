@@ -1189,37 +1189,64 @@ impl ChatWidget {
         std::time::Duration::from_secs(secs)
     }
 
-    /// Diagnostic watchdog for the pending-start latch (never auto-clears):
-    /// when the latch stays high and no turn is in progress past the
-    /// threshold, warn and show the state in the footer. A silent core is an
-    /// app-server defect: the TUI makes it visible, it does not hide it.
+    /// Elapsed time after which the TUI clears a pending-start latch that the
+    /// core never acknowledged. The message that raised the latch was already
+    /// dispatched, so a core that stays silent past this point would only hold
+    /// every later message hostage.
+    const PENDING_START_AUTO_CLEAR_MS: u64 = 60_000;
+
+    /// Watchdog for the pending-start latch: past the warn threshold it warns
+    /// once and shows the state in the footer; past the auto-clear timeout it
+    /// clears the latch on its own and lets the queue flow again, because a
+    /// core that stayed silent that long is not going to acknowledge the turn
+    /// start. A turn that is actually running never reaches this path, and a
+    /// late `TaskStarted` after the clear lands on the normal latch reset.
     pub(crate) fn check_pending_start_watchdog_with(&mut self, threshold: std::time::Duration) {
         if threshold.is_zero() {
             return;
         }
-        if self.input_queue.pending_start_warned
-            || !self.input_queue.user_turn_pending_start
-            || self.turn_lifecycle.agent_turn_running
-        {
+        if !self.input_queue.user_turn_pending_start || self.turn_lifecycle.agent_turn_running {
             return;
         }
         let Some(since) = self.input_queue.user_turn_pending_since else {
             return;
         };
         let elapsed = since.elapsed();
-        if elapsed < threshold {
-            return;
+        if !self.input_queue.pending_start_warned && elapsed >= threshold {
+            self.input_queue.pending_start_warned = true;
+            tracing::warn!(
+                target: "codex_vl::pending_start",
+                elapsed_secs = elapsed.as_secs(),
+                "user turn pending start with no TaskStarted: app-server may be stuck"
+            );
+            self.set_footer_hint_override(Some(vec![(
+                "wait".to_string(),
+                format!("in attesa del core da {} s", elapsed.as_secs()),
+            )]));
         }
-        self.input_queue.pending_start_warned = true;
+        if elapsed >= Duration::from_millis(Self::PENDING_START_AUTO_CLEAR_MS) {
+            self.auto_clear_stale_pending_start(elapsed);
+        }
+    }
+
+    /// Clear a pending-start latch whose turn start the core never
+    /// acknowledged: warn once on the same target, drop the waiting footer
+    /// hint, and drain the queue. The message that raised the latch was
+    /// already dispatched and is not re-sent, so the drain opens only the
+    /// NEXT queued message, exactly like any other drain.
+    fn auto_clear_stale_pending_start(&mut self, elapsed: Duration) {
+        self.input_queue.user_turn_pending_start = false;
+        self.input_queue.user_turn_pending_since = None;
+        self.input_queue.pending_start_warned = false;
         tracing::warn!(
             target: "codex_vl::pending_start",
             elapsed_secs = elapsed.as_secs(),
-            "user turn pending start with no TaskStarted: app-server may be stuck"
+            timeout_ms = Self::PENDING_START_AUTO_CLEAR_MS,
+            "cleared a stale pending user-turn start: the core never acknowledged the turn start"
         );
-        self.set_footer_hint_override(Some(vec![(
-            "wait".to_string(),
-            format!("in attesa del core da {} s", elapsed.as_secs()),
-        )]));
+        self.set_footer_hint_override(/*items*/ None);
+        self.refresh_pending_input_preview();
+        let _ = self.maybe_send_next_queued_input();
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
