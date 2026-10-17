@@ -1973,7 +1973,7 @@ dependencies = [
  "http 1.4.0",
  "jsonwebtoken",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2367,7 +2367,7 @@ dependencies = [
  "libc",
  "owo-colors",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2431,7 +2431,7 @@ name = "codex-async-utils"
 version = "0.163.0"
 dependencies = [
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "tokio",
  "tokio-util",
 ]
@@ -2657,7 +2657,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "http 1.4.0",
- "rand 0.9.3",
+ "rand 0.10.1",
  "tokio",
  "tracing",
  "url",
@@ -2783,7 +2783,7 @@ dependencies = [
  "http-body-util",
  "pretty_assertions",
  "prost",
- "rand 0.9.3",
+ "rand 0.10.1",
  "reqwest 0.12.28",
  "serde_json",
  "tokio",
@@ -3078,7 +3078,7 @@ dependencies = [
  "opentelemetry_sdk",
  "predicates",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "regex-lite",
  "rmcp",
  "serde",
@@ -3634,7 +3634,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
  "test-case",
@@ -3917,7 +3917,7 @@ dependencies = [
  "opentelemetry_sdk",
  "os_info",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "regex-lite",
  "serde",
  "serde_json",
@@ -4223,7 +4223,7 @@ dependencies = [
  "rama-tcp",
  "rama-tls-rustls",
  "rama-unix",
- "rand 0.9.3",
+ "rand 0.10.1",
  "rand_regex",
  "regex",
  "regex-automata",
@@ -4604,7 +4604,7 @@ dependencies = [
  "codex-keyring-store",
  "keyring",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "regex",
  "schemars 0.8.22",
  "serde",
@@ -4743,7 +4743,7 @@ dependencies = [
  "http 1.4.0",
  "pretty_assertions",
  "quinn",
- "rand 0.9.3",
+ "rand 0.10.1",
  "rcgen",
  "rustls",
  "rustls-native-certs",
@@ -4924,7 +4924,7 @@ dependencies = [
  "pathdiff",
  "pretty_assertions",
  "pulldown-cmark",
- "rand 0.9.3",
+ "rand 0.10.1",
  "ratatui",
  "ratatui-macros",
  "regex-lite",
@@ -5329,7 +5329,7 @@ dependencies = [
  "libloading",
  "opus",
  "pretty_assertions",
- "rand 0.9.3",
+ "rand 0.10.1",
  "rtc",
  "rubato",
  "sonora",
@@ -8890,7 +8890,7 @@ dependencies = [
  "idna",
  "ipnet",
  "once_cell",
- "rand 0.9.3",
+ "rand 0.9.5",
  "ring",
  "thiserror 2.0.18",
  "tinyvec",
@@ -8912,7 +8912,7 @@ dependencies = [
  "moka",
  "once_cell",
  "parking_lot",
- "rand 0.9.3",
+ "rand 0.9.5",
  "resolv-conf",
  "smallvec",
  "thiserror 2.0.18",
@@ -11430,7 +11430,7 @@ dependencies = [
  "futures-util",
  "opentelemetry",
  "percent-encoding",
- "rand 0.9.3",
+ "rand 0.9.5",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -12185,7 +12185,7 @@ checksum = "bee689443a2bd0a16ab0348b52ee43e3b2d1b1f931c8aa5c9f8de4c86fbe8c40"
 dependencies = [
  "bitflags 2.13.1",
  "num-traits",
- "rand 0.9.3",
+ "rand 0.9.5",
  "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
@@ -12597,7 +12597,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
- "rand 0.9.3",
+ "rand 0.9.5",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -12667,7 +12667,7 @@ dependencies = [
  "rama-macros",
  "rama-net",
  "rama-utils",
- "rand 0.9.3",
+ "rand 0.9.5",
  "serde",
  "sha1 0.10.6",
 ]
@@ -12695,7 +12695,7 @@ dependencies = [
  "rama-error",
  "rama-macros",
  "rama-utils",
- "rand 0.9.3",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "sync_wrapper",
@@ -12769,7 +12769,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
- "rand 0.9.3",
+ "rand 0.9.5",
  "tokio",
 ]
 
@@ -12858,9 +12858,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.3"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
+checksum = "b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
@@ -12946,7 +12946,7 @@ version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04db2e382d13679a1e42400e90e306cdbb79dc5cd41bb035ba4eae72e78cdf37"
 dependencies = [
- "rand 0.9.3",
+ "rand 0.9.5",
  "regex-syntax",
 ]
 
@@ -14226,7 +14226,7 @@ version = "0.46.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26ab054c34b87f96c3e4701bea1888317cde30cc7e4a6136d2c48454ab96661c"
 dependencies = [
- "rand 0.9.3",
+ "rand 0.9.5",
  "sentry-types",
  "serde",
  "serde_json",
@@ -14241,7 +14241,7 @@ checksum = "eecbd63e9d15a26a40675ed180d376fcb434635d2e33de1c24003f61e3e2230d"
 dependencies = [
  "debugid",
  "hex",
- "rand 0.9.3",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -16717,7 +16717,7 @@ dependencies = [
  "http 1.4.0",
  "httparse",
  "log",
- "rand 0.9.3",
+ "rand 0.9.5",
  "rustls",
  "rustls-pki-types",
  "sha1 0.10.6",

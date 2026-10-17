@@ -439,7 +439,7 @@ predicates = "3"
 pretty_assertions = "1.4.1"
 pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
-rand = "0.9"
+rand = "0.10"
 rand_regex = "0.18.1"
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
