@@ -15,9 +15,6 @@
 //! `ticks.rs` seam) lands in m2 — nothing here touches the tick path.
 
 use codex_protocol::ThreadId;
-use codex_state::LOOP_NOTIFICATION_KIND_PENDING;
-use codex_state::LOOP_NOTIFICATION_KIND_SUMMARY;
-use codex_state::LoopNotificationRecord;
 use codex_state::LoopRunnerKind;
 
 /// Schedule kind of the tick's descriptor — decides whether a successful
@@ -189,28 +186,6 @@ impl LoopTickSummary {
         }
     }
 
-    /// Persist-before-emit: `record_loop_notification` writes
-    /// the row (with the dedup verdict) before the caller is allowed to emit.
-    /// `Ok(true)` = first persistence, emit is allowed; `Ok(false)` =
-    /// duplicate event id, already persisted, never emit again.
-    pub(crate) async fn persist_before_emit(
-        &self,
-        state_runtime: &codex_state::StateRuntime,
-        kind: &'static str,
-    ) -> anyhow::Result<bool> {
-        state_runtime
-            .record_loop_notification(LoopNotificationRecord {
-                event_id: self.event_id(),
-                thread_id: self.thread_id,
-                job_id: self.job_id.clone(),
-                label: self.label.clone(),
-                kind,
-                summary_json: self.to_persisted_json()?,
-                created_at_ms: self.finished_at_ms,
-            })
-            .await
-    }
-
     /// Explicit projection for persistence: the typed summary stays the
     /// single source of truth, the JSON form is derived from it field by
     /// field (no generic value bags).
@@ -250,17 +225,6 @@ struct PersistedSummary<'a> {
     suspend_reason: Option<&'a str>,
     occurrence_ms: Option<i64>,
     finished_at_ms: i64,
-}
-
-/// The pending flavor of `persist_before_emit`, valid only for
-/// the events the summary policy admits; callers must check [`LoopTickSummary::pending_needed`]
-/// before reaching for it.
-pub(crate) fn pending_kind() -> &'static str {
-    LOOP_NOTIFICATION_KIND_PENDING
-}
-
-pub(crate) fn summary_kind() -> &'static str {
-    LOOP_NOTIFICATION_KIND_SUMMARY
 }
 
 #[cfg(test)]

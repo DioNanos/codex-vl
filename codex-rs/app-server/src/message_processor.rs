@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -143,7 +144,6 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 }
 
 pub(crate) struct MessageProcessor {
-    pub(crate) authority_verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
     pub(crate) turn_admission: TurnAdmission,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
@@ -166,7 +166,7 @@ pub(crate) struct MessageProcessor {
     mcp_processor: McpRequestProcessor,
     plugin_processor: PluginRequestProcessor,
     project_processor: ProjectRequestProcessor,
-    remote_control_processor: RemoteControlRequestProcessor,
+    pub(super) remote_control_processor: RemoteControlRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_goal_processor: ThreadGoalRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
@@ -303,7 +303,6 @@ impl ConnectionSessionState {
     pub(crate) async fn bind_identity(
         &self,
         proof: codex_app_server_protocol::IdentityProof,
-        verifier: Option<&dyn AuthorityVerifier>,
     ) -> Result<
         codex_app_server_protocol::IdentityBindResponse,
         codex_app_server_protocol::IdentityErrorCode,
@@ -366,8 +365,6 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
     pub(crate) rpc_transport: AppServerRpcTransport,
     pub(crate) remote_control_handle: Option<RemoteControlHandle>,
-    /// Authority verifier. `None` = fail-closed when ON.
-    pub(crate) authority_verifier: Option<std::sync::Arc<dyn AuthorityVerifier>>,
     /// Validated startup latch: enforcement is on only when the launcher required
     /// identity and the inherited channel was captured at startup.
     pub(crate) identity_required: bool,
@@ -398,7 +395,6 @@ impl MessageProcessor {
             rpc_transport,
             remote_control_handle,
             plugin_startup_tasks,
-            authority_verifier,
             identity_required,
         } = args;
         // Startup credential reads must not open a browser before initialize selects the policy.
@@ -504,7 +500,7 @@ impl MessageProcessor {
             outgoing.clone(),
         );
 
-        let pending_thread_unloads = Arc::new(Mutex::new(HashSet::new()));
+        let pending_thread_unloads = Arc::new(Mutex::new(HashMap::new()));
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
@@ -576,11 +572,8 @@ impl MessageProcessor {
             identity_required,
             Arc::clone(&user_verification),
         );
-        let marketplace_processor = MarketplaceRequestProcessor::new(
-            Arc::clone(&config),
-            config_manager.clone(),
-            Arc::clone(&thread_manager),
-        );
+        let marketplace_processor =
+            MarketplaceRequestProcessor::new(config_manager.clone(), Arc::clone(&thread_manager));
         let mcp_processor = McpRequestProcessor::new(
             auth_manager.clone(),
             Arc::clone(&thread_manager),
@@ -697,7 +690,6 @@ impl MessageProcessor {
         );
 
         Self {
-            authority_verifier,
             turn_admission,
             user_verification,
             outgoing,
@@ -1056,7 +1048,7 @@ impl MessageProcessor {
                 return Err(invalid_request("Identity bind requires initialize"));
             }
             let response = session
-                .bind_identity(params.proof.clone(), self.authority_verifier.as_deref())
+                .bind_identity(params.proof.clone())
                 .await
                 .map_err(|error| invalid_request(format!("identity bind failed: {error:?}")))?;
             let binding = response.binding.clone();
@@ -1666,11 +1658,17 @@ impl MessageProcessor {
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(&request_id, params).await
             }
+            ClientRequest::ThreadReadStateUpdate { params, .. } => {
+                self.thread_processor.thread_read_state_update(params).await
+            }
             ClientRequest::ThreadTurnsList { params, .. } => {
                 self.thread_processor.thread_turns_list(params).await
             }
             ClientRequest::ThreadItemsList { params, .. } => {
                 self.thread_processor.thread_items_list(params).await
+            }
+            ClientRequest::ThreadItemsRead { params, .. } => {
+                self.thread_processor.thread_items_read(params).await
             }
             ClientRequest::ThreadShellCommand { params, .. } => {
                 self.thread_processor
@@ -1757,7 +1755,8 @@ impl MessageProcessor {
                 self.catalog_processor.skills_config_write(params).await
             }
             ClientRequest::PluginInstall { params, .. } => {
-                self.plugin_processor.plugin_install(params).await
+                // Keep installation and auth setup state off the shared request dispatcher stack.
+                Box::pin(self.plugin_processor.plugin_install(params)).await
             }
             ClientRequest::PluginUninstall { params, .. } => {
                 self.plugin_processor.plugin_uninstall(params).await
@@ -2061,3 +2060,7 @@ mod gateway_oauth_tests;
 #[cfg(test)]
 #[path = "message_processor_thread_lifecycle_tests.rs"]
 mod thread_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "message_processor_workspace_routing_tests.rs"]
+mod workspace_routing_tests;

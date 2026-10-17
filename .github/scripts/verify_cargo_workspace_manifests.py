@@ -31,7 +31,7 @@ UTILITY_NAME_EXCEPTIONS = {
 MANIFEST_FEATURE_EXCEPTIONS = {
     "codex-rs/v8-poc/Cargo.toml": {"sandbox": ("v8/v8_enable_sandbox",)},
     # Permanent fork test gates and the embeddings flag, not a temporary migration.
-    "codex-rs/app-server/Cargo.toml": {"d174-test-fixture": ()},
+    "codex-rs/app-server/Cargo.toml": {"identity-test-fixture": ()},
     "codex-rs/tui/Cargo.toml": {
         "identity-gate-test": (),
         "legacy_tui_tests": (),

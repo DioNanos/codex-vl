@@ -1,23 +1,14 @@
-//! codex-vl loop_controller: bounded queue, separate consumer and
-//! bootstrap replay for the persisted tick summaries.
+//! codex-vl loop_controller: persistence seam for the tick summaries.
 //!
-//! Seam contract: the tick path only **persists** (the row lands before any emission) and then
-//! `try_send`s onto a fixed-capacity channel — the queue is transport only,
-//! a full queue drops the emission, never the tick, and no channel error
-//! ever reaches the tick. The consumer below is a distinct task: it drains
-//! the queue and, only for anomalous outcomes and one-shot ticks, tries
-//! the external notifier **only if configured**. An absent channel is a
-//! normal state: the persisted `pending` rows stay untouched and replay at
-//! the next bootstrap (once per start; the m1 `INSERT OR IGNORE` on
+//! Seam contract: the tick path only **persists** (the row lands before any
+//! emission) and then `try_send`s onto a fixed-capacity channel — the queue
+//! is transport only, a full queue drops the emission, never the tick, and
+//! no channel error ever reaches the tick. No consumer task is started in
+//! this process today (the worker that drained the queue and replayed the
+//! persisted `pending` rows was never wired at bootstrap and has been
+//! removed); the enqueue stays as the transport seam, and the persisted
+//! rows remain the single source of truth (the m1 `INSERT OR IGNORE` on
 //! `event_id` is the dedup verdict).
-//!
-//! The external notifier is **off by default**: `LoopNotifyChannel::from_config()`
-//! returns [`LoopNotifyChannel::Absent`] until the configuration key for the
-//! external notifier is decided —
-//! the delivery seam is already there (`core/src/hook_mcp_executor.rs`
-//! `CoreHookMcpExecutor` on `codex_mcp::McpRuntime`; `codex-mcp` in
-//! `tui/Cargo.toml`), so wiring it is a one-variant extension of
-//! [`LoopNotifyChannel`], no new crates.
 
 use std::sync::OnceLock;
 
@@ -34,30 +25,7 @@ use super::summary::LoopTickSummary;
 use super::summary::NextRun;
 use crate::app::App;
 
-/// Fixed queue capacity: bounded, never grows with the tick
-/// count; overflow drops the emission and keeps the persisted row.
-pub(crate) const LOOP_SUMMARY_QUEUE_CAPACITY: usize = 32;
-
 static LOOP_SUMMARY_TX: OnceLock<mpsc::Sender<LoopTickSummary>> = OnceLock::new();
-
-/// Where the external notifier delivers. `Absent` is the shipped default
-/// (off by default, normal state — not an error).
-pub(crate) enum LoopNotifyChannel {
-    Absent,
-    /// Test-only sink: lets the stitching test observe the delivery in-process.
-    /// Never constructed outside tests.
-    #[cfg(test)]
-    TestSink(std::sync::Arc<std::sync::atomic::AtomicBool>),
-    #[cfg(test)]
-    TestSinkFailure,
-}
-
-impl LoopNotifyChannel {
-    pub(crate) fn from_config() -> Self {
-        // The notifier configuration key is not chosen yet, so the channel ships off.
-        LoopNotifyChannel::Absent
-    }
-}
 
 /// Outcome of a finished tick, derived from the persisted post-tick row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,120 +308,17 @@ pub(super) async fn persist_summary_with_outcome(
     Ok(first.then_some(summary))
 }
 
-/// The separate consumer: replays undelivered pending rows once
-/// per start, then drains the queue. Delivery happens only through the
-/// (optional) external channel; absent channel = rows stay pending.
-pub(crate) async fn run_loop_summary_worker(
-    state_runtime: std::sync::Arc<codex_state::StateRuntime>,
-    mut rx: mpsc::Receiver<LoopTickSummary>,
-    channel: LoopNotifyChannel,
-) {
-    replay_pending(&state_runtime, &channel).await;
-    while let Some(summary) = rx.recv().await {
-        if summary.pending_needed() {
-            deliver_once(
-                &state_runtime,
-                &format!("pending:{}", summary.event_id()),
-                &summary.label,
-                &channel,
-            )
-            .await;
-        }
-    }
-}
-
-async fn replay_pending(state_runtime: &codex_state::StateRuntime, channel: &LoopNotifyChannel) {
-    match state_runtime.list_pending_loop_notifications().await {
-        Ok(rows) => {
-            for row in rows {
-                deliver_once(state_runtime, &row.event_id, &row.label, channel).await;
-            }
-        }
-        Err(err) => tracing::warn!(
-            target: "codex_vl::loop_summary",
-            error = %err,
-            "pending replay skipped; rows stay persisted for the next bootstrap"
-        ),
-    }
-}
-
-async fn deliver_once(
-    state_runtime: &codex_state::StateRuntime,
-    event_id: &str,
-    label: &str,
-    channel: &LoopNotifyChannel,
-) {
-    let delivered = match channel {
-        LoopNotifyChannel::Absent => {
-            tracing::debug!(
-                target: "codex_vl::loop_summary",
-                label = %label,
-                "notify channel absent; pending row stays persisted (normal state)"
-            );
-            false
-        }
-        #[cfg(test)]
-        LoopNotifyChannel::TestSink(flag) => {
-            // Test-only channel: the delivery is the flag flip, observed by
-            // the stitching test.
-            flag.store(true, std::sync::atomic::Ordering::Release);
-            true
-        }
-        #[cfg(test)]
-        LoopNotifyChannel::TestSinkFailure => false,
-    };
-    if delivered {
-        if let Err(err) = state_runtime
-            .mark_loop_notification_delivered(event_id)
-            .await
-        {
-            tracing::warn!(
-                target: "codex_vl::loop_summary",
-                error = %err,
-                event_id = %event_id,
-                "delivered loop notification could not be acknowledged"
-            );
-        }
-    }
-}
-
-/// starts (once per process) the bounded queue and the separate
-/// consumer task at APP BOOTSTRAP (startup_orchestration, next to the log-db
-/// worker): the consumer replays undelivered pending rows once per start and
-/// then drains the queue. The tick seam reads the sender from the same
-/// `OnceLock`; paths that never start the worker keep a no-op enqueue.
-pub(crate) fn start_worker(
-    state_runtime: &std::sync::Arc<codex_state::StateRuntime>,
-) -> Option<mpsc::Sender<LoopTickSummary>> {
-    let tx = LOOP_SUMMARY_TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<LoopTickSummary>(LOOP_SUMMARY_QUEUE_CAPACITY);
-        tokio::spawn(run_loop_summary_worker(
-            std::sync::Arc::clone(state_runtime),
-            rx,
-            LoopNotifyChannel::from_config(),
-        ));
-        tx
-    });
-    tx.clone().into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::DerivedOutcome;
-    use super::LOOP_SUMMARY_QUEUE_CAPACITY;
     use super::LoopManager;
-    use super::LoopNotifyChannel;
     use super::LoopScheduleKind;
     use super::LoopTickOutcome;
     use super::LoopTickSummary;
     use super::NextRun;
-    use super::deliver_once;
     use super::derive_outcome;
-    use super::enqueue_or_drop;
     use super::enqueue_or_drop_result;
-    use super::run_loop_summary_worker;
     use codex_protocol::ThreadId;
-    use codex_utils_absolute_path::test_support::PathExt;
     use tokio::sync::mpsc;
 
     fn job(
@@ -523,7 +388,7 @@ mod tests {
     // panicking; the tick path ignores the result either way.
     #[tokio::test]
     async fn full_queue_drops_the_emission_without_panicking() {
-        let (tx, mut rx) = mpsc::channel::<LoopTickSummary>(LOOP_SUMMARY_QUEUE_CAPACITY.min(1));
+        let (tx, mut rx) = mpsc::channel::<LoopTickSummary>(1);
         let summary_slot = summary_for_queue();
         assert!(enqueue_or_drop_result(Some(&tx), &summary_slot));
         assert!(
@@ -556,139 +421,5 @@ mod tests {
             occurrence_ms: Some(1),
             finished_at_ms: 2,
         }
-    }
-
-    // stitching test: a persisted pending row is picked up and
-    // processed by the worker itself (bootstrap replay), and a delivered row
-    // leaves the pending set.
-    #[tokio::test]
-    async fn worker_replays_a_persisted_pending_row() -> anyhow::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let state_runtime = std::sync::Arc::new(
-            codex_state::StateRuntime::init(
-                codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
-                "test-provider".to_string(),
-            )
-            .await?,
-        );
-        state_runtime
-            .record_loop_notification_with_pending(
-                codex_state::LoopNotificationRecord {
-                    event_id: "evt-cucitura".to_string(),
-                    thread_id: ThreadId::new(),
-                    job_id: "job-c".to_string(),
-                    label: "cucitura".to_string(),
-                    kind: codex_state::LOOP_NOTIFICATION_KIND_SUMMARY,
-                    summary_json: "{}".to_string(),
-                    created_at_ms: 1_700_000_000_000,
-                },
-                Some(codex_state::LoopNotificationRecord {
-                    event_id: "pending:evt-cucitura".to_string(),
-                    thread_id: ThreadId::new(),
-                    job_id: "job-c".to_string(),
-                    label: "cucitura".to_string(),
-                    kind: codex_state::LOOP_NOTIFICATION_KIND_PENDING,
-                    summary_json: "{}".to_string(),
-                    created_at_ms: 1_700_000_000_000,
-                }),
-            )
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
-        let delivered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (_tx, rx) = mpsc::channel(4);
-        tokio::spawn(run_loop_summary_worker(
-            std::sync::Arc::clone(&state_runtime),
-            rx,
-            LoopNotifyChannel::TestSink(std::sync::Arc::clone(&delivered)),
-        ));
-
-        for _ in 0..50 {
-            if delivered.load(std::sync::atomic::Ordering::Acquire) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(
-            delivered.load(std::sync::atomic::Ordering::Acquire),
-            "the worker must pick up and deliver the persisted pending row"
-        );
-        // The pending row is removed AFTER the delivery flag
-        // (same worker, two steps): under parallel load an immediate
-        // assert still sees the row in the set. Bounded poll instead of
-        // an instant comparison — the invariant is that the row leaves
-        // the set WITHIN the limit, not within zero milliseconds.
-        let mut pending_empty = false;
-        for _ in 0..50 {
-            let pending = state_runtime
-                .list_pending_loop_notifications()
-                .await
-                .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-            if pending.is_empty() {
-                pending_empty = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(
-            pending_empty,
-            "a delivered pending row must leave the pending set"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn failed_or_absent_delivery_keeps_the_pending_row() -> anyhow::Result<()> {
-        let codex_home = tempfile::tempdir()?;
-        let state_runtime = std::sync::Arc::new(
-            codex_state::StateRuntime::init(
-                codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
-                "test-provider".to_string(),
-            )
-            .await?,
-        );
-        state_runtime
-            .record_loop_notification_with_pending(
-                codex_state::LoopNotificationRecord {
-                    event_id: "evt-failed-delivery".to_string(),
-                    thread_id: ThreadId::new(),
-                    job_id: "job-f".to_string(),
-                    label: "failed-delivery".to_string(),
-                    kind: codex_state::LOOP_NOTIFICATION_KIND_SUMMARY,
-                    summary_json: "{}".to_string(),
-                    created_at_ms: 1_700_000_000_000,
-                },
-                Some(codex_state::LoopNotificationRecord {
-                    event_id: "pending:evt-failed-delivery".to_string(),
-                    thread_id: ThreadId::new(),
-                    job_id: "job-f".to_string(),
-                    label: "failed-delivery".to_string(),
-                    kind: codex_state::LOOP_NOTIFICATION_KIND_PENDING,
-                    summary_json: "{}".to_string(),
-                    created_at_ms: 1_700_000_000_000,
-                }),
-            )
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
-        deliver_once(
-            &state_runtime,
-            "pending:evt-failed-delivery",
-            "failed-delivery",
-            &LoopNotifyChannel::Absent,
-        )
-        .await;
-        deliver_once(
-            &state_runtime,
-            "pending:evt-failed-delivery",
-            "failed-delivery",
-            &LoopNotifyChannel::TestSinkFailure,
-        )
-        .await;
-        assert_eq!(
-            state_runtime.list_pending_loop_notifications().await?.len(),
-            1
-        );
-        Ok(())
     }
 }

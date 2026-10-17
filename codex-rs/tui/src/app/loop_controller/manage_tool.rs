@@ -88,12 +88,12 @@ async fn execute_dynamic_tool(
 pub(super) async fn resolve_app_server_request(
     app: &mut App,
     app_server: &AppServerSession,
-    request_id: RequestId,
-    params: DynamicToolCallParams,
+    request_id: &RequestId,
+    params: &DynamicToolCallParams,
 ) -> color_eyre::Result<()> {
     let thread_id = ThreadId::from_string(&params.thread_id)?;
     let outcome = if is_manage_loops_dynamic_tool(params.namespace.as_deref(), &params.tool) {
-        execute_dynamic_tool(app, thread_id, params.arguments).await
+        execute_dynamic_tool(app, thread_id, params.arguments.clone()).await
     } else {
         loop_action_failure(
             "unknown",
@@ -111,7 +111,7 @@ pub(super) async fn resolve_app_server_request(
     };
     app_server
         .resolve_server_request(
-            request_id,
+            request_id.clone(),
             serde_json::to_value(loop_action_outcome_to_app_server_response(outcome))?,
         )
         .await?;

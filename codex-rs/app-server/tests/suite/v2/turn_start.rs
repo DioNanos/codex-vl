@@ -4684,6 +4684,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         .request(|request_id| ClientRequest::ThreadList {
             request_id,
             params: codex_app_server_protocol::ThreadListParams {
+                excluded_thread_ids: None,
                 originators: None,
                 cursor: None,
                 limit: Some(10),
@@ -5555,7 +5556,6 @@ async fn command_execution_notifications_include_process_id(
     MockResponsesConfig::new(&server.uri())
         .with_sandbox_mode("danger-full-access")
         .enable_feature(Feature::UnifiedExec)
-        .disable_feature(Feature::ShellZshFork)
         .disable_feature(Feature::ShellSnapshot)
         .write(codex_home.path())?;
 
@@ -5740,7 +5740,6 @@ async fn command_execution_notifications_include_trusted_plugin_id(
         .enable_feature(Feature::Plugins)
         .enable_feature(Feature::UnifiedExec)
         .disable_feature(Feature::RemotePlugin)
-        .disable_feature(Feature::ShellZshFork)
         .disable_feature(Feature::ShellSnapshot)
         .with_extra_config("[plugins.\"google-calendar@openai-api-curated\"]\nenabled = true")
         .write(codex_home.path())?;

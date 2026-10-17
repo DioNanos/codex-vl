@@ -688,10 +688,11 @@ pub(super) async fn run_command_request(
             }
         }
         LoopCommandRequest::Remove { label } => {
-            if let Some(job) = state_runtime
+            if state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
                 .await
                 .map_err(loop_state_error)?
+                .is_some()
             {
                 state_runtime
                     .delete_thread_loop_job_with_dependents(thread_id, &label)

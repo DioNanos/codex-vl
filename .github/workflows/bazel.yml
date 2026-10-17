@@ -309,6 +309,7 @@ jobs:
 
           bazel_test_args=(
             test
+            --config=ci-windows-msvc
             --platforms=//:windows_x86_64_msvc
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings

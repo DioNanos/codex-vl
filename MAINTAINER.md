@@ -46,6 +46,28 @@ reproduction.
 
 `main` push to GitHub is gated and only happens after explicit approval.
 
+### CI overlay on `main`
+
+GitHub `main` carries a small set of CI changes that `develop` does not:
+upstream jobs that need infrastructure this project does not have (Bazel,
+private runner groups, paid macOS runners) are switched off with an explanatory
+comment. They live in `scripts/fork-overlay/` and are reapplied on every
+promotion:
+
+1. Prepare the clean tree for `main`.
+2. Make sure PyYAML is available, for example
+   `python3 -m venv ~/.venvs/fork-overlay && ~/.venvs/fork-overlay/bin/pip install pyyaml==6.0.2` and
+   `export PYTHON=~/.venvs/fork-overlay/bin/python` (CI uses the same version through
+   `uv`). Then run `scripts/fork-overlay/fork-ci-overlay.sh` from the repository
+   root. It checks the dependency before writing anything, applies the patch,
+   does nothing if it is already applied, and fails if the patch no longer
+   fits.
+3. The script ends with `check_fork_ci_overlay.py`, which must report
+   `INTACT`. It also runs the result steps in an isolated shell: they must
+   pass when the disabled jobs are `skipped` and fail when one of them fails. Do not push to `main` otherwise.
+4. After an upstream merge changes the workflows, regenerate the patch with
+   `git diff <develop> <main> -- .github/workflows` in a dedicated change.
+
 ## Identity
 
 - Profile: [github.com/DioNanos](https://github.com/DioNanos)

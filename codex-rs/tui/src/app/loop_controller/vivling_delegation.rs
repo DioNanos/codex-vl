@@ -44,7 +44,6 @@ use super::parsing::parse_manage_loops_interval_seconds;
 use super::parsing::parse_vivling_loop_status;
 use super::state::loop_now_ms;
 use super::state::loop_state_error;
-use super::state::next_run_after_tick_ms;
 use super::state::retry_tick_runtime_state;
 use super::types::LoopCommandSource;
 

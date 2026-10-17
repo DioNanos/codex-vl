@@ -81,7 +81,6 @@ struct InternalLoopTickOutcome {
 fn execute_internal_payload(
     job: &codex_state::ThreadLoopJob,
     payload: &LoopJobPayload,
-    now: i64,
     next_run_ms: Option<i64>,
 ) -> Option<InternalLoopTickOutcome> {
     let LoopJobPayload::InternalFn { fn_name, args } = payload else {
@@ -415,8 +414,7 @@ pub(super) async fn process_submission(
             )
         })
         .unwrap_or_else(|| Some(now.saturating_add(job.interval_seconds.saturating_mul(1000))));
-    if let Some(internal_outcome) =
-        execute_internal_payload(&job, &payload, now, scheduled_next_run_ms)
+    if let Some(internal_outcome) = execute_internal_payload(&job, &payload, scheduled_next_run_ms)
     {
         if !claim_occurrence_for_dispatch(&state_runtime, app, thread_id, &job, retry_state).await?
         {
@@ -969,8 +967,8 @@ mod tests {
         .unwrap();
         let payload = LoopJobPayload::from_storage_text(&job.prompt_text);
 
-        let outcome = execute_internal_payload(&job, &payload, 1_000, Some(301_000))
-            .expect("internal outcome");
+        let outcome =
+            execute_internal_payload(&job, &payload, Some(301_000)).expect("internal outcome");
 
         assert_eq!(outcome.message, "watching");
         assert_eq!(outcome.status, LOOP_STATUS_PROGRESS);

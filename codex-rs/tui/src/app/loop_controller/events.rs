@@ -153,7 +153,6 @@ pub(super) async fn handle_reload(app: &mut App, thread_id: ThreadId) -> color_e
 mod tests {
     use super::*;
     use crate::app::tests::make_test_app_with_channels;
-    use codex_state::LoopDescriptorUpsertParams;
     use codex_state::LoopRunnerKind;
     use codex_state::SqliteConfig;
     use codex_state::StateRuntime;

@@ -698,10 +698,29 @@ mod tests {
 
     #[test]
     fn handle_key_event_invokes_codex_vl_handle_input_event() {
-        let body = extract_fn_body(MOD_SOURCE, "handle_key_event")
+        // Upstream 0.163 split the entry point: `handle_key_event` is now a
+        // thin wrapper delegating to `handle_key_event_with_activation_key`,
+        // which holds the real routing body. Follow the delegation and keep
+        // asserting the original invariant: the Vivling intercept runs ahead
+        // of the composer keymap.
+        let wrapper = extract_fn_body(MOD_SOURCE, "handle_key_event")
             .expect("BottomPane::handle_key_event must exist in bottom_pane/mod.rs");
         assert!(
-            body.contains("self.codex_vl_handle_input_event("),
+            wrapper.contains("handle_key_event_with_activation_key("),
+            "BottomPane::handle_key_event must delegate to \
+             handle_key_event_with_activation_key(...). Body was:\n{wrapper}",
+        );
+        let body = extract_fn_body(MOD_SOURCE, "handle_key_event_with_activation_key").expect(
+            "BottomPane::handle_key_event_with_activation_key must exist in bottom_pane/mod.rs",
+        );
+        let vl_hook = body
+            .find("self.codex_vl_handle_input_event(")
+            .expect("the key routing body must call self.codex_vl_handle_input_event(...)");
+        let composer = body
+            .find("self.composer.handle_key_event(")
+            .expect("the key routing body must call self.composer.handle_key_event(...)");
+        assert!(
+            vl_hook < composer,
             "BottomPane::handle_key_event must delegate Vivling intercepts \
              to self.codex_vl_handle_input_event(...) before the regular \
              keymap path. Body was:\n{body}",

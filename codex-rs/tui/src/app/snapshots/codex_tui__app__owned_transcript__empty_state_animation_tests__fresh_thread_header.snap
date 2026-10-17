@@ -1,10 +1,11 @@
 ---
 source: tui/src/app/empty_state_animation_tests.rs
+assertion_line: 208
 expression: "format!(\"enabled:\\n{}\\n---\\ndisabled:\\n{}\", text(after), text(&before))"
 ---
 enabled:
 
-  >_ OpenAI Codex (v0.162.1)
+  >_ OpenAI Codex (v0.163.0)
      /tmp/project
 
 
@@ -50,7 +51,7 @@ enabled:
 ---
 disabled:
 
-  >_ OpenAI Codex (v0.162.1)
+  >_ OpenAI Codex (v0.163.0)
      /tmp/project
 
 

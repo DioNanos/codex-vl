@@ -1,6 +1,6 @@
 ---
 source: tui/src/app/tests/navigation_reconnect_tests.rs
-assertion_line: 399
+assertion_line: 407
 expression: "render_bottom_popup(&app.chat_widget, 100)"
 ---
   Agent command center  Group: Project  g

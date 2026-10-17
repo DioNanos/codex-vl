@@ -177,10 +177,9 @@ impl Harness {
                 ConnectionOrigin::WebSocket => AppServerRpcTransport::Websocket,
             },
             remote_control_handle: None,
-            // Identity is not required in this test support: the same pair
+            // Identity is not required in this test support: the same value
             // `message_processor_tracing_tests.rs` already uses. This standalone
             // fixture is not an identity client.
-            authority_verifier: None,
             identity_required: false,
             plugin_startup_tasks: None,
         }));

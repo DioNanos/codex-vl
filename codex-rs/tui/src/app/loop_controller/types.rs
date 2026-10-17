@@ -13,7 +13,7 @@ pub(super) struct LoopActionOutcome {
 pub(super) use crate::vl::events::LoopCommandScope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum LoopCommandSource {
+pub(crate) enum LoopCommandSource {
     User,
     Agent,
     /// An agent call made while one managed tick is in flight.  The scope is
@@ -28,7 +28,7 @@ pub(super) enum LoopCommandSource {
 /// separate, stricter resolver (`resolve_managed_tick_source`) that can
 /// never yield `Agent`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ManagedToolCallSource {
+pub(crate) enum ManagedToolCallSource {
     /// No active server-issued scope on the thread: an ordinary agent call
     /// (pre-governance behaviour, normal permissions).
     OrdinaryAgent,

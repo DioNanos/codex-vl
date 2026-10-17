@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
 
-#[cfg(feature = "d174-test-fixture")]
+#[cfg(feature = "identity-test-fixture")]
 use std::io::Write;
 
 use crate::outgoing_message::ConnectionId;
@@ -132,7 +132,7 @@ impl ConnectionIdentityState {
                 issued_at,
                 expires_at: issued_at + 15_000,
             };
-            #[cfg(feature = "d174-test-fixture")]
+            #[cfg(feature = "identity-test-fixture")]
             if let Ok(path) = std::env::var("D174_IDENTITY_CHALLENGE_FILE")
                 && let Ok(mut file) = std::fs::OpenOptions::new()
                     .create(true)
@@ -156,10 +156,6 @@ impl ConnectionIdentityState {
 
     pub(crate) fn challenge(&self) -> Option<IdentityChallenge> {
         self.challenge.clone()
-    }
-
-    pub(crate) fn binding(&self) -> Option<IdentityBinding> {
-        self.binding.clone()
     }
 }
 
@@ -311,7 +307,6 @@ mod tests {
     use codex_app_server_protocol::IdentityClaims;
     use codex_app_server_protocol::IdentityKind;
     use codex_app_server_protocol::IdentityOrigin;
-    use std::sync::Arc;
 
     #[test]
     fn launcher_flag_truthy_values_request_identity() {
@@ -484,7 +479,7 @@ mod tests {
 
     #[test]
     fn required_connection_is_blocked_until_bind() {
-        let mut state = required_state();
+        let state = required_state();
         assert!(!state.ready());
         let prepared = state.prepare(&proof(&state)).expect("prepare");
         let _ = prepared;
@@ -617,7 +612,7 @@ mod tests {
 
     #[test]
     fn expired_proof_fails_closed_against_daemon_clock() {
-        let mut state = required_state();
+        let state = required_state();
         let outcome = state.prepare(&expired_proof(&state));
         assert_eq!(
             outcome,
@@ -660,7 +655,7 @@ mod tests {
     fn clock_tolerance_thirty_seconds_accepted_rejected_at_thirty_one() {
         // Tolerance: 30s — a not_before in the future within the tolerance
         // is accepted (clock skew); beyond that, refused.
-        let mut state = required_state();
+        let state = required_state();
         let now = Utc::now().timestamp_millis();
         let mut within = proof(&state);
         within.claims.issued_at = now - 60_000;

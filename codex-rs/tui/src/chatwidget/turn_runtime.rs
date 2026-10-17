@@ -420,6 +420,8 @@ impl ChatWidget {
     }
 
     /// Apply a raw core abort when no `TurnComplete` follows it.
+    /// Only the fork tests drive this path directly today.
+    #[cfg(test)]
     pub(super) fn handle_turn_aborted_event(
         &mut self,
         event: codex_protocol::protocol::TurnAbortedEvent,

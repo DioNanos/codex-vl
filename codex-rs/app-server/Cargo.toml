@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-d174-test-fixture = []
+identity-test-fixture = []
 
 [[bin]]
 name = "codex-app-server"
@@ -20,9 +20,9 @@ name = "exec-server"
 path = "src/bin/exec_server.rs"
 
 [[bin]]
-name = "d174-daemon-shim"
-path = "src/bin/d174_daemon_shim.rs"
-required-features = ["d174-test-fixture"]
+name = "identity-test-daemon-shim"
+path = "src/bin/identity_test_daemon_shim.rs"
+required-features = ["identity-test-fixture"]
 
 [lib]
 name = "codex_app_server"

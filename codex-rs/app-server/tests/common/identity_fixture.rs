@@ -40,7 +40,6 @@ const IDENTITY_FD_ENV: &str = "NEXUSCREW_IDENTITY_FD";
 /// the parent half closes the pipe and lets the serving thread exit.
 struct ChannelServe {
     _parent: std::os::unix::net::UnixStream,
-    server: std::thread::JoinHandle<()>,
 }
 
 /// Hand a fresh fd3/fd4 verifier channel to the daemon process tree and keep
@@ -73,11 +72,10 @@ fn add_identity_channel(command: &mut Command) -> Result<ChannelServe> {
         });
     }
     command.env(IDENTITY_FD_ENV, "3:4");
-    let server = std::thread::spawn(move || serve_verify_requests(peer));
-    Ok(ChannelServe {
-        _parent: parent,
-        server,
-    })
+    // Detached by design: the serving thread exits once the parent half of
+    // the pipe closes, so the join handle is intentionally dropped here.
+    std::thread::spawn(move || serve_verify_requests(peer));
+    Ok(ChannelServe { _parent: parent })
 }
 
 /// Minimal authority-side responder: one JSON-RPC line per request, echoing
@@ -209,7 +207,7 @@ impl IdentityFixture {
     async fn start_with_policy(protected: bool) -> Result<Self> {
         let home = TempDir::new().context("create C6 CODEX_HOME")?;
         let challenge_file = home.path().join("identity-challenges.jsonl");
-        let shim = codex_utils_cargo_bin::cargo_bin("d174-daemon-shim")
+        let shim = codex_utils_cargo_bin::cargo_bin("identity-test-daemon-shim")
             .context("locate C6 daemon shim")?;
         // The daemon lifecycle refuses to start unless the CLI runs from a
         // complete packaged layout (InstallContext::package_layout, resolved

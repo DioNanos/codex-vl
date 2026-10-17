@@ -99,23 +99,6 @@ pub struct RemoteAppServerConnectArgs {
     pub opt_out_notification_methods: Vec<String>,
     pub channel_capacity: usize,
 }
-/// The client TRANSPORTS the proof, it does not verify it — authentication
-/// happens at the authority (bind on the app-server side). The type is
-/// crate-only: no public constructors turn a caller's assertion into a
-/// security boundary.
-#[derive(Debug, Clone)]
-pub(crate) struct VerifiedIdentityProof(pub(crate) IdentityProof);
-
-impl VerifiedIdentityProof {
-    pub(crate) fn from_verified_authority(proof: IdentityProof) -> Self {
-        Self(proof)
-    }
-
-    fn into_inner(self) -> IdentityProof {
-        self.0
-    }
-}
-
 impl RemoteAppServerConnectArgs {
     pub(crate) fn initialize_params(&self) -> InitializeParams {
         self.initialize_params_with_identity(false)
@@ -756,6 +739,64 @@ impl RemoteAppServerClient {
         request_id: RequestId,
         result: JsonRpcResult,
     ) -> IoResult<()> {
+        self.request_handle()
+            .resolve_server_request(request_id, result)
+            .await
+    }
+
+    pub async fn reject_server_request(
+        &self,
+        request_id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> IoResult<()> {
+        self.request_handle()
+            .reject_server_request(request_id, error)
+            .await
+    }
+
+    pub async fn next_event(&mut self) -> Option<AppServerEvent> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Some(event);
+        }
+        self.event_rx.recv().await
+    }
+
+    pub async fn shutdown(self) -> IoResult<()> {
+        let Self {
+            command_tx,
+            event_rx,
+            pending_events: _pending_events,
+            metadata: _,
+            identity_proof: _,
+            worker_handle,
+        } = self;
+        let mut worker_handle = worker_handle;
+        let (response_tx, response_rx) = oneshot::channel();
+        if command_tx
+            .send(RemoteClientCommand::Shutdown { response_tx })
+            .await
+            .is_ok()
+            && let Ok(Ok(close_result)) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
+        {
+            close_result?;
+        }
+
+        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut worker_handle).await {
+            worker_handle.abort();
+            let _ = worker_handle.await;
+        }
+        // Keep events deliverable until the worker has closed the websocket.
+        drop(event_rx);
+        Ok(())
+    }
+}
+
+impl RemoteAppServerRequestHandle {
+    pub(crate) async fn resolve_server_request(
+        &self,
+        request_id: RequestId,
+        result: JsonRpcResult,
+    ) -> IoResult<()> {
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(RemoteClientCommand::ResolveServerRequest {
@@ -778,7 +819,7 @@ impl RemoteAppServerClient {
         })?
     }
 
-    pub async fn reject_server_request(
+    pub(crate) async fn reject_server_request(
         &self,
         request_id: RequestId,
         error: JSONRPCErrorError,
@@ -805,43 +846,6 @@ impl RemoteAppServerClient {
         })?
     }
 
-    pub async fn next_event(&mut self) -> Option<AppServerEvent> {
-        if let Some(event) = self.pending_events.pop_front() {
-            return Some(event);
-        }
-        self.event_rx.recv().await
-    }
-
-    pub async fn shutdown(self) -> IoResult<()> {
-        let Self {
-            command_tx,
-            event_rx,
-            pending_events: _pending_events,
-            metadata: _,
-            identity_proof: _,
-            worker_handle,
-        } = self;
-        let mut worker_handle = worker_handle;
-        drop(event_rx);
-        let (response_tx, response_rx) = oneshot::channel();
-        if command_tx
-            .send(RemoteClientCommand::Shutdown { response_tx })
-            .await
-            .is_ok()
-            && let Ok(Ok(close_result)) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
-        {
-            close_result?;
-        }
-
-        if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut worker_handle).await {
-            worker_handle.abort();
-            let _ = worker_handle.await;
-        }
-        Ok(())
-    }
-}
-
-impl RemoteAppServerRequestHandle {
     pub async fn request(&self, request: ClientRequest) -> IoResult<RequestResult> {
         self.request_json_rpc(jsonrpc_request_from_client_request(request))
             .await
@@ -1421,9 +1425,21 @@ mod tests {
     #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
-        let (_event_tx, event_rx) = mpsc::unbounded_channel::<AppServerEvent>();
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<AppServerEvent>();
+        let (delivered_tx, delivered_rx) = oneshot::channel();
         let worker_handle = tokio::spawn(async move {
             let _ = command_rx.recv().await;
+            // Force an event after shutdown is queued but before this worker has exited.
+            let result = deliver_event(
+                &event_tx,
+                AppServerEvent::ServerNotification(Box::new(ServerNotification::AccountUpdated(
+                    codex_app_server_protocol::AccountUpdatedNotification {
+                        auth_mode: None,
+                        plan_type: None,
+                    },
+                ))),
+            );
+            let _ = delivered_tx.send(result);
         });
         let client = RemoteAppServerClient {
             command_tx,
@@ -1438,6 +1454,10 @@ mod tests {
             .shutdown()
             .await
             .expect("shutdown should complete when worker exits first");
+        delivered_rx
+            .await
+            .expect("worker should attempt delivery")
+            .expect("an in-flight event must not abort the worker during shutdown");
     }
 
     #[tokio::test]

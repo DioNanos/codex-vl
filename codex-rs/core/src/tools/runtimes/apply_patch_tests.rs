@@ -3,7 +3,6 @@ use crate::config::PermissionProfileSnapshot;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::sandboxing::SandboxAttempt;
-use crate::tools::sandboxing::SandboxOverride;
 use crate::tools::sandboxing::sandbox_override_for_first_attempt;
 use crate::tools::sandboxing::unsandboxed_execution_allowed;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -21,6 +20,7 @@ use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::sandbox::SandboxOverride;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::is_likely_executor_managed_sandbox_denied;
@@ -251,6 +251,7 @@ async fn file_system_sandbox_context_preserves_executor_workspace_permissions() 
     let manager = SandboxManager::new();
     let sandbox_policy_cwd = PathUri::from_abs_path(&path);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::NoOverride,
         sandbox: SandboxType::MacosSeatbelt,
         sandbox_requested: true,
         permissions: &permissions,
@@ -318,6 +319,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     let manager = SandboxManager::new();
     let sandbox_policy_cwd = PathUri::from_abs_path(&path);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::NoOverride,
         sandbox: SandboxType::None,
         sandbox_requested: false,
         permissions: &permissions,
@@ -355,6 +357,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     assert_eq!(
         ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
         Some(FileSystemSandboxContext {
+            sandbox_override: SandboxOverride::NoOverride,
             permissions,
             cwd: cwd.clone(),
             workspace_roots: vec![cwd],
@@ -431,6 +434,7 @@ async fn approved_apply_patch_on_sandboxless_platform_executes_without_fs_sandbo
     let manager = SandboxManager::new();
     let cwd_uri = PathUri::from_abs_path(&path);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::BypassSandboxFirstAttempt,
         sandbox: SandboxType::None,
         sandbox_requested: false,
         permissions: &permissions,
@@ -500,6 +504,7 @@ fn r2_unrelated_failure_after_bypass_is_not_a_sandbox_denial() {
     let manager = SandboxManager::new();
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::BypassSandboxFirstAttempt,
         sandbox: SandboxType::None,
         sandbox_requested: false,
         permissions: &permissions,

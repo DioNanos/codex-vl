@@ -17,41 +17,52 @@ use codex_state::SqliteConfig;
 use codex_utils_absolute_path::test_support::PathExt;
 use serde_json::json;
 
-fn manage_loops_add_request(request_id: AppServerRequestId, thread_id: &ThreadId) -> ServerRequest {
-    ServerRequest::DynamicToolCall {
-        request_id,
-        params: DynamicToolCallParams {
-            thread_id: thread_id.to_string(),
-            turn_id: ThreadId::new().to_string(),
-            call_id: "ml-add-1".to_string(),
-            namespace: Some("codex_app".to_string()),
-            tool: "manage_loops".to_string(),
-            arguments: json!({
-                "action": "add",
-                "label": "gate-fix-probe",
-                "interval": "1h",
-                "prompt": "noop",
-            }),
+fn manage_loops_add_request(
+    app_server: &AppServerSession,
+    request_id: AppServerRequestId,
+    thread_id: &ThreadId,
+) -> crate::app::app_server_requests::BufferedServerRequest {
+    crate::app::app_server_requests::BufferedServerRequest::new(
+        ServerRequest::DynamicToolCall {
+            request_id,
+            params: DynamicToolCallParams {
+                thread_id: thread_id.to_string(),
+                turn_id: ThreadId::new().to_string(),
+                call_id: "ml-add-1".to_string(),
+                namespace: Some("codex_app".to_string()),
+                tool: "manage_loops".to_string(),
+                arguments: json!({
+                    "action": "add",
+                    "label": "gate-fix-probe",
+                    "interval": "1h",
+                    "prompt": "noop",
+                }),
+            },
         },
-    }
+        &app_server.request_handle(),
+    )
 }
 
 fn non_manage_loops_request(
+    app_server: &AppServerSession,
     request_id: AppServerRequestId,
     namespace: Option<&str>,
     tool: &str,
-) -> ServerRequest {
-    ServerRequest::DynamicToolCall {
-        request_id,
-        params: DynamicToolCallParams {
-            thread_id: ThreadId::new().to_string(),
-            turn_id: ThreadId::new().to_string(),
-            call_id: format!("route-{tool}"),
-            namespace: namespace.map(str::to_string),
-            tool: tool.to_string(),
-            arguments: json!({}),
+) -> crate::app::app_server_requests::BufferedServerRequest {
+    crate::app::app_server_requests::BufferedServerRequest::new(
+        ServerRequest::DynamicToolCall {
+            request_id,
+            params: DynamicToolCallParams {
+                thread_id: ThreadId::new().to_string(),
+                turn_id: ThreadId::new().to_string(),
+                call_id: format!("route-{tool}"),
+                namespace: namespace.map(str::to_string),
+                tool: tool.to_string(),
+                arguments: json!({}),
+            },
         },
-    }
+        &app_server.request_handle(),
+    )
 }
 
 fn failure_text(response: &DynamicToolCallResponse) -> String {
@@ -89,7 +100,7 @@ async fn manage_loops_dynamic_tool_is_served_by_the_loop_controller_in_embedded_
 
     app.handle_server_request_event(
         &app_server,
-        manage_loops_add_request(AppServerRequestId::Integer(4242), &thread_id),
+        manage_loops_add_request(&app_server, AppServerRequestId::Integer(4242), &thread_id),
     )
     .await;
 
@@ -127,6 +138,7 @@ async fn upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_
     app.handle_server_request_event(
         &app_server,
         non_manage_loops_request(
+            &app_server,
             AppServerRequestId::Integer(4243),
             Some("codex_tui"),
             "fork_thread",
@@ -145,6 +157,7 @@ async fn upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_
     app.handle_server_request_event(
         &app_server,
         non_manage_loops_request(
+            &app_server,
             AppServerRequestId::Integer(4244),
             Some("codex_app"),
             "some_other_tool",

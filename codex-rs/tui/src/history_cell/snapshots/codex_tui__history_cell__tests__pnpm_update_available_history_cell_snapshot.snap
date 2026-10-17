@@ -1,10 +1,10 @@
 ---
 source: tui/src/history_cell/tests.rs
-assertion_line: 1225
+assertion_line: 1397
 expression: rendered
 ---
 ╭──────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.162.1 -> 9.9.9                │
+│ ✨ Update available! 0.163.0 -> 9.9.9                │
 │ Run pnpm add -g @mmmbuto/codex-vl to update.         │
 │                                                      │
 │ See full release notes:                              │

@@ -52,6 +52,8 @@ pub(super) async fn run_vivling_assist_request(
     .await;
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![codex_protocol::models::ContentItem::InputText {
@@ -146,6 +148,8 @@ pub(super) async fn run_vivling_loop_tick_request(
 
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![codex_protocol::models::ContentItem::InputText {
@@ -337,6 +341,8 @@ pub(super) async fn run_vivling_expression_request(
 
     let mut prompt = Prompt::default();
     prompt.input = vec![codex_protocol::models::ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![codex_protocol::models::ContentItem::InputText {

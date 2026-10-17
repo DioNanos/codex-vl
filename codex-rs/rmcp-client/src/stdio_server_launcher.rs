@@ -641,7 +641,7 @@ impl ExecutorStdioServerLauncher {
                 argv,
                 cwd,
                 shell_snapshot: None,
-                env_policy: Some(Self::remote_env_policy(&remote_env_vars)),
+                env_policy: Some(Self::remote_env_policy(&remote_env_vars, &env)),
                 env,
                 tty: false,
                 pipe_stdin: true,
@@ -697,7 +697,10 @@ impl ExecutorStdioServerLauncher {
             .map_err(|_| anyhow!("{label} must be valid Unicode for remote MCP stdio"))
     }
 
-    fn remote_env_policy(remote_env_vars: &[String]) -> ExecEnvPolicy {
+    fn remote_env_policy(
+        remote_env_vars: &[String],
+        env: &HashMap<String, String>,
+    ) -> ExecEnvPolicy {
         let include_only = if remote_env_vars.is_empty() {
             Vec::new()
         } else {
@@ -710,7 +713,7 @@ impl ExecutorStdioServerLauncher {
             // inputs even when explicit remote vars activate this allowlist.
             crate::utils::DEFAULT_ENV_VARS
                 .iter()
-                .chain(["SYSTEMROOT", "TEMP", "TMP"].iter())
+                .chain(["SYSTEMROOT", "TEMP", "TMP", "SYSTEMDRIVE", "LOCALAPPDATA"].iter())
                 .map(|name| (*name).to_string())
                 .chain(remote_env_vars.iter().cloned())
                 .collect()
@@ -723,7 +726,9 @@ impl ExecutorStdioServerLauncher {
             },
             ignore_default_excludes: true,
             exclude: Vec::new(),
-            r#set: HashMap::new(),
+            // Apply overrides through the policy's Windows-aware merge, including
+            // on older executors. Keep the final overlay for names filtered out below.
+            r#set: env.clone(),
             include_only,
         }
     }
@@ -765,7 +770,7 @@ mod tests {
 
     #[test]
     fn shared_verified_env_injects_binding_metadata_and_scrubs_legacy() {
-        let mut env = HashMap::from([
+        let env = HashMap::from([
             (OsString::from("TMUX"), OsString::from("legacy-secret")),
             (
                 OsString::from("NEXUSCREW_MCP_SESSION"),
@@ -953,10 +958,11 @@ mod tests {
     use codex_protocol::config_types::EnvironmentVariablePattern;
     use codex_protocol::config_types::ShellEnvironmentPolicy;
     use codex_protocol::shell_environment;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn remote_env_policy_uses_core_env_without_remote_source_vars() {
-        let policy = ExecutorStdioServerLauncher::remote_env_policy(&[]);
+        let policy = ExecutorStdioServerLauncher::remote_env_policy(&[], &HashMap::new());
 
         assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::Core);
         assert!(policy.include_only.is_empty());
@@ -964,7 +970,10 @@ mod tests {
 
     #[test]
     fn remote_env_policy_includes_remote_source_vars_without_full_env() {
-        let policy = ExecutorStdioServerLauncher::remote_env_policy(&["REMOTE_TOKEN".to_string()]);
+        let policy = ExecutorStdioServerLauncher::remote_env_policy(
+            &["REMOTE_TOKEN".to_string()],
+            &HashMap::new(),
+        );
 
         assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::All);
         assert!(
@@ -981,9 +990,11 @@ mod tests {
 
     #[test]
     fn remote_env_policy_effectively_filters_unrequested_vars() {
-        let exec_policy =
-            ExecutorStdioServerLauncher::remote_env_policy(&["REMOTE_TOKEN".to_string()]);
-        let policy = ShellEnvironmentPolicy {
+        let exec_policy = ExecutorStdioServerLauncher::remote_env_policy(
+            &["REMOTE_TOKEN".to_string()],
+            &HashMap::new(),
+        );
+        let mut policy = ShellEnvironmentPolicy {
             inherit: exec_policy.inherit,
             ignore_default_excludes: exec_policy.ignore_default_excludes,
             exclude: exec_policy
@@ -1004,6 +1015,11 @@ mod tests {
             [
                 ("PATH".to_string(), "/remote/bin".to_string()),
                 ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+                ("SystemDrive".to_string(), "C:".to_string()),
+                (
+                    "LocalAppData".to_string(),
+                    r"C:\Users\test\AppData\Local".to_string(),
+                ),
                 (
                     "TEMP".to_string(),
                     r"C:\Users\test\AppData\Local\Temp".to_string(),
@@ -1023,6 +1039,11 @@ mod tests {
         );
 
         assert_eq!(env.get("PATH").map(String::as_str), Some("/remote/bin"));
+        assert_eq!(env.get("SystemDrive").map(String::as_str), Some("C:"));
+        assert_eq!(
+            env.get("LocalAppData").map(String::as_str),
+            Some(r"C:\Users\test\AppData\Local")
+        );
         assert_eq!(
             env.get("SystemRoot").map(String::as_str),
             Some(r"C:\Windows")
@@ -1038,5 +1059,31 @@ mod tests {
             Some("remote-secret")
         );
         assert!(!env.contains_key("UNREQUESTED_SECRET"));
+
+        let overrides = HashMap::from([
+            ("SYSTEMDRIVE".to_string(), "D:".to_string()),
+            ("LOCALAPPDATA".to_string(), r"D:\McpProfile".to_string()),
+            ("EXPLICIT_ONLY".to_string(), "configured".to_string()),
+        ]);
+        policy.r#set = ExecutorStdioServerLauncher::remote_env_policy(
+            &["REMOTE_TOKEN".to_string()],
+            &overrides,
+        )
+        .r#set;
+        let mut child_env =
+            shell_environment::create_env_from_vars(env.clone(), &policy, /*thread_id*/ None);
+        assert_eq!(
+            child_env.get("LOCALAPPDATA").map(String::as_str),
+            Some(r"D:\McpProfile")
+        );
+        // Older executors apply the final overlay with a case-sensitive merge.
+        child_env.extend(overrides.clone());
+        let mut expected = env;
+        if cfg!(windows) {
+            expected.remove("SystemDrive");
+            expected.remove("LocalAppData");
+        }
+        expected.extend(overrides);
+        assert_eq!(child_env, expected);
     }
 }

@@ -552,7 +552,6 @@ async fn start_uninitialized(
         let (processor_tx, mut processor_rx) = mpsc::channel::<ProcessorCommand>(channel_capacity);
         let mut processor_handle = tokio::spawn(async move {
             let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
-                authority_verifier: authority_verifier.clone(),
                 identity_required,
                 outgoing: Arc::clone(&processor_outgoing),
                 analytics_events_client,

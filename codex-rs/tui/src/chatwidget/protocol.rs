@@ -346,7 +346,7 @@ impl ChatWidget {
             }
             ServerNotification::ThreadRealtimeError(notification) => {
                 if !from_replay {
-                    self.on_realtime_error(notification.message);
+                    self.on_realtime_error(notification.message, RealtimeFailureCause::Backend);
                 }
             }
             ServerNotification::ThreadRealtimeClosed(notification) => {
@@ -360,6 +360,7 @@ impl ChatWidget {
             | ServerNotification::AccountRateLimitsUpdated(_)
             | ServerNotification::ThreadStarted(_)
             | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadReadStateChanged(_)
             | ServerNotification::ThreadReverted(_)
             | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadPredictionUpdated(_)
