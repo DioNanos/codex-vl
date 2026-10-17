@@ -330,7 +330,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - name: Download prebuilt Windows binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: windows-binaries-${{ matrix.target }}-{primary,helpers,app-server}${{ env.ARTIFACT_SUFFIX }}
           merge-multiple: true
@@ -409,19 +409,19 @@ jobs:
       - uses: ./.github/actions/setup-ci
 
       - name: Download prebuilt Windows primary binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-binaries-${{ matrix.target }}-primary${{ env.ARTIFACT_SUFFIX }}
           path: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.target }}/release
 
       - name: Download prebuilt Windows helper binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-binaries-${{ matrix.target }}-helpers${{ env.ARTIFACT_SUFFIX }}
           path: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.target }}/release
 
       - name: Download prebuilt Windows app-server binary
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-binaries-${{ matrix.target }}-app-server${{ env.ARTIFACT_SUFFIX }}
           path: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.target }}/release
@@ -449,7 +449,7 @@ jobs:
           certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
 
       - name: Download matching native voice build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: voice-${{ matrix.target }}-unsigned
           path: ${{ runner.temp }}/unsigned-voice
