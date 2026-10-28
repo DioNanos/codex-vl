@@ -8,6 +8,14 @@ pub(crate) enum CrtMode {
     Alert,
     Tired,
     Hungry,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "static state planned by the strip design; nothing triggers it yet"
+        )
+    )]
+    Error,
 }
 
 pub(crate) struct CrtDirector;

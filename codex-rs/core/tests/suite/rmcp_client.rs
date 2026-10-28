@@ -867,6 +867,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
         .environment_ready(
             &selection,
             EnvironmentConfig {
+                environment_hooks: Default::default(),
                 allow_login_shell: true,
                 workspace_roots: selection.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(
@@ -984,6 +985,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
     wait_for_mcp_server(&fixture.codex, "environment_policy").await?;
     let selection = fixture.codex.environment_selections().await.remove(0);
     let mut config = EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell: fixture.config.permissions.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
         permission_profile: PermissionProfileSnapshot::legacy(
@@ -1066,6 +1068,144 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
         .collect::<Vec<_>>();
     assert_eq!(tool_is_visible, vec![true, true, false]);
     Ok(())
+}
+
+#[test_case(Some("discovery"), true; "notification_during_listing")]
+#[test_case(Some("pagination"), true; "notification_invalidates_cursor")]
+#[test_case(None, false; "disabled")]
+#[test_case(Some("startup"), true; "notification_during_startup")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovers_and_calls_new_mcp_tool_in_same_turn(
+    invalidation: Option<&'static str>,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(Ok(()), "requires a Windows test_stdio_server binary");
+    mcp_tool_discovery_scenario(ToolMode::Direct, invalidation, enabled)
+        .await
+        .map(|_| ())
+}
+
+pub(super) async fn mcp_tool_discovery_scenario(
+    tool_mode: ToolMode,
+    invalidation: Option<&'static str>,
+    enabled: bool,
+) -> anyhow::Result<Vec<responses::ResponsesRequest>> {
+    let server = responses::start_mock_server().await;
+    let command = remote_aware_stdio_server_bin()?;
+    let test = test_codex()
+        .with_config(move |config| {
+            config.code_mode.disable_in_process_fallback = true;
+            config
+                .features
+                .enable(Feature::CodeModeHost)
+                .expect("enable Code Mode host");
+            if enabled {
+                config
+                    .features
+                    .enable(Feature::McpToolListChanged)
+                    .expect("enable tool-list refresh");
+            }
+            let mut env = HashMap::from([
+                ("MCP_TEST_DISCOVER_TOOLS".to_string(), "1".to_string()),
+                ("MCP_TEST_VALUE".to_string(), "discovered".to_string()),
+            ]);
+            if let Some(phase) = invalidation {
+                env.insert("MCP_TEST_INVALIDATE_LISTING".to_string(), phase.to_string());
+            }
+            insert_mcp_server(
+                config,
+                "discovery",
+                stdio_transport(command, Some(env), Vec::new()),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .with_model_info_override("gpt-5.5", move |model| {
+            model.tool_mode = Some(tool_mode);
+            model.supports_search_tool = false;
+            model.use_responses_lite = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&test.codex, "discovery").await?;
+    let mut mocks = Vec::new();
+    for (call_id, tool, arguments) in [
+        ("discover", "search_tools", r#"{"message":"find echo"}"#),
+        ("invoke", "echo", r#"{"message":"hello"}"#),
+    ] {
+        if !enabled && tool == "echo" {
+            break;
+        }
+        let call = if tool_mode == ToolMode::CodeModeOnly {
+            responses::ev_custom_tool_call(
+                call_id,
+                "exec",
+                &format!("text(await tools.mcp__discovery__{tool}({arguments}));"),
+            )
+        } else {
+            responses::ev_function_call_with_namespace(call_id, "mcp__discovery", tool, arguments)
+        };
+        mocks.push(
+            responses::mount_sse_once(
+                &server,
+                responses::sse(vec![
+                    responses::ev_response_created(call_id),
+                    call,
+                    responses::ev_completed(call_id),
+                ]),
+            )
+            .await,
+        );
+    }
+    mocks.push(responses::mount_sse_once(&server, responses::sse_completed("done")).await);
+    test.submit_turn("Discover the echo tool, then call it with hello.")
+        .await?;
+    let requests = mocks
+        .iter()
+        .map(responses::ResponseMock::single_request)
+        .collect::<Vec<_>>();
+    if tool_mode == ToolMode::Direct {
+        assert!(
+            requests[0]
+                .tool_by_name("mcp__discovery", "search_tools")
+                .is_some()
+        );
+        assert_eq!(
+            requests[0].tool_by_name("mcp__discovery", "echo").is_some(),
+            invalidation == Some("startup")
+        );
+        if !enabled {
+            assert_eq!(
+                requests[1].body_json()["tools"],
+                requests[0].body_json()["tools"]
+            );
+            return Ok(requests);
+        }
+        assert!(requests[1].tool_by_name("mcp__discovery", "echo").is_some());
+        let output = requests[2]
+            .function_call_output_text("invoke")
+            .expect("echo output");
+        let (_, payload) = output
+            .split_once("\nOutput:\n")
+            .expect("wrapped MCP output");
+        assert_eq!(
+            serde_json::from_str::<Value>(payload)?,
+            json!({
+                "echo": "ECHOING: hello", "env": "discovered",
+            })
+        );
+    } else {
+        assert!(
+            requests[2]
+                .custom_tool_call_output("invoke")
+                .to_string()
+                .contains("ECHOING: hello")
+        );
+    }
+    Ok(requests)
 }
 
 #[test_case("rmcp", "mcp__rmcp"; "simple name")]
@@ -1780,15 +1920,6 @@ async fn startup_prewarm_connects_before_delayed_mcp_tools_then_reuses_socket(
     assert_eq!(prewarm["generate"].as_bool(), Some(false));
     assert!(prewarm.get("previous_response_id").is_none());
     assert_eq!(prewarm["service_tier"].as_str(), Some(service_tier));
-    let tool_body = if use_responses_lite {
-        &prewarm["input"][0]
-    } else {
-        &prewarm
-    };
-    assert!(
-        responses::namespace_child_tool(tool_body, namespace, "echo").is_some(),
-        "prewarm should contain the discovered MCP echo tool: {prewarm:?}"
-    );
     let metadata: Value = serde_json::from_str(
         prewarm["client_metadata"]["x-codex-turn-metadata"]
             .as_str()
@@ -1812,6 +1943,18 @@ async fn startup_prewarm_connects_before_delayed_mcp_tools_then_reuses_socket(
     assert_eq!(first_turn["type"], "response.create");
     assert!(first_turn.get("generate").is_none());
     assert_eq!(first_turn["previous_response_id"], "warm-1");
+    let tool_body = if use_responses_lite {
+        first_turn["input"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["type"] == "additional_tools"))
+            .context("first Responses Lite turn should declare discovered tools")?
+    } else {
+        &prewarm
+    };
+    assert!(
+        responses::namespace_child_tool(tool_body, namespace, "echo").is_some(),
+        "startup should declare the discovered MCP echo tool before sampling: {tool_body:?}"
+    );
     let handshakes = server.handshakes();
     assert_eq!(handshakes.len(), connection_index + 1);
     if close_eager_socket {
@@ -1960,6 +2103,15 @@ async fn interrupt_during_mcp_startup_preserves_user_input_in_history(
             )
         })
         .expect("an interrupted turn should retain its submitted user prompt");
+    assert!(
+        history.items[..user_prompt_index]
+            .iter()
+            .any(|item| matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(applied))
+                    if applied.thread_id == Some(fixture.session_configured.thread_id)
+            ))
+    );
     let RolloutItem::ResponseItem(envelope) = &history.items[user_prompt_index] else {
         unreachable!("found the user prompt");
     };
@@ -2072,6 +2224,10 @@ async fn stdio_server_uses_configured_cwd_before_runtime_fallback() -> anyhow::R
 #[serial(mcp_cwd)]
 async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() -> anyhow::Result<()>
 {
+    use codex_core::StartThreadOptions;
+    use core_test_support::exec_server::ExecServerProcess;
+    use core_test_support::test_codex::local;
+
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -2085,9 +2241,26 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
             .expect("test stdio server binary should have a file name"),
     );
     let relative_command = relative_server_path.to_string_lossy().into_owned();
+    let additional_workspace = tempdir()?;
+    let additional_root = AbsolutePathBuf::try_from(additional_workspace.path().to_path_buf())?;
 
-    let fixture = test_codex()
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    codex_skills_extension::install(&mut extensions, |config: &Config| {
+        codex_skills_extension::SkillsExtensionConfig {
+            include_instructions: config.include_skill_instructions,
+            max_context_tokens: config.skill_max_context_tokens,
+            bundled_skills_enabled: config.bundled_skills_enabled(),
+            cloud_skill_enabled: config.cloud_skill_enabled,
+            shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
+        }
+    });
+    let mut fixture = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
+            config.workspace_roots = vec![config.cwd.clone(), additional_root.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
             *expected_cwd_for_config
                 .lock()
                 .expect("expected cwd lock should not be poisoned") =
@@ -2128,6 +2301,140 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
         call_cwd_tool(&server, &fixture, server_name, "call-local-fallback-cwd").await?;
 
     assert_cwd_tool_output(&structured, &expected_cwd);
+
+    // The relative MCP executable exists only in the host workspace. A remote
+    // primary must not change its command resolution at startup or refresh.
+    let executor = ExecServerProcess::start().await?;
+    let remote_workspace = tempdir()?;
+    let remote_skill = remote_workspace
+        .path()
+        .join(".agents/skills/remote-fixture");
+    fs::create_dir_all(&remote_skill)?;
+    fs::write(
+        remote_skill.join("SKILL.md"),
+        "---\nname: remote-fixture\ndescription: Remote repository skill fixture\n---\nRemote instructions\n",
+    )?;
+    let manager = fixture.thread_manager.environment_manager();
+    manager.upsert_environment(
+        "other".to_string(),
+        executor.websocket_url.clone(),
+        /*connect_timeout*/ None,
+    )?;
+    for local_roots in [
+        Some(vec![fixture.config.cwd.clone()]),
+        Some(Vec::new()),
+        None,
+    ] {
+        let mut environments = vec![TurnEnvironmentRequest {
+            environment_id: "other".to_string(),
+            cwd: PathUri::from_host_native_path(remote_workspace.path())?,
+            workspace_roots: vec![PathUri::from_host_native_path(remote_workspace.path())?],
+            config: EnvironmentConfigState::FromThread,
+        }];
+        if let Some(roots) = &local_roots {
+            let mut local = local(fixture.config.cwd.clone()).into_request();
+            local.workspace_roots = roots.iter().map(PathUri::from_abs_path).collect();
+            environments.push(local);
+        }
+        let started = fixture
+            .thread_manager
+            .start_thread(StartThreadOptions {
+                environments: Some(environments),
+                ..StartThreadOptions::new(fixture.config.clone())
+            })
+            .await?;
+        fixture.codex = started.thread;
+        fixture.session_configured = started.session_configured;
+        wait_for_mcp_server(&fixture.codex, server_name).await?;
+
+        // A fresh thread must still discover the primary executor's repository
+        // skills; host routing must not silently replace them with local skills.
+        let request = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![responses::ev_completed("remote-skills")]),
+        )
+        .await;
+        fixture.submit_turn("list repository skills").await?;
+        assert!(
+            request
+                .single_request()
+                .message_input_texts("developer")
+                .join("\n")
+                .contains("Remote repository skill fixture")
+        );
+
+        let initial = call_cwd_tool(&server, &fixture, server_name, "before-refresh").await?;
+        assert_cwd_tool_output(&initial, &expected_cwd);
+        fixture.codex.submit(Op::RefreshMcpServers).await?;
+        let refreshed = call_cwd_tool(&server, &fixture, server_name, "after-refresh").await?;
+        assert_cwd_tool_output(&refreshed, &expected_cwd);
+
+        // Host MCP policy follows explicit local roots, including an empty list,
+        // and falls back to the saved host roots only when local is absent.
+        for (phase, updated_roots) in [("initial", None), ("revoked", Some(Vec::new()))] {
+            let expected_roots = local_roots
+                .as_ref()
+                .or(updated_roots.as_ref())
+                .unwrap_or(&fixture.config.workspace_roots)
+                .clone();
+            let call_id = format!("host-sandbox-{phase}");
+            mount_sse_once(
+                &server,
+                responses::sse(vec![
+                    responses::ev_function_call_with_namespace(
+                        &call_id,
+                        &format!("mcp__{server_name}"),
+                        "sandbox_meta",
+                        "{}",
+                    ),
+                    responses::ev_completed("sandbox-meta"),
+                ]),
+            )
+            .await;
+            let final_request = mount_sse_once(
+                &server,
+                responses::sse(vec![responses::ev_completed("sandbox-meta-done")]),
+            )
+            .await;
+            fixture
+                .codex
+                .start_or_steer_turn(
+                    TurnInputRequest::user_input(vec![UserInput::Text {
+                        text: "inspect host MCP permissions".into(),
+                        text_elements: Vec::new(),
+                    }])
+                    .with_thread_settings(ThreadSettingsOverrides {
+                        permission_profile: Some(PermissionProfile::workspace_write()),
+                        runtime_workspace_roots: updated_roots,
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            wait_for_event(&fixture.codex, |event| {
+                matches!(event, EventMsg::TurnComplete(_))
+            })
+            .await;
+            let output = final_request
+                .single_request()
+                .function_call_output(&call_id);
+            let metadata: Value = serde_json::from_str(split_wall_time_wrapped_output(
+                output["output"]
+                    .as_str()
+                    .context("sandbox metadata output")?,
+            ))?;
+            assert_eq!(
+                metadata.get(MCP_SANDBOX_STATE_CAPABILITY),
+                Some(&serde_json::to_value(SandboxState {
+                    permission_profile: PermissionProfile::workspace_write()
+                        .materialize_project_roots_with_workspace_roots(&expected_roots),
+                    codex_linux_sandbox_exe: fixture.config.codex_linux_sandbox_exe.clone(),
+                    sandbox_cwd: PathUri::from_abs_path(&fixture.config.cwd),
+                    use_legacy_landlock: false,
+                    use_mxc: false,
+                })?),
+            );
+        }
+    }
     server.verify().await;
     Ok(())
 }
@@ -2312,6 +2619,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
             .environment_ready(
                 &selection,
                 EnvironmentConfig {
+                    environment_hooks: Default::default(),
                     allow_login_shell: fixture.config.permissions.allow_login_shell,
                     workspace_roots: workspace_roots.clone(),
                     permission_profile: PermissionProfileSnapshot::legacy(

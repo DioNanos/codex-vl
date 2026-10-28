@@ -10,11 +10,11 @@ pub(crate) use setup::run_guardian_review_session;
 
 #[path = "review_session_context.rs"]
 mod context_policy;
+use codex_guardian_reviewer::ReviewDeadline;
 use context_policy::ReviewContextPolicy;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -118,7 +118,7 @@ pub(crate) struct GuardianReviewSessionParams {
     pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) personality: Option<Personality>,
     pub(crate) external_cancel: Option<CancellationToken>,
-    pub(crate) deadline: tokio::time::Instant,
+    pub(crate) deadline: ReviewDeadline,
 }
 
 pub(crate) type GuardianReviewSessionManager =
@@ -277,7 +277,7 @@ impl GuardianReviewSessionReuseKey {
     }
 
     fn with_node_repl_policy(mut self, policy: &GuardianNodeReplPolicy) -> Self {
-        self.node_repl_policy = policy.body();
+        self.node_repl_policy = policy.body().into_text().unwrap_or_default();
         self
     }
 }
@@ -332,7 +332,7 @@ async fn run_review_on_session(
     review_session: &GuardianReviewSession,
     params: &GuardianReviewSessionParams,
     guardian_session_kind: GuardianReviewSessionKind,
-    deadline: tokio::time::Instant,
+    deadline: ReviewDeadline,
 ) -> ReviewSessionResult {
     let review_model = &params.review_model;
     let model_info = params
@@ -581,26 +581,6 @@ async fn run_review_on_session(
                 .any(|(_, cost)| cost.image_count > 0)
             {
                 let reviewer_history = review_session.session.clone_history().await;
-                let mut reviewer_image_urls = HashSet::new();
-                let mut reviewer_file_ids = HashSet::new();
-                for item in reviewer_history.raw_items() {
-                    let ResponseItem::Message { content, .. } = item else {
-                        continue;
-                    };
-                    for item in content {
-                        let ContentItem::InputImage { image, .. } = item else {
-                            continue;
-                        };
-                        match image {
-                            ImageReference::Inline { image_url } => {
-                                reviewer_image_urls.insert(image_url.as_str());
-                            }
-                            ImageReference::File { file_id } => {
-                                reviewer_file_ids.insert(file_id.as_str());
-                            }
-                        }
-                    }
-                }
                 let context_window = model_info.resolved_context_window().map(|supported| {
                     params
                         .spawn_config
@@ -621,7 +601,7 @@ async fn run_review_on_session(
                     } else {
                         ImagePreparationMode::DetailBased
                     };
-                    prompt_items.context.retain_images(|image, detail| {
+                    prompt_items.context.retain_new_images(reviewer_history.raw_items(), |image, detail| {
                         *detail = match normalize_output_image_detail(&model_info, *detail) {
                             _ if mode == ImagePreparationMode::UnifiedBudget => {
                                 Some(ImageDetail::Original)
@@ -631,20 +611,18 @@ async fn run_review_on_session(
                         };
                         match image {
                             ImageReference::Inline { image_url } => {
-                                let prepared_image_url = match resize_image(image_url, detail, mode)
-                                {
-                                    Ok(Some(prepared)) => Cow::Owned(prepared.into_data_url()),
-                                    Ok(None) => Cow::Borrowed(image_url),
+                                match resize_image(image_url, detail, mode) {
+                                    Ok(Some(prepared)) => Some(Cow::Owned(ImageReference::Inline {
+                                        image_url: prepared.into_data_url(),
+                                    })),
+                                    Ok(None) => Some(Cow::Borrowed(image)),
                                     Err(error) => {
                                         warn!(%error, "failed to prepare guardian review image");
-                                        return false;
+                                        None
                                     }
-                                };
-                                !reviewer_image_urls.contains(prepared_image_url.as_str())
+                                }
                             }
-                            ImageReference::File { file_id } => {
-                                !reviewer_file_ids.contains(file_id.as_str())
-                            }
+                            ImageReference::File { .. } => Some(Cow::Borrowed(image)),
                         }
                     });
                     let prompt_tokens = prompt_items
@@ -804,25 +782,39 @@ async fn run_review_on_session(
         &mut analytics_result,
     )
     .await;
-    review_session
+    // Finalizing input consumes this context; failures before admission leave it pending.
+    let transcript_admitted = review_session
         .session
         .services
         .thread_extension_data
-        .remove::<super::input_budget::PendingReviewContext>();
-    if matches!(
+        .remove::<super::input_budget::PendingReviewContext>()
+        .is_none();
+    let completed_review = matches!(
         turn_result.outcome,
         GuardianReviewSessionOutcome::Completed(_)
-    ) {
-        if turn_result.turn_completed
-            && let Some(total_token_usage) = review_session.session.total_token_usage().await
-        {
-            analytics_result.token_usage = Some(token_usage_delta(
-                &token_usage_at_review_start,
-                &total_token_usage,
-            ));
-        }
+    );
+    if completed_review
+        && turn_result.turn_completed
+        && let Some(total_token_usage) = review_session.session.total_token_usage().await
+    {
+        analytics_result.token_usage = Some(token_usage_delta(
+            &token_usage_at_review_start,
+            &total_token_usage,
+        ));
+    }
+    if completed_review
+        || (transcript_admitted
+            && turn_result.turn_completed
+            && turn_result.disposition == SessionDisposition::Reusable)
+    {
         let mut state = review_session.state.lock().await;
-        state.conversation.complete_review(transcript_cursor);
+        if completed_review {
+            state.conversation.complete_review(transcript_cursor);
+        } else {
+            // A failed inference still retains its input. Keep admission progress
+            // in sync without counting the failure as a completed review.
+            state.conversation.admit_transcript(transcript_cursor);
+        }
         state.transcript_history_version = reviewer_history_version;
         state.transcript_source = Some(transcript_source);
     }
@@ -856,7 +848,10 @@ async fn run_review_on_session(
 }
 
 async fn ensure_guardian_followup_reminder(review_session: &GuardianReviewSession) {
-    let followup_reminder = GuardianFollowupReviewReminder.body();
+    let followup_reminder = GuardianFollowupReviewReminder
+        .body()
+        .into_text()
+        .unwrap_or_default();
     let already_injected = review_session
         .session
         .clone_history()
@@ -896,7 +891,7 @@ async fn ensure_guardian_node_repl_policy(
     }
 
     let policy = &params.node_repl_policy;
-    let policy_body = policy.body();
+    let policy_body = policy.body().into_text().unwrap_or_default();
     if policy_body.is_empty() {
         return Ok(());
     }

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # workflow changes because they can alter whether the canary is invoked.
 CANARY_PATH_PATTERNS = {
     ".bazelrc",
-    ".github/actions/setup-bazel-ci/**",
+    ".github/actions/prepare-bazel-ci/**",
     ".github/actions/setup-ci/**",
     ".github/scripts/run_bazel_with_buildbuddy.py",
     ".github/scripts/rusty_v8_bazel.py",
@@ -49,6 +49,7 @@ WINDOWS_SOURCE_BUILD_PATHS = {
     ".github/scripts/v8_canary_changes.py",
     ".github/workflows/rusty-v8-release.yml",
     ".github/workflows/v8-canary.yml",
+    "patches/v8_array_sort_elements_kind.patch",
 }
 
 

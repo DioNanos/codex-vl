@@ -1,13 +1,13 @@
 //! Bounded Decisions transport for the optional Guardian comparison classifier.
 //! Admission retains the newest requests and cancels the oldest unfinished request at capacity.
-//! Unsupported evidence is rejected intact; errors never contain credentials or wire bodies.
-//! Only host-annotated trusted-tool evidence is appended to the developer-level rubric.
+//! Comparisons omit reasoning and compaction.
+//! Other unsupported evidence is rejected intact.
+//! Errors never contain credentials or wire bodies.
+//! Evidence preserves message roles, content order, and boundaries.
 //! The caller records measurements after baseline publication; dropping its task aborts Decisions work.
 
 use super::sampler::LunaSampler;
 use super::sampler::LunaSamplingRequest;
-use codex_context_fragments::RenderedFragment;
-use codex_guardian_context::TrustedTool;
 use codex_history::ResponseItemEnvelope;
 use codex_http_client::HttpClient;
 use codex_protocol::models::ContentItem;
@@ -42,8 +42,14 @@ pub(super) enum DecisionsError {
     Credentials,
     #[error("Decisions HTTP client setup failed")]
     ClientSetup,
-    #[error("Decisions cannot represent the complete classifier evidence")]
-    UnsupportedEvidence,
+    #[error("Decisions received unexpected classifier request setup")]
+    UnexpectedRequestSetup,
+    #[error("Decisions cannot represent this input item")]
+    UnsupportedInputItem,
+    #[error("Decisions cannot represent this image evidence")]
+    UnsupportedImage,
+    #[error("Decisions cannot represent audio evidence")]
+    UnsupportedAudio,
     #[error("Decisions input exceeds the request limit")]
     InputTooLarge,
     #[error("Decisions request timed out")]
@@ -114,17 +120,15 @@ impl DecisionsSampler {
         })
     }
 
-    /// Retain the newest requests; the caller joins after baseline publication.
-    pub(super) fn spawn(
+    pub(super) fn start_snapshot_comparison(
         self: &Arc<Self>,
         request: &LunaSamplingRequest,
         max_input_tokens: usize,
     ) -> DecisionsTask {
         let started = Instant::now();
         let body = request_body(
-            &request.instructions,
+            request.instructions.annotated_content().content(),
             &request.input,
-            request.parent_compaction.as_ref(),
         )
         .and_then(|body| {
             // Reuse Guardian's complete budget without changing its sampling path.
@@ -144,6 +148,44 @@ impl DecisionsSampler {
             }
             Ok(body)
         });
+        self.spawn_request(body, started)
+    }
+
+    pub(super) fn start_conversation_comparison(
+        self: &Arc<Self>,
+        input: &[ResponseItemEnvelope],
+    ) -> DecisionsTask {
+        let started = Instant::now();
+        let body = (|| {
+            let [tools, instructions, evidence @ ..] = input else {
+                return Err(DecisionsError::UnexpectedRequestSetup);
+            };
+            if !matches!(
+                &tools.item,
+                ResponseItem::AdditionalTools { role, tools, .. }
+                    if role == "developer" && tools.is_empty()
+            ) {
+                return Err(DecisionsError::UnexpectedRequestSetup);
+            }
+            let ResponseItem::Message { role, content, .. } = &instructions.item else {
+                return Err(DecisionsError::UnexpectedRequestSetup);
+            };
+            let [rubric] = content.as_slice() else {
+                return Err(DecisionsError::UnexpectedRequestSetup);
+            };
+            if role != "developer" {
+                return Err(DecisionsError::UnexpectedRequestSetup);
+            }
+            request_body(rubric, evidence.iter().map(|item| &item.item))
+        })();
+        self.spawn_request(body, started)
+    }
+
+    fn spawn_request(
+        self: &Arc<Self>,
+        body: Result<Value, DecisionsError>,
+        started: Instant,
+    ) -> DecisionsTask {
         let body = match body {
             Ok(body) => body,
             Err(error) => {
@@ -209,56 +251,43 @@ impl DecisionsSampler {
     }
 }
 
-fn request_body(
-    instructions: &RenderedFragment,
-    evidence: &[ResponseItem],
-    parent_compaction: Option<&ResponseItem>,
+fn request_body<'a>(
+    instructions: &ContentItem,
+    evidence: impl IntoIterator<Item = &'a ResponseItem>,
 ) -> Result<Value, DecisionsError> {
-    if parent_compaction.is_some() {
-        return Err(DecisionsError::UnsupportedEvidence);
-    }
-    let ContentItem::InputText { text: rubric } = instructions.annotated_content().content() else {
-        return Err(DecisionsError::UnsupportedEvidence);
+    let ContentItem::InputText { text: rubric } = instructions else {
+        return Err(DecisionsError::UnexpectedRequestSetup);
     };
-    let mut rubric = rubric.to_owned();
     let mut image_bytes = 0usize;
     let mut messages = Vec::new();
     for item in evidence {
+        if matches!(
+            item,
+            ResponseItem::Reasoning { .. }
+                | ResponseItem::Compaction { .. }
+                | ResponseItem::ContextCompaction { .. }
+        ) {
+            continue;
+        }
         let ResponseItem::Message {
             role,
             content,
-            internal_chat_message_metadata_passthrough: metadata,
+            phase,
             ..
         } = item
         else {
-            return Err(DecisionsError::UnsupportedEvidence);
+            return Err(DecisionsError::UnsupportedInputItem);
         };
-        let kinds = metadata
-            .as_ref()
-            .and_then(|metadata| metadata.content_item_kinds.as_deref());
-        // Decisions only accepts user input, so keep Codex's trusted-tool note in the rubric.
-        // This preserves its developer role; other developer messages remain unsupported.
-        match (role.as_str(), content.as_slice(), kinds) {
-            ("developer", [ContentItem::InputText { text }], Some([kind]))
-                if kind.0 == TrustedTool::KIND =>
-            {
-                rubric.push_str("\n\n");
-                rubric.push_str(text);
-                continue;
-            }
-            ("user", _, _) => {}
-            _ => return Err(DecisionsError::UnsupportedEvidence),
-        }
-        let mut parts = Vec::new();
+        let mut parts = Vec::with_capacity(content.len());
         for part in content {
             match part {
-                ContentItem::InputText { text } => {
-                    parts.push(json!({"type": "input_text", "text": text}));
+                ContentItem::InputText { .. } | ContentItem::OutputText { .. } => {
+                    parts.push(json!(part));
                 }
                 ContentItem::InputImage {
                     image: ImageReference::Inline { image_url },
                     ..
-                } if image_url.starts_with("data:") => {
+                } if role == "user" && image_url.starts_with("data:") => {
                     image_bytes = image_bytes.saturating_add(image_url.len());
                     if image_bytes > MAX_IMAGE_BYTES {
                         return Err(DecisionsError::InputTooLarge);
@@ -268,25 +297,28 @@ fn request_body(
                         json!({"type": "input_image", "image_url": image_url, "detail": null}),
                     );
                 }
-                ContentItem::InputImage { .. }
-                | ContentItem::InputAudio { .. }
-                | ContentItem::OutputText { .. } => {
-                    return Err(DecisionsError::UnsupportedEvidence);
+                ContentItem::InputImage { .. } => {
+                    return Err(DecisionsError::UnsupportedImage);
+                }
+                ContentItem::InputAudio { .. } => {
+                    return Err(DecisionsError::UnsupportedAudio);
                 }
             }
         }
-        // Harness annotations/IDs are not part of the Decisions contract. Preserve every
-        // user content part and message boundary.
-        let mut message = json!({"role": "user"});
+        // Harness annotations/IDs are not part of the Decisions contract.
+        let mut message = json!({"role": role});
         message["content"] = Value::Array(parts);
+        if let Some(phase) = phase {
+            message["phase"] = json!(phase);
+        }
         messages.push(message);
     }
     let mut body = json!({
         "model": MODEL,
         "questions": [{"type": "choice", "name": "guardian_risk",
+                       "instructions": rubric,
                        "choices": [{"value": "low"}, {"value": "high"}]}]
     });
-    body["questions"][0]["instructions"] = Value::String(rubric);
     body["input"] = Value::Array(messages);
     Ok(body)
 }

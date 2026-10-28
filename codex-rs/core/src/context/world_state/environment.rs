@@ -11,7 +11,9 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::session::turn_context::TurnContext;
 use crate::shell::ShellType;
 use codex_features::Feature;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
@@ -217,7 +219,7 @@ impl ContextualUserFragment for EnvironmentsState {
         environment_context_markers()
     }
 
-    fn body(&self) -> String {
+    fn body(&self) -> ContentItem {
         self.rendered_full().body()
     }
 }
@@ -258,7 +260,7 @@ impl ContextualUserFragment for RenderedEnvironments {
         environment_context_markers()
     }
 
-    fn body(&self) -> String {
+    fn body(&self) -> ContentItem {
         let mut rendered = "\n".to_string();
         if self.legacy_single {
             if let Some(EnvironmentUpdate::Current(environment)) = self.updates.values().next() {
@@ -323,7 +325,7 @@ impl ContextualUserFragment for RenderedEnvironments {
             }
             rendered.push_str("  </subagents>\n");
         }
-        rendered
+        input_text(rendered)
     }
 }
 
@@ -429,19 +431,7 @@ async fn powershell_version(shell_path: &Path) -> Option<String> {
         return version;
     }
 
-    let mut command = Command::new(shell_path);
-    command
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$PSVersionTable.PSVersion.ToString()",
-        ])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut command = powershell_version_command_for_target(shell_path, std::env::consts::OS);
 
     let version = tokio::time::timeout(Duration::from_secs(2), command.output())
         .await
@@ -459,6 +449,33 @@ async fn powershell_version(shell_path: &Path) -> Option<String> {
         .await
         .insert(shell_path.to_owned(), version.clone());
     version
+}
+
+/// Build the external shell probe that reads the PowerShell version.
+///
+/// The shared body owns composition and finalization: flags, stdio, and the
+/// platform creation flag are applied exactly as before, and the `Command` is
+/// then finalized for an external child on the target platform — the probe
+/// runs a configured shell, which is external regardless of how familiar its
+/// name looks. Cache, timeout, and feature gating stay with the caller; the
+/// finalizer runs after the last flag so nothing can reintroduce the
+/// launcher-private names afterwards.
+fn powershell_version_command_for_target(shell_path: &Path, target_os: &str) -> Command {
+    let mut command = Command::new(shell_path);
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$PSVersionTable.PSVersion.ToString()",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
+    command
 }
 
 fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, EnvironmentState> {

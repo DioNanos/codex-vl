@@ -378,3 +378,19 @@ async fn credential_export_reuses_cache_and_coalesces_refreshes() -> io::Result<
     assert_eq!(credentials.await?, rotated);
     Ok(())
 }
+
+#[test]
+fn sentinel_credential_export_command_drops_launcher_metadata_for_android() {
+    let config = codex_model_provider_info::AwsCredentialExportConfig {
+        command: "aws".to_string(),
+        args: Vec::new(),
+        timeout_ms: NonZeroU64::new(1_000).expect("timeout"),
+    };
+    let android = credential_export_command_for_target(&config, "android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        let entry = android.as_std().get_envs().find(|(key, _)| *key == *name);
+        assert_eq!(entry.map(|(_, value)| value), Some(None), "{name}");
+    }
+    let host = credential_export_command_for_target(&config, "linux");
+    assert_eq!(host.as_std().get_envs().count(), 0);
+}

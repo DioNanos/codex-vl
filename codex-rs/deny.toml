@@ -85,13 +85,23 @@ ignore = [
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto v0.25.2 is pulled in via rama-dns/rama-tcp used by codex-network-proxy; no fixed rama release is available yet; remove when rama updates to hickory 0.26.1 or hickory-net" },
     { id = "RUSTSEC-2026-0194", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant 4.x is unmaintained; pulled in via zbus 4.4 used by keyring/secret-service (credential store) and codex-tui; no patched release; remove when they move to zbus 5" },
-    { id = "RUSTSEC-2026-0371", reason = "zvariant_derive 4.x is unmaintained; pulled in via zbus 4.4 used by keyring/secret-service (credential store) and codex-tui; no patched release; remove when they move to zbus 5" },
-    { id = "RUSTSEC-2026-0372", reason = "zbus_names 4.x is unmaintained; pulled in via zbus 4.4 used by keyring/secret-service (credential store) and codex-tui; no patched release; remove when they move to zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 3.0.0 is unmaintained; pulled in via zbus 4.4 used by keyring/secret-service (credential store) and codex-tui; no patched release; remove when they move to zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 4.2.0 is unmaintained; pulled in via zbus 4.4 used by keyring/secret-service (credential store) and codex-tui; no patched release; remove when they move to zbus 5" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml v0.39.4 remains via plist/syntect and wayland-scanner; plist does not exercise the affected APIs and wayland-scanner parses trusted build-time XML; remove when rust-plist#191 and wayland-rs#938 are released" },
 { id = "RUSTSEC-2026-0221", reason = "event-listener 5.4.1: current stack-listener users use Event<()> only; no non-Send tags or with_tag calls in the release dependency graph. Remove at event-listener >=5.4.2; re-review on caller or tag changes." },
 { id = "RUSTSEC-2026-0186", reason = "memmap2 0.9.10: current gix users do not call affected range APIs; tantivy uses advise on offset 0 and the full mapping. Remove at memmap2 >=0.9.11; re-review on range API or mapping-call changes." },
 { id = "RUSTSEC-2026-0205", reason = "scc 2.4.0 is used only through serial_test 3.3.1 in dev-dependencies, using HashMap rather than the affected ordered insert path. Remove when serial_test selects a patched scc (currently >=3.8.4); re-review if scc becomes a release dependency or its used APIs change." },
 { id = "RUSTSEC-2026-0306", reason = "faster-hex 0.10.0: current callers use checked hex_decode, which enforces src.len() >= 2*dst.len() before AVX2; AArch64 does not compile the affected AVX2 branch. Remove at faster-hex >=0.10.1; re-review on unchecked calls or decoding-invariant changes." },
+{ id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 via tantivy 0.22.1 under msa-core only; its private LruCache<usize, OwnedBytes> uses new/get/put/len and never the affected IterMut paths. Remove when tantivy selects lru >=0.18.2 or drops the old lru; re-review on caller or API changes." },
+{ id = "RUSTSEC-2026-0253", reason = "lru 0.12.5 via tantivy 0.22.1 under msa-core only; pop() is never called and the usize key has no panicking Drop. Remove when tantivy selects lru >=0.18.2 or drops the old lru; re-review on pop calls or key-type changes." },
+    # Reviewed 2026-10-20.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml 0.1.10 is unmaintained; pulled in via i18n-config/i18n-embed-fl under age 0.12.1 used by codex-secrets; no patched release; remove when age's localization dependencies migrate off basic-toml" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via elliptic-curve 0.13.8 is used by age, AWS login, user verification, and WebRTC; timing leakage can affect private-key or session-secret operations; remove when these dependency paths use crypto-bigint >=0.7.6" },
+    # Reviewed 2026-10-26.
+    { id = "RUSTSEC-2026-0391", reason = "Codex, tonic and zip use zstd 0.13.3 without reusing borrowed contexts across streams. Remove when all paths use zstd >=0.14.3." },
+    { id = "RUSTSEC-2026-0398", reason = "zstd 0.13.3 pulls in zstd-safe 7.2.4 with the affected seekable feature disabled. Remove when all paths use zstd-safe >=8.2.0." },
+    { id = "RUSTSEC-2026-0403", reason = "zstd 0.13.3 pulls in zstd-safe 7.2.4. Codex, tonic and zip use read decoders or initialized output buffers and discard output on error. Remove when all paths use zstd-safe >=8.2.0." },
+    { id = "RUSTSEC-2026-0386", reason = "unsound only via AsyncFd::new with an fd not owned, fixed in 1.53.3 which deprecates the API used here; upstream main still pins 1.52.3; revisit on next upstream merge" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

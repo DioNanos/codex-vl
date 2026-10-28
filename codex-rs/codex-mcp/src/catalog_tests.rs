@@ -226,6 +226,8 @@ fn plugin_host_root_is_retained_in_catalog_identity() {
 fn ema_policy_survives_rebuilds_and_rebinds_materialized_servers() {
     let idp = McpServerIdpOAuthConfig {
         issuer: "https://idp.example".to_string(),
+        client_secret: None,
+        token_endpoint_auth_method: None,
         client_id: "enterprise-client".to_string(),
     };
     let mut builder = ResolvedMcpCatalog::builder();
@@ -747,7 +749,15 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
             true,
         ),
     ] {
+        let custom = server("https://custom.example/mcp");
         let mut builder = ResolvedMcpCatalog::builder();
+        builder.register(McpServerRegistration::from_config(
+            CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            custom.clone(),
+        ));
+        let denied = builder
+            .build_with_environment_authority(|_| McpEnvironmentAuthority::Restricted(&policy));
+        let mut builder = denied.to_builder();
         builder.register(registration);
         let catalog = builder
             .build_with_environment_authority(|_| McpEnvironmentAuthority::Restricted(&policy));
@@ -758,6 +768,19 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
                 .config()
                 .enabled,
             expected
+        );
+        let mut builder = catalog
+            .with_materialized_servers(catalog.configured_servers())
+            .to_builder();
+        builder.register(McpServerRegistration::from_extension(
+            CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            "custom",
+            /*contribution_order*/ 1,
+            custom,
+        ));
+        assert_eq!(
+            builder.build().configured_servers(),
+            denied.configured_servers()
         );
     }
 }

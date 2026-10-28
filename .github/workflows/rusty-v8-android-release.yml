@@ -19,9 +19,9 @@ name: rusty-v8-android-release
   workflow_dispatch:
     inputs:
       v8_version:
-        description: "denoland/rusty_v8 tag to build (e.g. 150.4.0)"
+        description: "denoland/rusty_v8 tag to build (e.g. 152.2.0)"
         type: string
-        default: "150.4.0"
+        default: "152.2.0"
       target:
         description: "Rust target triple (only aarch64-linux-android supported)"
         type: choice

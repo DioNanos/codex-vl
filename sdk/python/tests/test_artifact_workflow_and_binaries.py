@@ -500,13 +500,12 @@ def test_python_codegen_schema_annotation_adds_stable_variant_titles() -> None:
         "GranularAskForApproval",
     ]
 
-    reasoning_summary_titles = [
-        variant.get("title") for variant in definitions["ReasoningSummary"]["oneOf"]
-    ]
-    assert reasoning_summary_titles == [
-        "ReasoningSummaryValue",
-        "NoneReasoningSummary",
-    ]
+    from openai_codex.generated.v2_all import ReasoningSummary
+
+    reasoning_values, disabled = definitions["ReasoningSummary"]["oneOf"]
+    assert reasoning_values["title"] == "ReasoningSummaryValue"
+    assert disabled["enum"] == ["none"]
+    assert ReasoningSummary.model_validate("none").root == "none"
 
 
 def test_generate_v2_all_uses_titles_for_generated_names() -> None:
@@ -554,6 +553,30 @@ def test_generated_inline_image_class_names_remain_stable() -> None:
         InputImageFunctionCallOutputContentItem.__name__
         == "InputImageFunctionCallOutputContentItem"
     )
+
+
+def test_generated_image_generation_thread_item_alias_remains_available() -> None:
+    """Existing SDK callers can still construct and validate inline image-generation items."""
+    from openai_codex.generated.v2_all import (
+        ImageGenerationThreadItem,
+        ResultThreadItem,
+    )
+
+    item = ImageGenerationThreadItem.model_validate(
+        {
+            "failure": None,
+            "id": "image_1",
+            "result": "aW1hZ2U=",
+            "revisedPrompt": None,
+            "savedPath": None,
+            "status": "completed",
+            "transparentBackground": None,
+            "type": "imageGeneration",
+        }
+    )
+
+    assert ImageGenerationThreadItem is ResultThreadItem
+    assert isinstance(item, ResultThreadItem)
 
 
 def test_runtime_package_template_has_no_checked_in_binaries() -> None:

@@ -692,6 +692,7 @@ impl TurnRequestProcessor {
                     })
                     .with_additional_context(additional_context)
                     .with_responses_metadata(params.responsesapi_client_metadata)
+                    .with_responses_metadata_patch(params.responsesapi_client_metadata_patch)
                     .with_trace(self.request_trace_context(&request_id).await),
             )
             .await
@@ -1108,7 +1109,8 @@ impl TurnRequestProcessor {
                     client_id: params.client_user_message_id,
                 })
                 .with_additional_context(additional_context)
-                .with_responses_metadata(params.responsesapi_client_metadata),
+                .with_responses_metadata(params.responsesapi_client_metadata)
+                .with_responses_metadata_patch(params.responsesapi_client_metadata_patch),
                 params.expected_turn_id,
             )
             .await
@@ -1303,6 +1305,7 @@ impl TurnRequestProcessor {
                 realtime_end_instructions: params.realtime_end_instructions,
                 prompt: params.prompt,
                 realtime_session_id: params.realtime_session_id,
+                voice_session_id: params.voice_session_id,
                 transport: params.transport.map(|transport| match transport {
                     ThreadRealtimeStartTransport::Websocket => {
                         ConversationStartTransport::Websocket
@@ -1708,7 +1711,6 @@ impl TurnRequestProcessor {
             pending_thread_unloads: Arc::clone(&self.pending_thread_unloads),
             thread_watch_manager: self.thread_watch_manager.clone(),
             codex_home: self.config.codex_home.to_path_buf(),
-            thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
             turn_cost_worker: self.turn_cost_worker.clone(),
         }

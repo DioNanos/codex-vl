@@ -277,6 +277,8 @@ mod plan_mode;
 #[path = "tests/plugin_catalog_tests.rs"]
 mod plugin_catalog;
 mod popups_and_settings;
+#[path = "tests/program_status.rs"]
+mod program_status;
 #[path = "tests/queued_input_stall.rs"]
 mod queued_input_stall;
 #[path = "tests/rate_limit_recovery_tests.rs"]
@@ -298,6 +300,8 @@ mod sparkle_submission_tests;
 mod startup_submission_tests;
 mod status_and_layout;
 mod status_command_tests;
+#[path = "tests/status_surface_command_tests.rs"]
+mod status_surface_command_tests;
 mod status_surface_previews;
 #[path = "tests/subagent_activity_tests.rs"]
 mod subagent_activity;
@@ -331,3 +335,6 @@ mod question_notifications_tests;
 
 #[path = "tests/security_setup_tests.rs"]
 mod security_setup_tests;
+
+#[path = "tests/quick_dials_tests.rs"]
+mod quick_dials_tests;

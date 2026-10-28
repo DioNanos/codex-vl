@@ -10,12 +10,11 @@ use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::router::ToolRouter;
-use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
-use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ExtensionData;
 use codex_file_system::EnvironmentAccess;
 use codex_mcp::McpBinding;
 use codex_otel::SessionTelemetry;
+use codex_plugin::ExecutorPluginHookSource;
 use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::protocol::TurnContextItem;
 use tokio_util::sync::CancellationToken;
@@ -34,10 +33,10 @@ pub(crate) struct StepContext {
     /// Telemetry context tagged with this sampling request's model.
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) environments: TurnEnvironmentSnapshot,
-    /// Capability roots bound to ready environments in this exact step.
-    pub(crate) selected_capability_roots: Vec<ResolvedSelectedCapabilityRoot>,
-    /// Executor-materialized capability files shared by MCP and skills in this exact step.
-    pub(crate) executor_capability_discovery: Option<Arc<ExecutorCapabilityDiscoverySnapshot>>,
+    /// Child bindings captured with this step; configured-only when opted in.
+    pub(crate) inherited_environments: TurnEnvironmentSnapshot,
+    /// Admitted executor hooks bound to this step's discovery, plugin policy, and MCP routing.
+    pub(crate) executor_hook_sources: Vec<ExecutorPluginHookSource>,
     /// Keeps the extension inputs used to build this step's tools for its World State as well.
     pub(crate) extension_data: ExtensionData,
     /// The exact MCP connections, configuration, and catalog captured for this step.
@@ -63,13 +62,18 @@ impl StepContext {
     pub(crate) fn environments(&self) -> Vec<(&TurnEnvironment, impl EnvironmentAccess + '_)> {
         self.environments
             .turn_environments()
-            .map(|environment| {
-                let grants = self
-                    .turn
-                    .granted_permissions(&environment.selection.environment_id);
-                (environment, environment.fs_accessor(grants))
-            })
+            .map(|environment| (environment, self.fs_accessor(environment)))
             .collect()
+    }
+
+    pub(crate) fn fs_accessor<'a>(
+        &self,
+        environment: &'a TurnEnvironment,
+    ) -> impl EnvironmentAccess + 'a + use<'a> {
+        let grants = self
+            .turn
+            .granted_permissions(&environment.selection.environment_id);
+        environment.fs_accessor(grants)
     }
 
     /// Persist the context captured for this request, even after a live update.

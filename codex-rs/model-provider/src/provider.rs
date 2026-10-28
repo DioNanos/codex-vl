@@ -33,6 +33,7 @@ use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth;
 use crate::auth::resolve_provider_auth_for_scope;
 use crate::combined_auth::compose_auth;
+use crate::gcp::GcpModelProvider;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 use crate::workspace_routing::WorkspaceRoutingContext;
 
@@ -105,6 +106,14 @@ pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.6-terra";
 /// Implementations own provider-specific behavior for a model backend. The
 /// `ModelProviderInfo` returned by `info` is the serialized/configured provider
 /// metadata used by the default OpenAI-compatible implementation.
+///
+/// OpenAI-compatible catalog caches use header auth's account ID instead of auth
+/// headers when available. Missing IDs and explicit provider API key, bearer, or
+/// command auth retain credential-sensitive keys. Provider settings remain in the key.
+/// Hosts using header auth must isolate model managers and cache storage by user and
+/// catalog-varying request context, such as country: an account ID may identify a
+/// workspace shared by multiple users. Request authentication, credential refresh,
+/// and permission checks are unchanged.
 pub trait ModelProvider: fmt::Debug + Send + Sync {
     /// Returns the configured provider metadata.
     fn info(&self) -> &ModelProviderInfo;
@@ -339,6 +348,9 @@ pub fn create_model_provider(
 ) -> SharedModelProvider {
     if provider_info.is_amazon_bedrock() {
         return Arc::new(AmazonBedrockModelProvider::new(provider_info, auth_manager));
+    }
+    if provider_info.is_gcp() {
+        return Arc::new(GcpModelProvider::new(provider_info, auth_manager));
     }
     let gateway_auth_manager = provider_info.gateway_oauth.as_ref().map(|config| {
         provider_info.validate()?;
@@ -707,7 +719,7 @@ mod tests {
             .await
             .expect("auth should resolve");
 
-        assert!(auth.auth.to_auth_headers().is_empty());
+        assert!(auth.auth.to_auth_headers().unwrap().is_empty());
     }
 
     #[test]
@@ -1246,6 +1258,7 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
         assert_eq!(uncached_catalog, catalog);
         for slug in [
             "openai.gpt-6.1-sol",
+            "openai.gpt-6.1-terra",
             "openai.gpt-6-sol",
             "openai.gpt-6-luna",
             "openai.gpt-5.6-sol",
@@ -1278,6 +1291,7 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
             vec![
                 ("openai.gpt-6.1-sol", "GPT-6.1 Sol"),
                 ("openai.gpt-6-astra", "GPT-6-Astra"),
+                ("openai.gpt-6.1-terra", "GPT-6.1 Terra"),
                 ("openai.gpt-6-sol", "GPT-6 Sol"),
                 ("openai.gpt-6-luna", "GPT-6 Luna"),
                 ("openai.gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -1301,6 +1315,7 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
             vec![
                 "openai.gpt-6.1-sol",
                 "openai.gpt-6-astra",
+                "openai.gpt-6.1-terra",
                 "openai.gpt-6-sol",
                 "openai.gpt-6-luna",
                 "openai.gpt-5.6-sol",

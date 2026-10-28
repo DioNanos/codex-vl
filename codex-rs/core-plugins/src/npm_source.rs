@@ -97,6 +97,9 @@ fn pack_npm_package(
         command.arg("--registry").arg(registry);
     }
     command.arg("--").arg(package_spec);
+    // npm is an external child: drop the launcher-private install metadata
+    // after the last environment write. No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
 
     let output = command
         .output()

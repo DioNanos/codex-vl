@@ -357,3 +357,25 @@ fn json_response(body: &str) -> EnvironmentResponse {
         body: body.to_string(),
     }
 }
+
+/// Sentinel through the shared production body. The Android target records the
+/// six names as unset, the host target records nothing, and the test never
+/// finalizes the command afterwards.
+#[test]
+fn sentinel_git_origin_command_carries_no_launcher_metadata() {
+    let android = git_command_for_target("android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        let entry = android
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(name));
+        let entry = entry.unwrap_or_else(|| panic!("{name} must be recorded as unset"));
+        assert!(entry.1.is_none(), "{name} must carry no value");
+    }
+
+    let host = git_command_for_target("linux");
+    assert_eq!(
+        host.get_envs().count(),
+        0,
+        "the host target must not record an unset"
+    );
+}

@@ -4,6 +4,30 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.165.0-vl.1 - 2026-10-28 - Upstream rust-v0.165.0
+
+### Codex VL changes
+
+- Upstream `rust-v0.165.0`: built-in Google Cloud Vertex AI provider
+  (`model_provider = "gcp"`), GPT-6.1 Terra added to model catalogs, repository
+  filter in session picker and directory grouping in agent command center,
+  experimental attached thread forks in app-server API, reasoning effort
+  changes enabled by default, and memory v2 enabled by default for fresh
+  profiles with external-agent memory imports. Upstream fixes: fresh TUI
+  sessions honor server approval reviewer defaults, TUI preferences remain
+  editable with invalid execution settings, dropped response futures cancel
+  remote MCP tool requests, interrupts and Plan mode prevent queued agent
+  messages from resuming work, non-retryable model-not-found errors preserved,
+  and marketplace URL userinfo backslash gap closed.
+- Stop rewriting `LD_LIBRARY_PATH` on Android: the native binary resolves its
+  shared libraries via `$ORIGIN` in DT_RUNPATH, preserving caller-provided paths.
+- Scrub launcher-private CODEX metadata from external child processes on Android
+  across shell/exec, MCP stdio servers, hooks, cloud tasks, plugins, worktree,
+  and tools boundaries; preserve caller-provided loader variables.
+- Refresh dependency security audits: update webpki and ctutils, ignore accepted
+  upstream advisories in deny.toml, and align process utilities formatting.
+- Add test coverage for launcher child environment policies and boundary sentinels.
+
 ## 0.162.1-vl.1 - 2026-10-11 - Upstream rust-v0.162.1
 
 ### Codex VL changes

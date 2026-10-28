@@ -988,6 +988,72 @@ mod tests {
         );
     }
 
+    /// Sentinel through the shared selector into the serialized policy: the
+    /// names a `source = "remote"` config selects on the preparing client are
+    /// filtered for the Android target before they reach the executor
+    /// request's env policy. The final `ExecEnvPolicy` built from those names
+    /// — the payload actually serialized with `inherit = All` — must not
+    /// carry a reserved name or case-variant, while unrelated selectors and
+    /// the default inputs survive and the non-Android target keeps the names.
+    #[test]
+    fn sentinel_remote_env_policy_drops_launcher_selectors_for_android() {
+        use crate::utils::remote_mcp_env_var_names_for_target;
+
+        let mut vars: Vec<McpServerEnvVar> = codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS
+            .iter()
+            .map(|name| McpServerEnvVar::Config {
+                name: (*name).to_string(),
+                source: Some("remote".to_string()),
+            })
+            .collect();
+        vars.push(McpServerEnvVar::Config {
+            name: "codex_self_exe".to_string(),
+            source: Some("remote".to_string()),
+        });
+        vars.push(McpServerEnvVar::Config {
+            name: "REMOTE_KEPT".to_string(),
+            source: Some("remote".to_string()),
+        });
+        vars.push(McpServerEnvVar::Config {
+            name: "openai_identity_token_file".to_string(),
+            source: Some("remote".to_string()),
+        });
+
+        let android_names =
+            remote_mcp_env_var_names_for_target(&vars, codex_utils_process::ANDROID_TARGET_OS);
+        assert_eq!(android_names, vec!["REMOTE_KEPT".to_string()]);
+
+        let android_policy =
+            ExecutorStdioServerLauncher::remote_env_policy(&android_names, &HashMap::new());
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(
+                !android_policy.include_only.contains(&name.to_string()),
+                "{name} leaked into the serialized env policy"
+            );
+        }
+        assert!(
+            !android_policy
+                .include_only
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("codex_self_exe")),
+            "case-variant selector leaked into the serialized env policy"
+        );
+        assert!(
+            android_policy
+                .include_only
+                .contains(&"REMOTE_KEPT".to_string()),
+            "unrelated selector must survive"
+        );
+        assert_eq!(android_policy.inherit, ShellEnvironmentPolicyInherit::All);
+
+        let host_names = remote_mcp_env_var_names_for_target(&vars, "linux");
+        assert!(
+            host_names.contains(&"CODEX_SELF_EXE".to_string()),
+            "the non-Android target must keep the selectors"
+        );
+        assert!(host_names.contains(&"REMOTE_KEPT".to_string()));
+    }
+
     #[test]
     fn remote_env_policy_effectively_filters_unrequested_vars() {
         let exec_policy = ExecutorStdioServerLauncher::remote_env_policy(

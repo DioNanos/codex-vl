@@ -1,5 +1,6 @@
 use super::*;
 use crate::session::tests::make_session_and_context_with_rx;
+use crate::session::tests::test_environment_id;
 use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use pretty_assertions::assert_eq;
@@ -14,6 +15,7 @@ fn approval_resolution_rejects_denied_network_policy_amendment() {
             },
         },
         source: ApprovalResolutionSource::User,
+        cancellation_reason: None,
     };
 
     assert!(matches!(
@@ -27,6 +29,7 @@ fn approval_resolution_rejects_mcp_policy_amendment() {
     let resolution = ApprovalResolution {
         decision: ReviewDecision::ApprovedMcpPolicyAmendment,
         source: ApprovalResolutionSource::User,
+        cancellation_reason: None,
     };
 
     assert!(matches!(
@@ -40,6 +43,7 @@ fn approval_resolution_aborts_turn_when_approval_is_aborted() {
     let resolution = ApprovalResolution {
         decision: ReviewDecision::Abort,
         source: ApprovalResolutionSource::User,
+        cancellation_reason: None,
     };
 
     assert!(matches!(
@@ -67,6 +71,7 @@ fn approval_resolution_uses_acting_model_timeout_instructions() {
         let resolution = ApprovalResolution {
             decision: ReviewDecision::TimedOut,
             source: ApprovalResolutionSource::Guardian,
+            cancellation_reason: None,
         };
 
         assert!(matches!(
@@ -167,11 +172,13 @@ async fn non_utf8_cwd_preserves_approval_routing(
         ApprovalResolution {
             decision: ReviewDecision::Approved,
             source: ApprovalResolutionSource::User,
+            cancellation_reason: None,
         }
     } else {
         ApprovalResolution {
             decision: ReviewDecision::Approved,
             source: ApprovalResolutionSource::Guardian,
+            cancellation_reason: None,
         }
     };
     assert_eq!(approval.await, expected);
@@ -184,6 +191,7 @@ async fn explicit_mcp_reviewer_override_takes_precedence_over_action_context() {
     let (session, turn, events) = make_session_and_context_with_rx().await;
     let action = ApprovalAction::McpToolCall {
         id: "mcp-override".to_string(),
+        environment_id: test_environment_id(&turn).to_owned(),
         server: "example".to_string(),
         tool_name: "dangerous".to_string(),
         arguments: None,

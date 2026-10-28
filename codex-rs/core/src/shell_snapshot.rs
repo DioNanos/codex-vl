@@ -1056,6 +1056,9 @@ async fn run_script_with_timeout(
         };
         let mut env = prepared_env.unwrap_or_else(|| std::env::vars().collect());
         remove_env_value(&mut env, CODEX_TOOL_CALL_ID_ENV_VAR);
+        // Snapshot capture shells are external children: drop launcher-private
+        // install metadata inherited from this process. No-op outside Android.
+        codex_utils_process::scrub_private_launcher_env_here(&mut env);
         return sandbox
             .run(
                 args,
@@ -1086,6 +1089,10 @@ async fn run_script_with_timeout(
     }
     handler.env_remove(CODEX_TOOL_CALL_ID_ENV_VAR);
     codex_protocol::shell_environment::scrub_non_inheritable_env_vars(handler.as_std_mut());
+    // Same final boundary for the launcher-private install metadata: runs
+    // after the last env write so inheritance and explicit overlays are both
+    // covered, before the unix path clones the finalized settings below.
+    codex_utils_process::finalize_external_child(handler.as_std_mut());
     #[cfg(unix)]
     let output = {
         let settings = handler.as_std();

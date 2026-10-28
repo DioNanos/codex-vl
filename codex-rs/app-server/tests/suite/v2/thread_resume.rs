@@ -28,6 +28,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::GeneratedImageRef;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -194,7 +195,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
     }))?;
     append_rollout_item_to_path(
         &path,
-        &RolloutItem::Compacted(CompactedItem {
+        &RolloutItem::Compacted(Box::new(CompactedItem {
             message: "compacted history".to_string(),
             replacement_history: Some(Vec::new()),
             retained_context: None,
@@ -207,7 +208,7 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
     )
     .await?;
     append_rollout_item_to_path(
@@ -446,8 +447,15 @@ async fn wait_for_responses_request_count(
     Ok(())
 }
 
+#[test_case(ThreadHistoryMode::Legacy, false; "legacy with turns")]
+#[test_case(ThreadHistoryMode::Legacy, true; "legacy without turns")]
+#[test_case(ThreadHistoryMode::Paginated, false; "paginated with turns")]
+#[test_case(ThreadHistoryMode::Paginated, true; "paginated without turns")]
 #[tokio::test]
-async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
+async fn thread_resume_rejects_unmaterialized_thread(
+    history_mode: ThreadHistoryMode,
+    exclude_turns: bool,
+) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
@@ -461,6 +469,7 @@ async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("gpt-5.4".to_string()),
+            history_mode: Some(history_mode),
             ..Default::default()
         })
         .await?;
@@ -471,6 +480,7 @@ async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
+            exclude_turns,
             ..Default::default()
         })
         .await?;
@@ -495,7 +505,9 @@ async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
 async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
-    mock_responses_config(&server.uri()).write(codex_home.path())?;
+    mock_responses_config(&server.uri())
+        .enable_feature(Feature::FastMode)
+        .write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -504,7 +516,8 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
 
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
-            model: Some("gpt-5.4".to_string()),
+            model: Some("gpt-daybreak-blue-latest".to_string()),
+            service_tier: Some(Some("priority".to_string())),
             ..Default::default()
         })
         .await?;
@@ -537,6 +550,7 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id.clone(),
             path: Some(PathBuf::new()),
+            service_tier: Some(Some("priority".to_string())),
             exclude_turns: true,
             ..Default::default()
         })
@@ -574,6 +588,27 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
         serde_json::Value::Array(initialization),
         json!(["new", "new"])
     );
+
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    mock_responses_config(&server.uri())
+        .enable_feature(Feature::FastMode)
+        .with_root_config("service_tier = \"flex\"")
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let resumed: ThreadResumeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: thread.id,
+                ..Default::default()
+            },
+        })
+        .await?;
+    // The startup selection still wins over the new global flex tier, but remains ineffective.
+    assert_eq!(resumed.service_tier, None);
     Ok(())
 }
 
@@ -808,7 +843,9 @@ async fn thread_resume_restores_startup_and_updated_runtime_workspace_roots() ->
 
 #[tokio::test]
 async fn cold_resume_workspace_roots_honor_owned_snapshot_and_caller_overrides() -> Result<()> {
-    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let server = responses::start_mock_server().await;
+    let response_mock =
+        responses::mount_sse_sequence(&server, vec![responses::sse_completed("done"); 3]).await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .with_sandbox_mode("workspace-write")
@@ -839,7 +876,7 @@ sandbox = "unelevated"
     let owned: ThreadSettingsAppliedEvent = serde_json::from_value(json!({
         "thread_id": thread_id,
         "thread_settings": {
-            "model": "gpt-5.4",
+            "model": "gpt-5.5",
             "model_provider_id": "mock_provider",
             "cwd": saved_cwd,
             "runtime_workspace_roots": [saved_cwd, new_cwd, extra_root],
@@ -849,14 +886,21 @@ sandbox = "unelevated"
                 .materialize_project_roots_with_workspace_roots(
                     &[saved_cwd.clone(), new_cwd.clone(), extra_root.clone()]
                 ),
-            "collaboration_mode": { "mode": "default", "settings": { "model": "gpt-5.4" } },
+            "service_tier": "flex",
+            "reasoning_summary": "concise",
+            "personality": "friendly",
+            "collaboration_mode": { "mode": "default", "settings": { "model": "gpt-5.5" } },
         },
     }))?;
     let mut foreign = owned.clone();
     foreign.thread_id = Some(ThreadId::new());
     foreign.thread_settings.runtime_workspace_roots = Some(vec![extra_root.clone()]);
     foreign.thread_settings.permission_profile = PermissionProfile::Disabled;
-    for settings in [owned, foreign] {
+    foreign.thread_settings.service_tier = Some("default".to_string());
+    let mut ownerless = owned.clone();
+    ownerless.thread_id = None;
+    ownerless.thread_settings.service_tier = Some("priority".to_string());
+    for settings in [owned, ownerless.clone(), foreign] {
         append_rollout_item_to_path(
             &path,
             &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings)),
@@ -864,7 +908,7 @@ sandbox = "unelevated"
         .await?;
     }
     // Every iteration is a cold resume; the final one must retain the preceding explicit clear.
-    for (cwd_override, roots_override, expected_cwd, expected_roots) in [
+    for (index, (cwd_override, roots_override, expected_cwd, expected_roots)) in [
         (
             Some(&new_cwd),
             None,
@@ -879,7 +923,10 @@ sandbox = "unelevated"
         ),
         (None, Some(Vec::new()), &saved_cwd, Vec::new()),
         (None, None, &saved_cwd, Vec::new()),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut mcp = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .without_auto_env()
@@ -891,6 +938,14 @@ sandbox = "unelevated"
                 thread_id: thread_id.clone(),
                 cwd: cwd_override.map(|cwd| cwd.to_string_lossy().into_owned()),
                 runtime_workspace_roots: roots_override,
+                service_tier: (index == 2).then_some(Some("priority".to_string())),
+                personality: (index == 2).then_some(Personality::None),
+                config: (index == 1).then(|| {
+                    std::collections::HashMap::from([
+                        ("model_reasoning_summary".to_string(), json!("detailed")),
+                        ("personality".to_string(), json!("none")),
+                    ])
+                }),
                 ..Default::default()
             })
             .await?;
@@ -900,6 +955,26 @@ sandbox = "unelevated"
             (resumed.cwd, resumed.runtime_workspace_roots),
             (expected_cwd.clone(), expected_roots.clone())
         );
+        if index < 3 {
+            mcp.start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: thread_id.clone(),
+                ..Default::default()
+            })
+            .await?;
+            let request = response_mock.last_request().expect("response request");
+            assert_eq!(
+                (
+                    request.body_json()["service_tier"].as_str(),
+                    request.body_json()["reasoning"]["summary"].as_str(),
+                    request.body_contains_text("# Personality"),
+                ),
+                [
+                    (Some("flex"), Some("concise"), true),
+                    (Some("priority"), Some("detailed"), false),
+                    (Some("priority"), Some("detailed"), false),
+                ][index]
+            );
+        }
 
         // Inspect persistence before shutdown or another resume can hide a missing checkpoint.
         let expected_thread_id = ThreadId::from_string(&thread_id)?;
@@ -931,6 +1006,13 @@ sandbox = "unelevated"
             );
         }
         timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+        if index == 0 {
+            append_rollout_item_to_path(
+                &path,
+                &RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(ownerless.clone())),
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -2148,7 +2230,7 @@ async fn unloaded_thread_goal_mutations_respect_parent_ownership() -> Result<()>
         // must take precedence, just as it does when the thread resumes.
         let mut meta = read_session_meta_line(&path).await?;
         meta.meta.multi_agent_version = version;
-        append_rollout_item_to_path(&path, &RolloutItem::SessionMeta(meta)).await?;
+        append_rollout_item_to_path(&path, &RolloutItem::SessionMeta(Box::new(meta))).await?;
 
         for (method, params) in [
             (
@@ -2607,6 +2689,7 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
             "approval_policy": "never",
             "approvals_reviewer": "user",
             "permission_profile": PermissionProfile::read_only(),
+            "service_tier": "flex",
             "collaboration_mode": { "mode": "default", "settings": { "model": "gpt-5.4" } },
         },
     }))?;
@@ -2627,8 +2710,12 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    let ThreadResumeResponse { thread, cwd, .. } =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+    let ThreadResumeResponse {
+        thread,
+        cwd,
+        service_tier,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
 
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.preview, preview);
@@ -2640,7 +2727,7 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
     assert_eq!(thread.status, ThreadStatus::Idle);
-
+    assert_eq!(service_tier.as_deref(), Some("flex"));
     assert_eq!(
         thread.turns.len(),
         1,
@@ -2781,7 +2868,11 @@ async fn thread_resume_redacts_payloads_for_chatgpt_remote_clients() -> Result<(
         normal_turn.items.iter().any(|item| matches!(
             item,
             ThreadItem::ImageGeneration(item)
-                if item.result == "base64-image-result"
+                if matches!(
+                    &item.image,
+                    GeneratedImageRef::Inline { result }
+                        if result == "base64-image-result"
+                )
                     && item.revised_prompt.as_deref() == Some("secret revised prompt")
         )),
         "normal resume should keep image generation items"
@@ -2889,10 +2980,13 @@ fn append_resume_redaction_history(
             call_id: "ig-1".to_string(),
             status: "completed".to_string(),
             revised_prompt: Some("secret revised prompt".to_string()),
-            result: "base64-image-result".to_string(),
+            image: GeneratedImageRef::Inline {
+                result: "base64-image-result".to_string(),
+            },
             transparent_background: None,
             failure: None,
             saved_path: Some(test_absolute_path("/tmp/ig-1.png")),
+            input_images: Vec::new(),
         }),
     ]
     .into_iter()
@@ -4548,6 +4642,7 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
     let rollout_dir = rollout_path.parent().expect("rollout parent directory");
     std::fs::create_dir_all(rollout_dir)?;
     let session_meta = SessionMeta {
+        attached_thread: false,
         creator_user_id: None,
         creator_account_id: None,
         session_id: conversation_id.into(),
@@ -5965,6 +6060,51 @@ async fn thread_resume_with_overrides_preserves_recency_and_checkpoints_model() 
 }
 
 #[tokio::test]
+async fn thread_resume_does_not_checkpoint_unchanged_settings() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    mock_responses_config(&server.uri()).write(codex_home.path())?;
+
+    let RestartedThreadFixture {
+        mut mcp,
+        thread_id,
+        rollout_file_path,
+        ..
+    } = start_materialized_thread_and_restart(codex_home.path(), "materialize").await?;
+
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_file_path).await?;
+    let settings_before_resume = items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => Some(event),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!settings_before_resume.is_empty());
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id,
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_file_path).await?;
+    let settings_after_resume = items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => Some(event),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(settings_after_resume, settings_before_resume);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_resume_fails_when_required_mcp_server_fails_to_initialize() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -6470,8 +6610,11 @@ async fn setup_rollout_fixture(codex_home: &Path, server_uri: &str) -> Result<Ro
     let rollout_file_path = rollout_path(codex_home, filename_ts, &conversation_id);
     let mut session_meta = read_session_meta_line(&rollout_file_path).await?;
     session_meta.meta.multi_agent_version = Some(MultiAgentVersion::V1);
-    append_rollout_item_to_path(&rollout_file_path, &RolloutItem::SessionMeta(session_meta))
-        .await?;
+    append_rollout_item_to_path(
+        &rollout_file_path,
+        &RolloutItem::SessionMeta(Box::new(session_meta)),
+    )
+    .await?;
     set_rollout_mtime(rollout_file_path.as_path(), expected_updated_at_rfc3339)?;
     Ok(RolloutFixture {
         conversation_id,

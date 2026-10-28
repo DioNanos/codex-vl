@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
       - name: Validate tag matches Cargo.toml version
         shell: bash
         env:
@@ -254,7 +254,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils pkg-config libcap-dev
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
         with:
           targets: ${{ matrix.target }}
 
@@ -338,6 +339,13 @@ jobs:
           done
           cargo build --target "$target" --release --timings "${build_args[@]}"
 
+      - name: Prepare Bazel for release binaries or Linux voice
+        if: matrix.build-system == 'bazel' || (matrix.bundle == 'primary' && contains(matrix.target, 'linux'))
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: ${{ matrix.target }}
+          cache-scope: bazel-release-${{ matrix.bundle }}
+
       - name: Upload Cargo timings
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -371,17 +379,12 @@ jobs:
           path: codex-rs/symbols-dist/${{ matrix.artifact_name }}/*
           if-no-files-found: error
 
-      - name: Set up Bazel for Linux voice
-        if: ${{ matrix.bundle == 'primary' && contains(matrix.target, 'linux') }}
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
-        with:
-          bazelisk-version: 1.28.1
-
       - name: Build Linux voice runtime
         if: ${{ matrix.bundle == 'primary' && contains(matrix.target, 'linux') }}
         shell: bash
         env:
           APP_TARGET: ${{ matrix.target }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -486,6 +489,12 @@ jobs:
             --entrypoint-dir "target/${TARGET}/release" \
             --archive-dir "dist/${TARGET}"
 
+      - name: Set up Python release tools
+        if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
+        uses: ./.github/actions/setup-python-release-tools
+        with:
+          group: runtime
+
       - name: Build Python runtime wheel
         if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
         shell: bash
@@ -510,11 +519,6 @@ jobs:
               exit 1
               ;;
           esac
-
-          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          # Do not install into the runner's system Python; macOS runners mark
-          # the Homebrew Python as externally managed under PEP 668.
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
 
           # Keep the existing manylinux_2_17 wheel compatible with older glibc.
           # GNU voice libraries belong in the signed release package archives,
@@ -545,7 +549,8 @@ jobs:
             --platform-tag "$platform_tag"
           )
           python3 "${stage_runtime_args[@]}"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
+          uv build --offline --no-build-isolation --no-create-gitignore \
+            --python "${RUNNER_TEMP}/python-runtime-build-venv" --wheel --out-dir "$wheel_dir" "$stage_dir"
 
       - name: Upload Python runtime wheel
         if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
@@ -605,6 +610,9 @@ jobs:
     needs: tag-check
     name: Build voice runtime - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    environment:
+      name: bazel
+      deployment: false
     timeout-minutes: 120
     permissions:
       contents: read
@@ -625,14 +633,17 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
-      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
         with:
-          bazelisk-version: 1.28.1
+          target: ${{ matrix.target }}
+          cache-scope: bazel-release-primary
       - name: Build matching helper and native runtime
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           PREFIX: ${{ matrix.prefix }}
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           # Release tags bump Cargo.toml without rewriting the workspace lockfile.
@@ -1103,37 +1114,11 @@ jobs:
           path: codex-rs/target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg
           if-no-files-found: error
 
-      - name: Stage macOS artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          dest="dist/${{ matrix.target }}"
-          mkdir -p "$dest"
-
-          for binary in ${{ matrix.binaries }}; do
-            # Both variants package the host, but only the primary bundle publishes
-            # standalone binary archives to avoid duplicate release asset names.
-            if [[ "${{ matrix.bundle }}" == "app-server" && "$binary" == "codex-code-mode-host" ]]; then
-              continue
-            fi
-            cp "target/${{ matrix.target }}/release/${binary}" "$dest/${binary}-${{ matrix.target }}"
-          done
-
-      - name: Build Codex package archive
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          BUNDLE: ${{ matrix.bundle }}
-        run: |
-          set -euo pipefail
-          bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
-            --target "$TARGET" \
-            --bundle "$BUNDLE" \
-            --entrypoint-dir "target/${TARGET}/release" \
-            --archive-dir "dist/${TARGET}"
-            --archive-dir "dist/${TARGET}" \
-            --rg-bin "signed-resources/${TARGET}/rg" \
-            --zsh-bin "signed-resources/${TARGET}/zsh"
+      - name: Set up Python release tools
+        if: ${{ matrix.bundle == 'primary' }}
+        uses: ./.github/actions/setup-python-release-tools
+        with:
+          group: runtime
 
       - name: Build Python runtime wheel
         if: ${{ matrix.bundle == 'primary' }}
@@ -1153,9 +1138,6 @@ jobs:
               exit 1
               ;;
           esac
-
-          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
 
           # The wheel keeps its macOS 10.9/11 tags. The native voice build
           # currently targets macOS 14, so keep it in the release archives and
@@ -1185,7 +1167,8 @@ jobs:
             "$wheel_archive" \
             --codex-version "${GITHUB_REF_NAME}" \
             --platform-tag "$platform_tag"
-          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
+          uv build --offline --no-build-isolation --no-create-gitignore \
+            --python "${RUNNER_TEMP}/python-runtime-build-venv" --wheel --out-dir "$wheel_dir" "$stage_dir"
 
       - name: Upload Python runtime wheel
         if: ${{ matrix.bundle == 'primary' }}
@@ -2349,6 +2332,9 @@ jobs:
         env:
           VERSION: ${{ needs.release.outputs.version }}
           NPM_TAG: ${{ needs.release.outputs.npm_tag }}
+          NPM_CONFIG_LOGLEVEL: verbose
+          NPM_CONFIG_LOGS_DIR: ${{ runner.temp }}/npm-publish-logs
+          NPM_CONFIG_LOGS_MAX: "100"
         run: |
           set -euo pipefail
           prefix=""
@@ -2438,24 +2424,41 @@ jobs:
               publish_cmd+=(--tag "${tag}")
             fi
 
-            echo "+ ${publish_cmd[*]}"
-            set +e
-            publish_output="$("${publish_cmd[@]}" 2>&1)"
-            publish_status=$?
-            set -e
+            # A fresh npm process obtains new OIDC credentials on each attempt.
+            for attempt in 1 2 3; do
+              echo "+ ${publish_cmd[*]} (attempt ${attempt}/3)"
+              set +e
+              publish_output="$("${publish_cmd[@]}" 2>&1)"
+              publish_status=$?
+              set -e
 
-            echo "${publish_output}"
-            if [[ ${publish_status} -eq 0 ]]; then
-              continue
-            fi
+              echo "${publish_output}"
+              if [[ ${publish_status} -eq 0 ]]; then
+                break
+              fi
 
-            if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
-              echo "Skipping already-published package version for ${filename}"
-              continue
-            fi
+              if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
+                echo "Skipping already-published package version for ${filename}"
+                break
+              fi
 
-            exit "${publish_status}"
+              if [[ ${attempt} -eq 3 ]]; then
+                exit "${publish_status}"
+              fi
+              delay=$((attempt * 10))
+              echo "Publishing ${filename} failed; retrying in ${delay} seconds."
+              sleep "${delay}"
+            done
           done
+
+      - name: Retain npm debug logs
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: npm-publish-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-publish-logs/
+          if-no-files-found: ignore
+          retention-days: 7
 
   deploy-dev-website:
     name: Trigger developers.openai.com deploy

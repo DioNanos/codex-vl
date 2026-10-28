@@ -6,33 +6,33 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::protocol::FileSystemAccessMode;
 use codex_protocol::protocol::FileSystemPath;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::FileSystemSpecialPath;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use codex_windows_sandbox::resolve_windows_deny_read_paths;
+use mxc_sdk::mxc_common::cmdline::CommandLineContext;
+use mxc_sdk::mxc_common::cmdline::CommandLineError;
+use mxc_sdk::mxc_common::cmdline::cmdline_from_argv_for_context;
+use mxc_sdk::mxc_common::filesystem_object::ExistingObjectComparison;
+use mxc_sdk::mxc_common::filesystem_object::compare_existing_filesystem_objects;
+use mxc_sdk::mxc_common::filesystem_object::normalize_object_conflicts;
+use mxc_sdk::mxc_common::logger::Logger;
+use mxc_sdk::mxc_common::logger::Mode;
+use mxc_sdk::mxc_common::models::BaseProcessUiConfig;
+use mxc_sdk::mxc_common::models::ContainerPolicy;
+use mxc_sdk::mxc_common::models::ExecutionRequest;
+use mxc_sdk::mxc_common::models::FallbackPolicy;
+use mxc_sdk::mxc_common::models::NetworkAction;
+use mxc_sdk::mxc_common::models::NetworkCidr;
+use mxc_sdk::mxc_common::models::NetworkEgressPolicy;
+use mxc_sdk::mxc_common::models::NetworkIngressPolicy;
+use mxc_sdk::mxc_common::models::NetworkPeer;
+use mxc_sdk::mxc_common::models::NetworkRule;
+use mxc_sdk::mxc_common::models::UiPolicy;
 use thiserror::Error;
-use wxc_common::cmdline::CommandLineContext;
-use wxc_common::cmdline::CommandLineError;
-use wxc_common::cmdline::cmdline_from_argv_for_context;
-use wxc_common::filesystem_object::ExistingObjectComparison;
-use wxc_common::filesystem_object::compare_existing_filesystem_objects;
-use wxc_common::filesystem_object::normalize_object_conflicts;
-use wxc_common::logger::Logger;
-use wxc_common::logger::Mode;
-use wxc_common::models::BaseProcessUiConfig;
-use wxc_common::models::ContainerPolicy;
-use wxc_common::models::ExecutionRequest;
-use wxc_common::models::FallbackPolicy;
-use wxc_common::models::NetworkAction;
-use wxc_common::models::NetworkCidr;
-use wxc_common::models::NetworkEgressPolicy;
-use wxc_common::models::NetworkIngressPolicy;
-use wxc_common::models::NetworkPeer;
-use wxc_common::models::NetworkPolicy;
-use wxc_common::models::NetworkRule;
-use wxc_common::models::UiPolicy;
 
 use crate::MxcCommand;
 
@@ -138,7 +138,11 @@ pub(super) fn build_request(
         .iter()
         .map(PathUri::from_host_native_path)
         .collect::<std::io::Result<Vec<_>>>()?;
-    let fs = materialize_volume_roots(policy.clone(), &volumes)?;
+    #[cfg(windows)]
+    let read_volumes = crate::windows::implicit_read_roots(volume_roots, cwd, command_cwd)?;
+    #[cfg(not(windows))]
+    let read_volumes = volumes.clone();
+    let fs = materialize_volume_roots(policy.clone(), &volumes, &read_volumes)?;
     let roots = if full_disk_write {
         Vec::new()
     } else {
@@ -242,7 +246,7 @@ pub(super) fn build_request(
         ..Default::default()
     };
     if proxied {
-        // PSEC host loopback is bidirectional. This shape is supported only
+        // PSEC host loopback can be bidirectional. This shape is supported only
         // when the caller already allows local clients and servers. Keep
         // private-network ingress denied and allow no direct DNS bypass.
         egress.allow.push(NetworkRule {
@@ -274,7 +278,7 @@ pub(super) fn build_request(
             .to_str()
             .ok_or(PolicyError::NonUnicodeCommandCwd)?
             .to_owned(),
-        env,
+        env: (!env.is_empty()).then_some(env),
         policy: ContainerPolicy {
             capabilities: vec!["registryRead".to_owned()],
             readwrite_paths: unicode_paths(write)?,
@@ -283,12 +287,6 @@ pub(super) fn build_request(
             fallback: FallbackPolicy {
                 allow_dacl_mutation: false,
             },
-            default_network_policy: if egress_default == NetworkAction::Allow {
-                NetworkPolicy::Allow
-            } else {
-                NetworkPolicy::Block
-            },
-            allow_local_network: ingress_default == NetworkAction::Allow,
             network_egress: Some(egress),
             network_ingress: Some(NetworkIngressPolicy {
                 default: ingress_default,
@@ -342,22 +340,30 @@ fn prune_unavailable_volume_roots(paths: &mut NativePaths, volume_roots: &HashSe
     });
 }
 
-// Bind :root to every executor volume before canonical precedence and carveout
-// resolution. This is purely lexical; native volume enumeration happens later.
+// Bind :root before canonical precedence and carveout resolution. Only implicit
+// reads use the filtered volumes; writes and denies retain every executor volume.
 pub(super) fn materialize_volume_roots(
     mut fs: FileSystemSandboxPolicy,
     volume_roots: &[PathUri],
+    implicit_read_roots: &[PathUri],
 ) -> Result<FileSystemSandboxPolicy, PolicyError> {
     let mut entries = Vec::new();
     for entry in fs.entries {
         match &entry.path {
             FileSystemPath::Special {
                 value: FileSystemSpecialPath::Root,
-            } => entries.extend(volume_roots.iter().map(|path| {
-                let mut entry = entry.clone();
-                entry.path = path.clone().into();
-                entry
-            })),
+            } => {
+                let roots = if entry.access == FileSystemAccessMode::Read {
+                    implicit_read_roots
+                } else {
+                    volume_roots
+                };
+                entries.extend(roots.iter().map(|path| {
+                    let mut entry = entry.clone();
+                    entry.path = path.clone().into();
+                    entry
+                }));
+            }
             FileSystemPath::Special {
                 value:
                     FileSystemSpecialPath::ProjectRoots { .. }

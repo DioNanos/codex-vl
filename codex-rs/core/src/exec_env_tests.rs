@@ -326,3 +326,36 @@ fn test_inherit_none() {
     expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     assert_eq!(result, expected);
 }
+
+/// Sentinel through the shared production body. The Android target scrubs, the
+/// host target does not, and the test never scrubs the result afterwards: the
+/// composition and the finalizer both live inside `create_env_for_target`.
+#[test]
+fn sentinel_shell_exec_env_drops_launcher_metadata_for_android() {
+    let mut set = HashMap::new();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        set.insert((*name).to_string(), "launcher-value".to_string());
+    }
+    set.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+    let policy = ShellEnvironmentPolicy {
+        inherit: ShellEnvironmentPolicyInherit::None,
+        r#set: set,
+        ..Default::default()
+    };
+
+    let android = create_env_for_target(&policy, None, "android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(!android.contains_key(*name), "{name} leaked");
+    }
+    assert_eq!(
+        android.get("TOOL_KEEP_ME").map(String::as_str),
+        Some("kept")
+    );
+
+    let host = create_env_for_target(&policy, None, "linux");
+    assert!(
+        host.contains_key("CODEX_SELF_EXE"),
+        "the host target must not scrub"
+    );
+    assert_eq!(host.get("TOOL_KEEP_ME").map(String::as_str), Some("kept"));
+}

@@ -165,6 +165,7 @@ pub struct Client {
     chatgpt_account_id: Option<String>,
     chatgpt_account_is_fedramp: bool,
     path_style: PathStyle,
+    config_server_base_url: Option<String>,
 }
 
 impl fmt::Debug for Client {
@@ -205,6 +206,22 @@ impl Client {
         Self::with_http(base_url.into(), http)
     }
 
+    pub fn for_config_endpoint(
+        base_url: impl Into<String>,
+        http_client_factory: HttpClientFactory,
+    ) -> Self {
+        let base_url = base_url.into();
+        let mut client = Self::with_http(
+            base_url.clone(),
+            RouteAwareClientPool::new_without_redirects_or_request_logging(
+                http_client_factory,
+                ClientRouteClass::Api,
+            ),
+        );
+        client.config_server_base_url = Some(base_url);
+        client
+    }
+
     fn with_http(mut base_url: String, http: RouteAwareClientPool) -> Self {
         // Normalize common ChatGPT hostnames to include /backend-api so we hit the WHAM paths.
         // Also trim trailing slashes for consistent URL building.
@@ -226,6 +243,7 @@ impl Client {
             chatgpt_account_id: None,
             chatgpt_account_is_fedramp: false,
             path_style,
+            config_server_base_url: None,
         }
     }
 
@@ -242,6 +260,12 @@ impl Client {
     pub fn with_auth_provider(mut self, auth: SharedAuthProvider) -> Self {
         self.auth_provider = auth;
         self
+    }
+
+    pub fn with_bearer_token(self, token: String) -> Self {
+        self.with_auth_provider(std::sync::Arc::new(
+            codex_model_provider::BearerAuthProvider::new(token),
+        ))
     }
 
     pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
@@ -266,14 +290,14 @@ impl Client {
         self
     }
 
-    fn headers(&self) -> HeaderMap {
+    fn headers(&self) -> Result<HeaderMap> {
         let mut h = HeaderMap::new();
         if let Some(ua) = &self.user_agent {
             h.insert(USER_AGENT, ua.clone());
         } else {
             h.insert(USER_AGENT, HeaderValue::from_static("codex-cli"));
         }
-        self.auth_provider.add_auth_headers(&mut h);
+        self.auth_provider.add_auth_headers(&mut h)?;
         if let Some(acc) = &self.chatgpt_account_id
             && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
             && let Ok(hv) = HeaderValue::from_str(acc)
@@ -285,7 +309,7 @@ impl Client {
         {
             h.insert(name, HeaderValue::from_static("true"));
         }
-        h
+        Ok(h)
     }
 
     fn request(&self, method: Method, url: &str) -> RequestBuilder {
@@ -344,7 +368,7 @@ impl Client {
         &self,
         url: &str,
     ) -> std::result::Result<(String, String), RequestError> {
-        let request = self.request(Method::GET, url).headers(self.headers());
+        let request = self.request(Method::GET, url).headers(self.headers()?);
         if !self.http.allows_system_proxy_fallback() {
             return self.exec_request_detailed(request, "GET", url).await;
         }
@@ -371,7 +395,7 @@ impl Client {
             .http
             .clone()
             .with_outbound_proxy_policy(OutboundProxyPolicy::RespectSystemProxy);
-        let request = http.get(url).headers(self.headers());
+        let request = http.get(url).headers(self.headers()?);
         self.exec_request_detailed(request, "GET", url).await
     }
 
@@ -411,7 +435,7 @@ impl Client {
 
     pub async fn get_token_usage_profile(&self) -> Result<TokenUsageProfile> {
         let url = self.token_usage_profile_url();
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json(&url, &ct, &body)
     }
@@ -430,7 +454,7 @@ impl Client {
         let url = self.send_add_credits_nudge_email_url();
         let req = self
             .request(Method::POST, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
             .json(&SendAddCreditsNudgeEmailRequest { credit_type });
         self.exec_request_detailed(req, "POST", &url).await?;
@@ -445,7 +469,7 @@ impl Client {
         cursor: Option<&str>,
     ) -> Result<PaginatedListTaskListItem> {
         let url = self.list_tasks_url(limit, task_filter, environment_id, cursor)?;
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json::<PaginatedListTaskListItem>(&url, &ct, &body)
     }
@@ -497,7 +521,7 @@ impl Client {
             PathStyle::CodexApi => format!("{}/api/codex/tasks/{}", self.base_url, task_id),
             PathStyle::ChatGptApi => format!("{}/wham/tasks/{}", self.base_url, task_id),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         let parsed: CodeTaskDetailsResponse = self.decode_json(&url, &ct, &body)?;
         Ok((parsed, body, ct))
@@ -518,15 +542,14 @@ impl Client {
                 self.base_url, task_id, turn_id
             ),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json::<TurnAttemptsSiblingTurnsResponse>(&url, &ct, &body)
     }
 
-    /// Fetch the selected cloud-managed config bundle from codex-backend.
-    ///
     /// `GET /api/codex/config/bundle` (Codex API style) or
-    /// `GET /wham/config/bundle` (ChatGPT backend-api style).
+    /// `GET /wham/config/bundle` (ChatGPT backend-api style), or
+    /// `GET /codex/config/bundle` beneath a custom config server's base URL.
     pub async fn get_config_bundle(
         &self,
     ) -> std::result::Result<ConfigBundleResponse, RequestError> {
@@ -538,6 +561,10 @@ impl Client {
 
     /// Returns the normalized discovery endpoint used by this client.
     pub fn config_bundle_url(&self) -> String {
+        if let Some(base_url) = &self.config_server_base_url {
+            let base_url = base_url.strip_suffix('/').unwrap_or(base_url);
+            return format!("{base_url}/codex/config/bundle");
+        }
         match self.path_style {
             PathStyle::CodexApi => format!("{}/api/codex/config/bundle", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/config/bundle", self.base_url),
@@ -554,7 +581,7 @@ impl Client {
         let url = self.user_settings_url();
         let req = self
             .request(Method::GET, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(
                 CACHE_CONTROL,
                 HeaderValue::from_static("no-cache, no-store"),
@@ -570,7 +597,7 @@ impl Client {
         let url = self.workspace_messages_url();
         let req = self
             .request(Method::GET, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         let (body, ct) = self.exec_request_detailed(req, "GET", &url).await?;
         self.decode_json::<CodexWorkspaceMessagesResponse>(&url, &ct, &body)
@@ -586,7 +613,7 @@ impl Client {
         };
         let req = self
             .request(Method::POST, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
             .json(&request_body);
         let (body, ct) = self.exec_request(req, "POST", &url).await?;
@@ -803,6 +830,8 @@ impl Client {
             crate::types::PlanType::Edu | crate::types::PlanType::Education => AccountPlanType::Edu,
             crate::types::PlanType::EduPlus => AccountPlanType::EduPlus,
             crate::types::PlanType::EduPro => AccountPlanType::EduPro,
+            crate::types::PlanType::Sci => AccountPlanType::Sci,
+            crate::types::PlanType::SciPlus => AccountPlanType::SciPlus,
             crate::types::PlanType::Guest
             | crate::types::PlanType::FreeWorkspace
             | crate::types::PlanType::Quorum
@@ -1253,7 +1282,7 @@ mod tests {
             &auth,
             HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
         );
-        let headers = client.headers();
+        let headers = client.headers().unwrap();
 
         assert_eq!(
             [
@@ -1280,6 +1309,7 @@ mod tests {
             chatgpt_account_id: None,
             chatgpt_account_is_fedramp: false,
             path_style,
+            config_server_base_url: None,
         }
     }
 }

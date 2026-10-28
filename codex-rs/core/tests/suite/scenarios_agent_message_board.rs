@@ -1,9 +1,9 @@
 //! Exercises board tools through the runtime, including resume and active-only notices.
 
 use anyhow::Context;
-use codex_agent_message_board_extension::PostMetadata;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
+use codex_message_board::PostMetadata;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -388,10 +388,15 @@ async fn board_is_shared_with_children_and_skips_idle_notices(
     Ok(())
 }
 
-#[test_case::test_case(false; "before_final")]
-#[test_case::test_case(true; "after_final")]
+#[test_case::test_case(false, "Finished."; "before_final")]
+#[test_case::test_case(true, "Finished."; "after_final")]
+#[test_case::test_case(false, ""; "before_empty_final")]
+#[test_case::test_case(true, ""; "after_empty_final")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> anyhow::Result<()> {
+async fn board_notifications_do_not_reopen_a_final_answer(
+    after_final: bool,
+    final_answer: &str,
+) -> anyhow::Result<()> {
     let response = |body| vec![StreamingSseChunk { gate: None, body }];
     let (release_final, final_gate) = oneshot::channel();
     let (release_child, child_gate) = oneshot::channel();
@@ -400,7 +405,7 @@ async fn board_notifications_do_not_reopen_a_final_answer(after_final: bool) -> 
         event
     };
     let started = final_phase(ev_message_item_added("root-final", ""));
-    let finished = final_phase(ev_assistant_message("root-final", "Finished."));
+    let finished = final_phase(ev_assistant_message("root-final", final_answer));
     let (before_gate, after_gate) = if after_final {
         // Starting an empty item confirms the answer was processed without adding mailbox work.
         (
@@ -934,11 +939,11 @@ async fn board_clock_failure_does_not_fall_back_or_create_a_channel() -> anyhow:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_instances_share_board_with_fixed_access() -> anyhow::Result<()> {
-    use codex_agent_message_board_extension::LocalBoard;
     use codex_extension_api::ExtensionRegistryBuilder;
     use codex_extension_api::IsolatedSessionExtensions;
     use codex_extension_api::SessionIsolation;
     use codex_extension_api::ToolName;
+    use codex_message_board::LocalBoard;
     use codex_protocol::protocol::InternalSessionSource;
     use codex_protocol::protocol::SessionSource;
     use codex_state::SqliteConfig;

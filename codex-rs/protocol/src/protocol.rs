@@ -65,7 +65,9 @@ use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
 use crate::turn_input::TurnStartOptions;
+use codex_extension_items::image_generation::GeneratedImageRef;
 use codex_extension_items::image_generation::ImageGenerationFailure;
+use codex_extension_items::image_generation::ImageGenerationInputImage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
@@ -209,6 +211,9 @@ pub struct ConversationStartParams {
     pub realtime_end_instructions: Option<String>,
     pub prompt: Option<Option<String>>,
     pub realtime_session_id: Option<String>,
+    /// Client-generated identifier for the product voice session. This is distinct from the
+    /// Realtime API session identifier.
+    pub voice_session_id: Option<String>,
     pub transport: Option<ConversationStartTransport>,
     /// Overrides the configured realtime protocol version for this session only.
     pub version: Option<RealtimeConversationVersion>,
@@ -1685,6 +1690,12 @@ pub enum EventMsg {
     RawResponseItem(RawResponseItemEvent),
     RawResponseCompleted(RawResponseCompletedEvent),
 
+    /// In-process delivery from a private reviewer through its parent's subscription.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    PrivateSessionEvent(PrivateSessionEvent),
+
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
     HookStarted(HookStartedEvent),
@@ -1735,6 +1746,8 @@ pub enum HookEventName {
     SubagentStop,
     Stop,
     Interrupt,
+    PreModelRequest,
+    PostModelRequest,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -2004,6 +2017,7 @@ pub enum CodexErrorInfo {
     RateLimitExceeded,
     FlexUnavailable,
     ServerOverloaded,
+    ModelNotFound,
     CyberPolicy,
     BioPolicy,
     MisalignmentPolicyViolation,
@@ -2049,6 +2063,7 @@ impl CodexErrorInfo {
             | Self::RateLimitExceeded
             | Self::FlexUnavailable
             | Self::ServerOverloaded
+            | Self::ModelNotFound
             | Self::CyberPolicy
             | Self::BioPolicy
             | Self::MisalignmentPolicyViolation
@@ -2070,6 +2085,20 @@ impl CodexErrorInfo {
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseItemEvent {
     pub item: ResponseItem,
+}
+
+/// Observer events that a private session forwards without modifying its parent's history.
+#[derive(Debug, Clone)]
+pub struct PrivateSessionEvent {
+    pub thread_id: ThreadId,
+    pub event: PrivateSessionEventPayload,
+}
+
+/// Recorded state and cancellation needed by observers awaiting response acceptance.
+#[derive(Debug, Clone)]
+pub enum PrivateSessionEventPayload {
+    RecordedItem(RawResponseItemEvent),
+    TurnAborted(TurnAbortedEvent),
 }
 
 /// Exact usage and metadata reported by one upstream Responses API completion.
@@ -2993,7 +3022,8 @@ pub struct ImageGenerationEndEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub revised_prompt: Option<String>,
-    pub result: String,
+    #[serde(flatten)]
+    pub image: GeneratedImageRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub transparent_background: Option<bool>,
@@ -3003,6 +3033,9 @@ pub struct ImageGenerationEndEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub saved_path: Option<AbsolutePathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<_>", optional)]
+    pub input_images: Vec<ImageGenerationInputImage>,
 }
 
 // Conversation kept for backward compatibility.
@@ -3326,6 +3359,9 @@ pub struct SessionMeta {
     pub id: ThreadId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub forked_from_id: Option<ThreadId>,
+    /// Marks a persisted fork as attached to `forked_from_id`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attached_thread: bool,
     /// Exclusive ordinal inherited from the logical fork parent, independent of `history_base`.
     /// Revert may replace the physical history base while retaining this fork boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3400,6 +3436,7 @@ impl Default for SessionMeta {
             session_id: id.into(),
             id,
             forked_from_id: None,
+            attached_thread: false,
             forked_from_ordinal_exclusive: None,
             parent_thread_id: None,
             timestamp: String::new(),
@@ -5683,7 +5720,12 @@ mod tests {
                 assert_eq!(event.call_id, "ig-1");
                 assert_eq!(event.status, "completed");
                 assert_eq!(event.revised_prompt.as_deref(), Some("A tiny blue square"));
-                assert_eq!(event.result, "Zm9v");
+                assert_eq!(
+                    event.image,
+                    GeneratedImageRef::Inline {
+                        result: "Zm9v".to_string(),
+                    }
+                );
                 assert_eq!(
                     event.saved_path.as_ref().map(AbsolutePathBuf::as_path),
                     Some(test_path_buf("/tmp/ig-1.png").as_path())

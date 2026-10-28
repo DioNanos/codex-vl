@@ -1,5 +1,6 @@
 use super::common::*;
 use crate::vivling::model::VivlingGeneVector;
+use crate::vivling::runtime::render::compose_line_layout_row;
 
 #[test]
 fn active_footer_pose_changes_while_task_running() {
@@ -174,7 +175,13 @@ fn line_layout_uses_a_single_row() {
     vivling.configure_runtime(FrameRequester::test_dummy(), true);
     vivling.set_task_running(true);
     assert_eq!(vivling.desired_height(80), 1);
-    // Below the strip minimum width the strip stays hidden.
+    // Line layout threshold is exactly 5 columns:
+    assert_eq!(vivling.desired_height(5), 1);
+    assert_eq!(vivling.desired_height(4), 0);
+
+    // Full layout threshold remains 12 columns:
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Full;
+    assert_eq!(vivling.desired_height(12), 3);
     assert_eq!(vivling.desired_height(11), 0);
 }
 
@@ -221,4 +228,280 @@ fn line_layout_schedules_no_frame_without_animations() {
     vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
     vivling.configure_runtime(FrameRequester::test_dummy(), false);
     assert_eq!(vivling.schedule_animation_wake(Instant::now()), None);
+}
+
+#[test]
+fn line_layout_renders_at_all_canonical_widths() {
+    for width in [4, 5, 6, 7, 11, 12, 20, 50, 120] {
+        let mut vivling = Vivling::unavailable();
+        vivling.state = Some(seeded_state());
+        vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+        vivling.configure_runtime(FrameRequester::test_dummy(), true);
+        vivling.set_task_running(true);
+
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        vivling.render(area, &mut buf);
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+
+        if width < 5 {
+            assert_eq!(
+                rendered,
+                " ".repeat(width as usize),
+                "width {width} must not draw"
+            );
+            assert_eq!(vivling.desired_height(width), 0);
+        } else {
+            assert_eq!(vivling.desired_height(width), 1);
+            // The 5-column face always stays at the start:
+            assert!(
+                rendered.starts_with(".-<-.") || rendered.starts_with(".-<-'"),
+                "width {width} must start with face: {rendered:?}"
+            );
+            // Under 8 columns the dot is omitted; at 8 columns or wider the dot is present:
+            if width >= 8 {
+                assert!(
+                    rendered.contains('●') || rendered.contains('·'),
+                    "width {width} must have dot: {rendered:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn full_layout_threshold_at_11_and_12() {
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Full;
+    vivling.configure_runtime(FrameRequester::test_dummy(), true);
+    vivling.set_task_running(true);
+
+    assert_eq!(vivling.desired_height(11), 0);
+    assert_eq!(vivling.desired_height(12), 3);
+
+    let mut buf11 = Buffer::empty(Rect::new(0, 0, 11, 3));
+    vivling.render(Rect::new(0, 0, 11, 3), &mut buf11);
+    let content11: String = buf11
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert_eq!(content11, " ".repeat(33));
+
+    let mut buf12 = Buffer::empty(Rect::new(0, 0, 12, 3));
+    vivling.render(Rect::new(0, 0, 12, 3), &mut buf12);
+    let content12: String = buf12
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert_ne!(content12, " ".repeat(36));
+}
+
+#[test]
+fn line_layout_face_cells_and_color_containment() {
+    // 1. Ambient policy test: inspect the real color policy applied by the product
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+    vivling.configure_runtime(FrameRequester::test_dummy(), true);
+    vivling.set_task_running(true);
+
+    let area = Rect::new(0, 0, 60, 1);
+    let mut buf = Buffer::empty(area);
+    vivling.render(area, &mut buf);
+
+    let expected_face_style = if crate::terminal_palette::effective_stdout_color_level()
+        != crate::terminal_palette::StdoutColorLevel::Unknown
+    {
+        crate::vl::crt::Palette::codex().face
+    } else {
+        ratatui::style::Style::default()
+    };
+
+    // First 5 cells must match the expected policy face style:
+    for x in 0..5 {
+        let cell = buf.cell((x, 0)).expect("cell in bounds");
+        if let Some(expected_fg) = expected_face_style.fg {
+            assert_eq!(
+                cell.fg, expected_fg,
+                "face cell at {x} must have expected face color"
+            );
+            assert!(
+                cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                "face cell at {x} must be bold"
+            );
+        } else {
+            assert_eq!(
+                cell.fg,
+                ratatui::style::Color::Reset,
+                "face cell at {x} must be uncolored when color level is unknown"
+            );
+            assert!(
+                !cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                "face cell at {x} must not be bold when uncolored"
+            );
+        }
+    }
+
+    // Cells after the face must NOT be LightYellow face color:
+    let face_palette = crate::vl::crt::Palette::codex().face;
+    for x in 5..60 {
+        let cell = buf.cell((x, 0)).expect("cell in bounds");
+        assert_ne!(
+            Some(cell.fg),
+            face_palette.fg,
+            "non-face cell at {x} must not leak face color"
+        );
+    }
+
+    // 2. Explicit colored terminal injection: test with truecolor enabled
+    crate::terminal_palette::with_test_default_colors(
+        crate::terminal_probe::DefaultColors {
+            fg: (238, 238, 238),
+            bg: (17, 17, 17),
+        },
+        || {
+            let mut vivling = Vivling::unavailable();
+            vivling.state = Some(seeded_state());
+            vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+            vivling.configure_runtime(FrameRequester::test_dummy(), true);
+            vivling.set_task_running(true);
+
+            let area = Rect::new(0, 0, 60, 1);
+            let mut buf = Buffer::empty(area);
+            vivling.render(area, &mut buf);
+
+            // First 5 cells must have LightYellow face color and bold:
+            for x in 0..5 {
+                let cell = buf.cell((x, 0)).expect("cell in bounds");
+                assert_eq!(
+                    Some(cell.fg),
+                    face_palette.fg,
+                    "colored face cell at {x} must have face color"
+                );
+                assert!(
+                    cell.modifier.contains(ratatui::style::Modifier::BOLD),
+                    "colored face cell at {x} must be bold"
+                );
+            }
+
+            // Cells after the face must NOT leak face color:
+            for x in 5..60 {
+                let cell = buf.cell((x, 0)).expect("cell in bounds");
+                assert_ne!(
+                    Some(cell.fg),
+                    face_palette.fg,
+                    "non-face cell at {x} must not leak face color"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn line_layout_wide_and_combining_characters() {
+    let face = ".-o-.";
+    let dot = "●";
+    // CJK characters (each 2 display columns)
+    let row_cjk = compose_line_layout_row(20, face, "観察中", "好奇心", dot);
+    assert!(
+        row_cjk.starts_with(face),
+        "must start with face: {row_cjk:?}"
+    );
+    assert!(row_cjk.ends_with(dot), "must end with dot: {row_cjk:?}");
+    assert!(crate::width::display_width(&row_cjk) <= 20);
+
+    // Combining diacritics (0 display width)
+    let row_combining = compose_line_layout_row(20, face, "re\u{0301}sume\u{0301}", "calm", dot);
+    assert!(
+        row_combining.starts_with(face),
+        "must start with face: {row_combining:?}"
+    );
+    assert!(
+        row_combining.ends_with(dot),
+        "must end with dot: {row_combining:?}"
+    );
+    assert!(crate::width::display_width(&row_combining) <= 20);
+}
+
+#[test]
+fn line_layout_animates_with_injected_time() {
+    let mut vivling = Vivling::unavailable();
+    vivling.state = Some(seeded_state());
+    vivling.ui_layout = crate::vl::crt::VivlingLayout::Line;
+    vivling.configure_runtime(FrameRequester::test_dummy(), true);
+    vivling.set_task_running(true);
+
+    let t0 = Instant::now();
+    vivling.shadow.active_started_at = Some(t0);
+
+    let area = Rect::new(0, 0, 20, 1);
+    let mut buf0 = Buffer::empty(area);
+    vivling.render_line_layout(area, &mut buf0, vivling.visible_state().unwrap(), t0);
+    let s0: String = buf0
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(s0.starts_with(".-<-."), "t0 must be frame A: {s0:?}");
+
+    let t1 = t0 + std::time::Duration::from_secs(1);
+    let mut buf1 = Buffer::empty(area);
+    vivling.render_line_layout(area, &mut buf1, vivling.visible_state().unwrap(), t1);
+    let s1: String = buf1
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(s1.starts_with(".-<-'"), "t1 must be frame B: {s1:?}");
+
+    let t2 = t0 + std::time::Duration::from_secs(2);
+    let mut buf2 = Buffer::empty(area);
+    vivling.render_line_layout(area, &mut buf2, vivling.visible_state().unwrap(), t2);
+    let s2: String = buf2
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
+    assert!(s2.starts_with(".-<-."), "t2 must wrap to frame A: {s2:?}");
+}
+
+#[test]
+fn vivling_layout_config_roundtrip() {
+    let temp = TempDir::new().expect("tempdir");
+    let home = temp.path();
+
+    // Default is Full
+    assert_eq!(
+        crate::vl::crt::VivlingLayout::load_from_codex_home(home),
+        crate::vl::crt::VivlingLayout::Full
+    );
+
+    // Save Line
+    crate::vl::crt::VivlingLayout::save_layout_to_codex_home(
+        home,
+        crate::vl::crt::VivlingLayout::Line,
+    )
+    .expect("save line");
+    assert_eq!(
+        crate::vl::crt::VivlingLayout::load_from_codex_home(home),
+        crate::vl::crt::VivlingLayout::Line
+    );
+
+    // Save Full
+    crate::vl::crt::VivlingLayout::save_layout_to_codex_home(
+        home,
+        crate::vl::crt::VivlingLayout::Full,
+    )
+    .expect("save full");
+    assert_eq!(
+        crate::vl::crt::VivlingLayout::load_from_codex_home(home),
+        crate::vl::crt::VivlingLayout::Full
+    );
 }

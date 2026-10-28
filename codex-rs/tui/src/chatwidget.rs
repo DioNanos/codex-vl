@@ -316,6 +316,7 @@ mod interaction;
 pub(crate) mod loop_jobs;
 pub(crate) use interaction::KeyEventAction;
 mod skills;
+mod slash_command_args;
 mod slash_dispatch;
 mod vl_ext;
 mod vl_slash;
@@ -331,9 +332,11 @@ use self::plugins::PluginListFetchState;
 use self::plugins::PluginsCacheState;
 mod plan_implementation;
 use self::plan_implementation::PLAN_IMPLEMENTATION_TITLE;
+mod model_command;
 mod model_popup_state;
 mod model_popups;
 mod notifications;
+pub(crate) mod quick_dials;
 mod session_model_selection;
 use self::notifications::Notification;
 pub(crate) use self::session_model_selection::AstraModelPickerAction;
@@ -396,10 +399,11 @@ use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
 mod status_controls;
+mod status_surface_commands;
 mod status_surfaces;
+use self::status_surface_commands::StatusSurfaceOverrides;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
-mod thread_title_status;
 mod thread_usage;
 pub(crate) use self::thread_usage::ThreadUsageOutcome;
 mod tool_lifecycle;
@@ -549,8 +553,12 @@ pub(crate) struct ChatWidget {
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
     model_popup_request_id: Option<uuid::Uuid>,
+    /// An app event has been queued to open the permissions picker, but no view exists yet.
+    pub(crate) permission_popup_pending: bool,
     permission_popup_request_id: Option<uuid::Uuid>,
     permission_discovery: Option<crate::permission_discovery::PermissionDiscovery>,
+    inline_permission_profile_selection:
+        Option<permission_discovery::InlinePermissionProfileSelection>,
     worktree_popup_request_id: Option<uuid::Uuid>,
     permission_profiles_menu_opened: bool,
     model_popup_model_ids: Vec<String>,
@@ -712,6 +720,10 @@ pub(crate) struct ChatWidget {
     safety_buffering_source: UserMessageSource,
     /// Main chat-surface bindings resolved from `tui.keymap.chat`.
     chat_keymap: ChatKeymap,
+    /// Whether the preset submenu owns the next key.
+    quick_dial_menu: bool,
+    /// Ignore a held key after it dismisses the preset submenu.
+    quick_dial_menu_key_guard: Option<crate::activation_key_guard::ActivationKeyGuard>,
     permission_shortcut_pending: bool,
     /// Keybinding to show for popping the most-recently queued message back
     /// into the composer. This may differ from the first configured binding
@@ -758,6 +770,8 @@ pub(crate) struct ChatWidget {
     // On cancel or persist-failure the inner value is restored to config;
     // on confirm the outer is set to `None` to end the session.
     terminal_title_setup_original_items: Option<Option<Vec<String>>>,
+    // Explicit per-thread layout choices made through `/title` and `/statusline`.
+    status_surface_overrides: StatusSurfaceOverrides,
     // Baseline instant used to animate spinner-prefixed title statuses.
     terminal_title_animation_origin: Instant,
     // The foreground loop refreshes the title at this deadline without drawing a frame.
@@ -1039,7 +1053,11 @@ impl ChatWidget {
             self.thread_id
                 .is_some_and(|thread_id| thread_id.to_string() == request_thread_id)
         }) && self.interrupts.remove_resolved_prompt(request);
+        let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
         let removed_visible = self.bottom_pane.dismiss_app_server_request(request);
+        if removed_visible && had_modal_or_popup && self.bottom_pane.no_modal_or_popup_active() {
+            self.on_modal_or_popup_closed();
+        }
         if removed_deferred || removed_visible {
             self.request_redraw();
         }
@@ -2040,6 +2058,10 @@ impl ChatWidget {
             .as_ref()
             .map(|ti| ti.total_token_usage.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn last_turn_id(&self) -> Option<&str> {
+        self.turn_lifecycle.last_turn_id.as_deref()
     }
 
     pub(crate) fn thread_id(&self) -> Option<ThreadId> {

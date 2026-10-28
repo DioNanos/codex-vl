@@ -175,22 +175,6 @@ function getUpdatedPath(newDirs) {
   ].join(path.delimiter);
 }
 
-function sanitizeAndroidLdLibraryPath(binDir) {
-  const termuxPrefix = process.env.PREFIX || "/data/data/com.termux/files/usr";
-  const blocked = new Set([
-    `${termuxPrefix}/lib`,
-    `${termuxPrefix}/libexec`,
-    "/data/data/com.termux/files/usr/lib",
-    "/data/data/com.termux/files/usr/libexec",
-  ]);
-
-  const extraPaths = (process.env.LD_LIBRARY_PATH || "")
-    .split(":")
-    .filter((entry) => entry && !blocked.has(entry));
-
-  return [binDir, ...extraPaths].join(":");
-}
-
 function safeRealpath(targetPath) {
   try {
     return realpathSync(targetPath);
@@ -216,8 +200,11 @@ const env = {
 };
 
 if (platform === "android") {
+  // The packaged ELF resolves its own shared libraries through its
+  // DT_RUNPATH ($ORIGIN), so the launcher must not rewrite
+  // LD_LIBRARY_PATH: the native binary receives the caller's value
+  // verbatim, including when it is unset or empty.
   env.CODEX_SELF_EXE = binaryPath;
-  env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
 }
 
 const resolvedBinaryPath = safeRealpath(binaryPath) ?? binaryPath;

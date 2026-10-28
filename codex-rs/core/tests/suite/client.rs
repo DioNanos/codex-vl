@@ -673,7 +673,7 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -686,7 +686,7 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),
@@ -871,14 +871,30 @@ fn write_auth_json(
     fake_jwt
 }
 
-struct ProviderAuthCommandFixture {
+pub(super) struct ProviderAuthCommandFixture {
     tempdir: TempDir,
     command: String,
     args: Vec<String>,
 }
 
 impl ProviderAuthCommandFixture {
-    fn new(tokens: &[&str]) -> std::io::Result<Self> {
+    /// Each thread can resolve credentials independently, including at the same time.
+    pub(super) fn fixed_token(token: &str) -> std::io::Result<Self> {
+        let tempdir = tempfile::tempdir()?;
+        std::fs::write(tempdir.path().join("token.txt"), token)?;
+        let (command, args): (&str, &[&str]) = if cfg!(windows) {
+            ("cmd.exe", &["/D", "/C", "type", "token.txt"])
+        } else {
+            ("cat", &["token.txt"])
+        };
+        Ok(Self {
+            tempdir,
+            command: command.to_owned(),
+            args: args.iter().copied().map(str::to_owned).collect(),
+        })
+    }
+
+    pub(super) fn new(tokens: &[&str]) -> std::io::Result<Self> {
         let tempdir = tempfile::tempdir()?;
         let tokens_file = tempdir.path().join("tokens.txt");
         let mut token_file_contents = String::new();
@@ -942,7 +958,7 @@ move /y tokens.next tokens.txt >nul
         })
     }
 
-    fn auth(&self) -> ModelProviderAuthInfo {
+    pub(super) fn auth(&self) -> ModelProviderAuthInfo {
         ModelProviderAuthInfo {
             command: self.command.clone(),
             args: self.args.iter().cloned().map(Into::into).collect(),
@@ -1187,7 +1203,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -1200,7 +1216,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),
@@ -1331,7 +1347,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -1344,7 +1360,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),

@@ -60,6 +60,7 @@ codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-external-agent-migration = { workspace = true }
 codex-features = { workspace = true }
+codex-multi-env-copy-file = { workspace = true }
 codex-goal-extension = { workspace = true }
 codex-git-attribution = { workspace = true }
 codex-guardian-v2 = { workspace = true }
@@ -140,6 +141,7 @@ libc = { workspace = true }
 codex-windows-sandbox = { workspace = true }
 
 [dev-dependencies]
+zip = { workspace = true }
 codex-uds = { workspace = true }
 app_test_support = { workspace = true }
 axum = { workspace = true, default-features = false, features = [
@@ -154,6 +156,7 @@ flate2 = { workspace = true }
 hmac = { workspace = true }
 libc = { workspace = true }
 http = { workspace = true }
+insta = { workspace = true }
 keyring = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

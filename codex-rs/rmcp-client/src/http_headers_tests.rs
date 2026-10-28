@@ -1,5 +1,48 @@
 use super::*;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::Path;
+
+fn valued_names(command: &Command) -> Vec<OsString> {
+    command
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_some())
+        .map(|(name, _)| name.to_os_string())
+        .collect()
+}
+
+/// The helper body applies the env map and then finalizes. Android drops the
+/// six names; the host keeps them. The test does not finalize afterwards.
+#[test]
+fn sentinel_header_helper_drops_launcher_metadata_for_android() {
+    let mut env = HashMap::new();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        env.insert(OsString::from(*name), OsString::from("launcher-value"));
+    }
+    env.insert(OsString::from("TOOL_KEEP_ME"), OsString::from("kept"));
+
+    let android = helper_command_for_target("true", Path::new("."), env.clone(), "android");
+    let android_names = valued_names(&android);
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(
+            !android_names.contains(&OsString::from(*name)),
+            "{name} leaked"
+        );
+    }
+    assert!(android_names.contains(&OsString::from("TOOL_KEEP_ME")));
+
+    let host = helper_command_for_target("true", Path::new("."), env, "linux");
+    let host_names = valued_names(&host);
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(
+            host_names.contains(&OsString::from(*name)),
+            "{name} must stay on the host"
+        );
+    }
+    assert!(host_names.contains(&OsString::from("TOOL_KEEP_ME")));
+}
 
 #[test]
 fn helper_output_errors_do_not_echo_secrets() {

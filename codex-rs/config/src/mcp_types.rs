@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 
 use crate::McpEmaRegistration;
+use crate::McpEmaTokenEndpointAuthMethod;
 use crate::RequirementSource;
 
 /// Effective MCP environment id when config omits `environment_id`.
@@ -61,13 +62,16 @@ pub enum McpServerDisabledReason {
     Unknown,
     /// The server was disabled by config requirements from the given source.
     Requirements { source: RequirementSource },
+    /// An explicit disable is also denied by requirements.
+    ExplicitAndRequirements { source: RequirementSource },
 }
 
 impl fmt::Display for McpServerDisabledReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             McpServerDisabledReason::Unknown => write!(f, "unknown"),
-            McpServerDisabledReason::Requirements { source } => {
+            McpServerDisabledReason::Requirements { source }
+            | McpServerDisabledReason::ExplicitAndRequirements { source } => {
                 write!(f, "requirements ({source})")
             }
         }
@@ -163,6 +167,11 @@ pub struct McpServerOAuthConfig {
     /// OAuth client secret used for token exchange with a pre-registered client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<RedactedString>,
+
+    /// Registered EMA client authentication method. Defaults to client_secret_basic
+    /// when a secret is configured; requires a client secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_endpoint_auth_method: Option<McpEmaTokenEndpointAuthMethod>,
 
     /// Registered callback URL associated with this OAuth client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +314,21 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
+    /// Disables this registration without losing an existing explicit disable.
+    pub fn disable_by_requirements(&mut self, source: RequirementSource) {
+        let explicitly_disabled = match self.disabled_reason {
+            Some(McpServerDisabledReason::Requirements { .. }) => false,
+            Some(McpServerDisabledReason::ExplicitAndRequirements { .. }) => true,
+            Some(McpServerDisabledReason::Unknown) | None => !self.enabled,
+        };
+        self.enabled = false;
+        self.disabled_reason = Some(if explicitly_disabled {
+            McpServerDisabledReason::ExplicitAndRequirements { source }
+        } else {
+            McpServerDisabledReason::Requirements { source }
+        });
+    }
+
     pub fn is_local_environment(&self) -> bool {
         self.environment_id == DEFAULT_MCP_SERVER_ENVIRONMENT_ID
     }
@@ -558,6 +582,20 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
                 .is_none_or(|client_id| client_id.trim().is_empty())
             {
                 return Err("oauth.client_secret requires oauth.client_id".to_string());
+            }
+        }
+        if let Some(oauth) = &oauth
+            && oauth.token_endpoint_auth_method.is_some()
+        {
+            if !matches!(auth, McpServerAuth::EmaAuth) {
+                return Err(
+                    "oauth.token_endpoint_auth_method requires auth = \"ema_auth\"".to_string(),
+                );
+            }
+            if oauth.client_secret.is_none() {
+                return Err(
+                    "oauth.token_endpoint_auth_method requires oauth.client_secret".to_string(),
+                );
             }
         }
         if !matches!(auth, McpServerAuth::EmaAuth)

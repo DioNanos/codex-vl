@@ -225,11 +225,13 @@ impl ChatComposer {
     }
 
     pub fn set_daybreak_command_description(&mut self, description: Option<&'static str>) {
-        self.popups.daybreak_command_description = description;
+        self.update_slash_command_catalog(|composer| {
+            composer.popups.daybreak_command_description = description
+        });
     }
 
     pub fn set_worktrees_enabled(&mut self, enabled: bool) {
-        self.worktrees_enabled = enabled;
+        self.update_slash_command_catalog(|composer| composer.worktrees_enabled = enabled);
     }
 
     /// Handle key event when the slash-command popup is visible.
@@ -751,13 +753,13 @@ mod tests {
     #[test]
     fn slash_completion_does_not_preserve_existing_draft_tail_for_other_commands() {
         let mut composer = composer_with_draft_tail(
-            "/mo",
+            "/sta",
             "preserve this draft only for opted-in slash commands",
         );
 
         assert_eq!(press(&mut composer, KeyCode::Tab), InputResult::None);
-        assert_eq!(composer.draft.textarea.text(), "/model ");
-        assert_eq!(composer.draft.textarea.cursor(), "/model ".len());
+        assert_eq!(composer.draft.textarea.text(), "/status ");
+        assert_eq!(composer.draft.textarea.cursor(), "/status ".len());
     }
 
     #[test]

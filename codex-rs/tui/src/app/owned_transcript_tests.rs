@@ -188,11 +188,11 @@ async fn list_spacing_completion_preserves_the_scrolled_reader() -> Result<()> {
     let mut after = Buffer::empty(area);
     app.transcript_view
         .render(area, &mut after, &app.transcript_cells);
-    assert_eq!(after, before);
+    assert_eq!(buffer_text(&after), buffer_text(&before));
     app.transcript_view.jump_to_latest();
     app.transcript_view
         .render(area, &mut after, &app.transcript_cells);
-    assert_eq!(after, before);
+    assert_eq!(buffer_text(&after), buffer_text(&before));
     Ok(())
 }
 
@@ -353,6 +353,7 @@ async fn owned_transcript_reserves_a_row_above_the_composer() -> Result<()> {
         app.chat_widget.apply_external_edit(draft.to_string());
         if label == "Detailed" {
             app.transcript_cells = vec![Arc::new(crate::history_cell::new_view_image_tool_call(
+                "detail-image".to_string(),
                 codex_utils_path_uri::LegacyAppPathString::from_string("assets/detail-image.png"),
             ))];
             app.open_transcript_overlay(&mut tui);

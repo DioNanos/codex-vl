@@ -79,7 +79,8 @@ pub const THREAD_SKILLS_TRUNCATED_METRIC: &str = "codex.thread.skills.truncated"
 pub const THREAD_TOOLS_NAMESPACES_TOTAL_METRIC: &str = "codex.thread.tools.namespaces_total";
 pub const THREAD_TOOLS_FRAGMENT_BYTES_METRIC: &str = "codex.thread.tools.fragment_bytes";
 
-/// Finalized tool registrations per sampling request, tagged by exposure and tool_mode.
+/// Finalized tool registrations per sampling request, tagged by exposure, tool_mode,
+/// and effective incremental_tools mode.
 pub const TOOL_REGISTRATIONS_METRIC: &str = "codex.tools.registered";
 pub const TOOL_REGISTRATIONS_METRIC_BUCKETS: &[f64] = &[
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, 500.0, 750.0,
@@ -90,9 +91,15 @@ pub const TOOL_REGISTRATIONS_METRIC_BUCKETS: &[f64] = &[
 pub static THREAD_TOOLS_METRIC_BUCKETS: LazyLock<[f64; 511]> =
     LazyLock::new(|| context_log_buckets(/*max_exponent*/ 15.0));
 
-/// Rendered incremental tool deltas, tagged by action; excludes initial catalogs.
+/// Rendered incremental tool deltas by action and qualified tool; excludes initial catalogs.
 /// schema_changed includes any definition change, such as description edits.
 pub const TOOL_INCREMENTAL_UPDATES_METRIC: &str = "codex.tools.incremental_updates";
+
+/// UTF-8 description bytes on replacement by qualified tool; skips missing descriptions.
+pub const TOOL_SPEC_DESCRIPTION_BYTES_METRIC: &str = "codex.tools.spec_description_bytes";
+/// Logarithmic boundaries up to 1 MiB.
+pub static TOOL_SPEC_DESCRIPTION_BYTES_METRIC_BUCKETS: LazyLock<[f64; 511]> =
+    LazyLock::new(|| context_log_buckets(/*max_exponent*/ 20.0));
 
 pub static THREAD_SKILLS_COUNT_METRIC_BUCKETS: LazyLock<[f64; 513]> =
     LazyLock::new(|| std::array::from_fn(|index| index as f64));

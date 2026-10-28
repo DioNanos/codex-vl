@@ -19,7 +19,13 @@ pub fn main() -> ! {
         std::process::exit(1);
     };
 
-    let error = Command::new(&program).arg0(arg0).args(args).exec();
+    let mut command = Command::new(&program);
+    command.arg0(arg0).args(args);
+    // The helper replaces this process with an external program that inherits
+    // the full environment: drop the launcher-private install metadata before
+    // the exec. No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
+    let error = command.exec();
     eprintln!("failed to exec {program:?}: {error}");
     std::process::exit(1);
 }

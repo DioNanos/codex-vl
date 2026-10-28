@@ -4,6 +4,9 @@
 mod connection_pool;
 mod execution;
 mod response;
+mod telemetry;
+
+pub(super) use telemetry::SampledScore;
 
 use super::request::PreparedRequest;
 use super::score::PendingScore;
@@ -94,8 +97,14 @@ pub struct LunaSamplingRequest {
     pub parent_turn_id: String,
     /// Trusted causal root of the owning turn, absent when unknown or ambiguous.
     pub root_turn_id: Option<String>,
-    /// Snapshot expiry remains active until its response finishes draining.
+    /// Sampling expiry remains active until its response finishes draining.
     pub(super) pending_score: Option<PendingScore>,
+}
+
+/// Admitted retained input and Luna settings consumed together at execution.
+pub(super) struct ConversationSample {
+    pub(super) input: PreparedRequest,
+    pub(super) sampling: LunaSamplingRequest,
 }
 
 /// Failures returned while connecting or sampling the Luna model.
@@ -189,7 +198,7 @@ impl LunaSampler {
                 ResponseItemEnvelope::new(ResponseItem::AdditionalTools {
                     id: None,
                     role: "developer".to_owned(),
-                    tools: Vec::new(),
+                    tools: Arc::from([]),
                 }),
                 ResponseItemEnvelope::new(ResponseItem::from(request.instructions.clone())),
             ];
@@ -298,13 +307,20 @@ impl LunaSampler {
             .into_iter()
             .map(ResponseItemEnvelope::into_item)
             .collect();
+        let admission =
+            if total_tokens > self.config.max_input_tokens.saturating_sub(/*rhs*/ 256) {
+                super::metrics::RequestAdmission::Rejected
+            } else {
+                super::metrics::RequestAdmission::Admitted
+            };
         super::metrics::record_request_tokens(
             self.config.metrics.as_deref(),
             /*existing*/ 0,
             total_tokens,
+            admission,
         );
         // Oversized classifications defer to sync with the existing failure score.
-        if total_tokens > self.config.max_input_tokens.saturating_sub(/*rhs*/ 256) {
+        if matches!(admission, super::metrics::RequestAdmission::Rejected) {
             return Err(LunaSamplerError::InputTooLarge);
         }
         let (supersede, superseded) = oneshot::channel();
@@ -330,6 +346,8 @@ impl LunaSampler {
             });
         }
         // The same cancellation future moves into the detached drain after an early score.
+        let mut telemetry =
+            telemetry::SamplingTelemetry::new(self.config.metrics.clone(), pending_score.clone());
         let superseded = Box::pin(async move {
             tokio::select! {
                 _ = superseded => {},
@@ -341,9 +359,15 @@ impl LunaSampler {
                 } => {},
             }
         });
-        self.execution(&request, input, auth_owner_generation)
-            .run(execution::SamplingMode::Snapshot { superseded, scored })
-            .await
+        let result = self
+            .execution(&request, input, auth_owner_generation)
+            .run(
+                execution::SamplingMode::Snapshot { superseded, scored },
+                &mut telemetry,
+            )
+            .await;
+        telemetry.record_result(&result);
+        result
     }
 
     pub(super) fn max_input_tokens(&self) -> usize {
@@ -353,9 +377,13 @@ impl LunaSampler {
     /// Publishes the early score and returns only validated, completed history.
     pub(super) async fn sample_retained(
         &self,
-        prepared: PreparedRequest<'_>,
-        ready: oneshot::Sender<Result<String, LunaSamplerError>>,
+        sample: ConversationSample,
+        ready: oneshot::Sender<Result<SampledScore, LunaSamplerError>>,
     ) -> Option<Vec<ResponseItemEnvelope>> {
+        let ConversationSample {
+            input: review_request,
+            sampling,
+        } = sample;
         let auth_owner_generation = self.auth_owner_generation();
         let mut completion = execution::RetainedCompletion {
             ready: Some(ready),
@@ -365,20 +393,30 @@ impl LunaSampler {
                 .config
                 .max_input_tokens
                 .saturating_sub(/*rhs*/ 256)
-                .saturating_sub(prepared.input_tokens),
+                .saturating_sub(review_request.input_tokens),
         };
         // Transport sees model items; delivery proof follows the unchanged input prefix.
-        let (input, metadata): (Vec<_>, Vec<_>) = prepared
+        let (input, metadata): (Vec<_>, Vec<_>) = review_request
             .input
             .into_iter()
             .map(|envelope| (envelope.item, envelope.metadata))
             .unzip();
-        let mut execution = self.execution(prepared.sampling, input, auth_owner_generation);
+        let mut execution = self.execution(&sampling, input, auth_owner_generation);
         execution.request.include = vec!["reasoning.encrypted_content".to_owned()];
+        let mut telemetry = telemetry::SamplingTelemetry::new(
+            self.config.metrics.clone(),
+            sampling.pending_score.clone(),
+        );
         let result = execution
-            .run(execution::SamplingMode::Retained(&mut completion))
+            .run(
+                execution::SamplingMode::Retained(&mut completion),
+                &mut telemetry,
+            )
             .await;
-        execution.request.input.extend(completion.finish(result)?);
+        execution
+            .request
+            .input
+            .extend(completion.finish(result, &mut telemetry)?);
         Some(
             execution
                 .request

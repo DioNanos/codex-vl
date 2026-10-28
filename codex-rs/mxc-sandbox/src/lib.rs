@@ -2,8 +2,10 @@
 //! a usable process security environment and never enters MXC's ACL fallbacks.
 
 #[cfg(windows)]
+mod availability;
+#[cfg(windows)]
 mod native;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, all(test, not(target_os = "android"))))]
 mod policy;
 mod transport;
 #[cfg(windows)]
@@ -97,7 +99,7 @@ pub fn create_command_args(args: CreateMxcCommandArgsParams<'_>) -> Result<Vec<S
 pub fn is_available() -> bool {
     #[cfg(windows)]
     {
-        appcontainer_common::base_container_runner::BaseContainerRunner::is_process_security_environment_usable()
+        availability::is_available()
     }
     #[cfg(not(windows))]
     {
@@ -135,11 +137,17 @@ pub fn prepare_file_system_policy(
     if policy.has_full_disk_write_access() {
         return Ok(policy);
     }
-    let volumes = windows::volume_roots(policy_cwd.as_path(), command_cwd)?
+    let volumes = windows::volume_roots(policy_cwd.as_path(), command_cwd)?;
+    let read_volumes = windows::implicit_read_roots(&volumes, policy_cwd.as_path(), command_cwd)?;
+    let volumes = volumes
         .into_iter()
         .map(PathUri::from_host_native_path)
         .collect::<std::io::Result<Vec<_>>>()?;
-    Ok(policy::materialize_volume_roots(policy, &volumes)?)
+    Ok(policy::materialize_volume_roots(
+        policy,
+        &volumes,
+        &read_volumes,
+    )?)
 }
 
 /// Entry point dispatched before ordinary Codex CLI parsing.
@@ -161,6 +169,6 @@ pub fn run_main() -> ! {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "android")))]
 #[path = "policy_tests.rs"]
 mod tests;

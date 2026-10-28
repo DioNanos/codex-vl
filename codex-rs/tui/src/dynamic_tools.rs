@@ -13,6 +13,7 @@ use codex_app_server_protocol::DynamicToolFunctionSpec;
 use codex_app_server_protocol::DynamicToolNamespaceSpec;
 use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
+use codex_app_server_protocol::GeneratedImageRef;
 use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::ImageReference;
@@ -350,6 +351,7 @@ async fn execute_inner(
                     request_id,
                     params: ThreadListParams {
                         excluded_thread_ids: None,
+                        attached_to_thread_id: None,
                         originators: None,
                         cursor: arguments.cursor.clone(),
                         limit: Some(limit),
@@ -1319,7 +1321,7 @@ async fn background_turn_program(
                 }
                 true
             }
-            Some(Account::AmazonBedrock { .. }) | None => false,
+            Some(Account::AmazonBedrock { .. } | Account::Gcp {}) | None => false,
         };
     // Retain saved metadata while suppressing it for accounts that cannot use Daybreak.
     let enabled = enabled && eligible;
@@ -1550,7 +1552,14 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                     "savedPath": item.saved_path
                 });
                 if include_outputs {
-                    image["result"] = output_summary(&item.result, output_chars);
+                    match &item.image {
+                        GeneratedImageRef::Inline { result } => {
+                            image["result"] = output_summary(result, output_chars);
+                        }
+                        GeneratedImageRef::File { file_id } => {
+                            image["fileId"] = Value::String(file_id.clone());
+                        }
+                    }
                 }
                 image
             }

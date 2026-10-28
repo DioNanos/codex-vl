@@ -100,7 +100,7 @@ jobs:
           Write-Host "Disk usage:"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize Name, @{Name='Size(GB)';Expression={[math]::Round(($_.Used + $_.Free) / 1GB, 1)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free / 1GB, 1)}}
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
         with:
           targets: ${{ matrix.build-system == 'cargo' && matrix.target || '' }}
 
@@ -179,6 +179,9 @@ jobs:
   build-windows-voice:
     name: Build Windows voice - ${{ matrix.target }}
     runs-on: ${{ matrix.runs_on }}
+    environment:
+      name: bazel
+      deployment: false
     timeout-minutes: 120
     permissions:
       contents: read
@@ -250,7 +253,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           VOICE_ARCH: ${{ matrix.arch }}
-          BUILDBUDDY_API_KEY: ""
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           (cd codex-rs && cargo update --workspace)
           python .github/scripts/watch_voice_bazel.py "$(cygpath -w "$BASH")" ./.github/scripts/run-bazel-ci.sh \
@@ -564,6 +567,12 @@ jobs:
           python -c 'import sys; from pathlib import Path; sys.path.insert(0, sys.argv[3]); from package_runtime import runtime_files; runtime_files(Path(sys.argv[1]), sys.argv[2], public_release=True)' $voice $target (Join-Path $env:GITHUB_WORKSPACE 'third_party/voice')
           if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime receipt verification failed' }
 
+      - name: Set up Python release tools
+        if: ${{ matrix.build-system == 'cargo' }}
+        uses: ./.github/actions/setup-python-release-tools
+        with:
+          group: runtime
+
       - name: Build Python runtime wheel
         if: ${{ matrix.build-system == 'cargo' }}
         shell: bash
@@ -583,9 +592,6 @@ jobs:
               ;;
           esac
 
-          python -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
-          "${RUNNER_TEMP}/python-runtime-build-venv/Scripts/python.exe" -m pip install build
-
           # The wheel's Windows support floor predates the native voice
           # runtime's verified device/VC++ prerequisites. Keep it voice-free.
           wheel_package="${RUNNER_TEMP}/codex-package-${{ matrix.target }}"
@@ -602,7 +608,8 @@ jobs:
             "$wheel_package" \
             --codex-version "${GITHUB_REF_NAME}" \
             --platform-tag "$platform_tag"
-          "${RUNNER_TEMP}/python-runtime-build-venv/Scripts/python.exe" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
+          uv build --offline --no-build-isolation --no-create-gitignore \
+            --python "${RUNNER_TEMP}/python-runtime-build-venv" --wheel --out-dir "$wheel_dir" "$stage_dir"
 
       - name: Upload Python runtime wheel
         if: ${{ matrix.build-system == 'cargo' }}

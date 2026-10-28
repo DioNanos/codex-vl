@@ -3,6 +3,7 @@ use crate::config::NetworkMode;
 use crate::config::NetworkProxyConfig;
 use crate::config::ValidatedUnixSocketPath;
 use crate::credential_broker::CredentialBroker;
+use crate::credential_broker::env_value;
 use crate::domain_matcher::DomainPatternSet;
 use crate::mitm::MitmState;
 use crate::mitm_hook::HookEvaluation;
@@ -180,6 +181,7 @@ pub struct ConfigState {
     pub(crate) brokerage_created_default_allowlist: bool,
     pub allow_set: DomainPatternSet,
     pub deny_set: DomainPatternSet,
+    pub review_set: DomainPatternSet,
     pub mitm: Option<Arc<MitmState>>,
     pub mitm_hooks: MitmHooksByHost,
     pub constraints: NetworkProxyConstraints,
@@ -274,7 +276,8 @@ pub struct NetworkProxyState {
     pub(crate) policy_audit_observer: Option<NetworkPolicyAuditObserver>,
     pub(crate) launch_span_context: Option<SpanContext>,
     pub(crate) process_log_metadata: crate::NetworkProxyProcessLogMetadata,
-    credential_broker: CredentialBroker,
+    /// Shared by this proxy's listeners; rebinding leaves other proxies' cached brokers intact.
+    credential_broker: Arc<std::sync::RwLock<CredentialBroker>>,
     audit_metadata: NetworkProxyAuditMetadata,
     execution_attributions: Arc<Mutex<HashMap<String, ExecutionAttribution>>>,
     environment_id: Option<Arc<str>>,
@@ -334,6 +337,8 @@ impl NetworkProxyState {
     pub fn from_remote_launch_config(
         launch: crate::RemoteNetworkProxyLaunchConfig,
         executor_os: crate::Platform,
+        credential_brokers: &crate::RemoteCredentialBrokerCache,
+        environment: &HashMap<String, String>,
     ) -> Result<Self> {
         let crate::RemoteNetworkProxyLaunchConfig {
             proxy,
@@ -346,9 +351,15 @@ impl NetworkProxyState {
             proxy.enabled,
             "executor-local network proxy launch requires an enabled proxy"
         );
-        let config = proxy.into_network_proxy_config();
+        let mut config = proxy.into_network_proxy_config();
+        config.configure_credential_broker_environment(environment);
         let state = build_config_state(config, NetworkProxyConstraints::default(), executor_os)?;
-        Ok(Self {
+        let cached_broker = credential_brokers.broker_if_enabled(
+            environment_id.as_deref(),
+            audit_metadata.conversation_id.as_deref(),
+            &state.config,
+        );
+        let mut proxy_state = Self {
             environment_id: environment_id.map(Into::into),
             execution_id: execution_id.map(Into::into),
             ..Self::with_reloader_and_audit_metadata(
@@ -357,7 +368,11 @@ impl NetworkProxyState {
                 audit_metadata,
                 LocalBindingPolicy::DefaultFalse,
             )
-        })
+        };
+        if let Some(broker) = cached_broker {
+            proxy_state.credential_broker = Arc::new(std::sync::RwLock::new(broker));
+        }
+        Ok(proxy_state)
     }
 
     pub fn with_reloader(state: ConfigState, reloader: Arc<dyn ConfigReloader>) -> Self {
@@ -408,7 +423,7 @@ impl NetworkProxyState {
         let credential_broker = CredentialBroker::new(state.config.credential_broker);
         credential_broker.configure(&local_binding_policy.resolved_config(&state.config));
         Self {
-            credential_broker,
+            credential_broker: Arc::new(std::sync::RwLock::new(credential_broker)),
             state: Arc::new(RwLock::new(state)),
             local_binding_policy,
             proxy_private_ips_via_upstream: false,
@@ -507,6 +522,45 @@ impl NetworkProxyState {
         &self.audit_metadata
     }
 
+    fn credential_broker(&self) -> CredentialBroker {
+        self.credential_broker
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) async fn bind_credential_broker_environment(
+        &self,
+        credential_brokers: &crate::RemoteCredentialBrokerCache,
+        environment: &HashMap<String, String>,
+    ) -> Result<()> {
+        self.reload_if_needed().await?;
+        let mut state = self.state.write().await;
+        let mut config = self.local_binding_policy.resolved_config(&state.config);
+        config.configure_credential_broker_environment(environment);
+        // Captures are complete environments: absent hints are removals, not launch fallbacks.
+        config.credential_broker_context = self
+            .credential_broker_environment(environment)
+            .provider_context_keys
+            .into_iter()
+            .filter_map(|key| env_value(environment, &key).map(|value| (key, value.to_string())))
+            .collect::<HashMap<_, _>>()
+            .into();
+        let broker = credential_brokers
+            .broker_if_enabled(
+                self.environment_id(),
+                self.audit_metadata.conversation_id.as_deref(),
+                &config,
+            )
+            .context("credential brokerage is disabled for the startup environment")?;
+        state.config.credential_broker_context = config.credential_broker_context;
+        *self
+            .credential_broker
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = broker;
+        Ok(())
+    }
+
     pub fn virtualize_child_credentials(&self, env: &mut HashMap<String, String>) {
         self.virtualize_child_credentials_for_environment(env, self.environment_id());
     }
@@ -519,10 +573,13 @@ impl NetworkProxyState {
         let parent_env = std::env::vars_os()
             .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
             .collect();
-        self.credential_broker
-            .discover_parent_credentials_for_environment(&parent_env, env, environment_id);
-        self.credential_broker
-            .virtualize_child_env_for_environment(env, environment_id);
+        let credential_broker = self.credential_broker();
+        credential_broker.discover_parent_credentials_for_environment(
+            &parent_env,
+            env,
+            environment_id,
+        );
+        credential_broker.virtualize_child_env_for_environment(env, environment_id);
     }
 
     pub(crate) fn restore_child_credentials(
@@ -530,7 +587,7 @@ impl NetworkProxyState {
         env: &mut HashMap<String, String>,
         command: &mut [String],
     ) {
-        self.credential_broker.restore_child_env(env, command);
+        self.credential_broker().restore_child_env(env, command);
     }
 
     pub(crate) fn virtualize_snapshot_credentials(
@@ -538,7 +595,7 @@ impl NetworkProxyState {
         env: &mut HashMap<String, String>,
         environment_id: Option<&str>,
     ) {
-        self.credential_broker
+        self.credential_broker()
             .virtualize_snapshot_env(env, environment_id);
     }
 
@@ -549,7 +606,7 @@ impl NetworkProxyState {
         snapshot_value: &str,
         environment_id: Option<&str>,
     ) -> bool {
-        self.credential_broker
+        self.credential_broker()
             .child_alias_matches(key, value, snapshot_value, environment_id)
     }
 
@@ -558,7 +615,7 @@ impl NetworkProxyState {
         env: &mut HashMap<String, String>,
         command: &mut [String],
     ) {
-        self.credential_broker
+        self.credential_broker()
             .restore_and_disable_child_env(env, command);
     }
 
@@ -567,14 +624,23 @@ impl NetworkProxyState {
         text: &mut String,
         env: &HashMap<String, String>,
     ) -> bool {
-        self.credential_broker.virtualize_text(text, env)
+        self.credential_broker().virtualize_text(text, env)
+    }
+
+    pub(crate) fn handle_unmasked_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        mode: crate::CredentialMaskingFailureMode,
+    ) -> anyhow::Result<()> {
+        self.credential_broker()
+            .handle_unmasked_credentials(env, mode)
     }
 
     pub(crate) fn credential_broker_environment(
         &self,
         env: &HashMap<String, String>,
     ) -> crate::CredentialBrokerEnvironment {
-        self.credential_broker.environment(env)
+        self.credential_broker().environment(env)
     }
 
     pub(crate) fn credential_broker_environment_for_text(
@@ -582,7 +648,7 @@ impl NetworkProxyState {
         text: &str,
         env: &HashMap<String, String>,
     ) -> crate::CredentialBrokerEnvironment {
-        self.credential_broker.environment_for_text(text, env)
+        self.credential_broker().environment_for_text(text, env)
     }
 
     pub(crate) fn credential_broker_source_matches_text(
@@ -591,7 +657,7 @@ impl NetworkProxyState {
         source_value: &str,
         text: &str,
     ) -> bool {
-        self.credential_broker
+        self.credential_broker()
             .source_matches_text(source, source_value, text)
     }
 
@@ -602,16 +668,20 @@ impl NetworkProxyState {
         source_env: &HashMap<String, String>,
         is_allowed: impl Fn(&str) -> bool,
     ) -> bool {
-        self.credential_broker
-            .provider_sources_allowed(value, virtualized, source_env, is_allowed)
+        self.credential_broker().provider_sources_allowed(
+            value,
+            virtualized,
+            source_env,
+            is_allowed,
+        )
     }
 
     pub(crate) fn restore_brokered_text(&self, text: &mut String) -> bool {
-        self.credential_broker.restore_text(text)
+        self.credential_broker().restore_text(text)
     }
 
     pub fn inject_request_credentials(&self, host: &str, headers: &mut rama_http::HeaderMap) {
-        self.credential_broker
+        self.credential_broker()
             .inject_request_headers_for_environment(host, headers, self.environment_id());
     }
 
@@ -630,7 +700,7 @@ impl NetworkProxyState {
     }
 
     pub(crate) fn credential_broker_config_revision(&self) -> u64 {
-        self.credential_broker.config_revision()
+        self.credential_broker().config_revision()
     }
 
     pub(crate) async fn current_cfg_with_brokerage_provenance(
@@ -667,7 +737,7 @@ impl NetworkProxyState {
             Ok(mut new_state) => {
                 {
                     let mut guard = self.state.write().await;
-                    self.credential_broker
+                    self.credential_broker()
                         .configure(&self.local_binding_policy.resolved_config(&new_state.config));
                     // Log policy diffs without dumping potentially sensitive config values.
                     log_policy_changes(&guard.config, &new_state.config);
@@ -689,7 +759,7 @@ impl NetworkProxyState {
     pub async fn replace_config_state(&self, mut new_state: ConfigState) -> Result<()> {
         self.reload_if_needed().await?;
         let mut guard = self.state.write().await;
-        self.credential_broker
+        self.credential_broker()
             .configure(&self.local_binding_policy.resolved_config(&new_state.config));
         log_policy_changes(&guard.config, &new_state.config);
         new_state.blocked = guard.blocked.clone();
@@ -747,11 +817,12 @@ impl NetworkProxyState {
             Ok(host) => host,
             Err(_) => return Ok(HostBlockDecision::Blocked(HostBlockReason::NotAllowed)),
         };
-        let (deny_set, allow_set, allow_local_binding, allowed_domains) = {
+        let (deny_set, review_set, allow_set, allow_local_binding, allowed_domains) = {
             let guard = self.state.read().await;
             let allowed_domains = guard.config.allowed_domains();
             (
                 guard.deny_set.clone(),
+                guard.review_set.clone(),
                 guard.allow_set.clone(),
                 // Keep explicit controller restrictions even if the executor launched with true.
                 allow_local_binding
@@ -767,13 +838,15 @@ impl NetworkProxyState {
         // Decision order matters:
         //  1) explicit deny always wins
         //  2) local/private networking is opt-in (defense-in-depth)
-        //  3) DNS requires an allowlist match or an approval
+        //  3) managed review selectors precede every ordinary allow rule
+        //  4) DNS requires an allowlist match or an approval
         if domains_match_host_or_unscoped(&deny_set, host_str) {
             return Ok(HostBlockDecision::Blocked(HostBlockReason::Denied));
         }
 
         let is_authorized = authorization == HostAuthorization::Approved
-            || domains_match_host_or_unscoped(&allow_set, host_str);
+            || (!domains_match_host_or_unscoped(&review_set, host_str)
+                && domains_match_host_or_unscoped(&allow_set, host_str));
         if !allow_local_binding {
             // If the intent is "prevent access to local/internal networks", we must not rely solely
             // on string checks like `localhost` / `127.0.0.1`. Attackers can use DNS rebinding or
@@ -982,12 +1055,13 @@ impl NetworkProxyState {
         &self,
         host: &str,
         req: &rama_http::Request,
+        origin: &crate::mitm_hook::MitmHookOrigin,
         credential_destinations: &[String],
     ) -> Result<HookEvaluation> {
         self.reload_if_needed().await?;
         let hooked_hosts = {
             let guard = self.state.read().await;
-            match evaluate_mitm_hooks(&guard.mitm_hooks, host, req) {
+            match evaluate_mitm_hooks(&guard.mitm_hooks, host, req, origin) {
                 HookEvaluation::NoHooksForHost if !guard.mitm_hooks.is_empty() => {
                     guard.mitm_hooks.keys().cloned().collect::<Vec<_>>()
                 }
@@ -995,8 +1069,9 @@ impl NetworkProxyState {
             }
         };
 
+        let credential_broker = self.credential_broker();
         if credential_destinations.iter().any(|destination| {
-            self.credential_broker.request_matches_hooked_host_alias(
+            credential_broker.request_matches_hooked_host_alias(
                 destination,
                 req.headers(),
                 &hooked_hosts,
@@ -1020,7 +1095,7 @@ impl NetworkProxyState {
             let guard = self.state.read().await;
             guard.mitm_hooks.contains_key(&normalized_host)
         };
-        let protocols = self.credential_broker.host_protocols_for_environment(
+        let protocols = self.credential_broker().host_protocols_for_environment(
             &normalized_host,
             port,
             self.environment_id(),
@@ -1113,7 +1188,7 @@ impl NetworkProxyState {
             Some(mut new_state) => {
                 {
                     let mut guard = self.state.write().await;
-                    self.credential_broker
+                    self.credential_broker()
                         .configure(&self.local_binding_policy.resolved_config(&new_state.config));
                     log_policy_changes(&guard.config, &new_state.config);
                     new_state.blocked = guard.blocked.clone();
@@ -1310,6 +1385,7 @@ pub(crate) fn network_proxy_state_for_policy(
         constraints: NetworkProxyConstraints::default(),
         deny_set: crate::policy::compile_denylist(&config.denied_domains().unwrap_or_default())
             .unwrap(),
+        review_set: crate::policy::compile_allowlist(&config.review_domains).unwrap(),
         mitm: None,
         mitm_hooks: crate::mitm_hook::compile_mitm_hooks(&config).unwrap(),
         config,

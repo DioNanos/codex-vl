@@ -31,6 +31,8 @@ impl Drop for KillGitProcessTreeOnDrop {
 
 fn spawn_git_command(command: &mut Command) -> Option<(Child, KillGitProcessTreeOnDrop)> {
     scrub_non_inheritable_env_vars(command.as_std_mut());
+    // Git may run hooks or wrappers: external child, drop launcher metadata.
+    codex_utils_process::finalize_external_child(command.as_std_mut());
     #[cfg(unix)]
     command.process_group(0);
     command.kill_on_drop(true);

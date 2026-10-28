@@ -22,19 +22,36 @@ impl Drop for InstallLock {
     }
 }
 
+/// Build the external shell probe that detects which lock utility the shell
+/// installer coordinates on.
+///
+/// The shared body owns composition and finalization: the probe script and
+/// its exit-code protocol are verbatim, and the `Command` is finalized for an
+/// external child on the target platform — `/bin/sh` here is an external
+/// process, not one of the fork's own re-execs, so the launcher-private
+/// metadata must not reach it. Locking protocol, paths, and the choice
+/// handling stay with the caller.
+#[cfg(unix)]
+fn install_lock_probe_command_for_target(target_os: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.args(["-c", if cfg!(target_os = "macos") {
+        "if command -v lockf >/dev/null 2>&1; then exit 0; elif command -v flock >/dev/null 2>&1; then exit 1; else exit 2; fi"
+    } else {
+        "if command -v flock >/dev/null 2>&1; then exit 1; else exit 2; fi"
+    }]);
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
+    command
+}
+
 pub(crate) async fn acquire_install_lock(root: &Path) -> Result<InstallLock> {
     let lock = root.join("install.lock");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     #[cfg(unix)]
     let use_lockf = {
         // Match the installer so both processes coordinate on the same lock.
-        let choice = tokio::process::Command::new("/bin/sh")
-            .args(["-c", if cfg!(target_os = "macos") {
-                "if command -v lockf >/dev/null 2>&1; then exit 0; elif command -v flock >/dev/null 2>&1; then exit 1; else exit 2; fi"
-            } else {
-                "if command -v flock >/dev/null 2>&1; then exit 1; else exit 2; fi"
-            }])
-            .status().await?;
+        let choice = install_lock_probe_command_for_target(std::env::consts::OS)
+            .status()
+            .await?;
         match choice.code() {
             Some(0) => true,
             Some(1) => false,
@@ -139,5 +156,63 @@ pub(crate) async fn acquire_install_lock(root: &Path) -> Result<InstallLock> {
             ));
         }
         sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod launcher_env_tests {
+    use super::*;
+
+    /// Sentinel through the shared production body: the installer lock probe
+    /// is an external shell invocation, so on the Android target every
+    /// launcher-private name is recorded as an unset over inheritance and
+    /// overrides, while program and probe script stay verbatim and the
+    /// non-Android target is untouched. The Command is only inspected — no
+    /// installer runs and no fleet lock is acquired.
+    #[test]
+    fn sentinel_install_lock_probe_is_finalized_for_android() {
+        let command = install_lock_probe_command_for_target(codex_utils_process::ANDROID_TARGET_OS);
+
+        assert_eq!(command.as_std().get_program(), "/bin/sh");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(std::ffi::OsStr::to_os_string)
+            .collect::<Vec<_>>();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], std::ffi::OsString::from("-c"));
+        let script = args[1].to_string_lossy();
+        assert!(
+            script.contains("command -v"),
+            "probe script must stay verbatim"
+        );
+
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            let leaked = command
+                .as_std()
+                .get_envs()
+                .any(|(env_name, value)| env_name == *name && value.is_some());
+            assert!(!leaked, "{name} must not carry a value");
+        }
+        let unset_names = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_os_string())
+            .collect::<Vec<_>>();
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(
+                unset_names.contains(&std::ffi::OsString::from(*name)),
+                "{name} must be recorded as an unset for the Android target"
+            );
+        }
+
+        let host = install_lock_probe_command_for_target("linux");
+        let host_unsets = host
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .count();
+        assert_eq!(host_unsets, 0, "the non-Android target must not scrub");
     }
 }

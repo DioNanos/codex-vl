@@ -30,6 +30,28 @@ fn sleep_tool_config_rejects_unknown_mode() {
 }
 
 #[test]
+fn runtime_auth_config_accepts_modes_without_implicitly_enabling_the_feature() {
+    for mode in ["dual_header", "assertion_only"] {
+        let config: FeaturesToml =
+            toml::from_str(&format!("[runtime_agent_instances]\nmode = '{mode}'")).unwrap();
+        let mut features = Features::with_defaults();
+        features.apply_toml(&config);
+        assert!(!features.enabled(Feature::RuntimeAgentInstances));
+
+        let config: FeaturesToml = toml::from_str(&format!(
+            "[runtime_agent_instances]\nenabled = true\nmode = '{mode}'"
+        ))
+        .unwrap();
+        features.apply_toml(&config);
+        assert!(features.enabled(Feature::RuntimeAgentInstances));
+    }
+    assert!(
+        toml::from_str::<FeaturesToml>("[runtime_agent_instances]\nmode = 'credential_only'")
+            .is_err()
+    );
+}
+
+#[test]
 fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
         // Instant interrupts are enabled by default while retaining their development stage.
@@ -187,6 +209,43 @@ fn guardian_v2_feature_config_preserves_boolean_toggle() {
         features.entries(),
         BTreeMap::from([("guardianv2".to_owned(), true)])
     );
+}
+
+#[test]
+fn guardian_v3_feature_config_resolves_base_and_profile_toggles() {
+    for (base, profile, enabled) in [
+        ("guardianv3 = true", "", true),
+        ("guardianv3 = false", "", false),
+        ("[guardianv3]", "", false),
+        ("[guardianv3]\nenabled = true", "", true),
+        ("[guardianv3]\nenabled = false", "", false),
+        (
+            "[guardianv3]\nenabled = true",
+            "[guardianv3]\nenabled = false",
+            false,
+        ),
+        (
+            "[guardianv3]\nenabled = false",
+            "[guardianv3]\nenabled = true",
+            true,
+        ),
+        ("[guardianv3]\nenabled = true", "[guardianv3]", true),
+    ] {
+        let base = toml::from_str::<FeaturesToml>(base).expect("base features");
+        let profile = toml::from_str::<FeaturesToml>(profile).expect("profile features");
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&base),
+                ..Default::default()
+            },
+            FeatureConfigSource {
+                features: Some(&profile),
+                ..Default::default()
+            },
+            FeatureOverrides::default(),
+        );
+        assert_eq!(features.enabled(Feature::GuardianV3), enabled);
+    }
 }
 
 #[test]
@@ -900,4 +959,23 @@ code_mode = true
         "Under-development features enabled: code_mode. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /tmp/config.toml.".to_string(),
         message
     );
+}
+
+#[test]
+fn retired_worktree_and_voice_config_overrides_are_ignored() {
+    for enabled in [false, true] {
+        let features_toml = FeaturesToml::from(BTreeMap::from([
+            ("worktrees".to_string(), enabled),
+            ("realtime_conversation".to_string(), enabled),
+        ]));
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&features_toml),
+                ..Default::default()
+            },
+            FeatureConfigSource::default(),
+            FeatureOverrides::default(),
+        );
+        assert_eq!(features, Features::with_defaults());
+    }
 }

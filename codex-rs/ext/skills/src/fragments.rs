@@ -1,5 +1,8 @@
 use codex_extension_api::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ContentItemMetadata;
+use codex_protocol::models::input_text;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 
@@ -37,6 +40,10 @@ impl AvailableSkillsInstructions {
 }
 
 impl ContextualUserFragment for AvailableSkillsInstructions {
+    fn content_metadata(&self) -> ContentItemMetadata {
+        ContentItemMetadata::skills()
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }
@@ -53,8 +60,12 @@ impl ContextualUserFragment for AvailableSkillsInstructions {
         (SKILLS_INSTRUCTIONS_OPEN_TAG, SKILLS_INSTRUCTIONS_CLOSE_TAG)
     }
 
-    fn body(&self) -> String {
-        render_available_skills_body(self.prompt_kind, &self.skill_root_lines, &self.skill_lines)
+    fn body(&self) -> ContentItem {
+        input_text(render_available_skills_body(
+            self.prompt_kind,
+            &self.skill_root_lines,
+            &self.skill_lines,
+        ))
     }
 }
 
@@ -74,6 +85,10 @@ pub(crate) struct SkillResourceAccess {
 }
 
 impl ContextualUserFragment for SkillInstructions {
+    fn content_metadata(&self) -> ContentItemMetadata {
+        ContentItemMetadata::skills()
+    }
+
     fn role(&self) -> &'static str {
         "user"
     }
@@ -90,7 +105,7 @@ impl ContextualUserFragment for SkillInstructions {
         ("<skill>", "</skill>")
     }
 
-    fn body(&self) -> String {
+    fn body(&self) -> ContentItem {
         let name = &self.name;
         let path = &self.path;
         let contents = &self.contents;
@@ -106,6 +121,8 @@ impl ContextualUserFragment for SkillInstructions {
                 format!("\n<resource_access>{metadata}</resource_access>")
             })
             .unwrap_or_default();
-        format!("\n<name>{name}</name>\n<path>{path}</path>{resource_access}\n{contents}\n")
+        input_text(format!(
+            "\n<name>{name}</name>\n<path>{path}</path>{resource_access}\n{contents}\n"
+        ))
     }
 }

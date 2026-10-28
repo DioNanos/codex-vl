@@ -139,6 +139,24 @@ impl InternalProcessIdExt for InternalProcessId {
     }
 }
 
+/// The environment map the local `command/exec` launch boundary actually hands
+/// to the external command.
+///
+/// This is the last stop before the PTY/pipe spawn branches: by the time the
+/// recomposed `ExecRequest` reaches this point, the shell policy, the protocol
+/// overrides, and the sandbox transform have all had their say, so the shared
+/// body finalizes the map for the target platform — scrubbing the
+/// launcher-private install metadata that a late override could have
+/// reintroduced after the earlier `create_env` boundary. Permissions, network,
+/// and stdio configuration are not touched.
+fn external_command_exec_env_for_target(
+    mut env: HashMap<String, String>,
+    target_os: &str,
+) -> HashMap<String, String> {
+    codex_utils_process::scrub_private_launcher_env(&mut env, target_os);
+    env
+}
+
 impl CommandExecManager {
     pub(crate) async fn start(
         &self,
@@ -241,6 +259,7 @@ impl CommandExecManager {
         let cwd = cwd
             .to_abs_path()
             .map_err(|err| invalid_request(format!("invalid command cwd: {err}")))?;
+        let env = external_command_exec_env_for_target(env, std::env::consts::OS);
 
         let stream_stdin = tty || stream_stdin;
         let stream_stdout_stderr = tty || stream_stdout_stderr;
@@ -1075,5 +1094,56 @@ mod tests {
 
         assert_eq!(err.code, INVALID_REQUEST_ERROR_CODE);
         assert_eq!(err.message, "command/exec \"proc-13\" is no longer running");
+    }
+
+    /// Sentinel through the shared production body at the local launch
+    /// boundary: the map the PTY/pipe branches actually receive drops the six
+    /// launcher names even when a late override reintroduced them after the
+    /// earlier create_env boundary, in every case variant; an explicitly unset
+    /// name stays absent, and a foreign entry survives intact. The non-Android
+    /// target keeps the names; the test never scrubs the result afterwards.
+    #[test]
+    fn sentinel_command_exec_env_drops_late_launcher_overrides_for_android() {
+        let mut env = HashMap::new();
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            env.insert((*name).to_string(), "late-override".to_string());
+        }
+        env.insert(
+            "codex_managed_by_npm".to_string(),
+            "case-variant".to_string(),
+        );
+        env.insert("COMMAND_EXEC_KEEP_ME".to_string(), "kept".to_string());
+
+        let android = external_command_exec_env_for_target(
+            env.clone(),
+            codex_utils_process::ANDROID_TARGET_OS,
+        );
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(!android.contains_key(*name), "{name} leaked");
+        }
+        assert!(
+            !android.contains_key("codex_managed_by_npm"),
+            "case-variant of a reserved name leaked"
+        );
+        assert!(
+            !android.contains_key("CODEX_SELF_EXE"),
+            "an explicitly unset name must not come back"
+        );
+        assert_eq!(
+            android.get("COMMAND_EXEC_KEEP_ME").map(String::as_str),
+            Some("kept")
+        );
+        assert_eq!(android.len(), 1);
+
+        let host = external_command_exec_env_for_target(env, "linux");
+        assert_eq!(
+            host.get("CODEX_SELF_EXE").map(String::as_str),
+            Some("late-override"),
+            "the non-Android target must not scrub"
+        );
+        assert_eq!(
+            host.len(),
+            codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS.len() + 2
+        );
     }
 }

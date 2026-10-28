@@ -1,3 +1,14 @@
+[env]
+# curl-sys enables its NTLM sources but does not set the flag required by libcurl 8.21.
+CFLAGS_aarch64_pc_windows_gnullvm = "-DCURL_ENABLE_NTLM"
+CFLAGS_aarch64_pc_windows_msvc = "-DCURL_ENABLE_NTLM"
+CFLAGS_x86_64_pc_windows_gnullvm = "-DCURL_ENABLE_NTLM"
+CFLAGS_x86_64_pc_windows_msvc = "-DCURL_ENABLE_NTLM"
+AR_aarch64_linux_android = "llvm-ar"
+CC_aarch64_linux_android = "aarch64-linux-android29-clang"
+CXX_aarch64_linux_android = "aarch64-linux-android29-clang++"
+RANLIB_aarch64_linux_android = "llvm-ranlib"
+
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "target-feature=+crt-static"]
 
@@ -20,9 +31,3 @@ rustflags = ["-C", "link-arg=-lm"]
 ar = "llvm-ar"
 linker = "aarch64-linux-android29-clang"
 rustflags = ["-C", "link-arg=-lc++_shared", "-C", "link-arg=-Wl,-rpath,$ORIGIN"]
-
-[env]
-AR_aarch64_linux_android = "llvm-ar"
-CC_aarch64_linux_android = "aarch64-linux-android29-clang"
-CXX_aarch64_linux_android = "aarch64-linux-android29-clang++"
-RANLIB_aarch64_linux_android = "llvm-ranlib"

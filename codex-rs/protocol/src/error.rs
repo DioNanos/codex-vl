@@ -152,6 +152,11 @@ pub enum CodexErrorDetails {
     #[error("{0}")]
     InvalidRequest(String),
     #[error("{message}")]
+    ModelNotFound {
+        message: String,
+        status: Option<StatusCode>,
+    },
+    #[error("{message}")]
     InvalidPrompt { message: String },
     /// Multiple registered tools share the same effective name.
     #[error("duplicate tool: {0}")]
@@ -201,6 +206,9 @@ pub enum CodexErrorDetails {
     UnsupportedOperation(String),
     #[error("{0}")]
     RefreshTokenFailed(RefreshTokenFailedError),
+    /// Gateway credentials require user action before requests can resume.
+    #[error("{0}")]
+    GatewayLoginRequired(String),
     #[error("Fatal error: {0}")]
     Fatal(String),
     // -----------------------------------------------------------------
@@ -419,9 +427,11 @@ impl CodexErr {
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::ResponseIncomplete(_)
+            | CodexErrorDetails::ModelNotFound { .. }
             | CodexErrorDetails::InvalidPrompt { .. }
             | CodexErrorDetails::ToolCollision(_)
             | CodexErrorDetails::RefreshTokenFailed(_)
+            | CodexErrorDetails::GatewayLoginRequired(_)
             | CodexErrorDetails::UnsupportedOperation(_)
             | CodexErrorDetails::Sandbox(_)
             | CodexErrorDetails::LandlockSandboxExecutableNotProvided
@@ -496,6 +506,7 @@ impl CodexErr {
             CodexErrorDetails::FlexUnavailable => CodexErrorInfo::FlexUnavailable,
             CodexErrorDetails::CyberPolicy { .. } => CodexErrorInfo::CyberPolicy,
             CodexErrorDetails::BioPolicy { .. } => CodexErrorInfo::BioPolicy,
+            CodexErrorDetails::ModelNotFound { .. } => CodexErrorInfo::ModelNotFound,
             CodexErrorDetails::InvalidPrompt { .. } => CodexErrorInfo::InvalidPrompt,
             CodexErrorDetails::MisalignmentPolicyViolation { .. } => {
                 CodexErrorInfo::MisalignmentPolicyViolation
@@ -546,6 +557,7 @@ impl CodexErr {
     pub fn http_status_code_value(&self) -> Option<u16> {
         let http_status_code = match &self.details {
             CodexErrorDetails::FlexUnavailable => Some(StatusCode::TOO_MANY_REQUESTS),
+            CodexErrorDetails::ModelNotFound { status, .. } => *status,
             CodexErrorDetails::RetryLimit(err) => Some(err.status),
             CodexErrorDetails::UnexpectedStatus(err) => Some(err.status),
             CodexErrorDetails::ConnectionFailed(err) => err.source.status(),
@@ -784,7 +796,9 @@ impl std::fmt::Display for UsageLimitReachedError {
                 | KnownPlan::Business
                 | KnownPlan::Ent26
                 | KnownPlan::EnterpriseCbpAutomation
-                | KnownPlan::EnterpriseCbpUsageBased,
+                | KnownPlan::EnterpriseCbpUsageBased
+                | KnownPlan::Sci
+                | KnownPlan::SciPlus,
             )) => {
                 format!(
                     "You’ve hit your usage limit. To get more access now, send a request to your admin{}",

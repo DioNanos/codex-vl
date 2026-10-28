@@ -1,7 +1,6 @@
 use super::MarketplaceAddError;
 use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
 
 pub(super) fn clone_git_source(
     url: &str,
@@ -105,10 +104,6 @@ pub(super) fn replace_marketplace_root(
     fs::rename(staged_root, destination)
 }
 
-pub(super) fn marketplace_staging_root(install_root: &Path) -> PathBuf {
-    install_root.join(".staging")
-}
-
 fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), MarketplaceAddError> {
     let mut command = codex_utils_process::background_command("git");
     command
@@ -118,6 +113,10 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), MarketplaceAddError>
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    // Git is an external child and may run hooks or wrappers from the user
+    // configuration: drop the launcher-private install metadata after the last
+    // environment write. No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
 
     let output = command.output().map_err(|err| {
         MarketplaceAddError::Internal(format!("failed to run git {}: {err}", args.join(" ")))

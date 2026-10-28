@@ -53,3 +53,19 @@ binding_sha256 = "c87a57bbad22339684cda2759ccb1e0fe15d0edc9dc9d70a2e1d0a40f674de
 [versions."150.4.0".targets."aarch64-linux-android".profiles.ptrcomp_sandbox_release]
 archive_sha256 = "6fb02f1669dbb85f7265a1cba05ac31b683295be7db9651f1db2b7b082794a09"
 binding_sha256 = "639421ae6a0d125dde076cdb4c5d5b3afc9e3ce764acad4a772b7182ea77da66"
+
+[versions."152.2.0"]
+source_tag = "v152.2.0"
+
+[versions."152.2.0".targets."aarch64-linux-android"]
+release_tag = "rusty-v8-v152.2.0"
+# This lineage lives only under the codex-vl releases, and 152.2.0 publishes
+# only the sandbox-enabled profile: no plain release archive exists, so this
+# entry pins no top-level checksum pair.
+base_urls = [
+  "https://github.com/DioNanos/codex-vl/releases/download/rusty-v8-v152.2.0",
+]
+
+[versions."152.2.0".targets."aarch64-linux-android".profiles.ptrcomp_sandbox_release]
+archive_sha256 = "ed9cd201d8f62c43d07320e1fcb4e9f44662b8ba25543df3f168c8f04893db46"
+binding_sha256 = "13c9b755752972a7ee9748dbc2aecb1dc9e349baff6c7c019c395ff801779059"

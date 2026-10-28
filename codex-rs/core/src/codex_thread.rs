@@ -409,7 +409,7 @@ impl CodexThread {
         self.io
             .submit_with_trace(
                 op, trace, /*parent_turn_id*/ None, /*root_turn_id*/ None,
-                /*residency_guard*/ None,
+                /*residency_guard*/ None, /*message_delivery*/ None,
             )
             .await
     }
@@ -526,14 +526,15 @@ impl CodexThread {
     /// Stops the active unfinished root turn without recording TurnAborted or
     /// TurnComplete, so another worker can recover its original turn ID.
     ///
-    /// Suspension is refused while a currently loaded descendant exists. Past
-    /// descendants do not prevent recovery, and concurrent descendant admission
-    /// is not sealed. Queued user input and outstanding approval, elicitation,
-    /// or server-request waiters remain best effort and may be discarded.
+    /// After stopping the root turn, fences new starts and initiates shutdown of all sessions
+    /// sharing its local agent runtime. Descendant turns are interrupted and are not automatically
+    /// recovered. Queued user input and outstanding approval, elicitation, or server-request
+    /// waiters remain best effort and may be discarded.
     ///
     /// The session processes an accepted request even if its caller disconnects.
-    /// Callers must not transfer ownership until suspension succeeds, which
-    /// requires stopping execution, flushing history, and closing its writer.
+    /// Success confirms the root's execution has stopped, its history is flushed, and its writer
+    /// is closed. It does not wait for descendant cleanup. Before transferring ownership,
+    /// callers must also finish tree shutdown or fence and terminate the tree's persistence writers.
     pub async fn suspend_turn_and_shutdown(&self) -> CodexResult<SuspendTurnOutcome> {
         if self.session_source.is_non_root_agent() {
             return Err(CodexErr::UnsupportedOperation(
@@ -554,6 +555,7 @@ impl CodexThread {
                 parent_turn_id: None,
                 root_turn_id: None,
                 residency_guard: None,
+                message_delivery: None,
             })
             .await
             .map_err(|_| CodexErr::Fatal("thread session has stopped".to_string()))?;
@@ -884,6 +886,18 @@ impl CodexThread {
         self.rollout_path.clone()
     }
 
+    /// Selects a local feedback rollout without materializing an untouched thread.
+    pub async fn feedback_rollout_path(&self) -> ThreadStoreResult<Option<PathBuf>> {
+        match self.session.live_thread() {
+            Some(thread) => thread.feedback_rollout_path().await.or_else(|error| {
+                // Shutdown can close or remove the writer before its thread leaves the manager.
+                // Retain the captured input; the archive reader still rejects missing files.
+                self.rollout_path().map(Some).ok_or(error)
+            }),
+            None => Ok(None),
+        }
+    }
+
     /// Returns startup metadata without the one-time initial message replay.
     pub fn startup_metadata(&self) -> &ThreadStartupMetadata {
         &self.startup_metadata
@@ -962,6 +976,10 @@ impl CodexThread {
 
     pub async fn config_snapshot(&self) -> ThreadConfigSnapshot {
         self.session.thread_config_snapshot().await
+    }
+
+    pub async fn resume_config_snapshot(&self) -> (ThreadConfigSnapshot, Option<String>) {
+        self.session.resume_config_snapshot().await
     }
 
     /// Returns the active turn's reviewer, including live updates, or the thread default.
@@ -1156,6 +1174,7 @@ impl CodexThread {
         &self,
         server: &str,
         detail: codex_mcp::McpSnapshotDetail,
+        expected_registration: Option<&codex_mcp::ResolvedMcpServer>,
     ) -> anyhow::Result<(
         Arc<codex_mcp::McpConfig>,
         codex_mcp::McpServerStatusSnapshot,
@@ -1165,7 +1184,7 @@ impl CodexThread {
         self.session
             .services
             .mcp_runtime
-            .server_status_snapshot(server, detail, &runtime_context)
+            .server_status_snapshot(server, detail, expected_registration, &runtime_context)
             .await
     }
 
@@ -1222,6 +1241,7 @@ impl CodexThread {
                 /*requested_timeout*/ None, /*wait_for_server*/ true,
             )
             .await
+            .map(|call| call.result)
     }
 
     pub fn enabled(&self, feature: Feature) -> bool {

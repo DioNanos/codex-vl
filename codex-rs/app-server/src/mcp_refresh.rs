@@ -46,6 +46,7 @@ async fn reload_mcp_config_with_policy(
     config_manager: &ConfigManager,
     policy: ReloadPolicy,
 ) -> io::Result<()> {
+    config_manager.revoke_mcp_ema_startups();
     let mut rejected = false;
     let mut load_error = None;
     let mut completed: Vec<Arc<CodexThread>> = Vec::new();
@@ -401,6 +402,28 @@ enabled = false
             }
         }
         let thread = good_thread.expect("good test thread should exist");
+        // Config loading can finish before a startup is visible to ThreadManager.
+        let pending_startup = config_manager
+            .load_for_cwd(
+                /*request_overrides*/ None,
+                ConfigOverrides::default(),
+                Some(temp_dir.path().join("good")),
+            )
+            .await?;
+        assert!(
+            !pending_startup
+                .config_layer_stack
+                .mcp_ema_cancellation()
+                .is_cancelled()
+        );
+        // Prediction forks inherit a published config and may outlive their parent.
+        let parent = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(pending_startup.clone()))
+            .await?;
+        let (inherited_fork, _) = thread_manager
+            .fork_options_from_parent(parent.thread_id)
+            .await?;
+        thread_manager.remove_thread(&parent.thread_id).await;
         std::fs::write(
             temp_dir.path().join(codex_config::CONFIG_TOML_FILE),
             r#"
@@ -411,6 +434,45 @@ enabled = false
         )?;
 
         reload_mcp_config(&thread_manager, &config_manager).await?;
+
+        let fork = thread_manager.start_thread(inherited_fork).await?;
+        assert!(
+            fork.thread
+                .config()
+                .await
+                .config_layer_stack
+                .mcp_ema_cancellation()
+                .is_cancelled()
+        );
+        fork.thread.shutdown_and_wait().await?;
+        parent.thread.shutdown_and_wait().await?;
+        assert!(
+            pending_startup
+                .config_layer_stack
+                .mcp_ema_cancellation()
+                .is_cancelled()
+        );
+        assert!(
+            thread
+                .config()
+                .await
+                .config_layer_stack
+                .mcp_ema_cancellation()
+                .is_cancelled()
+        );
+        let fresh_startup = config_manager
+            .load_for_cwd(
+                /*request_overrides*/ None,
+                ConfigOverrides::default(),
+                Some(temp_dir.path().join("good")),
+            )
+            .await?;
+        assert!(
+            !fresh_startup
+                .config_layer_stack
+                .mcp_ema_cancellation()
+                .is_cancelled()
+        );
 
         assert!(
             thread
@@ -476,20 +538,27 @@ enabled = false
                 codex_core::CodexAppsToolsCache::default(),
                 SessionSource::Exec,
                 Arc::clone(&environment_manager),
-                thread_extensions(ThreadExtensionDependencies {
-                    event_sink: Arc::new(NoopExtensionEventSink),
-                    auth_manager: auth_manager.clone(),
-                    state_db: Some(state_db.clone()),
-                    analytics_events_client: codex_analytics::AnalyticsEventsClient::disabled(),
-                    thread_manager: thread_manager.clone(),
-                    goal_service: Arc::new(codex_goal_extension::GoalService::new()),
-                    environment_manager: Arc::clone(&environment_manager),
-                    executor_skill_provider: Arc::clone(&executor_skill_provider),
-                    git_attribution_base_url: good_config.chatgpt_base_url.clone(),
-                    http_client_factory: good_config.http_client_factory(),
-                    queue_service: None,
-                    turn_start_admission: None,
-                }),
+                thread_extensions(
+                    &good_config,
+                    ThreadExtensionDependencies {
+                        sample_responses: Arc::new(
+                            crate::thread_sample::SampleResponseRegistry::default(),
+                        ),
+                        cloud_skill_provider: None,
+                        event_sink: Arc::new(NoopExtensionEventSink),
+                        auth_manager: auth_manager.clone(),
+                        state_db: Some(state_db.clone()),
+                        analytics_events_client: codex_analytics::AnalyticsEventsClient::disabled(),
+                        thread_manager: thread_manager.clone(),
+                        goal_service: Arc::new(codex_goal_extension::GoalService::new()),
+                        environment_manager: Arc::clone(&environment_manager),
+                        executor_skill_provider: Arc::clone(&executor_skill_provider),
+                        git_attribution_base_url: good_config.chatgpt_base_url.clone(),
+                        http_client_factory: good_config.http_client_factory(),
+                        queue_service: None,
+                        turn_start_admission: None,
+                    },
+                ),
                 Arc::new(CodexHomeUserInstructionsProvider::new(
                     good_config.codex_home.clone(),
                 )),

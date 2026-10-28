@@ -62,6 +62,10 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
     } = request;
 
     env.retain(|name, _| !is_non_inheritable_env_var(name));
+    // Shell/exec children are external processes: on Android they must not
+    // receive the launcher's private CODEX_* install metadata, neither by
+    // inheritance nor through a later policy overlay. No-op elsewhere.
+    codex_utils_process::scrub_private_launcher_env_here(&mut env);
 
     trace!(
         "spawn_child_async: {program:?} {args:?} {arg0:?} {cwd:?} {network_sandbox_policy:?} {stdio_policy:?} {env:?}"
@@ -86,6 +90,12 @@ pub(crate) async fn spawn_child_async(request: SpawnChildRequest<'_>) -> std::io
     if !network_sandbox_policy.is_enabled() {
         cmd.env(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR, "1");
     }
+
+    // Final boundary after the last environment write: drop inherited and
+    // explicitly-overridden launcher metadata for this external child. Runs
+    // after the sandbox marker so no later `env`/`envs` can reintroduce the
+    // names. No-op outside Android; stdio, groups and pre_exec stay as-is.
+    codex_utils_process::finalize_external_child(cmd.as_std_mut());
 
     // If this Codex process dies (including being killed via SIGKILL), we want
     // any child processes that were spawned as part of a `"shell"` tool call

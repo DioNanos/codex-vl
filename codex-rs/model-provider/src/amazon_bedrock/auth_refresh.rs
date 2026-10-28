@@ -44,24 +44,8 @@ impl AwsAuthRecovery {
         }
 
         let interactive = std::io::stdin().is_terminal();
-        let mut command = if interactive {
-            Command::new(&self.config.command)
-        } else {
-            Command::from(codex_utils_process::background_command(
-                &self.config.command,
-            ))
-        };
-        command
-            .args(self.config.args.iter().map(Deref::deref))
-            .stdin(if interactive {
-                Stdio::inherit()
-            } else {
-                Stdio::null()
-            })
-            // Keep interactive prompts visible without corrupting app-server's JSON-RPC stdout.
-            .stdout(std::io::stderr())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
+        let mut command =
+            auth_refresh_command_for_target(&self.config, interactive, std::env::consts::OS);
 
         let status = tokio::time::timeout(self.config.timeout(), command.status())
             .await
@@ -86,5 +70,57 @@ impl AwsAuthRecovery {
                 "AWS auth refresh command exited with {status}"
             )))
         }
+    }
+}
+
+/// Build the AWS reauthentication command and drop launcher metadata last.
+///
+/// [`AwsAuthRecovery::refresh`] only selects the compiling platform. Interactive
+/// stdio is unchanged.
+fn auth_refresh_command_for_target(
+    config: &AwsAuthRefreshConfig,
+    interactive: bool,
+    target_os: &str,
+) -> Command {
+    let mut command = if interactive {
+        Command::new(&config.command)
+    } else {
+        Command::from(codex_utils_process::background_command(&config.command))
+    };
+    command
+        .args(config.args.iter().map(Deref::deref))
+        .stdin(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
+        // Keep interactive prompts visible without corrupting app-server's JSON-RPC stdout.
+        .stdout(std::io::stderr())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn sentinel_auth_refresh_command_drops_launcher_metadata_for_android() {
+        let config = AwsAuthRefreshConfig {
+            command: "aws".to_string(),
+            args: Vec::new(),
+            timeout_ms: NonZeroU64::new(1_000).expect("timeout"),
+        };
+        let android =
+            auth_refresh_command_for_target(&config, /*interactive*/ false, "android");
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            let entry = android.as_std().get_envs().find(|(key, _)| *key == *name);
+            assert_eq!(entry.map(|(_, value)| value), Some(None), "{name}");
+        }
+        let host = auth_refresh_command_for_target(&config, /*interactive*/ false, "linux");
+        assert_eq!(host.as_std().get_envs().count(), 0);
     }
 }

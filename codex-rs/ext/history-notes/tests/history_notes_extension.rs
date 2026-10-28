@@ -29,6 +29,8 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::openai_models::NotesToolMessages;
+use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TruncationPolicy;
@@ -136,6 +138,37 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
         ]
     );
 
+    // Existing executors retain the catalog snapshot selected for their step.
+    let step_store = ExtensionData::new("step-1");
+    let mut messages = NotesToolMessages {
+        read_file: Some(ToolMessage {
+            description: Some("Catalog read instructions".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    step_store.insert(messages.clone());
+    let catalog_tools =
+        registry.tool_contributors()[0].tools_for_step(&session_store, &thread_store, &step_store);
+    let captured_tool = catalog_tools
+        .iter()
+        .find(|tool| tool.tool_name() == ToolName::namespaced("notes", "read_file"))
+        .expect("notes.read_file should be exposed");
+    let captured_spec = captured_tool.spec();
+    messages.read_file.as_mut().expect("read_file").description = Some(String::new());
+    step_store.insert(messages);
+    let next_tools =
+        registry.tool_contributors()[0].tools_for_step(&session_store, &thread_store, &step_store);
+    assert_ne!(
+        next_tools
+            .iter()
+            .find(|tool| tool.tool_name() == ToolName::namespaced("notes", "read_file"))
+            .expect("notes.read_file should be exposed")
+            .spec(),
+        captured_spec
+    );
+    assert_eq!(captured_tool.spec(), captured_spec);
+
     let read_file = tools
         .iter()
         .find(|tool| tool.tool_name() == ToolName::namespaced("notes", "read_file"))
@@ -165,10 +198,11 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
         .await;
     assert_eq!(
         hints,
-        vec![PromptFragment::new(
+        vec![PromptFragment::tool(
             PromptSlot::ContextWindow,
             THREAD_HINT,
             ContentItemKind("notes.thread_hint".to_string()),
+            "notes".to_string(),
         )]
     );
 
@@ -461,6 +495,8 @@ fn tool_call(tool_name: ToolName, arguments: serde_json::Value) -> ToolCall<'sta
         source: ToolCallSource::Direct,
         conversation_history: ConversationHistory::default(),
         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
+        attachment_store: codex_core::passthrough_image_store(),
+        ephemeral: false,
         environments: Vec::new(),
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),

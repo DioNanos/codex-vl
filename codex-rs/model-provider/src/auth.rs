@@ -85,7 +85,7 @@ struct AgentIdentityAuthProvider {
 }
 
 impl AuthProvider for AgentIdentityAuthProvider {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError> {
         let record = self.auth.record();
         let header_value = authorization_header_for_agent_task(
             AgentIdentityKey {
@@ -109,6 +109,7 @@ impl AuthProvider for AgentIdentityAuthProvider {
         if self.auth.is_fedramp_account() {
             let _ = headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
         }
+        Ok(())
     }
 }
 
@@ -118,8 +119,9 @@ struct HeaderAuthProvider {
 }
 
 impl AuthProvider for HeaderAuthProvider {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError> {
         headers.extend(self.auth.headers().clone());
+        Ok(())
     }
 }
 
@@ -146,11 +148,11 @@ impl AuthManagerAuthProvider {
 }
 
 impl AuthProvider for AuthManagerAuthProvider {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
-        let Some(auth) = self.current_auth() else {
-            return;
-        };
-        auth_provider_from_auth(&auth).add_auth_headers(headers);
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError> {
+        let auth = self.current_auth().ok_or_else(|| {
+            AuthError::Transient("managed authentication is unavailable".to_string())
+        })?;
+        auth_provider_from_auth(&auth).add_auth_headers(headers)
     }
 
     fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {
@@ -163,7 +165,52 @@ impl AuthProvider for AuthManagerAuthProvider {
                 .ok_or_else(|| {
                     AuthError::Transient("managed authentication is unavailable".to_string())
                 })?;
-            Ok(auth_provider_from_auth(&auth).to_auth_headers())
+            auth_provider_from_auth(&auth).to_auth_headers()
+        })
+    }
+
+    fn refresh_after_unauthorized(
+        &self,
+        rejected_headers: HeaderMap,
+    ) -> codex_api::AuthRefreshFuture<'_> {
+        Box::pin(async move {
+            let Some(auth) = self.current_auth() else {
+                return false;
+            };
+            let Ok(headers) = auth_provider_from_auth(&auth).to_auth_headers() else {
+                return false;
+            };
+            if headers.is_empty() {
+                return false;
+            }
+            if headers
+                .iter()
+                .any(|(name, value)| rejected_headers.get(name) != Some(value))
+                && self.auth_manager.refresh_failure_for_auth(&auth).is_none()
+            {
+                return true;
+            }
+            if !self.auth_manager.unauthorized_recovery().has_next() {
+                return false;
+            }
+            let result = self.auth_manager.refresh_token_if_unchanged(&auth).await;
+            let Some(refreshed_auth) = self.current_auth() else {
+                return false;
+            };
+            if self
+                .auth_manager
+                .refresh_failure_for_auth(&refreshed_auth)
+                .is_some()
+            {
+                return false;
+            }
+            let Ok(refreshed_headers) = auth_provider_from_auth(&refreshed_auth).to_auth_headers()
+            else {
+                return false;
+            };
+            !refreshed_headers.is_empty()
+                && refreshed_headers != headers
+                && !matches!(result, Err(codex_login::RefreshTokenError::Policy(_)))
         })
     }
 }
@@ -174,7 +221,9 @@ impl AuthProvider for AuthManagerAuthProvider {
 struct UnauthenticatedAuthProvider;
 
 impl AuthProvider for UnauthenticatedAuthProvider {
-    fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+    fn add_auth_headers(&self, _headers: &mut HeaderMap) -> Result<(), AuthError> {
+        Ok(())
+    }
 }
 
 pub fn unauthenticated_auth_provider() -> SharedAuthProvider {
@@ -340,6 +389,10 @@ pub fn auth_provider_from_auth_manager(
 }
 
 #[cfg(test)]
+#[path = "auth_refresh_tests.rs"]
+mod auth_refresh_tests;
+
+#[cfg(test)]
 mod tests {
     use codex_agent_identity::generate_agent_key_material;
     use codex_login::AuthCredentialsStoreMode;
@@ -474,7 +527,7 @@ mod tests {
             create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
         let auth = resolve_provider_auth(/*auth*/ None, &provider).expect("auth should resolve");
 
-        assert!(auth.to_auth_headers().is_empty());
+        assert!(auth.to_auth_headers().unwrap().is_empty());
     }
 
     #[test]
@@ -495,7 +548,7 @@ mod tests {
         let auth =
             resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
 
-        assert!(auth.to_auth_headers().is_empty());
+        assert!(auth.to_auth_headers().unwrap().is_empty());
     }
 
     #[test]
@@ -510,7 +563,7 @@ mod tests {
         let auth =
             resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
 
-        assert!(auth.to_auth_headers().is_empty());
+        assert!(auth.to_auth_headers().unwrap().is_empty());
     }
 
     #[test]
@@ -525,7 +578,8 @@ mod tests {
 
         let headers = resolve_provider_auth(Some(&ambient_auth), &provider)
             .expect("auth should resolve")
-            .to_auth_headers();
+            .to_auth_headers()
+            .unwrap();
 
         assert_eq!(
             headers.get(AUTHORIZATION),
@@ -552,7 +606,8 @@ mod tests {
 
         let headers = resolve_provider_auth(Some(&command_auth), &provider)
             .expect("auth should resolve")
-            .to_auth_headers();
+            .to_auth_headers()
+            .unwrap();
 
         assert_eq!(
             headers.get(AUTHORIZATION),
@@ -577,7 +632,7 @@ mod tests {
         let auth =
             resolve_provider_auth(Some(&ambient_auth), &provider).expect("auth should resolve");
 
-        assert_eq!(auth.to_auth_headers(), expected);
+        assert_eq!(auth.to_auth_headers().unwrap(), expected);
     }
 
     #[test]
@@ -590,7 +645,7 @@ mod tests {
         expected.insert("x-external-auth", HeaderValue::from_static("enabled"));
         let auth = CodexAuth::Headers(AuthHeaders::new(expected.clone()));
 
-        let actual = auth_provider_from_auth(&auth).to_auth_headers();
+        let actual = auth_provider_from_auth(&auth).to_auth_headers().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -640,9 +695,13 @@ mod tests {
             .auth_cached()
             .expect("initial auth should be cached");
         let provider = auth_provider_from_auth_manager(Arc::clone(&auth_manager), &expected_auth);
+        let initial_headers = provider
+            .resolve_auth_headers()
+            .await
+            .expect("initial auth headers");
 
         assert_eq!(
-            provider.to_auth_headers().get(AUTHORIZATION),
+            provider.to_auth_headers().unwrap().get(AUTHORIZATION),
             Some(&HeaderValue::from_static("Bearer header.e30.first"))
         );
 
@@ -653,7 +712,22 @@ mod tests {
             /*chatgpt_plan_type*/ None,
         )
         .expect("save reloaded auth");
-        auth_manager.reload().await;
+
+        // Ordinary requests retain the manager's cache until refresh or recovery runs.
+        assert_eq!(
+            provider
+                .resolve_auth_headers()
+                .await
+                .expect("cached auth headers"),
+            initial_headers
+        );
+        assert_eq!(
+            tokio::join!(
+                provider.refresh_after_unauthorized(initial_headers.clone()),
+                provider.refresh_after_unauthorized(initial_headers),
+            ),
+            (true, true)
+        );
 
         let resolved_headers = provider
             .resolve_auth_headers()
@@ -671,9 +745,115 @@ mod tests {
             /*chatgpt_plan_type*/ None,
         )
         .expect("save switched-account auth");
+        assert!(!provider.refresh_after_unauthorized(resolved_headers).await);
         auth_manager.reload().await;
 
-        assert!(provider.to_auth_headers().is_empty());
+        assert!(matches!(
+            provider.to_auth_headers(),
+            Err(AuthError::Transient(_))
+        ));
+        assert!(matches!(
+            provider.resolve_auth_headers().await,
+            Err(AuthError::Transient(_))
+        ));
+    }
+
+    #[derive(Clone, Copy)]
+    enum RefreshFailure {
+        Transient,
+        Permanent,
+        Policy,
+    }
+
+    struct FailingRefreshAuth {
+        auth: tokio::sync::watch::Receiver<CodexAuth>,
+        barrier: tokio::sync::Barrier,
+        failure: RefreshFailure,
+    }
+
+    impl codex_login::ExternalAuth for FailingRefreshAuth {
+        fn resolve(&self) -> codex_login::ExternalAuthFuture<'_, CodexAuth> {
+            Box::pin(async { Ok(self.auth.borrow().clone()) })
+        }
+
+        fn refresh(
+            &self,
+            _context: codex_login::ExternalAuthRefreshContext,
+        ) -> codex_login::ExternalAuthFuture<'_, CodexAuth> {
+            Box::pin(async {
+                self.barrier.wait().await;
+                self.barrier.wait().await;
+                Err(std::io::Error::other("refresh service unavailable"))
+            })
+        }
+
+        fn classify_error(&self, error: std::io::Error) -> codex_login::RefreshTokenError {
+            match self.failure {
+                RefreshFailure::Transient => codex_login::RefreshTokenError::Transient(error),
+                RefreshFailure::Permanent => codex_login::auth::RefreshTokenFailedError::new(
+                    codex_login::auth::RefreshTokenFailedReason::Other,
+                    error.to_string(),
+                )
+                .into(),
+                RefreshFailure::Policy => codex_login::RefreshTokenError::Policy(
+                    codex_http_client::NetworkPolicyDenied::Revoked,
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_retries_only_with_newer_credentials() {
+        for failure in [
+            RefreshFailure::Transient,
+            RefreshFailure::Permanent,
+            RefreshFailure::Policy,
+        ] {
+            for (token, account, changed) in [
+                ("Bearer old", "account", false),
+                ("Bearer new", "account", true),
+                ("Bearer new", "other-account", false),
+            ] {
+                let initial = CodexAuth::Headers(AuthHeaders::new(HeaderMap::from_iter([
+                    (AUTHORIZATION, HeaderValue::from_static("Bearer old")),
+                    (
+                        http::HeaderName::from_static("chatgpt-account-id"),
+                        HeaderValue::from_static("account"),
+                    ),
+                ])));
+                let (updates, auth) = tokio::sync::watch::channel(initial.clone());
+                let external = Arc::new(FailingRefreshAuth {
+                    auth,
+                    barrier: tokio::sync::Barrier::new(2),
+                    failure,
+                });
+                let manager = AuthManager::from_auth_for_testing(initial.clone());
+                manager.set_external_auth(external.clone()).await.unwrap();
+                let provider = auth_provider_from_auth_manager(manager.clone(), &initial);
+                let rejected = provider.to_auth_headers().expect("initial auth headers");
+                let recovery = provider.refresh_after_unauthorized(rejected);
+                let concurrent_update = async {
+                    external.barrier.wait().await;
+                    updates.send_replace(CodexAuth::Headers(AuthHeaders::new(
+                        HeaderMap::from_iter([
+                            (AUTHORIZATION, HeaderValue::from_static(token)),
+                            (
+                                http::HeaderName::from_static("chatgpt-account-id"),
+                                HeaderValue::from_static(account),
+                            ),
+                        ]),
+                    )));
+                    manager.reload().await;
+                    external.barrier.wait().await;
+                };
+                let (retry, ()) = tokio::join!(recovery, concurrent_update);
+                assert_eq!(retry, changed && !matches!(failure, RefreshFailure::Policy));
+                if matches!(failure, RefreshFailure::Permanent) && token == "Bearer old" {
+                    // Even a late rejection must not reuse a credential known to have failed.
+                    assert!(!provider.refresh_after_unauthorized(HeaderMap::new()).await);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -702,7 +882,7 @@ mod tests {
                 task_id: "task-run-1".to_string(),
             })
         );
-        let headers = auth.auth.to_auth_headers();
+        let headers = auth.auth.to_auth_headers().unwrap();
         assert!(
             headers
                 .get(http::header::AUTHORIZATION)
@@ -716,7 +896,7 @@ mod tests {
         let auth = agent_identity_auth(/*chatgpt_account_is_fedramp*/ true).await;
         let provider = auth_provider_from_auth(&CodexAuth::AgentIdentity(auth));
 
-        let headers = provider.to_auth_headers();
+        let headers = provider.to_auth_headers().unwrap();
 
         assert!(
             headers
@@ -761,7 +941,7 @@ mod tests {
         .await
         .expect("fallback should resolve bearer auth");
 
-        let headers = provider_auth.auth.to_auth_headers();
+        let headers = provider_auth.auth.to_auth_headers().unwrap();
         assert_eq!(
             headers
                 .get(http::header::AUTHORIZATION)

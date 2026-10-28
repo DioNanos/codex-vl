@@ -6,6 +6,7 @@ use anyhow::Result;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol_test_support::ContentItemTestExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -182,7 +183,8 @@ fn changing_primary_environment_updates_model_context_and_persisted_state() -> R
         .render_fragment_diff(PreviousSectionState::Known(&previous))
         .1
         .expect("primary change should update the model")
-        .render();
+        .render()
+        .expect_text();
 
     assert_eq!(
         rendered,
@@ -300,7 +302,8 @@ fn crossing_single_environment_boundary_restates_current_environments() -> Resul
             ))
             .1
             .expect("adding an environment should update the model")
-            .render();
+            .render()
+            .expect_text();
         assert_eq!(
             expanded,
             format!(
@@ -317,7 +320,8 @@ fn crossing_single_environment_boundary_restates_current_environments() -> Resul
             ))
             .1
             .expect("removing an environment should update the model")
-            .render();
+            .render()
+            .expect_text();
         assert_eq!(
             reduced,
             format!(
@@ -373,7 +377,7 @@ fn failure_context_is_escaped_incremental_and_cleared_on_recovery() -> Result<()
         .collect(),
         ..Default::default()
     };
-    insta::assert_snapshot!(failed.body(), @r#"
+    insta::assert_snapshot!(failed.body().expect_text(), @r#"
 
       <environments>
         <environment id="remote">
@@ -412,8 +416,8 @@ fn failure_context_is_escaped_incremental_and_cleared_on_recovery() -> Result<()
         ))
         .1
         .expect("recovery must be visible to the model");
-    assert!(!update.body().contains("<error>"));
-    assert!(update.body().contains("<shell>bash</shell>"));
+    assert!(!update.body().expect_text().contains("<error>"));
+    assert!(update.body().expect_text().contains("<shell>bash</shell>"));
     Ok(())
 }
 
@@ -451,4 +455,61 @@ fn failure_context_limits_total_detail_bytes_at_utf8_boundaries() {
             None
         ]
     );
+}
+
+/// Sentinel through the shared production body: the shell-version probe is
+/// finalized for an external child on the Android target — every
+/// launcher-private name is recorded as an unset over both inheritance and
+/// overrides — while program, argv, and stdio stay verbatim and the
+/// non-Android target is untouched. The shell path is a controlled fixture;
+/// no PowerShell binary is required or executed.
+#[test]
+fn sentinel_powershell_version_probe_is_finalized_for_android() {
+    let shell_path = std::path::Path::new("/controlled/fixture/pwsh-probe");
+    let command = super::powershell_version_command_for_target(
+        shell_path,
+        codex_utils_process::ANDROID_TARGET_OS,
+    );
+
+    assert_eq!(command.as_std().get_program(), shell_path);
+    let args = command
+        .as_std()
+        .get_args()
+        .map(std::ffi::OsStr::to_os_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        args[..2],
+        [
+            std::ffi::OsString::from("-NoProfile"),
+            std::ffi::OsString::from("-NonInteractive")
+        ]
+    );
+
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        let leaked = command
+            .as_std()
+            .get_envs()
+            .any(|(env_name, value)| env_name == *name && value.is_some());
+        assert!(!leaked, "{name} must not carry a value");
+    }
+    let unset_names = command
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name.to_os_string())
+        .collect::<Vec<_>>();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(
+            unset_names.contains(&std::ffi::OsString::from(*name)),
+            "{name} must be recorded as an unset for the Android target"
+        );
+    }
+
+    let host = super::powershell_version_command_for_target(shell_path, "linux");
+    let host_unsets = host
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .count();
+    assert_eq!(host_unsets, 0, "the non-Android target must not scrub");
 }

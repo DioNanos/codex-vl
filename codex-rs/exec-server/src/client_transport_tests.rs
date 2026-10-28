@@ -18,6 +18,8 @@ use tokio::io::duplex;
 use tokio::net::TcpListener;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
+use tracing::instrument::WithSubscriber;
+use tracing_subscriber::layer::SubscriberExt;
 
 use super::ExecServerClient;
 use super::ExecServerReconnectStrategy;
@@ -176,6 +178,66 @@ fn registry_error(status: http::StatusCode, code: &str) -> ExecServerError {
 }
 
 #[tokio::test]
+async fn noise_handshake_reports_disconnect_reason() -> Result<()> {
+    for (send_reset, expected_reason) in [
+        (
+            false,
+            "Noise relay transport expects binary protobuf frames",
+        ),
+        (true, "Noise relay stream reset"),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let websocket_url = format!("ws://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await?;
+            let mut websocket = accept_async(socket).await?;
+            let Message::Binary(resume) = websocket.next().await.unwrap()? else {
+                anyhow::bail!("expected resume frame");
+            };
+            let stream_id = decode_relay_message_frame(&resume)?.stream_id;
+            let _handshake = websocket.next().await.unwrap()?;
+            let response = if send_reset {
+                let frame = RelayMessageFrame::reset(stream_id, "untrusted reason".to_string());
+                Message::Binary(encode_relay_message_frame(&frame).into())
+            } else {
+                Message::Text("untrusted text".into())
+            };
+            websocket.send(response).await?;
+            anyhow::Ok(())
+        });
+        let opened =
+            ExecServerClient::open_noise_rendezvous_connection(NoiseRendezvousConnectArgs {
+                bundle: test_bundle(websocket_url)?,
+                harness_identity: NoiseChannelIdentity::generate()?,
+                client_name: "test".to_string(),
+                connect_timeout: DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
+                initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
+                resume_session_id: None,
+                http_client_factory: codex_http_client::HttpClientFactory::new(
+                    codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+                ),
+            })
+            .await?;
+
+        let error = ExecServerClient::finish_noise_rendezvous_connection(opened)
+            .await
+            .err()
+            .expect("invalid handshake response must fail");
+        let ExecServerError::Disconnected(reason) = error else {
+            anyhow::bail!("expected disconnect, got {error:?}");
+        };
+        assert_eq!(
+            reason,
+            format!(
+                "Noise harness handshake failed before connection became ready: {expected_reason}"
+            )
+        );
+        server.await??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn noise_handshake_uses_initialize_timeout() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let websocket_url = format!("ws://{}", listener.local_addr()?);
@@ -184,7 +246,10 @@ async fn noise_handshake_uses_initialize_timeout() -> Result<()> {
         let mut websocket = accept_async(socket).await?;
         // Drain the frames sent before the harness waits for the responder,
         // then verify that a timed-out readiness wait closes the socket.
-        assert!(websocket.next().await.is_some());
+        let Some(Ok(Message::Binary(resume))) = websocket.next().await else {
+            anyhow::bail!("expected resume frame");
+        };
+        let stream_id = decode_relay_message_frame(&resume)?.stream_id;
         assert!(websocket.next().await.is_some());
         let closed =
             tokio::time::timeout(std::time::Duration::from_secs(1), websocket.next()).await?;
@@ -192,7 +257,7 @@ async fn noise_handshake_uses_initialize_timeout() -> Result<()> {
             matches!(closed, None | Some(Ok(Message::Close(_))) | Some(Err(_))),
             "timed-out Noise handshake must close its websocket"
         );
-        anyhow::Ok(())
+        anyhow::Ok(stream_id)
     });
     let initialize_timeout = std::time::Duration::from_millis(1);
     let opened = ExecServerClient::open_noise_rendezvous_connection(NoiseRendezvousConnectArgs {
@@ -214,7 +279,16 @@ async fn noise_handshake_uses_initialize_timeout() -> Result<()> {
     })
     .await?;
 
+    let stream_id = opened.stream_id.clone();
+    let mut log_file = tempfile::tempfile()?;
+    let writer = log_file.try_clone()?;
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(move || writer.try_clone().expect("clone log file")),
+    );
     let error = ExecServerClient::finish_noise_rendezvous_connection(opened)
+        .with_subscriber(subscriber)
         .await
         .err()
         .expect("stalled Noise handshake must time out");
@@ -223,7 +297,19 @@ async fn noise_handshake_uses_initialize_timeout() -> Result<()> {
         ExecServerError::InitializeTimedOut { timeout } if timeout == initialize_timeout
     ));
 
-    server.await??;
+    assert_eq!(server.await??, stream_id);
+    std::io::Seek::rewind(&mut log_file)?;
+    let mut logs = String::new();
+    std::io::Read::read_to_string(&mut log_file, &mut logs)?;
+    for field in [
+        "noise_reason=\"timeout\"",
+        "environment_id=environment",
+        "executor_registration_id=registration",
+        "elapsed_ms=",
+        &stream_id,
+    ] {
+        assert!(logs.contains(field), "missing {field} in {logs}");
+    }
     Ok(())
 }
 
@@ -745,4 +831,59 @@ async fn initial_noise_connection_refreshes_bundle_after_exhausting_initial_retr
     unauthorized_server.await??;
     accepted_server.await??;
     Ok(())
+}
+
+/// The stdio transport applies the command env, keeps the non-inheritable
+/// filter, then drops launcher metadata. Android unsets the six names; the
+/// host keeps their values. The test does not finalize afterwards.
+#[test]
+fn sentinel_stdio_transport_drops_launcher_metadata_for_android() {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+
+    let mut env = HashMap::new();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        env.insert((*name).to_string(), "launcher-value".to_string());
+    }
+    env.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+    env.insert(
+        "OPENAI_IDENTITY_TOKEN_FILE".to_string(),
+        "sentinel".to_string(),
+    );
+    let command = crate::client_api::StdioExecServerCommand {
+        program: "exec-server".to_string(),
+        args: Vec::new(),
+        env,
+        cwd: None,
+    };
+
+    let android = super::stdio_command_process_for_target(&command, "android");
+    let android_valued: Vec<OsString> = android
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_some())
+        .map(|(name, _)| name.to_os_string())
+        .collect();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(
+            !android_valued.contains(&OsString::from(*name)),
+            "{name} leaked"
+        );
+    }
+    assert!(android_valued.contains(&OsString::from("TOOL_KEEP_ME")));
+    assert!(
+        !android_valued.contains(&OsString::from("OPENAI_IDENTITY_TOKEN_FILE")),
+        "the non-inheritable filter must still drop the identity-token name"
+    );
+
+    let host = super::stdio_command_process_for_target(&command, "linux");
+    let host_valued: Vec<OsString> = host
+        .as_std()
+        .get_envs()
+        .filter(|(_, value)| value.is_some())
+        .map(|(name, _)| name.to_os_string())
+        .collect();
+    assert!(host_valued.contains(&OsString::from("CODEX_SELF_EXE")));
+    assert!(host_valued.contains(&OsString::from("TOOL_KEEP_ME")));
+    assert!(!host_valued.contains(&OsString::from("OPENAI_IDENTITY_TOKEN_FILE")));
 }

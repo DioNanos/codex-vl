@@ -418,7 +418,7 @@ function main() {
   // publishes no sandbox assets at all, so the default download is a 404 and the
   // build stops there. The matching archive and binding come from this project's
   // own rusty-v8 release; both are pinned by checksum, and a mismatch aborts.
-  const v8Version = "150.4.0";
+  const v8Version = "152.2.0";
   const v8Base = `https://github.com/openai/codex/releases/download/rusty-v8-v${v8Version}`;
   const v8Dir = path.join(root, ".rusty_v8");
   const v8Archive = path.join(
@@ -431,9 +431,9 @@ function main() {
   );
   const v8Checksums = {
     [path.basename(v8Archive)]:
-      "00adbb48798848c77550441c68673a5e8529b8e1b73eabcdee232cb39b40f4a1",
+      "feab9ae0384bebaa99c1d000654462c9d42123d587185c7876aaeef7d76ff749",
     [path.basename(v8Binding)]:
-      "ca5adf0cf89c9a70ad460ae73648b2fe89b74aa113b3cb7f757b6a02b758394f",
+      "b9d5652ebca515eb2bf4c2ee4a6551b2567117b5aa720f430d2032616dd7e3b5",
   };
 
   mkdirSync(v8Dir, { recursive: true });

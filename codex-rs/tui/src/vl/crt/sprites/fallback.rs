@@ -13,6 +13,10 @@ pub(crate) fn art_for(mode: CrtMode, tick: u64) -> Frame {
         CrtMode::Alert => alert(tick),
         CrtMode::Tired => tired(tick),
         CrtMode::Hungry => hungry(tick),
+        CrtMode::Error => Frame::new(
+            ["   .-x-.      ", "  (  x  x  )  ", "   `-.__.-'   "],
+            ROW_SLOTS,
+        ),
     }
 }
 

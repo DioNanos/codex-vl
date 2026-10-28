@@ -14,6 +14,7 @@ use codex_model_provider_info::GatewayOAuthConfig;
 use codex_model_provider_info::GatewayOAuthDelivery;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use http::HeaderMap;
 use http::HeaderName;
@@ -39,7 +40,14 @@ pub(crate) async fn compose_auth(
             .get_ref()
             .and_then(|source| source.downcast_ref::<GatewayAuthError>())
         {
-            return CodexErr::InvalidRequest(login_error.to_string());
+            return match login_error {
+                GatewayAuthError::LoginRequired => {
+                    CodexErrorDetails::GatewayLoginRequired(login_error.to_string()).into()
+                }
+                GatewayAuthError::LoginInProgress => {
+                    CodexErr::InvalidRequest(login_error.to_string())
+                }
+            };
         }
         // Issuer errors may echo arbitrary credentials from configured URLs. Keep the
         // diagnostic safe and bounded, preserving retries for transient failures.
@@ -49,7 +57,12 @@ pub(crate) async fn compose_auth(
         ))
     })?;
     let (name, value) = gateway_header(config, &token)?;
-    if resolved.auth.to_auth_headers().contains_key(&name) {
+    if resolved
+        .auth
+        .to_auth_headers()
+        .map_err(|error| codex_api::map_api_error(error.into()))?
+        .contains_key(&name)
+    {
         return Err(CodexErr::InvalidRequest(
             "gateway OAuth conflicts with primary auth headers".into(),
         ));
@@ -99,11 +112,12 @@ struct CombinedAuth {
 }
 
 impl AuthProvider for CombinedAuth {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
-        self.primary.add_auth_headers(headers);
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> std::result::Result<(), AuthError> {
+        self.primary.add_auth_headers(headers)?;
         headers
             .entry(self.name.clone())
             .or_insert(self.value.clone());
+        Ok(())
     }
 
     fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {

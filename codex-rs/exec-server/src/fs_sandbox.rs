@@ -373,10 +373,10 @@ fn helper_env_key_is_allowed(key: &str) -> bool {
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
-        // MXC needs SystemDrive to resolve platform directories and LOCALAPPDATA
-        // to create the sandboxed helper process.
+        // MXC needs SystemDrive to resolve platform directories, and SystemRoot and
+        // LOCALAPPDATA to create the sandboxed helper process.
         || (cfg!(windows)
-            && ["PATH", "SystemDrive", "LOCALAPPDATA"]
+            && ["PATH", "SystemDrive", "SystemRoot", "LOCALAPPDATA"]
                 .iter()
                 .any(|allowed| key.eq_ignore_ascii_case(allowed)))
 }
@@ -544,6 +544,11 @@ pub(crate) fn spawn_command(
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     command.current_dir(cwd.as_path());
     env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_env_var(name));
+    // Final boundary before the exec'd child: the command's environment is
+    // exactly this map (the pty Command starts from a cleared environment), so
+    // scrubbing here removes inherited and overridden launcher metadata alike.
+    // No-op outside Android.
+    codex_utils_process::scrub_private_launcher_env_here(&mut env);
     command.envs(env);
     command.stdin(stdin);
     // A helper is a known executable: native launch errors must not retry through fork.
@@ -716,6 +721,7 @@ mod tests {
                 ("Path", r"C:\Windows\System32"),
                 ("LocalAppData", r"C:\Users\test\AppData\Local"),
                 ("SystemDrive", "C:"),
+                ("systemROOT", r"C:\Windows"),
                 ("PATH_INJECTION", "bad"),
                 ("OPENAI_API_KEY", "secret"),
             ]
@@ -731,6 +737,7 @@ mod tests {
                     r"C:\Users\test\AppData\Local".to_string()
                 ),
                 ("SystemDrive".to_string(), "C:".to_string()),
+                ("systemROOT".to_string(), r"C:\Windows".to_string()),
             ])
         );
     }

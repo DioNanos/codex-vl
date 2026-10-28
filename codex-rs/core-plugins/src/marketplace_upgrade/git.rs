@@ -185,6 +185,10 @@ fn run_git_command_with_timeout(
     context: &str,
     timeout: Duration,
 ) -> Result<Output, String> {
+    // Last boundary before the spawn: git is an external child and must not
+    // receive the launcher-private install metadata. No-op outside Android.
+    codex_utils_process::finalize_external_child(command);
+
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

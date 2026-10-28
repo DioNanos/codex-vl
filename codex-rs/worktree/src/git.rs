@@ -50,6 +50,10 @@ pub(crate) fn git_output(
             }),
         ));
     }
+    // Last boundary before the child starts: the WorkingTree branch above adds
+    // explicit overrides after `base_git_command`, so finalize once more here.
+    // Git is an external child. No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
     let output = command.args(args).output().context("failed to start git")?;
     ensure_git_success(&output)?;
     Ok(output)
@@ -178,6 +182,9 @@ fn base_git_command(cwd: &Path) -> Command {
         .env("GIT_LFS_SKIP_SMUDGE", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
     scrub_non_inheritable_env_vars(&mut command);
+    // Git may run hooks or wrappers: it is an external child, so drop the
+    // launcher-private install metadata too. No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
     command
 }
 

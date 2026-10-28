@@ -1,3 +1,44 @@
+use codex_app_server_protocol::JSONRPCErrorError;
+use codex_thread_store::ThreadStoreError;
+use pretty_assertions::assert_eq;
+
+#[test]
+fn storage_failure_classification_does_not_change_mutation_error_policy() {
+    for error in [
+        ThreadStoreError::Internal {
+            message: "retryable conflict; outcome unknown".to_owned(),
+        },
+        ThreadStoreError::Retryable {
+            message: "store temporarily unavailable".to_owned(),
+        },
+        ThreadStoreError::OutcomeUnknown {
+            message: "connection lost after write".to_owned(),
+        },
+    ] {
+        let mapped = super::thread_store_mutation_error("archive", error.clone());
+        let expected = JSONRPCErrorError {
+            code: -32603,
+            message: format!("failed to archive session: {error}"),
+            data: None,
+        };
+        assert_eq!(mapped, expected);
+    }
+
+    assert_eq!(
+        super::thread_store_mutation_error(
+            "archive",
+            ThreadStoreError::Conflict {
+                message: "writer already active".to_owned(),
+            },
+        ),
+        JSONRPCErrorError {
+            code: -32600,
+            message: "writer already active".to_owned(),
+            data: None,
+        },
+    );
+}
+
 mod thread_list_cwd_filter_tests {
     use super::super::normalize_thread_list_cwd_filters;
     use codex_app_server_protocol::ThreadListCwdFilter;
@@ -832,7 +873,11 @@ mod thread_processor_behavior_tests {
         };
 
         assert_eq!(
-            collect_resume_override_mismatches(&request, &config_snapshot),
+            collect_resume_override_mismatches(
+                &request,
+                &config_snapshot,
+                /* selected_service_tier */ Some("flex"),
+            ),
             vec!["service_tier requested=Some(\"priority\") active=Some(\"flex\")".to_string()]
         );
     }
@@ -1062,10 +1107,10 @@ mod thread_processor_behavior_tests {
         let line = RolloutLine {
             timestamp: timestamp.clone(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: session_meta.clone(),
                 git: None,
-            }),
+            })),
         };
 
         fs::write(&path, format!("{}\n", serde_json::to_string(&line)?))?;
@@ -1130,10 +1175,10 @@ mod thread_processor_behavior_tests {
         let line = RolloutLine {
             timestamp,
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: session_meta,
                 git: None,
-            }),
+            })),
         };
         fs::write(&path, format!("{}\n", serde_json::to_string(&line)?))?;
 
@@ -1173,10 +1218,10 @@ mod thread_processor_behavior_tests {
         let line = RolloutLine {
             timestamp,
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: session_meta,
                 git: None,
-            }),
+            })),
         };
         fs::write(&path, format!("{}\n", serde_json::to_string(&line)?))?;
 

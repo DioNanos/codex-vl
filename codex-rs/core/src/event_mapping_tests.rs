@@ -23,6 +23,7 @@ use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_OPEN_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_OPEN_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::user_input::UserInput;
+use codex_protocol_test_support::ContentItemTestExt;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -453,6 +454,7 @@ fn parses_hook_prompt_message_as_distinct_turn_item() {
                 HookPromptFragment {
                     text: "Retry with exactly the phrase meow meow meow.".to_string(),
                     hook_run_id: "hook-run-1".to_string(),
+                    metadata: Default::default(),
                 }
             );
         }
@@ -490,6 +492,7 @@ fn parses_hook_prompt_and_hides_other_contextual_fragments() {
                 vec![HookPromptFragment {
                     text: "Retry with care & joy.".to_string(),
                     hook_run_id: "hook-run-1".to_string(),
+                    metadata: Default::default(),
                 }]
             );
         }
@@ -509,7 +512,8 @@ fn internal_model_context_does_not_parse_as_visible_turn_item() {
                 InternalContextSource::from_static("extension"),
                 "Internal steering.",
             )
-            .render(),
+            .render()
+            .expect_text(),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,

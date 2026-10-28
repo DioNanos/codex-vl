@@ -118,6 +118,7 @@ async fn extract_metadata_from_rollout_uses_session_meta() {
 
     let session_meta = SessionMeta {
         creator_user_id: Some("creator-user".to_string()),
+        attached_thread: false,
         creator_account_id: Some("creator-account".to_string()),
         session_id: id.into(),
         id,
@@ -152,7 +153,7 @@ async fn extract_metadata_from_rollout_uses_session_meta() {
     let rollout_line = RolloutLine {
         timestamp: "2026-01-27T12:34:56Z".to_string(),
         ordinal: Some(0),
-        item: RolloutItem::SessionMeta(session_meta_line.clone()),
+        item: RolloutItem::SessionMeta(Box::new(session_meta_line.clone())),
     };
     let json = serde_json::to_string(&rollout_line).expect("rollout json");
     let mut file = File::create(&path).expect("create rollout");
@@ -164,7 +165,7 @@ async fn extract_metadata_from_rollout_uses_session_meta() {
     let parent_line = RolloutLine {
         timestamp: rollout_line.timestamp.clone(),
         ordinal: Some(1),
-        item: RolloutItem::SessionMeta(parent),
+        item: RolloutItem::SessionMeta(Box::new(parent)),
     };
     writeln!(
         file,
@@ -206,7 +207,7 @@ async fn extract_metadata_from_rollout_rejects_unknown_history_mode() {
     let mut rollout_line = serde_json::to_value(RolloutLine {
         timestamp: "2026-01-27T12:34:56Z".to_string(),
         ordinal: None,
-        item: RolloutItem::SessionMeta(SessionMetaLine {
+        item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
             meta: SessionMeta {
                 session_id: id.into(),
                 id,
@@ -217,7 +218,7 @@ async fn extract_metadata_from_rollout_rejects_unknown_history_mode() {
                 ..SessionMeta::default()
             },
             git: None,
-        }),
+        })),
     })
     .expect("serialize rollout line");
     rollout_line["payload"]["history_mode"] = serde_json::json!("future");
@@ -242,6 +243,7 @@ async fn extract_metadata_from_rollout_returns_latest_memory_mode() {
 
     let session_meta = SessionMeta {
         creator_user_id: None,
+        attached_thread: false,
         creator_account_id: None,
         session_id: id.into(),
         id,
@@ -278,18 +280,18 @@ async fn extract_metadata_from_rollout_returns_latest_memory_mode() {
         RolloutLine {
             timestamp: "2026-01-27T12:34:56Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: session_meta,
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2026-01-27T12:35:00Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: polluted_meta,
                 git: None,
-            }),
+            })),
         },
     ];
     let mut file = File::create(&path).expect("create rollout");
@@ -316,7 +318,7 @@ fn builder_from_items_falls_back_to_filename() {
     let path = dir
         .path()
         .join(format!("rollout-2026-01-27T12-34-56-{uuid}.jsonl"));
-    let items = vec![RolloutItem::Compacted(CompactedItem {
+    let items = vec![RolloutItem::Compacted(Box::new(CompactedItem {
         message: "noop".to_string(),
         replacement_history: None,
         retained_context: None,
@@ -329,7 +331,7 @@ fn builder_from_items_falls_back_to_filename() {
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
-    })];
+    }))];
 
     let builder = builder_from_items(items.as_slice(), path.as_path()).expect("builder");
     let naive = NaiveDateTime::parse_from_str("2026-01-27T12-34-56", "%Y-%m-%dT%H-%M-%S")
@@ -591,6 +593,7 @@ fn write_rollout_in_sessions_with_cwd(
     let path = sessions_dir.join(format!("rollout-{filename_ts}-{thread_uuid}.jsonl"));
     let session_meta = SessionMeta {
         creator_user_id: None,
+        attached_thread: false,
         creator_account_id: None,
         session_id: id.into(),
         id,
@@ -625,7 +628,7 @@ fn write_rollout_in_sessions_with_cwd(
     let rollout_line = RolloutLine {
         timestamp: event_ts.to_string(),
         ordinal: None,
-        item: RolloutItem::SessionMeta(session_meta_line),
+        item: RolloutItem::SessionMeta(Box::new(session_meta_line)),
     };
     let json = serde_json::to_string(&rollout_line).expect("serialize rollout");
     let mut file = File::create(&path).expect("create rollout");

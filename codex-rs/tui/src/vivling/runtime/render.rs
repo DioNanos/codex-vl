@@ -2,6 +2,7 @@ use super::*;
 
 const VIVLING_STRIP_HEIGHT: u16 = 3;
 const VIVLING_STRIP_MIN_WIDTH: u16 = 12;
+const VIVLING_LINE_MIN_WIDTH: u16 = 5;
 
 impl Vivling {
     pub(crate) fn mark_recent_activity(&mut self, tail: Duration) {
@@ -106,7 +107,11 @@ impl Renderable for Vivling {
         let Some(state) = self.visible_state() else {
             return;
         };
-        if area.height == 0 || area.width < VIVLING_STRIP_MIN_WIDTH {
+        let min_width = match self.ui_layout {
+            crate::vl::crt::VivlingLayout::Line => VIVLING_LINE_MIN_WIDTH,
+            crate::vl::crt::VivlingLayout::Full => VIVLING_STRIP_MIN_WIDTH,
+        };
+        if area.height == 0 || area.width < min_width {
             return;
         }
         if self.ui_layout == crate::vl::crt::VivlingLayout::Line {
@@ -208,28 +213,49 @@ impl Renderable for Vivling {
     }
 
     fn desired_height(&self, width: u16) -> u16 {
-        if self.visible_state().is_none() || width < VIVLING_STRIP_MIN_WIDTH {
+        if self.visible_state().is_none() {
             return 0;
         }
         match self.ui_layout {
-            crate::vl::crt::VivlingLayout::Line => 1,
-            crate::vl::crt::VivlingLayout::Full => VIVLING_STRIP_HEIGHT,
+            crate::vl::crt::VivlingLayout::Line => {
+                if width < VIVLING_LINE_MIN_WIDTH {
+                    0
+                } else {
+                    1
+                }
+            }
+            crate::vl::crt::VivlingLayout::Full => {
+                if width < VIVLING_STRIP_MIN_WIDTH {
+                    0
+                } else {
+                    VIVLING_STRIP_HEIGHT
+                }
+            }
         }
     }
 }
 
 impl Vivling {
-    /// Single-row strip used by the `line` layout: one-line glyph,
+    /// Single-row strip used by the `line` layout: compact 5-column face,
     /// truncated insight, short mood, and a slow-blinking dot as the only
     /// animation (a fixed dim dot when animations are disabled).
-    fn render_line_layout(&self, area: Rect, buf: &mut Buffer, state: &VivlingState, now: Instant) {
-        let sprite_head = self
-            .current_sprite(state, now)
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .trim_end()
-            .to_string();
+    pub(crate) fn render_line_layout(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &VivlingState,
+        now: Instant,
+    ) {
+        let mode = derive_mode(state, self.activity(), self.is_task_running(), area.width);
+        let started = self.shadow.active_started_at.unwrap_or(now);
+        let elapsed_secs = now.saturating_duration_since(started).as_secs();
+        let tick = if self.animations_enabled {
+            elapsed_secs
+        } else {
+            0
+        };
+        let face = crate::vl::crt::strip::face(mode, tick);
+
         let live_context = self.shadow.live_context.clone();
         let bootstrap_pending = !self.shadow.crt_first_dispatch_completed;
         let insight =
@@ -237,46 +263,63 @@ impl Vivling {
                 .or_else(|| self.current_animation_text_at(now))
                 .unwrap_or_default();
         let mood = state.mood();
-        // Slow blink (2 s period) driven by the wall clock so it keeps its
-        // phase across redraws; a fixed dim dot when animations are off.
-        let blink_on = self.animations_enabled
-            && std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_secs() % 2 == 0)
-                .unwrap_or(true);
+
+        // Slow blink (2 s period) driven by elapsed time; a fixed dim dot when animations are off.
+        let blink_on = self.animations_enabled && elapsed_secs.is_multiple_of(2);
         let dot = if blink_on { "●" } else { "·" };
-        let row = compose_line_layout_row(
-            area.width as usize,
-            &sprite_head,
-            insight.trim(),
-            mood.trim(),
-            dot,
-        );
-        let rendered = ratatui::text::Line::from(row);
+
+        let row =
+            compose_line_layout_row(area.width as usize, face, insight.trim(), mood.trim(), dot);
+
+        let face_style = if crate::terminal_palette::effective_stdout_color_level()
+            != crate::terminal_palette::StdoutColorLevel::Unknown
+        {
+            crate::vl::crt::Palette::codex().face
+        } else {
+            ratatui::style::Style::default()
+        };
+
+        let rendered = if row.len() >= face.len() && row.starts_with(face) {
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled(face, face_style),
+                ratatui::text::Span::raw(&row[face.len()..]),
+            ])
+        } else {
+            ratatui::text::Line::from(row)
+        };
         ratatui::widgets::Paragraph::new(rendered).render(area, buf);
         let _ = self.schedule_animation_wake(now);
     }
 }
 
-/// Truncate `text` to at most `max_chars` characters, ending with an
+/// Truncate `text` to at most `max_width` display columns, ending with an
 /// ellipsis when the text is cut.
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
         return String::new();
     }
-    if text.chars().count() <= max_chars {
+    if crate::width::display_width(text) <= max_width {
         return text.to_string();
     }
-    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    let target = max_width.saturating_sub(1);
+    let mut out = String::new();
+    let mut current_w = 0;
+    for ch in text.chars() {
+        let cw = crate::width::char_width(ch);
+        if current_w + cw > target {
+            break;
+        }
+        out.push(ch);
+        current_w += cw;
+    }
     out.push('…');
     out
 }
 
-/// Compose the single-row `line` layout: glyph, truncated insight, short
-/// mood, and the blinking dot in the last column. Everything is cut to fit
-/// `width` (character count; the CRT glyphs are ASCII so a char-based width
-/// matches the pane grid).
-fn compose_line_layout_row(
+/// Compose the single-row `line` layout: compact 5-column face, truncated insight,
+/// short mood, and the blinking dot in the last column. Everything is cut to fit
+/// `width` terminal columns.
+pub(crate) fn compose_line_layout_row(
     width: usize,
     glyph: &str,
     insight: &str,
@@ -285,11 +328,11 @@ fn compose_line_layout_row(
 ) -> String {
     let width = width.max(1);
     let glyph = glyph.trim_end();
-    let glyph_width = glyph.chars().count();
-    let dot_width = dot.chars().count();
+    let glyph_width = crate::width::display_width(glyph);
+    let dot_width = crate::width::display_width(dot);
     if glyph_width + dot_width + 1 >= width {
         // No room for anything but the glyph.
-        return truncate_chars(glyph, width);
+        return truncate_to_width(glyph, width);
     }
     // The blinking dot owns the last column.
     let body_width = width - dot_width;
@@ -300,7 +343,7 @@ fn compose_line_layout_row(
         if text.is_empty() {
             continue;
         }
-        let text_width = text.chars().count();
+        let text_width = crate::width::display_width(text);
         let separators = 2;
         if used + separators + text_width + dot_width <= body_width {
             row.push_str("  ");
@@ -313,15 +356,15 @@ fn compose_line_layout_row(
         let avail = body_width.saturating_sub(used + separators + dot_width + 1);
         if avail >= 4 {
             row.push_str("  ");
-            row.push_str(&truncate_chars(text, avail));
+            row.push_str(&truncate_to_width(text, avail));
         }
         break;
     }
-    while row.chars().count() + dot_width < body_width {
+    while crate::width::display_width(&row) + dot_width < body_width {
         row.push(' ');
     }
     row.push_str(dot);
-    truncate_chars(&row, width)
+    truncate_to_width(&row, width)
 }
 
 impl Vivling {

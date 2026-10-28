@@ -214,10 +214,25 @@ impl EnvironmentHttp for RouteAwareClientPool {
     }
 }
 
+/// Git child used by origin detection. Git is an external process and may run
+/// hooks or wrappers, so the launcher-private install metadata is dropped after
+/// the environment is set and before the child starts. No-op outside Android.
+fn git_command() -> std::process::Command {
+    git_command_for_target(std::env::consts::OS)
+}
+
+/// [`git_command`] against an explicit target platform: this body composes and
+/// finalizes, the wrapper above only selects the platform.
+fn git_command_for_target(target_os: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.args(["-c", codex_git_utils::SAFE_BARE_REPOSITORY_CONFIG]);
+    codex_utils_process::finalize_external_child_for(&mut command, target_os);
+    command
+}
+
 fn get_git_origins() -> Vec<SanitizedGitUrl> {
     // Prefer: git config --get-regexp remote\..*\.url
-    let out = std::process::Command::new("git")
-        .args(["-c", codex_git_utils::SAFE_BARE_REPOSITORY_CONFIG])
+    let out = git_command()
         .args(["config", "--get-regexp", "remote\\..*\\.url"])
         .output();
     if let Ok(ok) = out
@@ -237,10 +252,7 @@ fn get_git_origins() -> Vec<SanitizedGitUrl> {
         }
     }
     // Fallback: git remote -v
-    let out = std::process::Command::new("git")
-        .args(["-c", codex_git_utils::SAFE_BARE_REPOSITORY_CONFIG])
-        .args(["remote", "-v"])
-        .output();
+    let out = git_command().args(["remote", "-v"]).output();
     if let Ok(ok) = out
         && ok.status.success()
     {

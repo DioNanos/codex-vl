@@ -154,22 +154,6 @@ function getUpdatedPath(newDirs) {
   return updatedPath;
 }
 
-function sanitizeAndroidLdLibraryPath(binDir) {
-  const termuxPrefix = process.env.PREFIX || "/data/data/com.termux/files/usr";
-  const blocked = new Set([
-    `${termuxPrefix}/lib`,
-    `${termuxPrefix}/libexec`,
-    "/data/data/com.termux/files/usr/lib",
-    "/data/data/com.termux/files/usr/libexec",
-  ]);
-
-  const extraPaths = (process.env.LD_LIBRARY_PATH || "")
-    .split(":")
-    .filter((entry) => entry && !blocked.has(entry));
-
-  return [binDir, ...extraPaths].join(":");
-}
-
 // codex-vl fork: pnpm links the package under the fork-owned scope, so the
 // ownership probe must resolve that scope or pnpm detection is dead for fork
 // users.
@@ -484,8 +468,11 @@ delete env.CODEX_MANAGED_BY_PNPM;
 delete env.CODEX_MANAGED_BY_VITE_PLUS;
 env[packageManagerEnvVar] = "1";
 if (platform === "android") {
+  // The packaged ELF resolves its own shared libraries through its
+  // DT_RUNPATH ($ORIGIN), so the launcher must not rewrite
+  // LD_LIBRARY_PATH: the native binary receives the caller's value
+  // verbatim, including when it is unset or empty.
   env.CODEX_SELF_EXE = binaryPath;
-  env.LD_LIBRARY_PATH = sanitizeAndroidLdLibraryPath(path.dirname(binaryPath));
 }
 
 // Forward the identity channel descriptors (fd 3:4) declared by NexusCrew

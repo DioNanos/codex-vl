@@ -1,4 +1,4 @@
-//! Cloud catalog reuse, refresh, and auth-scoped retention through real Core turns.
+//! Cloud catalog reuse, refresh retries, and auth-scoped retention through real Core turns.
 
 use super::*;
 use codex_extension_api::ThreadLifecycleContributor;
@@ -41,6 +41,7 @@ impl SkillProvider for CloudTurnProvider {
                 })
                 .collect();
             Ok(SkillCatalog {
+                is_partial: false,
                 entries,
                 warnings: Vec::new(),
             })
@@ -90,6 +91,8 @@ impl ThreadLifecycleContributor<Config> for SessionResources {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+
     let server = responses::start_mock_server().await;
     let apps = AppsTestServer::mount(&server).await?;
     let calendar = ("calendar", 1);
@@ -129,6 +132,7 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
         });
     let test = builder.build_with_auto_env(&server).await?;
     let mut last_available_skill = calendar;
+    // Back off failures across steps and turns; reconnects allow immediate recovery.
     for (turn, next_reply, expected_skill, new_account, expected_lists, expected_reads) in [
         ("discovered", Ok(Some(calendar)), Some(calendar), None, 1, 1),
         (
@@ -173,6 +177,7 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
             1,
             0,
         ),
+        ("new-account-cooldown", Ok(Some(gmail)), None, None, 0, 0),
         (
             "new-account-discovered",
             Ok(Some(gmail)),
@@ -203,7 +208,13 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
         *provider.reply.lock().expect("cloud reply lock") = next_reply;
         let previous_connection_scope = if matches!(
             turn,
-            "refreshed" | "same-account-failure" | "restored" | "connection-replaced-failure"
+            "refreshed"
+                | "same-account-failure"
+                | "removed"
+                | "restored"
+                | "new-account-discovered"
+                | "connection-replaced-failure"
+                | "replacement-connection-discovered"
         ) {
             let client = resources
                 .0
@@ -246,6 +257,12 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
         }
         // Empty catalogs must also reject reads of the previously cached skill.
         let (plugin, _) = expected_skill.unwrap_or(last_available_skill);
+        // Auth changes revoke the old catalog, but never reuse its alias for a different root.
+        let alias = if plugin == "calendar" {
+            "c0/demo"
+        } else {
+            "c1/demo"
+        };
         let package = format!("skill://{plugin}/demo");
         let list_id = format!("list-{turn}");
         let read_id = format!("read-{turn}");
@@ -264,7 +281,7 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
                         &read_id,
                         "skills",
                         "read",
-                        &json!({"package": package}).to_string(),
+                        &json!({"package": alias}).to_string(),
                     ),
                     ev_completed("tools"),
                 ]),

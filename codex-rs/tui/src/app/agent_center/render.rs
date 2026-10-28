@@ -137,6 +137,7 @@ impl Renderable for AgentsOverviewView {
         };
         let grouping = match state.grouping {
             AgentsOverviewGrouping::Project => "Project",
+            AgentsOverviewGrouping::Directory => "Directory",
             AgentsOverviewGrouping::Status => "Status",
             AgentsOverviewGrouping::Model => "Model",
         };
@@ -216,6 +217,16 @@ impl Renderable for AgentsOverviewView {
                 state
                     .creating_worktree
                     .then(|| "Creating worktree…".to_owned())
+            })
+            .or_else(|| {
+                state.removal.map(|action| match action {
+                    AgentsOverviewAction::Archive => {
+                        "Archiving task…  You can still browse.".to_owned()
+                    }
+                    AgentsOverviewAction::Delete => {
+                        "Deleting task…  You can still browse.".to_owned()
+                    }
+                })
             })
             .or_else(|| {
                 (state.refresh_failed && !state.loading).then(|| "Error loading tasks".to_owned())

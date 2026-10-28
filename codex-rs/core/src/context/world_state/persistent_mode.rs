@@ -7,7 +7,9 @@ use super::WorldStateHash;
 use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 use codex_protocol::openai_models::ModelMessageTextTooLong;
 use codex_protocol::openai_models::validate_model_message_text;
 use serde::Deserialize;
@@ -39,8 +41,8 @@ impl ContextualUserFragment for PersistentModeState {
         ("<persistent_mode>", "</persistent_mode>")
     }
 
-    fn body(&self) -> String {
-        format!("\n{}\n", self.instructions)
+    fn body(&self) -> ContentItem {
+        input_text(format!("\n{}\n", self.instructions))
     }
 }
 

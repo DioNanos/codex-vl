@@ -16,13 +16,13 @@ use codex_protocol::protocol::FileSystemSpecialPath;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
+use mxc_sdk::mxc_common::models::NetworkAction;
+use mxc_sdk::mxc_common::models::NetworkCidr;
+use mxc_sdk::mxc_common::models::NetworkEgressPolicy;
+use mxc_sdk::mxc_common::models::NetworkIngressPolicy;
+use mxc_sdk::mxc_common::models::NetworkPeer;
+use mxc_sdk::mxc_common::models::NetworkRule;
 use pretty_assertions::assert_eq;
-use wxc_common::models::NetworkAction;
-use wxc_common::models::NetworkCidr;
-use wxc_common::models::NetworkEgressPolicy;
-use wxc_common::models::NetworkIngressPolicy;
-use wxc_common::models::NetworkPeer;
-use wxc_common::models::NetworkRule;
 
 use crate::CreateMxcCommandArgsParams;
 use crate::MxcCommand;
@@ -40,9 +40,10 @@ fn symbolic_root_precedence_is_independent_of_drive_and_cwd() -> Result<()> {
     let volumes = [
         PathUri::parse("file:///C:/")?,
         PathUri::parse("file:///D:/")?,
+        PathUri::parse("file:///R:/")?,
     ];
-    let readonly = PathUri::parse("file:///D:/foobar")?;
-    let writable = PathUri::parse("file:///D:/writable")?;
+    let readonly = PathUri::parse("file:///R:/foobar")?;
+    let writable = PathUri::parse("file:///R:/writable")?;
     let mut fs = FileSystemSandboxPolicy::read_only();
     fs.entries.extend([
         FileSystemSandboxEntry::new(volumes[1].clone().into(), Read),
@@ -52,7 +53,7 @@ fn symbolic_root_precedence_is_independent_of_drive_and_cwd() -> Result<()> {
     ]);
     for access in [Read, Write, Deny] {
         fs.entries[0].access = access;
-        let resolved = materialize_volume_roots(fs.clone(), &volumes)?;
+        let resolved = materialize_volume_roots(fs.clone(), &volumes, &volumes[..2])?;
         for volume in &volumes {
             let cwd = volume.join("work")?;
             let context = FileSystemSandboxPolicyContext {
@@ -62,9 +63,15 @@ fn symbolic_root_precedence_is_independent_of_drive_and_cwd() -> Result<()> {
                 temporary_directories: None,
             };
             assert_eq!(
-                [&volumes[0], &volumes[1], &readonly, &writable]
+                [&volumes[0], &volumes[1], &volumes[2], &readonly, &writable]
                     .map(|path| resolved.resolve_access(path, &context)),
-                [access, access, Read, Write]
+                [
+                    access,
+                    access,
+                    if access == Read { Deny } else { access },
+                    Read,
+                    Write
+                ]
             );
         }
     }
@@ -76,7 +83,7 @@ fn symbolic_root_precedence_is_independent_of_drive_and_cwd() -> Result<()> {
         Read,
     ));
     assert!(matches!(
-        materialize_volume_roots(fs, &volumes),
+        materialize_volume_roots(fs, &volumes, &volumes),
         Err(PolicyError::UnsupportedSymbolicPath)
     ));
     Ok(())
@@ -114,7 +121,7 @@ fn approved_command_expands_volume_roots_without_retaining_original_grants() -> 
     ]);
     let approved = policy.for_approved_command(&context);
     assert_eq!(approved.resolve_access(&formerly_readonly, &context), Deny);
-    let translated = materialize_volume_roots(approved, &volumes)?;
+    let translated = materialize_volume_roots(approved, &volumes, &volumes[..1])?;
     assert_eq!(
         [
             &volumes[0],
@@ -200,8 +207,12 @@ fn wrapper_preserves_exact_argv_and_separate_command_cwd() -> Result<()> {
         (
             r#""C:\Program Files\tool.exe" --permissions "" "quotes\" and slash\\""#.to_owned(),
             cwd.to_str().unwrap().to_owned(),
-            vec!["CUSTOM=value".to_owned()],
+            Some(vec!["CUSTOM=value".to_owned()]),
         )
+    );
+    assert_eq!(
+        build_request(&parsed, &cwd, Vec::new(), &[], &[])?.env,
+        None
     );
     Ok(())
 }

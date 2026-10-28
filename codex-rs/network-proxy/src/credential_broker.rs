@@ -45,6 +45,17 @@ pub(crate) const BROKERED_CREDENTIALS_ENV_KEY: &str = "CODEX_NETWORK_PROXY_BROKE
 const MIN_EMBEDDED_CREDENTIAL_LENGTH: usize = 16;
 const BROKERED_CREDENTIAL_ALIAS_MARKER_PREFIX: &str = "@alias:";
 
+/// How to handle recognized credentials left raw in a prepared command environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialMaskingFailureMode {
+    /// Warn and keep the unmasked values.
+    Warn,
+    /// Remove variables containing unmasked values, including copied aliases.
+    Deny,
+    /// Reject the command environment.
+    Error,
+}
+
 #[derive(Clone)]
 pub(crate) struct CredentialBroker {
     state: Arc<RwLock<CredentialBrokerState>>,
@@ -1120,6 +1131,59 @@ impl CredentialBroker {
         matching::virtualize_text(&state, text, env)
     }
 
+    pub(crate) fn handle_unmasked_credentials(
+        &self,
+        env: &mut HashMap<String, String>,
+        mode: CredentialMaskingFailureMode,
+    ) -> anyhow::Result<()> {
+        let state = self.read_state();
+        anyhow::ensure!(
+            state.enabled,
+            "credential masking requires an enabled credential broker"
+        );
+        let mut unmasked_keys = Vec::new();
+        for (key, value) in env.iter() {
+            let value = value.trim();
+            let known = matching::known_credential_matches(&state, value, env);
+            let contains_real_credential = known
+                .iter()
+                .any(|matched| matched.value == matched.real_value);
+            let remainder = matching::mask_known_credentials(value, &known);
+            let mut masked = remainder.clone();
+            if contains_real_credential
+                || !matching::virtualize_text(&state, &mut masked, env)
+                || masked != remainder
+            {
+                unmasked_keys.push(key.clone());
+            }
+        }
+        drop(state);
+        if unmasked_keys.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            CredentialMaskingFailureMode::Warn => {
+                tracing::warn!(
+                    "Credential masking could not protect some environment credentials; continuing with those values unmasked."
+                );
+            }
+            CredentialMaskingFailureMode::Deny => {
+                for key in unmasked_keys {
+                    env.remove(&key);
+                }
+                tracing::warn!(
+                    "Credential masking could not protect some environment credentials; removed those variables before execution."
+                );
+            }
+            CredentialMaskingFailureMode::Error => {
+                anyhow::bail!(
+                    "credential masking left an unmasked credential in the command environment"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn restore_text(&self, text: &mut String) -> bool {
         let state = self.read_state();
         if !state.enabled {
@@ -1578,6 +1642,44 @@ impl CredentialBrokerState {
             return None;
         }
 
+        let mut alias_identities = Vec::new();
+        if matches!(&provider, BrokeredCredentialProvider::Builtin(_))
+            && !self.configured_providers.is_empty()
+        {
+            let context_keys = self.environment(existing_env).provider_context_keys;
+            for (key, value) in existing_env {
+                if key.eq_ignore_ascii_case("PATH")
+                    || key.to_ascii_uppercase().ends_with("_PATH")
+                    || crate::is_managed_proxy_env_var(key, value)
+                    || context_keys
+                        .iter()
+                        .any(|context| env_key_matches(key, context))
+                {
+                    continue;
+                }
+                let known = matching::known_credential_matches(self, value, existing_env);
+                let uncovered = matching::mask_known_credentials(value, &known);
+                for configured in &self.configured_providers {
+                    for matched in configured.find_discoverable_credentials(&uncovered) {
+                        let value = &uncovered[matched.range.clone()];
+                        if value.contains('\0')
+                            || matching::is_operational_path_match(
+                                &uncovered,
+                                matched.range.start,
+                                matched.range.end,
+                            )
+                        {
+                            continue;
+                        }
+                        alias_identities.push((
+                            BrokeredCredentialProvider::Configured(Arc::clone(configured)),
+                            value.to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
         let Some(dummy_value) = (0..64).find_map(|_| {
             let candidate = provider.dummy_value(real_value)?;
             (candidate != real_value
@@ -1592,10 +1694,51 @@ impl CredentialBrokerState {
                         || credential.real_value == candidate
                         || credential.contains_embedded_value(&candidate, &credential.dummy_value)
                         || credential.contains_embedded_value(&candidate, &credential.real_value)
+                        || is_builtin_shaped_credential(real_value)
+                            && credential.dummy_value.contains(&candidate)
+                        || provider.contains_embedded_value(&credential.dummy_value, &candidate)
                 })
-                && !credential_provider_definitions(self).any(|other| {
-                    !other.same_provider(&provider)
-                        && other.recognizes_strictly_embedded_dummy_collision_in(&candidate)
+                && match &provider {
+                    BrokeredCredentialProvider::Builtin(_) => {
+                        // Check observed identities even when their sources have not registered.
+                        !credential_provider_definitions(self).any(|owner_provider| {
+                            self.credential_owners.iter().any(|owner| {
+                                let owns_key = match &owner_provider {
+                                    BrokeredCredentialProvider::Builtin(provider) => {
+                                        provider.sources().iter().any(|source| {
+                                            source.env_vars.iter().any(|key| {
+                                                env_key_matches(key, &owner.env_var)
+                                            })
+                                        })
+                                    }
+                                    BrokeredCredentialProvider::Configured(provider) => provider
+                                        .config
+                                        .env
+                                        .iter()
+                                        .any(|key| env_key_matches(key, &owner.env_var)),
+                                };
+                                owns_key
+                                    && (candidate == owner.real_value
+                                        || is_builtin_shaped_credential(&owner.real_value)
+                                            && candidate.contains(&owner.real_value)
+                                        || owner_provider.contains_embedded_value(
+                                            &candidate,
+                                            &owner.real_value,
+                                        ))
+                            })
+                        })
+                    }
+                    BrokeredCredentialProvider::Configured(_) => {
+                        !credential_provider_definitions(self).any(|other| {
+                            !other.same_provider(&provider)
+                                && other.recognizes_strictly_embedded_dummy_collision_in(&candidate)
+                        })
+                    }
+                }
+                && !alias_identities.iter().any(|(alias_provider, value)| {
+                    candidate == *value
+                        || is_builtin_shaped_credential(value) && candidate.contains(value)
+                        || alias_provider.contains_embedded_value(&candidate, value)
                 }))
             .then_some(candidate)
         }) else {

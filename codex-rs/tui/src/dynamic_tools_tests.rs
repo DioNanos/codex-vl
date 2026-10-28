@@ -236,7 +236,7 @@ stream_max_retries = 0
     assert_eq!(expected["page"]["order"], "newest_first");
     tokio::time::timeout(Duration::from_secs(/*secs*/ 30), async {
         while let Some(event) = model_server.next_event().await {
-            match event {
+            match event.event {
                 codex_app_server_client::AppServerEvent::ServerRequest(request) => {
                     if let codex_app_server_protocol::ServerRequest::DynamicToolCall {
                         request_id,
@@ -396,6 +396,45 @@ fn activity_metadata_is_retained_without_including_outputs() -> color_eyre::Resu
     assert_eq!(
         no_outputs["items"][8]["result"],
         json!({"text": "", "truncated": true, "originalChars": 11})
+    );
+    Ok(())
+}
+
+/// File-backed generated images retain their reference when task output is requested without
+/// exposing that output when the caller asks for metadata only.
+#[test]
+fn file_backed_image_generation_is_retained_as_a_reference() -> color_eyre::Result<()> {
+    let turn: Turn = serde_json::from_value(json!({
+        "id": "turn-1",
+        "status": "completed",
+        "items": [{
+            "type": "imageGeneration",
+            "id": "image-1",
+            "status": "completed",
+            "fileId": "file-generated-image"
+        }]
+    }))?;
+
+    assert_eq!(
+        turn_summary(&turn, /*include_outputs*/ true, DEFAULT_OUTPUT_CHARS)["items"][0],
+        json!({
+            "type": "imageGeneration",
+            "id": "image-1",
+            "status": "completed",
+            "revisedPrompt": null,
+            "savedPath": null,
+            "fileId": "file-generated-image"
+        })
+    );
+    assert_eq!(
+        turn_summary(&turn, /*include_outputs*/ false, DEFAULT_OUTPUT_CHARS)["items"][0],
+        json!({
+            "type": "imageGeneration",
+            "id": "image-1",
+            "status": "completed",
+            "revisedPrompt": null,
+            "savedPath": null
+        })
     );
     Ok(())
 }

@@ -2009,6 +2009,29 @@ async fn workspace_owner_limit_states_render_state_specific_messages() {
 }
 
 #[tokio::test]
+async fn academic_researchers_usage_limit_renders_admin_guidance() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let error = codex_protocol::error::UsageLimitReachedError {
+        plan_type: Some(codex_protocol::auth::PlanType::Known(
+            codex_protocol::auth::KnownPlan::Sci,
+        )),
+        resets_at: None,
+        limit_window_minutes: None,
+        rate_limits: None,
+        promo_message: None,
+        rate_limit_reached_type: None,
+    };
+    chat.on_rate_limit_error(RateLimitErrorKind::UsageLimit, error.to_string());
+    insta::assert_snapshot!(
+        drain_insert_history(&mut rx)
+            .into_iter()
+            .map(|lines| lines_to_single_string(&lines))
+            .collect::<String>(),
+        @"■ You’ve hit your usage limit. To get more access now, send a request to your admin or try again later."
+    );
+}
+
+#[tokio::test]
 async fn missing_rate_limit_reached_type_does_not_prompt_or_refresh() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 100.0)));
@@ -2261,6 +2284,37 @@ async fn ctrl_c_interrupt_pauses_active_goal_turn() {
 
     next_interrupt_op(&mut op_rx);
     assert_goal_paused_event(&mut rx, thread_id);
+}
+
+#[tokio::test]
+async fn program_status_stays_working_when_input_acknowledges_an_active_goal() {
+    use crate::terminal_program_status::ProgramStatus;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = start_active_goal_turn(&mut chat);
+    let mut statuses = vec![chat.desired_program_status()];
+    chat.on_task_complete(
+        /*last_agent_message*/ None, /*completion*/ None, /*from_replay*/ false,
+    );
+    statuses.push(chat.desired_program_status());
+    // App acknowledges input before the composer handles a non-interrupting key.
+    chat.acknowledge_program_status();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    statuses.push(chat.desired_program_status());
+    update_thread_goal(&mut chat, thread_id, AppThreadGoalStatus::Complete);
+    statuses.push(chat.desired_program_status());
+    chat.acknowledge_program_status();
+    statuses.push(chat.desired_program_status());
+    assert_eq!(
+        statuses,
+        [
+            ProgramStatus::Working,
+            ProgramStatus::Working,
+            ProgramStatus::Working,
+            ProgramStatus::Done,
+            ProgramStatus::Idle,
+        ]
+    );
 }
 
 #[tokio::test]

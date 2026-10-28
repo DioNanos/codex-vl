@@ -153,6 +153,8 @@ pub struct LocalThreadStore {
     state_db: Option<StateDbHandle>,
     thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,
     thread_data_cleanup: Option<Arc<ThreadDataCleanup>>,
+    #[cfg(test)]
+    startup_migration_retry_gate: Option<Arc<StartupMigrationRetryGate>>,
 }
 
 type ThreadDataCleanup = dyn Fn(Vec<ThreadId>) -> ThreadStoreFuture<'static, ()> + Send + Sync;
@@ -227,6 +229,14 @@ impl LiveWriterLocks {
     }
 }
 
+// Per-store synchronization for exercising startup contention through the public entry point.
+#[cfg(test)]
+#[derive(Default)]
+struct StartupMigrationRetryGate {
+    retry_started: tokio::sync::Notify,
+    retry_allowed: tokio::sync::Notify,
+}
+
 /// Process-scoped configuration for local thread storage.
 ///
 /// This describes where local storage lives. New-thread rollout metadata such
@@ -271,6 +281,8 @@ impl LocalThreadStore {
             state_db,
             thread_history_db: Arc::new(OnceCell::new()),
             thread_data_cleanup: None,
+            #[cfg(test)]
+            startup_migration_retry_gate: None,
         }
     }
 
@@ -325,6 +337,26 @@ impl LocalThreadStore {
     /// Return the live local rollout path for legacy local-only code paths.
     pub async fn live_rollout_path(&self, thread_id: ThreadId) -> ThreadStoreResult<PathBuf> {
         live_writer::rollout_path(self, thread_id).await
+    }
+
+    /// Select only materialized rollout inputs without creating a file for untouched threads.
+    pub(crate) async fn feedback_rollout_path(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreResult<Option<PathBuf>> {
+        let (recorder, _, _) = live_writer::live_writer_parts(self, thread_id).await?;
+        if recorder
+            .unpersisted_session_meta()
+            .await
+            .map_err(|error| ThreadStoreError::Internal {
+                message: error.to_string(),
+            })?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        // Keep the path even if a materialized file was deleted: collection must report that error.
+        Ok(Some(recorder.rollout_path().to_path_buf()))
     }
 
     pub(super) async fn ensure_live_recorder_absent(
@@ -582,6 +614,25 @@ impl ThreadStore for LocalThreadStore {
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredModelContext> {
         Box::pin(async move { model_context::load_latest_model_context(self, params).await })
+    }
+
+    fn is_model_context_current(
+        &self,
+        params: LoadThreadHistoryParams,
+        revision: String,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async move {
+            let resolved = if params.include_archived {
+                thread_rollout_resolver::resolve_current_including_archived(self, params.thread_id)
+                    .await?
+            } else {
+                thread_rollout_resolver::resolve_current(self, params.thread_id).await?
+            };
+            let Some(resolved) = resolved else {
+                return Ok(false);
+            };
+            Ok(history_revision::read(&resolved.path).await.as_ref() == Some(&revision))
+        })
     }
 
     fn prepare_fork(&self, params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
@@ -1027,6 +1078,7 @@ mod tests {
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
             },
+            /*resume_preparation*/ None,
         )
         .await
         .expect("resume paginated thread from its requested rollout");
@@ -1377,6 +1429,7 @@ mod tests {
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
             },
+            /*resume_preparation*/ None,
         )
         .await
         .expect("resume live thread");
@@ -1433,6 +1486,7 @@ mod tests {
                     memory_mode: ThreadMemoryMode::Enabled,
                 },
             },
+            /*resume_preparation*/ None,
         )
         .await
         .expect("resume external live thread");
@@ -1546,6 +1600,120 @@ mod tests {
                 matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn attached_creation_and_deletion_coordinate_across_stores() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("initialize state db");
+        let first = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let second = LocalThreadStore::new(config, Some(runtime.clone()));
+        let parent_uuid = uuid::Uuid::new_v4();
+        let parent = ThreadId::from_u128(parent_uuid.as_u128());
+        let parent_path = write_session_file(home.path(), "2025-01-03T00-00-00", parent_uuid)
+            .expect("write parent");
+        let child = ThreadId::new();
+        let mut params = create_thread_params(child);
+        params.attached_thread = true;
+        assert!(matches!(
+            second.create_thread(params.clone()).await,
+            Err(ThreadStoreError::InvalidRequest { .. })
+        ));
+        params.forked_from_id = Some(parent);
+        let parent_guard = first.acquire_writer_lock(parent).expect("lock parent");
+        assert!(matches!(
+            second.create_thread(params.clone()).await,
+            Err(ThreadStoreError::Conflict { .. })
+        ));
+        drop(parent_guard);
+        let pool = runtime
+            .sqlite()
+            .open_read_write_pool(&runtime.sqlite().state_db_path())
+            .await
+            .expect("open state db");
+        sqlx::query(
+            "CREATE TRIGGER fail_attached_index BEFORE UPDATE OF memory_mode ON threads WHEN NEW.attached_thread_parent_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'index failed'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("inject index failure");
+        let mut failing_params = params.clone();
+        failing_params.metadata.memory_mode = ThreadMemoryMode::Disabled;
+        second
+            .create_thread(failing_params)
+            .await
+            .expect_err("indexing must fail");
+        first
+            .ensure_no_attached_threads(&[parent])
+            .await
+            .expect("failed creation must not leave an attached rollout");
+        assert!(
+            runtime
+                .get_thread(child)
+                .await
+                .expect("read index")
+                .is_none()
+        );
+        sqlx::query("DROP TRIGGER fail_attached_index")
+            .execute(&pool)
+            .await
+            .expect("remove index failure");
+        second
+            .create_thread(params.clone())
+            .await
+            .expect("create child");
+        assert_eq!(
+            runtime
+                .delete_thread(child)
+                .await
+                .expect("remove index row"),
+            1
+        );
+        assert!(matches!(
+            first
+                .delete_threads(DeleteThreadsParams {
+                    thread_ids: vec![parent]
+                })
+                .await,
+            Err(ThreadStoreError::InvalidRequest { .. })
+        ));
+        assert!(
+            parent_path.exists(),
+            "refused deletion must preserve parent"
+        );
+        second
+            .discard_thread(child)
+            .await
+            .expect("release child writer");
+        assert!(matches!(
+            first
+                .delete_threads(DeleteThreadsParams {
+                    thread_ids: vec![parent]
+                })
+                .await,
+            Err(ThreadStoreError::InvalidRequest { .. })
+        ));
+        first
+            .delete_thread(DeleteThreadParams { thread_id: child })
+            .await
+            .expect("delete child");
+        first
+            .delete_threads(DeleteThreadsParams {
+                thread_ids: vec![parent],
+            })
+            .await
+            .expect("parent can be deleted after its child");
+        assert!(!parent_path.exists());
+        assert!(matches!(
+            second.create_thread(params).await,
+            Err(ThreadStoreError::ThreadNotFound { thread_id }) if thread_id == parent
+        ));
     }
 
     #[tokio::test]
@@ -2192,6 +2360,7 @@ mod tests {
 
     fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         CreateThreadParams {
+            attached_thread: false,
             creator_user_id: None,
             creator_account_id: None,
             session_id: thread_id.into(),

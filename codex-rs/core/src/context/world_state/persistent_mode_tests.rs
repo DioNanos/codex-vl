@@ -118,13 +118,15 @@ fn persistent_instructions_preserve_empty_none_and_exact_limit() {
     let built_in = PersistentModeState::new("test-model", true, &bundled, false)
         .expect("bundled instructions should be valid");
     assert_eq!(
-        built_in.body().trim(),
+        built_in.body().into_text().unwrap().trim(),
         bundled.replace("{{ approval_request_channel }}", "")
     );
     assert!(
         PersistentModeState::new("test-model", true, "", false,)
             .expect("empty instructions should disable the section")
             .body()
+            .into_text()
+            .unwrap()
             .trim()
             .is_empty()
     );
@@ -132,7 +134,7 @@ fn persistent_instructions_preserve_empty_none_and_exact_limit() {
     let exact = "x".repeat(8 * 1024);
     let state = PersistentModeState::new("test-model", true, exact.as_str(), false)
         .expect("8 KiB instructions should pass");
-    assert_eq!(state.body().trim().len(), 8 * 1024);
+    assert_eq!(state.body().into_text().unwrap().trim().len(), 8 * 1024);
 }
 
 #[test]

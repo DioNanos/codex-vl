@@ -34,6 +34,62 @@ use crate::local::test_support::test_config;
 use crate::local::test_support::write_session_file_with_history_mode;
 
 #[tokio::test]
+async fn model_context_revision_invalidates_after_append_or_removal() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1009);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let path = write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-08",
+        uuid,
+        [user_message("saved message")],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let params = LoadThreadHistoryParams {
+        thread_id,
+        include_archived: false,
+    };
+    let context = store
+        .load_latest_model_context(params.clone())
+        .await
+        .expect("load model context");
+    let revision = context.revision.expect("stable history revision");
+    assert!(
+        store
+            .is_model_context_current(params.clone(), revision.clone())
+            .await
+            .expect("validate unchanged context")
+    );
+
+    let new_item = user_message("message appended during configuration loading");
+    append_items(&path, [new_item.clone()]);
+    assert!(
+        !store
+            .is_model_context_current(params.clone(), revision.clone())
+            .await
+            .expect("invalidate stale context")
+    );
+    let updated = store
+        .load_latest_model_context(params.clone())
+        .await
+        .expect("load updated model context");
+    let mut expected = context.items;
+    expected.push(new_item);
+    assert_eq!(
+        serde_json::to_value(updated.items).expect("serialize updated context"),
+        serde_json::to_value(expected).expect("serialize expected context")
+    );
+
+    std::fs::remove_file(path).expect("remove rollout");
+    assert!(
+        !store
+            .is_model_context_current(params, revision)
+            .await
+            .expect("invalidate removed context")
+    );
+}
+
+#[tokio::test]
 async fn stops_at_newest_usable_compaction_and_keeps_companions() {
     let home = TempDir::new().expect("temp dir");
     let uuid = Uuid::from_u128(/*v*/ 1001);
@@ -69,7 +125,7 @@ async fn stops_at_newest_usable_compaction_and_keeps_companions() {
     assert_eq!(
         serde_json::to_value(context.items).expect("serialize context"),
         serde_json::to_value(vec![
-            RolloutItem::SessionMeta(session_meta),
+            RolloutItem::SessionMeta(Box::new(session_meta)),
             compacted("latest compaction", Some(Vec::new())),
             world_state,
             turn_context,
@@ -129,7 +185,7 @@ async fn loads_recent_context_after_many_empty_wake_turns() {
         })
         .await
         .expect("load model context");
-    expected_suffix.insert(0, RolloutItem::SessionMeta(session_meta));
+    expected_suffix.insert(0, RolloutItem::SessionMeta(Box::new(session_meta)));
 
     assert_eq!(
         serde_json::to_value(context.items).expect("serialize context"),
@@ -165,7 +221,7 @@ async fn fork_context_excludes_items_after_frozen_cutoff() {
         .expect("load frozen fork context");
 
     let expected = vec![
-        RolloutItem::SessionMeta(session_meta),
+        RolloutItem::SessionMeta(Box::new(session_meta)),
         turn_started("frozen-turn"),
         user_message("frozen message"),
     ];
@@ -201,7 +257,7 @@ async fn fork_version_stops_before_older_segments_once_resolved() {
         let head = RolloutLine {
             timestamp: "2025-01-03T13:02:01Z".to_string(),
             ordinal: Some(0),
-            item: RolloutItem::SessionMeta(source_meta.clone()),
+            item: RolloutItem::SessionMeta(Box::new(source_meta.clone())),
         };
         std::fs::write(
             &child_path,
@@ -243,7 +299,7 @@ async fn fork_version_stops_before_older_segments_once_resolved() {
         source_meta.meta.multi_agent_version = stored_version.or(Some(MultiAgentVersion::V2));
         assert_eq!(
             serde_json::to_value(context).expect("serialize fork context"),
-            serde_json::to_value(vec![RolloutItem::SessionMeta(source_meta)])
+            serde_json::to_value(vec![RolloutItem::SessionMeta(Box::new(source_meta))])
                 .expect("serialize expected context")
         );
     }
@@ -296,7 +352,7 @@ async fn fork_version_respects_inherited_segment_cutoffs() {
     source_meta.meta.multi_agent_version = Some(MultiAgentVersion::V2);
     assert_eq!(
         serde_json::to_value(context).expect("serialize fork context"),
-        serde_json::to_value(vec![RolloutItem::SessionMeta(source_meta)])
+        serde_json::to_value(vec![RolloutItem::SessionMeta(Box::new(source_meta))])
             .expect("serialize expected context")
     );
 }
@@ -444,7 +500,7 @@ async fn replays_nested_archived_lineage_from_frozen_prefix() {
         .await
         .expect("read child metadata");
     let expected = vec![
-        RolloutItem::SessionMeta(child_meta),
+        RolloutItem::SessionMeta(Box::new(child_meta)),
         compacted("root checkpoint", Some(Vec::new())),
         turn_started("middle-turn"),
         user_message("middle inherited"),
@@ -703,7 +759,7 @@ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
 }
 
 fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> RolloutItem {
-    RolloutItem::Compacted(CompactedItem {
+    RolloutItem::Compacted(Box::new(CompactedItem {
         message: message.to_string(),
         replacement_history: replacement_history
             .map(|items| items.into_iter().map(Into::into).collect()),
@@ -717,5 +773,5 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         compaction_response_id: None,
         latest_token_usage_record: None,
         resume_metadata: None,
-    })
+    }))
 }

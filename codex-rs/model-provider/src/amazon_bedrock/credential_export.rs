@@ -171,13 +171,7 @@ impl AwsCredentialExport {
             ));
         }
 
-        let mut command = Command::from(codex_utils_process::background_command(program));
-        command
-            .args(self.config.args.iter().map(Deref::deref))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        let mut command = credential_export_command_for_target(&self.config, std::env::consts::OS);
 
         let mut child = command.spawn().map_err(|error| {
             io::Error::new(
@@ -224,6 +218,26 @@ impl AwsCredentialExport {
         })??;
         CachedCredentials::from_output(&output, SystemTime::now())
     }
+}
+
+/// Build the credential-export command and drop launcher metadata last.
+///
+/// [`AwsCredentialExport::export_credentials`] only selects the compiling
+/// platform. The path check and the output bound stay where they were.
+fn credential_export_command_for_target(
+    config: &AwsCredentialExportConfig,
+    target_os: &str,
+) -> Command {
+    let program = Path::new(&config.command);
+    let mut command = Command::from(codex_utils_process::background_command(program));
+    command
+        .args(config.args.iter().map(Deref::deref))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
+    command
 }
 
 impl AwsCredentialsProvider for AwsCredentialExport {

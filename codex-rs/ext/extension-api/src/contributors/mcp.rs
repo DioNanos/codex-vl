@@ -1,5 +1,7 @@
 use codex_config::McpServerConfig;
+use codex_core_plugin_common::PluginIdentity;
 use codex_exec_server_protocol::ExecutorCapabilityDiscoverySnapshot;
+use codex_exec_server_protocol::ExecutorCapabilityDiscoveryV2Snapshot;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
@@ -32,6 +34,8 @@ pub struct McpServerContributionContext<'a, C> {
     ready_selected_capability_roots: Option<&'a [SelectedCapabilityRoot]>,
     /// Executor-materialized capability files shared by all consumers in this exact step.
     executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
+    /// V2 inventories supplied by the host for this contribution.
+    executor_capability_discovery_v2: Option<&'a [ExecutorCapabilityDiscoveryV2Snapshot]>,
 }
 
 impl<C> Clone for McpServerContributionContext<'_, C> {
@@ -55,6 +59,7 @@ impl<'a, C> McpServerContributionContext<'a, C> {
             selected_environments: None,
             ready_selected_capability_roots: None,
             executor_capability_discovery: None,
+            executor_capability_discovery_v2: None,
         }
     }
 
@@ -66,6 +71,7 @@ impl<'a, C> McpServerContributionContext<'a, C> {
         originator: &'a str,
         ready_selected_capability_roots: &'a [SelectedCapabilityRoot],
         executor_capability_discovery: Option<&'a ExecutorCapabilityDiscoverySnapshot>,
+        executor_capability_discovery_v2: Option<&'a [ExecutorCapabilityDiscoveryV2Snapshot]>,
     ) -> Self {
         Self {
             config,
@@ -77,6 +83,7 @@ impl<'a, C> McpServerContributionContext<'a, C> {
             selected_environments: None,
             ready_selected_capability_roots: Some(ready_selected_capability_roots),
             executor_capability_discovery,
+            executor_capability_discovery_v2,
         }
     }
 
@@ -145,6 +152,13 @@ impl<'a, C> McpServerContributionContext<'a, C> {
         self.ready_selected_capability_roots
     }
 
+    /// `Some` selects V2, including an empty inventory list; `None` selects legacy discovery.
+    pub fn executor_capability_discovery_v2(
+        &self,
+    ) -> Option<&'a [ExecutorCapabilityDiscoveryV2Snapshot]> {
+        self.executor_capability_discovery_v2
+    }
+
     /// Returns the executor-materialized capability files for this model step, when enabled.
     pub fn executor_capability_discovery(&self) -> Option<&'a ExecutorCapabilityDiscoverySnapshot> {
         self.executor_capability_discovery
@@ -157,6 +171,7 @@ pub struct SelectedPluginSnapshot {
     pub plugins: Vec<SelectedPluginIdentity>,
     /// Selected plugin roots suppressed by the effective plugin feature policy.
     pub disabled_plugin_roots: Vec<String>,
+    pub disabled_plugin_ids: Vec<String>,
 }
 
 /// The configured identity of a selected plugin and, when present, the root owning its skills.
@@ -164,7 +179,7 @@ pub struct SelectedPluginSnapshot {
 pub struct SelectedPluginIdentity {
     /// Hosted plugins have no executor root and cannot own skills from an executor folder.
     pub selected_root_id: Option<String>,
-    pub plugin_id: String,
+    pub plugin_id: PluginIdentity,
 }
 
 /// An executor plugin and its deferred MCP data. Callers that only need the identity can drop
@@ -173,6 +188,8 @@ pub struct SelectedPluginIdentity {
 pub struct SelectedPlugin<'a> {
     pub selected_root_id: String,
     pub plugin_id: String,
+    pub identity: PluginIdentity,
+    pub enabled: bool,
     pub mcp: ExtensionFuture<'a, SelectedPluginContribution>,
 }
 

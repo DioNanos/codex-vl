@@ -2294,6 +2294,7 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled(
     Mock::given(method("GET"))
         .and(path("/backend-api/ps/plugins/installed"))
         .and(query_param("scope", "GLOBAL"))
+        .and(query_param("limit", "200"))
         .and(header("authorization", "Bearer chatgpt-token"))
         .and(header("chatgpt-account-id", "account-123"))
         .and(header("oai-product-sku", expected_product_sku))
@@ -2303,6 +2304,7 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled(
     Mock::given(method("GET"))
         .and(path("/backend-api/ps/plugins/installed"))
         .and(query_param("scope", "WORKSPACE"))
+        .and(query_param("limit", "200"))
         .and(header("authorization", "Bearer chatgpt-token"))
         .and(header("chatgpt-account-id", "account-123"))
         .and(header("oai-product-sku", expected_product_sku))
@@ -3915,9 +3917,16 @@ trusted_hash = "sha256:unrelated"
     )?)?;
     let hook_states = config["hooks"]["state"].as_table().expect("hook states");
     for hook in &hooks {
+        let (declaration_hash, content_hash) = hook
+            .current_hash
+            .split_once('/')
+            .expect("declaration and content hashes");
         assert_eq!(
-            hook_states[hook.key.as_str()]["trusted_hash"].as_str(),
-            Some(hook.current_hash.as_str())
+            (
+                hook_states[hook.key.as_str()]["trusted_hash"].as_str(),
+                hook_states[hook.key.as_str()]["trusted_content_hash"].as_str(),
+            ),
+            (Some(declaration_hash), Some(content_hash))
         );
     }
     assert!(

@@ -95,7 +95,7 @@ impl PidBackend {
             } else {
                 None
             };
-        let mut command = Command::new(&codex_bin);
+        let mut command = Command::from(codex_utils_process::background_command(&codex_bin));
         let stderr_log = match self.open_stderr_log().await {
             Ok(stderr_log) => stderr_log,
             Err(err) => {
@@ -175,6 +175,7 @@ impl PidBackend {
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+            use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
             use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
             // A Windows process pins its working directory for its lifetime.
             // Keep both managed children out of the launching project's directory.
@@ -182,7 +183,7 @@ impl PidBackend {
             command.current_dir(&workdir);
             // Never retry inside the parent's Job Object: that would report a
             // successful launch that dies when the terminal/SSH session closes.
-            command.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+            command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
             if matches!(self.command_kind, PidCommandKind::UpdateLoop { .. }) {
                 match fs::remove_file(self.pid_file.with_extension("ready")).await {
                     Ok(()) => {}
@@ -243,12 +244,14 @@ impl PidBackend {
         let started = std::time::Instant::now();
         let record = async {
             let process_start_time = read_process_start_time(pid).await?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            // Android shares the Linux identity source; the `.ok()` fallback
+            // keeps records legacy on a device whose boot ID cannot be read.
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "android"))]
             let process_identity = super::identity::read_process_details(pid)
                 .await
                 .ok()
                 .map(|(_, identity)| identity);
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "android")))]
             let process_identity = None;
             anyhow::Ok(PidRecord {
                 pid,

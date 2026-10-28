@@ -166,6 +166,10 @@ impl Connection {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         scrub_non_inheritable_env_vars(command.as_std_mut());
+        // The host companion executes external material: treat it as an
+        // external child and drop the launcher-private install metadata
+        // inherited from this process. No-op outside Android.
+        codex_utils_process::finalize_external_child(command.as_std_mut());
         let mut child = command.spawn().map_err(|error| ConnectionError::Spawn {
             host_program: host_program.to_path_buf(),
             error,

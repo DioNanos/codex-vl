@@ -7,6 +7,105 @@ use crate::composition::user_message;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
+use std::borrow::Cow;
+
+#[test]
+fn native_agent_admission_uses_current_history_and_preserves_identity() {
+    let original = ResponseItem::AgentMessage {
+        id: Some(codex_protocol::ResponseItemId::from_server(
+            "amsg_original".to_owned(),
+        )),
+        author: "/root".to_owned(),
+        recipient: "/root/worker".to_owned(),
+        content: vec![
+            codex_protocol::models::AgentMessageInputContent::EncryptedContent {
+                encrypted_content: "opaque-restriction".to_owned(),
+            },
+        ],
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut new = original.clone();
+    new.set_id(Some(codex_protocol::ResponseItemId::from_server(
+        "amsg_new".to_owned(),
+    )));
+    let mut anonymous = original.clone();
+    anonymous.set_id(/*new_id*/ None);
+    let mut empty_id = original.clone();
+    empty_id.set_id(Some(codex_protocol::ResponseItemId::from_server(
+        String::new(),
+    )));
+    let context = ComposedContext {
+        sections: [
+            original.clone(),
+            original.clone(),
+            new.clone(),
+            new.clone(),
+            anonymous.clone(),
+            anonymous.clone(),
+            empty_id.clone(),
+            empty_id.clone(),
+        ]
+        .into_iter()
+        .map(|item| SectionOutput {
+            id: "conversation_transcript",
+            delivery: SectionDelivery::Message(Budgeted::required(Box::new(
+                ResponseItemEnvelope::new(item),
+            ))),
+        })
+        .collect(),
+        truncations: Vec::new(),
+    };
+    let mut delivered = original.clone();
+    delivered.set_turn_id_if_missing("reviewer-turn");
+    // Removing the old copy through compaction or rollback permits delivery again.
+    for history in [vec![ResponseItemEnvelope::new(delivered)], Vec::new()] {
+        let mut pending = context.clone();
+        pending.retain_new_agent_messages(&history).unwrap();
+        let mut expected = if history.is_empty() {
+            vec![original.clone()]
+        } else {
+            Vec::new()
+        };
+        expected.extend([
+            new.clone(),
+            anonymous.clone(),
+            anonymous.clone(),
+            empty_id.clone(),
+            empty_id.clone(),
+        ]);
+        // Already delivered copies must not consume admission budget or evict new evidence.
+        let admitted = pending
+            .enforce_budget(
+                RequestBudget {
+                    max_input_tokens: expected.iter().map(crate::estimate_input_tokens).sum(),
+                    existing_context_tokens: 0,
+                },
+                "evidence omitted".to_owned(),
+                HistoryTruncation::Preserve,
+            )
+            .unwrap();
+        assert_eq!(admitted.into_messages(), expected);
+    }
+
+    let mut conflicting = context;
+    let SectionDelivery::Message(message) = &mut conflicting.sections[1].delivery else {
+        panic!("native message")
+    };
+    let ResponseItem::AgentMessage { content, .. } = &mut message.content.item else {
+        panic!("agent message")
+    };
+    *content = vec![
+        codex_protocol::models::AgentMessageInputContent::EncryptedContent {
+            encrypted_content: "different-evidence".to_owned(),
+        },
+    ];
+    let before = conflicting.clone().into_messages();
+    assert_eq!(
+        conflicting.retain_new_agent_messages(&[]),
+        Err(SectionError::ConflictingAgentMessage)
+    );
+    assert_eq!(conflicting.into_messages(), before);
+}
 
 fn text(value: &str) -> ContentItem {
     ContentItem::InputText {
@@ -355,7 +454,36 @@ fn image_accounting_preserves_later_eviction_policy() {
             text("evidence omitted")
         ])]
     );
-    context.retain_images(|image, _| matches!(image, ImageReference::File { .. }));
+    let delivered = [user_message(vec![ContentItem::InputImage {
+        image: ImageReference::Inline {
+            image_url: "prepared-image".to_owned(),
+        },
+        detail: Some(codex_protocol::models::ImageDetail::High),
+    }])];
+    // A host-prepared reference matches delivered history even when source detail differs.
+    context.retain_new_images(&delivered, |image, _| match image {
+        ImageReference::Inline { .. } => Some(Cow::Owned(ImageReference::Inline {
+            image_url: "prepared-image".to_owned(),
+        })),
+        ImageReference::File { .. } => Some(Cow::Borrowed(image)),
+    });
+    let mut continued = context.clone();
+    let completed = context.clone().into_messages();
+    continued.retain_new_images(&completed, |image, _| Some(Cow::Borrowed(image)));
+    // Once all images were delivered, deduplication must not inspect retained history.
+    continued.retain_new_images(
+        completed
+            .iter()
+            .inspect(|_| panic!("image-free context must not scan retained history")),
+        |image, _| Some(Cow::Borrowed(image)),
+    );
+    assert_eq!(
+        continued.into_messages(),
+        vec![user_message(vec![
+            evidence.clone(),
+            text("user restriction")
+        ])]
+    );
     let available = context.estimated_tokens();
     let retained = context
         .clone()

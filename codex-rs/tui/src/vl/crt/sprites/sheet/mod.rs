@@ -27,6 +27,7 @@ pub(crate) fn state_for_mode(mode: CrtMode) -> SheetState {
         CrtMode::Alert => SheetState::Alert,
         CrtMode::Tired => SheetState::Sleep,
         CrtMode::Hungry => SheetState::Idle,
+        CrtMode::Error => SheetState::Error,
     }
 }
 

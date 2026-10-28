@@ -19,6 +19,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+codex-utils-process = { workspace = true }
 crossbeam-channel = { workspace = true }
 ignore = { workspace = true }
 nucleo = { workspace = true }

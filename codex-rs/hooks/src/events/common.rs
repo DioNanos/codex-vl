@@ -9,6 +9,7 @@ use crate::engine::ConfiguredHandler;
 use crate::engine::HandlerSourcePath;
 use crate::engine::dispatcher;
 use crate::output_spill::AdditionalContext;
+use codex_protocol::models::ContentItemMetadata;
 
 /// Identifies a thread-spawned subagent when a normal hook runs inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,13 +40,17 @@ pub(crate) fn append_additional_context(
     additional_contexts_for_model: &mut Vec<AdditionalContext>,
     handler: &ConfiguredHandler,
     additional_context: String,
+    metadata: &ContentItemMetadata,
 ) {
     entries.push(HookOutputEntry {
         kind: HookOutputEntryKind::Context,
         text: additional_context.clone(),
     });
     additional_contexts_for_model.push(AdditionalContext {
-        text: additional_context,
+        context: crate::HookContext {
+            text: additional_context,
+            metadata: metadata.clone(),
+        },
         limit: handler.additional_context_limit,
     });
 }
@@ -53,10 +58,7 @@ pub(crate) fn append_additional_context(
 pub(crate) fn flatten_additional_contexts<'a>(
     additional_contexts: impl IntoIterator<Item = &'a [AdditionalContext]>,
 ) -> Vec<AdditionalContext> {
-    additional_contexts
-        .into_iter()
-        .flat_map(|chunk| chunk.iter().cloned())
-        .collect()
+    additional_contexts.into_iter().flatten().cloned().collect()
 }
 
 pub(crate) fn serialization_failure_hook_events(
@@ -66,7 +68,12 @@ pub(crate) fn serialization_failure_hook_events(
 ) -> Vec<HookCompletedEvent> {
     handlers
         .into_iter()
-        .filter(|handler| matches!(handler.source_path, HandlerSourcePath::Local(_)))
+        .filter(|handler| {
+            !matches!(
+                handler.source_path,
+                HandlerSourcePath::ExecutorScoped { .. }
+            )
+        })
         .map(|handler| {
             let mut run = dispatcher::running_summary(&handler);
             run.status = HookRunStatus::Failed;
@@ -123,7 +130,11 @@ pub(crate) fn matcher_pattern_for_event(
         | HookEventName::SubagentStop
         | HookEventName::PreCompact
         | HookEventName::PostCompact => matcher,
-        HookEventName::UserPromptSubmit | HookEventName::Stop | HookEventName::Interrupt => None,
+        HookEventName::PreModelRequest
+        | HookEventName::PostModelRequest
+        | HookEventName::UserPromptSubmit
+        | HookEventName::Stop
+        | HookEventName::Interrupt => None,
     }
 }
 

@@ -681,3 +681,143 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
         (None, MAX_UNIFIED_EXEC_PROCESSES)
     );
 }
+
+/// Sentinel through the shared production body of stage one: the Android target
+/// drops the launcher-private names from both the environment and the explicit
+/// overrides that travel with the request, the host target leaves them, and the
+/// test never scrubs either map afterwards.
+#[test]
+fn sentinel_unified_exec_stage_one_scrubs_both_outputs() {
+    let mut env: HashMap<String, String> = HashMap::new();
+    let mut overrides: HashMap<String, String> = HashMap::new();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        env.insert((*name).to_string(), "launcher-value".to_string());
+        overrides.insert((*name).to_string(), "launcher-value".to_string());
+    }
+    env.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+    overrides.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+
+    let (android_env, android_overrides) =
+        prepare_unified_exec_env_for_target(env.clone(), None, &overrides, "android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(!android_env.contains_key(*name), "env: {name} leaked");
+        assert!(
+            !android_overrides.contains_key(*name),
+            "override: {name} leaked"
+        );
+    }
+    assert_eq!(
+        android_env.get("TOOL_KEEP_ME").map(String::as_str),
+        Some("kept")
+    );
+    assert_eq!(
+        android_overrides.get("TOOL_KEEP_ME").map(String::as_str),
+        Some("kept")
+    );
+
+    let (host_env, host_overrides) =
+        prepare_unified_exec_env_for_target(env, None, &overrides, "linux");
+    assert!(
+        host_env.contains_key("CODEX_SELF_EXE"),
+        "the host target must keep the names in the environment"
+    );
+    assert!(
+        host_overrides.contains_key("CODEX_SELF_EXE"),
+        "the host target must keep the names in the overrides"
+    );
+}
+
+/// Sentinel through the shared production body of stage two: the request
+/// environment is finalized before it reaches any backend, and the host target
+/// leaves it untouched.
+#[test]
+fn sentinel_unified_exec_stage_two_scrubs_the_request_env() {
+    let base = || {
+        let mut env: HashMap<String, String> = HashMap::new();
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            env.insert((*name).to_string(), "launcher-value".to_string());
+        }
+        env.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+        env
+    };
+
+    let mut android = base();
+    finalize_unified_exec_request_for_target(&mut android, "android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(!android.contains_key(*name), "{name} leaked");
+    }
+    assert_eq!(
+        android.get("TOOL_KEEP_ME").map(String::as_str),
+        Some("kept")
+    );
+
+    let mut host = base();
+    finalize_unified_exec_request_for_target(&mut host, "linux");
+    assert!(
+        host.contains_key("CODEX_SELF_EXE"),
+        "the host target must not scrub"
+    );
+}
+
+/// Maps actually handed to a remote executor: the env overlay and the policy
+/// `set` table. Both are scrubbed inside the body after the last local write.
+#[test]
+fn sentinel_remote_exec_maps_drop_launcher_metadata_for_android() {
+    let cwd: codex_utils_absolute_path::AbsolutePathBuf = std::env::current_dir()
+        .expect("current dir")
+        .try_into()
+        .expect("absolute");
+    let mut env = HashMap::new();
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        env.insert((*name).to_string(), "launcher-value".to_string());
+    }
+    env.insert("TOOL_KEEP_ME".to_string(), "kept".to_string());
+    let mut set = HashMap::new();
+    set.insert("CODEX_SELF_EXE".to_string(), "launcher-value".to_string());
+    set.insert("KEEP_SET".to_string(), "yes".to_string());
+    let mut request = ExecRequest::new(
+        vec!["true".to_string()],
+        cwd.clone(),
+        env,
+        /*network*/ None,
+        /*network_environment_id*/ None,
+        crate::exec::ExecExpiration::DefaultTimeout,
+        crate::exec::ExecCapturePolicy::ShellTool,
+        codex_sandboxing::SandboxType::None,
+        vec![cwd],
+        codex_protocol::config_types::WindowsSandboxLevel::Disabled,
+        codex_protocol::models::PermissionProfile::Disabled,
+        /*arg0*/ None,
+    );
+    request.exec_server_env_config = Some(ExecServerEnvConfig {
+        policy: codex_exec_server::ExecEnvPolicy {
+            inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::Core,
+            ignore_default_excludes: false,
+            exclude: Vec::new(),
+            r#set: set,
+            include_only: Vec::new(),
+        },
+        local_policy_env: HashMap::new(),
+    });
+
+    let (android_policy, android_env) = exec_server_env_for_request_for_target(&request, "android");
+    for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+        assert!(!android_env.contains_key(*name), "{name} leaked into env");
+    }
+    assert_eq!(
+        android_env.get("TOOL_KEEP_ME").map(String::as_str),
+        Some("kept")
+    );
+    let android_set = &android_policy.expect("policy").r#set;
+    assert!(!android_set.contains_key("CODEX_SELF_EXE"));
+    assert_eq!(android_set.get("KEEP_SET").map(String::as_str), Some("yes"));
+
+    let (host_policy, host_env) = exec_server_env_for_request_for_target(&request, "linux");
+    assert!(host_env.contains_key("CODEX_SELF_EXE"));
+    assert!(
+        host_policy
+            .expect("policy")
+            .r#set
+            .contains_key("CODEX_SELF_EXE")
+    );
+}

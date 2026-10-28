@@ -174,14 +174,17 @@ impl LMStudioClient {
         let lms = Self::find_lms()?;
         eprintln!("Downloading model: {model}");
 
-        let status = std::process::Command::new(&lms)
+        let mut command = std::process::Command::new(&lms);
+        command
             .args(["get", "--yes", model])
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map_err(|e| {
-                std::io::Error::other(format!("Failed to execute '{lms} get --yes {model}': {e}"))
-            })?;
+            .stderr(std::process::Stdio::null());
+        // The model runner is an external child: drop the launcher-private
+        // install metadata before it starts. No-op outside Android.
+        codex_utils_process::finalize_external_child(&mut command);
+        let status = command.status().map_err(|e| {
+            std::io::Error::other(format!("Failed to execute '{lms} get --yes {model}': {e}"))
+        })?;
 
         if !status.success() {
             return Err(std::io::Error::other(format!(

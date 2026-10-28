@@ -1,7 +1,11 @@
 //! Owns review reporting and the per-thread denial window. The host publishes
-//! events and enforces interruption only on the still-active owning turn.
+//! events and enforces interruption only on the still-active owning turn. Review
+//! completion captures one monotonic duration for latency reporting while retaining
+//! the actual wall-clock completion timestamp for event ordering.
 
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use codex_analytics::AnalyticsEventsClient;
 use codex_analytics::GuardianApprovalRequestSource;
@@ -38,10 +42,13 @@ pub struct ReviewMetadata {
     pub action: GuardianAssessmentAction,
     pub review_reason: GuardianReviewReason,
     pub model_context: ModelInvocationContext,
+    /// Configured review budget; None is reported as zero (unlimited).
+    pub timeout: Option<Duration>,
 }
 
 pub struct ReviewReport {
     started: GuardianAssessmentEvent,
+    started_instant: Instant,
     tracking: GuardianReviewTrackContext,
     approval_request_source: GuardianApprovalRequestSource,
     reviewed_action: GuardianReviewedAction,
@@ -49,6 +56,7 @@ pub struct ReviewReport {
 
 impl ReviewReport {
     pub fn new(metadata: ReviewMetadata) -> Self {
+        let started_instant = Instant::now();
         let tracking = GuardianReviewTrackContext::new(
             metadata.thread_id,
             metadata.turn_id.clone(),
@@ -56,7 +64,9 @@ impl ReviewReport {
             metadata.target_item_id.clone(),
             metadata.approval_request_source,
             metadata.reviewed_action.clone(),
-            crate::REVIEW_TIMEOUT.as_millis() as u64,
+            metadata
+                .timeout
+                .map_or(0, |timeout| timeout.as_millis() as u64),
         );
         let started = GuardianAssessmentEvent {
             review_reason: Some(metadata.review_reason),
@@ -77,6 +87,7 @@ impl ReviewReport {
         };
         Self {
             started,
+            started_instant,
             tracking,
             approval_request_source: metadata.approval_request_source,
             reviewed_action: metadata.reviewed_action,
@@ -91,6 +102,7 @@ impl ReviewReport {
         self.started.clone()
     }
 
+    /// Completes the report and captures the elapsed duration to use when tracking it.
     pub fn complete(
         &self,
         outcome: GuardianReviewOutcome,
@@ -98,11 +110,15 @@ impl ReviewReport {
         require_guardian: bool,
         analytics: GuardianReviewAnalyticsResult,
         completed_at_ms: i64,
-    ) -> ReviewCompletion {
+    ) -> (ReviewCompletion, Duration) {
+        let elapsed = self.started_instant.elapsed();
         let mut event = self.started.clone();
         event.completed_at_ms = Some(completed_at_ms);
         event.decision_source = Some(GuardianAssessmentDecisionSource::Agent);
-        crate::complete_review(outcome, model, require_guardian, event, analytics)
+        (
+            crate::complete_review(outcome, model, require_guardian, event, analytics),
+            elapsed,
+        )
     }
 
     pub fn track(
@@ -111,15 +127,16 @@ impl ReviewReport {
         analytics: &AnalyticsEventsClient,
         result: GuardianReviewAnalyticsResult,
         completed_at_ms: u64,
+        elapsed: Duration,
     ) {
         crate::metrics::emit_guardian_review_metrics(
             telemetry,
             &result,
             self.approval_request_source,
             &self.reviewed_action,
-            completed_at_ms.saturating_sub(self.tracking.started_at_ms),
+            elapsed,
         );
-        analytics.track_guardian_review(&self.tracking, result, completed_at_ms);
+        analytics.track_guardian_review(&self.tracking, result, completed_at_ms, elapsed);
     }
 }
 
@@ -163,3 +180,7 @@ impl ReviewDenials {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reporting_tests.rs"]
+mod tests;

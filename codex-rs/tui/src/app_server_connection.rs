@@ -19,7 +19,7 @@ pub(crate) async fn connect(
 ) -> color_eyre::Result<AppServerClient> {
     match target {
         AppServerTarget::Embedded => {
-            color_eyre::eyre::bail!("embedded sessions have no remote connection")
+            color_eyre::eyre::bail!("embedded sessions have no remote connection");
         }
         #[cfg(windows)]
         AppServerTarget::LocalDaemon {

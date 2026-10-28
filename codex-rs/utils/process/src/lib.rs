@@ -5,6 +5,17 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+pub mod launcher_env;
+
+pub use launcher_env::ANDROID_TARGET_OS;
+pub use launcher_env::PRIVATE_LAUNCHER_ENV_VARS;
+pub use launcher_env::finalize_external_child;
+pub use launcher_env::finalize_external_child_for;
+pub use launcher_env::is_private_launcher_env;
+pub use launcher_env::is_private_launcher_env_here;
+pub use launcher_env::scrub_private_launcher_env;
+pub use launcher_env::scrub_private_launcher_env_here;
+
 /// Construct a background command, suppressing console allocation on Windows.
 /// Convert with `tokio::process::Command::from` for asynchronous execution.
 /// Subsequent Windows `creation_flags` calls must retain `CREATE_NO_WINDOW`.

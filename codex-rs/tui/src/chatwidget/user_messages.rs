@@ -27,6 +27,7 @@ use codex_utils_plugins::mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 use codex_utils_plugins::mention_syntax::TOOL_MENTION_SIGIL;
 
 use super::ChatWidget;
+use super::StatusSurfaceOverrides;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UserMessage {
@@ -144,6 +145,8 @@ pub(crate) struct ThreadInputState {
     pub(crate) questions: Option<crate::bottom_pane::QuestionState>,
     pub(crate) pending_thread_settings:
         Option<codex_app_server_protocol::ThreadSettingsUpdatedNotification>,
+    pub(super) initial_user_message: Option<UserMessage>,
+    pub(super) startup_submission: Option<crate::bottom_pane::ComposerDraftSnapshot>,
     pub(super) composer: Option<ThreadComposerState>,
     pub(super) safety_buffering_prompt: Option<UserMessage>,
     pub(super) safety_buffering_source: UserMessageSource,
@@ -162,6 +165,7 @@ pub(crate) struct ThreadInputState {
     pub(super) current_collaboration_mode: CollaborationMode,
     pub(super) active_collaboration_mask: Option<CollaborationModeMask>,
     pub(super) plan_mode_reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(super) status_surface_overrides: StatusSurfaceOverrides,
     pub(super) task_running: bool,
     pub(super) agent_turn_running: bool,
 }
@@ -712,7 +716,7 @@ impl ChatWidget {
             .collect();
         let reply_text = crate::async_question_reply::display_text(&message);
         let (message, prompt_request_offset) =
-            crate::ide_context::extract_prompt_request_with_offset(&message);
+            crate::user_prompt::extract_prompt_request_with_offset(&message);
         if let Some(message) =
             reply_text.or_else(|| crate::async_question_reply::display_text(message))
         {

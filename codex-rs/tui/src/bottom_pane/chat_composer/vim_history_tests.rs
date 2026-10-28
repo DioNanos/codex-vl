@@ -685,6 +685,17 @@ fn vim_replace_backspace_restores_characters_in_new_slash_element() {
 }
 
 #[test]
+fn vim_replace_delete_backward_restores_characters_hidden_by_prompt_prefixes() {
+    let mut composer = vim_composer("ébc");
+    keys(&mut composer, "R!");
+    let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+    assert_eq!(
+        (composer.current_text(), composer.current_cursor()),
+        ("ébc".to_owned(), 0)
+    );
+}
+
+#[test]
 fn vim_editing_modes_use_the_same_large_and_image_paste_handling() {
     let temporary = tempfile::tempdir().expect("create image directory");
     let path = temporary.path().join("image.png");

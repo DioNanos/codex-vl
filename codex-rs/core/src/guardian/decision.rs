@@ -42,6 +42,7 @@ pub(crate) fn spawn_approval_decision(
 }
 
 /// `None` requests the existing user flow. No contributor is never an implicit allow.
+/// Both metric sinks use the originating turn retained by the review context.
 pub(crate) async fn decide_approval(
     session: Arc<Session>,
     context: impl Into<GuardianReviewContext>,
@@ -100,9 +101,10 @@ pub(crate) async fn decide_approval(
         escalated_exec: matches!(&request.request, Ok(GuardianApprovalRequest::ExecCommand { sandbox_permissions, .. }) if sandbox_permissions.requires_escalated_permissions()),
         full_access,
         cancellation: cancellation.clone(),
+        timeout: turn.config.guardian_review_timeout,
         // Keep the existing turn-level reporting policy during this ownership move.
         model: turn.model_info(),
-        telemetry: &session.services.session_telemetry,
+        telemetry: &turn.session_telemetry,
         log_assessments: turn.config.otel.guardian_assessment_logging_enabled(),
         analytics: &session.services.analytics_events_client,
         metrics: Some(crate::session::extension_metrics::from_session_telemetry(

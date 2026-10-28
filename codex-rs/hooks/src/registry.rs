@@ -1,5 +1,6 @@
 use crate::engine::ClaudeHooksEngine;
 use crate::engine::CommandShell;
+use crate::engine::ConfiguredHandler;
 use crate::engine::HookListEntry;
 use crate::engine::command_runner::CommandHookRuntime;
 use crate::events::compact::PostCompactRequest;
@@ -32,8 +33,11 @@ use codex_config::ConfigLayerStack;
 use codex_plugin::ExecutorPluginHookSource;
 use codex_plugin::PluginHookSource;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::HookEventName;
+use codex_protocol::protocol::HookExecutionMode;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
 use std::ffi::OsString;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -80,13 +84,9 @@ impl Hooks {
         let hooks = Self::from_config(config, mcp_executor, Arc::clone(&environment), |shell| {
             CommandHookRuntime::new(shell, environment, thread_id, result_sender)
         });
-        let required_load_errors = hooks.engine.required_load_errors();
-        if !required_load_errors.is_empty() {
-            anyhow::bail!(
-                "failed to load required managed hooks: {}",
-                required_load_errors.join("; ")
-            );
-        }
+        crate::engine::discovery::ensure_required_hooks_loaded(
+            hooks.engine.required_load_errors(),
+        )?;
         Ok((hooks, result_receiver))
     }
 
@@ -109,9 +109,64 @@ impl Hooks {
             && self.plugin_hook_load_warnings.iter().eq(warnings)
     }
 
+    /// Adds only owner-admitted requirements hooks; execution remains scoped to their environment.
+    pub fn with_environment_hooks(
+        &self,
+        sources: Vec<crate::EnvironmentHookSource>,
+        executor: Arc<dyn crate::HookEnvironmentExecutor>,
+    ) -> Self {
+        let discovered = self.discover_environment_hooks(sources);
+        let mut hooks = self.clone();
+        hooks.engine.command_runtime.environment_executor = Some(executor);
+        if !discovered.handlers.is_empty() {
+            Arc::make_mut(&mut hooks.engine.handlers).extend(discovered.handlers);
+        }
+        if !discovered.warnings.is_empty() {
+            let mut warnings = hooks.engine.warnings.to_vec();
+            warnings.extend(discovered.warnings);
+            hooks.engine.warnings = warnings.into();
+        }
+        hooks
+    }
+
+    /// List this session's declarations, including hooks that are disabled or not yet trusted.
+    pub fn list_with_environment_hooks(
+        &self,
+        sources: Vec<crate::EnvironmentHookSource>,
+    ) -> HookListOutcome {
+        let discovered = self.discover_environment_hooks(sources);
+        let mut hooks = self.engine.hook_entries.as_ref().clone();
+        hooks.extend(discovered.hook_entries);
+        let mut warnings = self.engine.warnings.to_vec();
+        warnings.extend(discovered.warnings);
+        HookListOutcome { hooks, warnings }
+    }
+
+    fn discover_environment_hooks(
+        &self,
+        sources: Vec<crate::EnvironmentHookSource>,
+    ) -> crate::engine::discovery::DiscoveryResult {
+        if !self.engine.enabled {
+            return crate::engine::discovery::DiscoveryResult::default();
+        }
+        let display_order = self
+            .engine
+            .hook_entries
+            .last()
+            .map_or(0, |entry| entry.display_order.saturating_add(1));
+        crate::engine::discovery::discover_environment_hooks(sources, display_order)
+    }
+
     pub fn with_executor_hooks(&self, executor_hooks: Vec<ExecutorPluginHookSource>) -> Self {
         let mut hooks = self.clone();
         hooks.engine.set_executor_hooks(executor_hooks);
+        hooks
+    }
+
+    pub fn for_memory_consolidation(&self, executor_hooks: Vec<ExecutorPluginHookSource>) -> Self {
+        let mut hooks = self.with_executor_hooks(executor_hooks);
+        Arc::make_mut(&mut hooks.engine.handlers)
+            .retain(ConfiguredHandler::runs_for_memory_consolidation);
         hooks
     }
 
@@ -299,6 +354,35 @@ impl Hooks {
     pub async fn run_interrupt(&self, request: InterruptRequest) -> InterruptOutcome {
         self.engine.run_interrupt(request).await
     }
+
+    /// None if unconfigured; Sync if any handler must finish before continuing.
+    pub fn execution_mode_for_event(&self, event: HookEventName) -> Option<HookExecutionMode> {
+        self.engine
+            .handlers
+            .iter()
+            .filter(|handler| handler.event_name == event)
+            .map(ConfiguredHandler::execution_mode)
+            .min_by_key(|mode| matches!(mode, HookExecutionMode::Async))
+    }
+
+    /// Run a hook task independently of the turn, but abort and join it at session shutdown.
+    pub fn schedule_async_task(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.engine.command_runtime.schedule_async_task(task);
+    }
+
+    pub fn preview_model_request(
+        &self,
+        request: &crate::ModelRequestHookInput,
+    ) -> Vec<codex_protocol::protocol::HookRunSummary> {
+        crate::events::model_request::preview(&self.engine.handlers, request)
+    }
+
+    pub async fn run_model_request(
+        &self,
+        request: crate::ModelRequestHookInput,
+    ) -> Vec<codex_protocol::protocol::HookCompletedEvent> {
+        crate::events::model_request::run(&self.engine, request).await
+    }
 }
 
 pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
@@ -311,6 +395,7 @@ pub fn list_hooks(config: HooksConfig) -> HookListOutcome {
         config.plugin_hook_sources,
         config.plugin_hook_load_warnings,
         config.bypass_hook_trust,
+        crate::engine::discovery::DiscoveryMode::Listing,
     );
     HookListOutcome {
         hooks: discovered.hook_entries,
@@ -323,6 +408,19 @@ pub(crate) fn command_from_argv(
     argv: &[String],
     environment: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Option<Command> {
+    command_from_argv_for_target(argv, environment, std::env::consts::OS)
+}
+
+/// [`command_from_argv`] against an explicit target platform.
+///
+/// The builder's own composition lives here, the launcher scrub included; the
+/// wrapper above only selects the platform. A test enters this body with
+/// `"android"` and observes the command, without finalizing it afterwards.
+pub(crate) fn command_from_argv_for_target(
+    argv: &[String],
+    environment: impl IntoIterator<Item = (OsString, OsString)>,
+    target_os: &str,
+) -> Option<Command> {
     let (program, args) = argv.split_first()?;
     if program.is_empty() {
         return None;
@@ -332,5 +430,58 @@ pub(crate) fn command_from_argv(
     command.env_clear();
     command.envs(environment);
     scrub_non_inheritable_env_vars(command.as_std_mut());
+    // Legacy notify children are external processes: drop the launcher-private
+    // install metadata after the last env write. No-op outside Android.
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
     Some(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn environment() -> Vec<(OsString, OsString)> {
+        vec![
+            (
+                OsString::from("CODEX_SELF_EXE"),
+                OsString::from("launcher-value"),
+            ),
+            (OsString::from("TOOL_KEEP_ME"), OsString::from("kept")),
+        ]
+    }
+
+    /// Names that keep a value for the child. `env_remove` records an unset,
+    /// so a dropped name can still appear in the override list with `None`.
+    fn names_with_value(command: &Command) -> Vec<OsString> {
+        command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| name.to_os_string())
+            .collect()
+    }
+
+    /// Sentinel through the shared production body. The Android target scrubs,
+    /// the host target does not, and the test never finalizes the command
+    /// afterwards.
+    #[test]
+    fn sentinel_hook_command_drops_launcher_metadata_for_android() {
+        let android =
+            command_from_argv_for_target(&[String::from("/usr/bin/env")], environment(), "android")
+                .expect("hook command must build");
+        let names = names_with_value(&android);
+        assert!(
+            !names.contains(&OsString::from("CODEX_SELF_EXE")),
+            "{names:?}"
+        );
+        assert!(names.contains(&OsString::from("TOOL_KEEP_ME")));
+
+        let host =
+            command_from_argv_for_target(&[String::from("/usr/bin/env")], environment(), "linux")
+                .expect("hook command must build");
+        assert!(
+            names_with_value(&host).contains(&OsString::from("CODEX_SELF_EXE")),
+            "the host target must not scrub"
+        );
+    }
 }

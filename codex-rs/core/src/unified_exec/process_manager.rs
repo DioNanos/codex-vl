@@ -52,6 +52,7 @@ use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::ProcessEntry;
 use crate::unified_exec::ProcessStore;
+use crate::unified_exec::TerminalSession;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -81,6 +82,7 @@ use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
+use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::TerminalInteractionEvent;
@@ -134,7 +136,60 @@ pub(super) fn apply_unified_exec_env(mut env: HashMap<String, String>) -> HashMa
     env
 }
 
-pub(super) fn exec_env_policy_from_shell_policy(
+/// Stage one of the unified-exec environment: the synchronous composition and
+/// finalization, with no orchestration, permission check, network or spawn.
+///
+/// Each output is scrubbed here, after its own last local write, so a later
+/// overlay cannot reintroduce the launcher-private names. The caller keeps the
+/// asynchronous work.
+fn prepare_unified_exec_env_for_target(
+    mut env: HashMap<String, String>,
+    active_permission_profile: Option<&ActivePermissionProfile>,
+    overrides: &HashMap<String, String>,
+    target_os: &str,
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    inject_permission_profile_env(&mut env, active_permission_profile);
+    let mut env = apply_unified_exec_env(env);
+    strip_output_env(&mut env);
+    // External child: scrub after the last local write. No-op outside Android.
+    codex_utils_process::scrub_private_launcher_env(&mut env, target_os);
+    let mut explicit_env_overrides = overrides.clone();
+    strip_output_env(&mut explicit_env_overrides);
+    codex_utils_process::scrub_private_launcher_env(&mut explicit_env_overrides, target_os);
+    (env, explicit_env_overrides)
+}
+
+/// [`prepare_unified_exec_env_for_target`] for the compiling platform.
+fn prepare_unified_exec_env(
+    env: HashMap<String, String>,
+    active_permission_profile: Option<&ActivePermissionProfile>,
+    overrides: &HashMap<String, String>,
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    prepare_unified_exec_env_for_target(
+        env,
+        active_permission_profile,
+        overrides,
+        std::env::consts::OS,
+    )
+}
+
+/// Stage two: finalize the request environment after `env_for`/
+/// `env_for_exec_server` and before it reaches any backend, so neither the local
+/// spawn nor the serialized exec-server payload can carry the launcher-private
+/// names.
+fn finalize_unified_exec_request_for_target(
+    request_env: &mut HashMap<String, String>,
+    target_os: &str,
+) {
+    codex_utils_process::scrub_private_launcher_env(request_env, target_os);
+}
+
+/// [`finalize_unified_exec_request_for_target`] for the compiling platform.
+fn finalize_unified_exec_request(request_env: &mut HashMap<String, String>) {
+    finalize_unified_exec_request_for_target(request_env, std::env::consts::OS);
+}
+
+pub(crate) fn exec_env_policy_from_shell_policy(
     policy: &ShellEnvironmentPolicy,
 ) -> codex_exec_server::ExecEnvPolicy {
     let mut exclude = policy
@@ -198,25 +253,47 @@ fn exec_server_env_for_request(
     Option<codex_exec_server::ExecEnvPolicy>,
     HashMap<String, String>,
 ) {
-    if let Some(exec_server_env_config) = &request.exec_server_env_config {
-        let mut env =
-            env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
-        if request.exec_server_shell_snapshot.is_some()
-            && !exec_server_env_config.policy.r#set.contains_key("PATH")
-        {
-            env.remove("PATH");
-        }
-        if request.exec_server_managed_network.is_some() {
-            for (key, value) in &request.env {
-                if is_managed_proxy_env_var(key, value) {
-                    env.insert(key.clone(), value.clone());
+    exec_server_env_for_request_for_target(request, std::env::consts::OS)
+}
+
+/// Environment and policy map sent to a remote executor.
+///
+/// Composition stays as it was. Launcher metadata is removed from both maps
+/// after the last local write, on the client that is about to send them. The
+/// executor's own final checks are unchanged. Network and sandbox fields are
+/// not part of these maps.
+fn exec_server_env_for_request_for_target(
+    request: &ExecRequest,
+    target_os: &str,
+) -> (
+    Option<codex_exec_server::ExecEnvPolicy>,
+    HashMap<String, String>,
+) {
+    let (mut policy, mut env) =
+        if let Some(exec_server_env_config) = &request.exec_server_env_config {
+            let mut env =
+                env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
+            if request.exec_server_shell_snapshot.is_some()
+                && !exec_server_env_config.policy.r#set.contains_key("PATH")
+            {
+                env.remove("PATH");
+            }
+            if request.exec_server_managed_network.is_some() {
+                for (key, value) in &request.env {
+                    if is_managed_proxy_env_var(key, value) {
+                        env.insert(key.clone(), value.clone());
+                    }
                 }
             }
-        }
-        (Some(exec_server_env_config.policy.clone()), env)
-    } else {
-        (None, request.env.clone())
+            (Some(exec_server_env_config.policy.clone()), env)
+        } else {
+            (None, request.env.clone())
+        };
+    codex_utils_process::scrub_private_launcher_env(&mut env, target_os);
+    if let Some(policy) = policy.as_mut() {
+        codex_utils_process::scrub_private_launcher_env(&mut policy.r#set, target_os);
     }
+    (policy, env)
 }
 
 fn exec_server_params_for_request(
@@ -477,13 +554,26 @@ impl UnifiedExecProcessManager {
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
+        self.release_process(process_id, /*expected_process*/ None)
+            .await;
+    }
+
+    async fn release_process(
+        &self,
+        process_id: i32,
+        expected_process: Option<&Arc<UnifiedExecProcess>>,
+    ) {
         let removed = {
             let mut store = self.process_store.lock().await;
-            let entry = store.processes.remove(&process_id);
-            if !should_use_deterministic_process_ids() {
-                store.reserved_process_ids.remove(&process_id);
+            if let Some(expected) = expected_process
+                && !store
+                    .processes
+                    .get(&process_id)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.process, expected))
+            {
+                return;
             }
-            entry
+            store.remove(process_id)
         };
         if let Some(entry) = removed {
             unregister_network_approval_for_entry(&entry).await;
@@ -732,7 +822,10 @@ impl UnifiedExecProcessManager {
             } else {
                 OutputRetention::UntilCollected
             };
-            match self.refresh_process_state(process_id, retention).await {
+            match self
+                .refresh_process_state(process_id, &process, retention)
+                .await
+            {
                 ProcessStatus::Alive {
                     exit_code,
                     process_id,
@@ -871,7 +964,7 @@ impl UnifiedExecProcessManager {
             turn_id = trace_id(&context.step_context.turn.sub_id),
             call_id = trace_id(&context.call_id),
             original_exec_call_id = tracing::field::Empty,
-            unified_exec_process_id = request.process_id,
+            unified_exec_process_id = request.terminal.process_id,
             interaction = if request.input.is_empty() { "poll" } else { "write" },
             outcome = tracing::field::Empty,
         )
@@ -897,23 +990,12 @@ impl UnifiedExecProcessManager {
         context: &UnifiedExecContext,
         request: WriteStdinRequest<'_>,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        let process_id = request.process_id;
-
-        // Different terminal sessions can be polled concurrently, but reads and
-        // writes against one terminal must not overlap because they share a
-        // draining output buffer and process lifecycle.
-        let locked_process = {
-            let store = self.process_store.lock().await;
-            let entry = store
-                .processes
-                .get(&process_id)
-                .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
-            // Capture the original call even if this interaction is cancelled while queued.
-            if let Some(call_id) = trace_id(&entry.call_id) {
-                tracing::Span::current().record("original_exec_call_id", call_id);
-            }
-            Arc::clone(&entry.process)
-        };
+        let process_id = request.terminal.process_id;
+        let locked_process = &request.terminal.process;
+        if let Some(call_id) = trace_id(&request.terminal.call_id) {
+            tracing::Span::current().record("original_exec_call_id", call_id);
+        }
+        // Serialize writes and polls on the original terminal.
         let _interaction_guard = locked_process.interaction_lock().lock_owned().await;
         // A queued write must observe strict review enabled while it was waiting.
         let strict_auto_review = context.step_context.turn.strict_auto_review_enabled();
@@ -922,7 +1004,7 @@ impl UnifiedExecProcessManager {
             let entry = store
                 .processes
                 .get(&process_id)
-                .filter(|entry| Arc::ptr_eq(&entry.process, &locked_process))
+                .filter(|entry| Arc::ptr_eq(&entry.process, locked_process))
                 .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
             entry.stdin_approval(context, request.input, strict_auto_review)?
         };
@@ -977,6 +1059,7 @@ impl UnifiedExecProcessManager {
                 .session
                 .request_approval(approval, approval_context)
                 .await
+                .result
                 .map_err(UnifiedExecError::StdinApproval)?;
         }
 
@@ -993,8 +1076,17 @@ impl UnifiedExecProcessManager {
             tty,
             ..
         } = self
-            .prepare_process_handles(process_id, &locked_process)
+            .prepare_process_handles(process_id, locked_process)
             .await?;
+        context
+            .session
+            .services
+            .rollout_thread_trace
+            .record_stdin_target(
+                &context.step_context.turn.sub_id,
+                &context.call_id,
+                &call_id,
+            );
         let remote_exited =
             process.has_exited() && output.drain_policy == OutputDrainPolicy::WaitForOutputClosure;
         // A write racing with remote exit still collects the final output.
@@ -1016,7 +1108,7 @@ impl UnifiedExecProcessManager {
                         if !process.has_exited() {
                             if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
                                 process.terminate();
-                                self.release_process_id(process_id).await;
+                                self.release_process(process_id, Some(locked_process)).await;
                             }
                             return Err(err);
                         }
@@ -1055,7 +1147,7 @@ impl UnifiedExecProcessManager {
             let message =
                 network_denial_message_for_session(session.as_ref(), network_approval.clone())
                     .await;
-            self.release_process_id(process_id).await;
+            self.release_process(process_id, Some(locked_process)).await;
             return Err(fail_process_with_message(process.as_ref(), message));
         }
         if let Some(message) = process.failure_message() {
@@ -1064,7 +1156,7 @@ impl UnifiedExecProcessManager {
                 network_approval.clone(),
             )
             .await;
-            self.release_process_id(process_id).await;
+            self.release_process(process_id, Some(locked_process)).await;
             if let Err(message) = finish_result {
                 return Err(fail_process_with_message(process.as_ref(), message));
             }
@@ -1073,7 +1165,7 @@ impl UnifiedExecProcessManager {
 
         // Only finalize remote sessions after both process exit and output collection.
         let status = self
-            .refresh_process_state(process_id, OutputRetention::UntilCollected)
+            .refresh_process_state(process_id, locked_process, OutputRetention::UntilCollected)
             .await;
         let (process_id, exit_code, event_call_id) = match status {
             ProcessStatus::Alive {
@@ -1095,9 +1187,7 @@ impl UnifiedExecProcessManager {
                 if process.has_exited() {
                     (None, process.exit_code(), call_id)
                 } else {
-                    return Err(UnifiedExecError::UnknownProcessId {
-                        process_id: request.process_id,
-                    });
+                    return Err(UnifiedExecError::UnknownProcessId { process_id });
                 }
             }
         };
@@ -1124,7 +1214,7 @@ impl UnifiedExecProcessManager {
                 call_id: response.event_call_id.clone(),
                 process_id: response
                     .process_id
-                    .unwrap_or(request.process_id)
+                    .unwrap_or(request.terminal.process_id)
                     .to_string(),
                 stdin: request.input.to_string(),
             };
@@ -1139,10 +1229,15 @@ impl UnifiedExecProcessManager {
     async fn refresh_process_state(
         &self,
         process_id: i32,
+        expected_process: &Arc<UnifiedExecProcess>,
         retention: OutputRetention,
     ) -> ProcessStatus {
         let mut store = self.process_store.lock().await;
-        let Some(entry) = store.processes.get_mut(&process_id) else {
+        let Some(entry) = store
+            .processes
+            .get_mut(&process_id)
+            .filter(|entry| Arc::ptr_eq(&entry.process, expected_process))
+        else {
             return ProcessStatus::Unknown;
         };
 
@@ -1305,6 +1400,7 @@ impl UnifiedExecProcessManager {
                 .await
         }
         .map_err(ToolError::Codex)?;
+        finalize_unified_exec_request(&mut request.env);
         let network_policy_decider = network_proxy_launch
             .as_ref()
             .filter(|launch| launch.policy_decision_timeout_ms.is_some())
@@ -1479,11 +1575,11 @@ impl UnifiedExecProcessManager {
         inject_session_env(&mut env, context.session.session_id());
         inject_apply_patch_env(&mut env);
         let active_permission_profile = request.turn_environment.active_permission_profile();
-        inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
-        let mut env = apply_unified_exec_env(env);
-        strip_output_env(&mut env);
-        let mut explicit_env_overrides = shell_environment_policy.r#set.clone();
-        strip_output_env(&mut explicit_env_overrides);
+        let (env, explicit_env_overrides) = prepare_unified_exec_env(
+            env,
+            active_permission_profile.as_ref(),
+            &shell_environment_policy.r#set,
+        );
         let exec_server_env_config = ExecServerEnvConfig {
             policy: exec_env_policy_from_shell_policy(shell_environment_policy),
             local_policy_env,
@@ -1837,14 +1933,21 @@ impl UnifiedExecProcessManager {
         }
     }
 
-    /// Resolves stdin's target from the host-owned terminal, not model-supplied metadata.
-    pub(crate) async fn environment_id_for_process(&self, process_id: i32) -> Option<String> {
-        self.process_store
-            .lock()
-            .await
+    pub(crate) async fn resolve_terminal(
+        &self,
+        process_id: i32,
+    ) -> Result<TerminalSession, UnifiedExecError> {
+        let store = self.process_store.lock().await;
+        let entry = store
             .processes
             .get(&process_id)
-            .map(|entry| entry.environment_id.clone())
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        Ok(TerminalSession {
+            process_id,
+            process: Arc::clone(&entry.process),
+            call_id: entry.call_id.clone(),
+            environment_id: entry.environment_id.clone(),
+        })
     }
 
     pub(crate) async fn list_processes(&self) -> Vec<BackgroundTerminalInfo> {

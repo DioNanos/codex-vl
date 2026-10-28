@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fmt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -429,33 +431,8 @@ impl HttpClient for HttpHeadersClient {
 }
 
 async fn run_helper(command: &str, cwd: &Path) -> Result<HeaderMap> {
-    #[cfg(windows)]
-    let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
-    #[cfg(not(windows))]
-    let shell = "sh";
-
-    // Match the repository's existing shell-command convention. The command is ordinary
-    // configuration and may be visible in local process metadata; credentials belong in the
-    // JSON output rather than in the command text.
-    let mut process = Command::new(shell);
-    #[cfg(windows)]
-    {
-        process.args(["/Q", "/D", "/C"]);
-        process.as_std_mut().raw_arg(format!(r#""{command}""#));
-    }
-    #[cfg(not(windows))]
-    process.args(["-c", command]);
-    #[cfg(unix)]
-    process.process_group(0);
-    process
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .current_dir(cwd)
-        // Match local MCP subprocess policy; arbitrary ambient variables are not inherited.
-        .env_clear()
-        .envs(create_env_for_mcp_server(/*extra_env*/ None, &[])?)
-        .kill_on_drop(true);
+    let env = create_env_for_mcp_server(/*extra_env*/ None, &[])?;
+    let mut process = helper_command_for_target(command, cwd, env, std::env::consts::OS);
 
     #[cfg(windows)]
     let (child, job) = {
@@ -563,6 +540,47 @@ fn parse_helper_output(stdout: Vec<u8>) -> Result<HeaderMap> {
         parsed.insert(name, value);
     }
     Ok(parsed)
+}
+
+/// Build the header helper and drop launcher metadata after its env map.
+///
+/// [`run_helper`] only selects the compiling platform. The allowlisted map is
+/// the last environment write; containment and the output bound stay outside.
+fn helper_command_for_target(
+    command: &str,
+    cwd: &Path,
+    env: HashMap<OsString, OsString>,
+    target_os: &str,
+) -> Command {
+    #[cfg(windows)]
+    let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+    #[cfg(not(windows))]
+    let shell = "sh";
+
+    // Match the repository's existing shell-command convention. The command is ordinary
+    // configuration and may be visible in local process metadata; credentials belong in the
+    // JSON output rather than in the command text.
+    let mut process = Command::new(shell);
+    #[cfg(windows)]
+    {
+        process.args(["/Q", "/D", "/C"]);
+        process.as_std_mut().raw_arg(format!(r#""{command}""#));
+    }
+    #[cfg(not(windows))]
+    process.args(["-c", command]);
+    #[cfg(unix)]
+    process.process_group(0);
+    process
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .current_dir(cwd)
+        // Match local MCP subprocess policy; arbitrary ambient variables are not inherited.
+        .env_clear()
+        .envs(env)
+        .kill_on_drop(true);
+    codex_utils_process::finalize_external_child_for(process.as_std_mut(), target_os);
+    process
 }
 
 #[cfg(test)]

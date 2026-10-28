@@ -45,7 +45,11 @@ async fn agent_plugin_overlay_apps_are_not_runtime_active() {
         r#"{"apps":{"example":{"id":"connector_example"}}}"#,
     );
 
-    assert!(load_plugin_apps(&plugin_root).await.is_empty());
+    assert!(
+        load_plugin_apps(&plugin_root, &PluginId::parse("plugin@test").unwrap())
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -79,7 +83,12 @@ async fn agent_plugin_codex_mcp_overlay_only_forwards_matching_stdio_server_env_
 }"#,
     );
 
-    let mut expected = load_plugin_mcp_servers(&plugin_root, /*auth_mode*/ None).await;
+    let mut expected = load_plugin_mcp_servers(
+        &plugin_root,
+        &PluginId::parse("plugin@test").unwrap(),
+        /*auth_mode*/ None,
+    )
+    .await;
     let Some(McpServerConfig {
         transport: McpServerTransportConfig::Stdio { env, env_vars, .. },
         ..
@@ -111,7 +120,12 @@ async fn agent_plugin_codex_mcp_overlay_only_forwards_matching_stdio_server_env_
     );
 
     assert_eq!(
-        load_plugin_mcp_servers(&plugin_root, /*auth_mode*/ None).await,
+        load_plugin_mcp_servers(
+            &plugin_root,
+            &PluginId::parse("plugin@test").unwrap(),
+            /*auth_mode*/ None
+        )
+        .await,
         expected
     );
 }
@@ -137,7 +151,12 @@ async fn agent_plugin_codex_mcp_overlay_supports_inline_legacy_servers_without_p
 }"#,
     );
 
-    let mut expected = load_plugin_mcp_servers(&plugin_root, /*auth_mode*/ None).await;
+    let mut expected = load_plugin_mcp_servers(
+        &plugin_root,
+        &PluginId::parse("plugin@test").unwrap(),
+        /*auth_mode*/ None,
+    )
+    .await;
     let Some(McpServerConfig {
         transport: McpServerTransportConfig::Stdio { env_vars, .. },
         ..
@@ -158,7 +177,12 @@ async fn agent_plugin_codex_mcp_overlay_supports_inline_legacy_servers_without_p
     );
 
     assert_eq!(
-        load_plugin_mcp_servers(&plugin_root, /*auth_mode*/ None).await,
+        load_plugin_mcp_servers(
+            &plugin_root,
+            &PluginId::parse("plugin@test").unwrap(),
+            /*auth_mode*/ None
+        )
+        .await,
         expected
     );
 }
@@ -377,6 +401,9 @@ fn configured_plugins_from_stack_merges_enabled_effective_layers() {
                 "base".to_string(),
                 PluginConfig {
                     enabled: Some(true),
+                    remote_plugin_id: None,
+                    release_id: None,
+                    auto_provision: None,
                     mcp_servers: HashMap::new(),
                 },
             ),
@@ -384,6 +411,9 @@ fn configured_plugins_from_stack_merges_enabled_effective_layers() {
                 "profile".to_string(),
                 PluginConfig {
                     enabled: Some(true),
+                    remote_plugin_id: None,
+                    release_id: None,
+                    auto_provision: None,
                     mcp_servers: project_mcp_servers.clone(),
                 },
             ),
@@ -391,6 +421,9 @@ fn configured_plugins_from_stack_merges_enabled_effective_layers() {
                 "system".to_string(),
                 PluginConfig {
                     enabled: Some(true),
+                    remote_plugin_id: None,
+                    release_id: None,
+                    auto_provision: None,
                     mcp_servers: HashMap::new(),
                 },
             ),
@@ -431,11 +464,17 @@ async fn legacy_ema_policy_disables_installed_and_selected_plugin_servers() {
         let policy = &config.plugins.plugins["plugin@market"].mcp_servers;
         let installed = load_plugin_mcp_servers_with_policy(
             &plugin_root,
+            &PluginId::parse("plugin@test").unwrap(),
             /*auth_mode*/ None,
             Some(policy),
         )
         .await;
-        let mut selected = load_plugin_mcp_servers(&plugin_root, /*auth_mode*/ None).await;
+        let mut selected = load_plugin_mcp_servers(
+            &plugin_root,
+            &PluginId::parse("plugin@test").unwrap(),
+            /*auth_mode*/ None,
+        )
+        .await;
         assert!(selected["example"].enabled);
         apply_configured_plugin_mcp_server_policies(policy, &mut selected);
         assert!(!installed["example"].enabled);
@@ -619,6 +658,16 @@ enabled = true
         ),
         (
             "[plugins._default]\nenabled = false\n[plugins.\"valid@test\".mcp_servers.example]\ndefault_tools_approval_mode = 'approve'",
+            false,
+            HashMap::new(),
+        ),
+        (
+            "[plugins.\"valid@test\"]\nremote_plugin_id = 'remote-plugin-123'\nrelease_id = 'plugin-release-123'\nauto_provision = true",
+            true,
+            HashMap::new(),
+        ),
+        (
+            "[plugins._default]\nenabled = false\n[plugins.\"valid@test\"]\nremote_plugin_id = 'remote-plugin-123'\nrelease_id = 'plugin-release-123'\nauto_provision = true",
             false,
             HashMap::new(),
         ),

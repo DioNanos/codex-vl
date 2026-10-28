@@ -10,6 +10,7 @@ use codex_network_proxy::LocalBindingPolicy::RequireTrue;
 use codex_network_proxy::NetworkDomainPermission;
 use codex_network_proxy::NetworkUnixSocketPermission;
 use codex_network_proxy::NetworkUnixSocketPermissions;
+use codex_network_proxy::RemoteCredentialMasking;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -104,7 +105,9 @@ async fn attachment_socket_grants_respect_configured_restrictions_at_remote_laun
             Some(composed.environment_policy()),
             /*fallback_policy_decider*/ None,
         )?;
-        let launch = scoped.remote_launch_config(DefaultFalse).await?;
+        let launch = scoped
+            .remote_launch_config(DefaultFalse, RemoteCredentialMasking::Disabled)
+            .await?;
         assert_eq!(
             launch.proxy.dangerously_allow_all_unix_sockets, expected,
             "{name}"
@@ -120,7 +123,7 @@ async fn attachment_socket_grants_respect_configured_restrictions_at_remote_laun
             // Inheritance must not grant sockets to ordinary controller-only commands.
             assert!(
                 !proxy
-                    .remote_launch_config(DefaultFalse)
+                    .remote_launch_config(DefaultFalse, RemoteCredentialMasking::Disabled)
                     .await?
                     .proxy
                     .dangerously_allow_all_unix_sockets
@@ -128,7 +131,7 @@ async fn attachment_socket_grants_respect_configured_restrictions_at_remote_laun
             state.add_allowed_domain("granted.example").await?;
             assert!(
                 scoped
-                    .remote_launch_config(DefaultFalse)
+                    .remote_launch_config(DefaultFalse, RemoteCredentialMasking::Disabled)
                     .await?
                     .proxy
                     .dangerously_allow_all_unix_sockets
@@ -149,7 +152,7 @@ async fn attachment_socket_grants_respect_configured_restrictions_at_remote_laun
                 .await?;
             assert!(
                 !scoped
-                    .remote_launch_config(DefaultFalse)
+                    .remote_launch_config(DefaultFalse, RemoteCredentialMasking::Disabled)
                     .await?
                     .proxy
                     .dangerously_allow_all_unix_sockets
@@ -220,6 +223,7 @@ fn environment_policy_replaces_soft_controller_allowlist_and_preserves_denials()
             ("controller.example", NetworkDomainPermissionToml::Allow),
             ("blocked.example", NetworkDomainPermissionToml::Deny),
         ])),
+        review_domains: Some(vec!["controller-review.example".to_string()]),
         ..Default::default()
     };
     let profile = PermissionProfile::workspace_write();
@@ -246,7 +250,10 @@ fn environment_policy_replaces_soft_controller_allowlist_and_preserves_denials()
         &profile,
     )
     .expect("controller policy should be valid");
-    let mut owner = NetworkProxyConfig::default();
+    let mut owner = NetworkProxyConfig {
+        review_domains: vec!["owner-review.example".to_string()],
+        ..NetworkProxyConfig::default()
+    };
     owner.set_allowed_domains(vec!["owner.example".to_string()]);
     owner.set_denied_domains(vec!["owner-blocked.example".to_string()]);
     owner.set_allow_unix_sockets(vec![
@@ -309,6 +316,9 @@ fn environment_policy_replaces_soft_controller_allowlist_and_preserves_denials()
     owner.dangerously_allow_all_unix_sockets = Some(false);
     owner.allow_local_binding = Some(true);
     owner.enabled = true;
+    owner
+        .review_domains
+        .insert(0, "controller-review.example".to_string());
     assert_eq!(
         restricted.environment_policy(),
         EnvironmentNetworkPolicy::from_config(&owner, /*managed_allowed_domains_only*/ false)
@@ -890,7 +900,9 @@ async fn environment_local_binding_preserves_explicit_denials_and_inherits_omitt
                     Some(policy),
                     Some(Arc::new(|_request| async { NetworkDecision::Allow })),
                 )?;
-                let launch = scoped.remote_launch_config(local_binding_policy).await;
+                let launch = scoped
+                    .remote_launch_config(local_binding_policy, RemoteCredentialMasking::Disabled)
+                    .await;
                 assert_eq!(proxy.current_cfg().await?, carrier.config, "{name}");
                 if local_binding_policy == RequireTrue && !expected {
                     assert!(

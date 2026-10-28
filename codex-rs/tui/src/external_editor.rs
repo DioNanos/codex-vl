@@ -213,13 +213,14 @@ pub(crate) async fn run_editor(
     if editor_cmd.len() > 1 {
         cmd.args(&editor_cmd[1..]);
     }
-    let status = cmd
-        .arg(&temp_path)
+    cmd.arg(&temp_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await?;
+        .stderr(Stdio::inherit());
+    // The editor is an external child: drop the launcher-private install
+    // metadata before it starts. No-op outside Android.
+    codex_utils_process::finalize_external_child(cmd.as_std_mut());
+    let status = cmd.status().await?;
 
     if !status.success() {
         return Err(Report::msg(format!("editor exited with status {status}")));

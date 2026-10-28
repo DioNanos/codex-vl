@@ -4,3 +4,5 @@ codex-rs/hooks/schema/generated/** linguist-generated
 # ASCII art experiment outputs (PIL/ASCII converters); padding-significant.
 docs/assets/vivling/cards/ascii_experiments/**/generated/** linguist-generated -whitespace
 docs/assets/vivling/cards/ascii_experiments/**/raw/** linguist-generated -whitespace
+third_party/voice/sources.json text eol=lf
+patches/v8_array_sort_elements_kind.patch text eol=lf

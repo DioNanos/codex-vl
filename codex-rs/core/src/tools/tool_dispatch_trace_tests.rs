@@ -101,6 +101,7 @@ impl codex_code_mode::CodeModeSession for MissingCellCodeModeSession {
             Ok(codex_code_mode::WaitOutcome::MissingCell(
                 codex_code_mode::RuntimeResponse::Result {
                     code_mode_host_duration: None,
+                    result_buffered_for: std::time::Duration::ZERO,
                     error_text: Some(format!("exec cell {cell_id} not found")),
                     cell_id,
                     content_items: Vec::new(),
@@ -365,6 +366,7 @@ fn test_invocation_with_payload(
         tool_name,
         source,
         payload,
+        environments: Default::default(),
     }
 }
 

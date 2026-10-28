@@ -136,9 +136,23 @@ pub(crate) fn sanitize_shared_verified_env(
 /// legacy identity variables are scrubbed only on a shared verified binding,
 /// and the authoritative metadata always wins over reintroduced values.
 pub(crate) fn finalize_child_env(
+    envs: HashMap<OsString, OsString>,
+    env_vars: &[McpServerEnvVar],
+    identity: Option<&SharedVerifiedIdentity>,
+) -> Result<HashMap<OsString, OsString>> {
+    finalize_child_env_for_target(envs, env_vars, identity, std::env::consts::OS)
+}
+
+/// [`finalize_child_env`] against an explicit target platform.
+///
+/// The identity policy, the overlays and the launcher scrub all live here; the
+/// wrapper above only selects the platform. A test enters this body with
+/// `"android"` and observes the map, without retaining it again afterwards.
+pub(crate) fn finalize_child_env_for_target(
     mut envs: HashMap<OsString, OsString>,
     env_vars: &[McpServerEnvVar],
     identity: Option<&SharedVerifiedIdentity>,
+    target_os: &str,
 ) -> Result<HashMap<OsString, OsString>> {
     sanitize_verified_identity_env(&mut envs, env_vars)?;
     if identity.is_some() {
@@ -147,6 +161,14 @@ pub(crate) fn finalize_child_env(
     if let Some(identity) = identity {
         apply_shared_verified_identity(&mut envs, identity);
     }
+    // MCP servers are external children on both launcher paths: drop the
+    // launcher-private install metadata from inherited values, extra_env
+    // overlays, and named env_vars alike. Non-UTF-8 keys stay untouched.
+    // No-op outside Android; the verified-identity policy above is unchanged.
+    envs.retain(|key, _| {
+        key.to_str()
+            .is_none_or(|key| !codex_utils_process::is_private_launcher_env(key, target_os))
+    });
     Ok(envs)
 }
 
@@ -241,6 +263,19 @@ pub(crate) fn create_env_overlay_for_remote_mcp_server(
     extra_env: Option<HashMap<OsString, OsString>>,
     env_vars: &[McpServerEnvVar],
 ) -> HashMap<OsString, OsString> {
+    create_env_overlay_for_remote_mcp_server_for_target(extra_env, env_vars, std::env::consts::OS)
+}
+
+/// [`create_env_overlay_for_remote_mcp_server`] against an explicit target.
+///
+/// The overlay is what the client sends. Launcher metadata is removed here,
+/// after the non-inheritable filter, on the preparing client. The remote
+/// side keeps its own final checks. Non-UTF-8 keys stay.
+pub(crate) fn create_env_overlay_for_remote_mcp_server_for_target(
+    extra_env: Option<HashMap<OsString, OsString>>,
+    env_vars: &[McpServerEnvVar],
+    target_os: &str,
+) -> HashMap<OsString, OsString> {
     // Remote stdio should inherit PATH/HOME/etc. from the executor side, not
     // from the orchestrator process. Only forward variables explicitly named
     // by the MCP config plus literal env overrides from that config.
@@ -254,14 +289,36 @@ pub(crate) fn create_env_overlay_for_remote_mcp_server(
         name.to_str()
             .is_none_or(|name| !is_non_inheritable_env_var(name))
     });
+    env.retain(|name, _| {
+        name.to_str()
+            .is_none_or(|name| !codex_utils_process::is_private_launcher_env(name, target_os))
+    });
     env
 }
 
 pub(crate) fn remote_mcp_env_var_names(env_vars: &[McpServerEnvVar]) -> Vec<String> {
+    remote_mcp_env_var_names_for_target(env_vars, std::env::consts::OS)
+}
+
+/// [`remote_mcp_env_var_names`] against an explicit target.
+///
+/// The selected names travel inside the serialized env policy of the executor
+/// request (`include_only` with `inherit = All`), so the preparing client
+/// applies the launcher boundary here as well: a reserved name configured
+/// with `source = "remote"` must not be selected on the client's platform,
+/// even though a recipient running elsewhere would honor the selection.
+/// Non-inheritable auth names keep being dropped and unrelated selectors
+/// pass through; every non-Android target is unchanged. The recipient's own
+/// final checks are not relaxed.
+pub(crate) fn remote_mcp_env_var_names_for_target(
+    env_vars: &[McpServerEnvVar],
+    target_os: &str,
+) -> Vec<String> {
     env_vars
         .iter()
         .filter(|var| var.is_remote_source())
         .filter(|var| !is_non_inheritable_env_var(var.name()))
+        .filter(|var| !codex_utils_process::is_private_launcher_env(var.name(), target_os))
         .map(|var| var.name().to_string())
         .collect()
 }
@@ -643,5 +700,76 @@ mod tests {
             create_env_for_mcp_server(/*extra_env*/ None, &[]).expect("local MCP env should build");
 
         assert_eq!(env.get(OsStr::new("PATH")), Some(&expected));
+    }
+
+    /// Sentinel through the shared production body. The Android target scrubs,
+    /// the host target does not, and the test never retains the result
+    /// afterwards: composition and finalizer both live in
+    /// `finalize_child_env_for_target`.
+    #[test]
+    fn sentinel_mcp_stdio_env_drops_launcher_metadata_for_android() {
+        let base = || {
+            let mut envs: HashMap<OsString, OsString> = HashMap::new();
+            for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+                envs.insert(OsString::from(*name), OsString::from("launcher-value"));
+            }
+            envs.insert(OsString::from("TOOL_KEEP_ME"), OsString::from("kept"));
+            envs
+        };
+
+        let android = finalize_child_env_for_target(base(), &[], None, "android")
+            .expect("no identity policy");
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(
+                !android.contains_key(&OsString::from(*name)),
+                "{name} leaked"
+            );
+        }
+        assert_eq!(
+            android.get(&OsString::from("TOOL_KEEP_ME")),
+            Some(&OsString::from("kept"))
+        );
+
+        let host =
+            finalize_child_env_for_target(base(), &[], None, "linux").expect("no identity policy");
+        assert!(
+            host.contains_key(&OsString::from("CODEX_SELF_EXE")),
+            "the host target must not scrub"
+        );
+    }
+
+    /// The remote overlay is the map the client sends. Android drops launcher
+    /// metadata inside the body; the host keeps it. The test does not scrub
+    /// the returned map.
+    #[test]
+    fn sentinel_remote_mcp_overlay_drops_launcher_metadata_for_android() {
+        let extra = || {
+            let mut env = HashMap::new();
+            for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+                env.insert(OsString::from(*name), OsString::from("launcher-value"));
+            }
+            env.insert(OsString::from("TOOL_KEEP_ME"), OsString::from("kept"));
+            env
+        };
+
+        let android =
+            create_env_overlay_for_remote_mcp_server_for_target(Some(extra()), &[], "android");
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(
+                !android.contains_key(&OsString::from(*name)),
+                "{name} leaked"
+            );
+        }
+        assert_eq!(
+            android.get(&OsString::from("TOOL_KEEP_ME")),
+            Some(&OsString::from("kept"))
+        );
+
+        let host = create_env_overlay_for_remote_mcp_server_for_target(Some(extra()), &[], "linux");
+        assert!(host.contains_key(&OsString::from("CODEX_SELF_EXE")));
+        assert_eq!(
+            host.get(&OsString::from("TOOL_KEEP_ME")),
+            Some(&OsString::from("kept"))
+        );
     }
 }

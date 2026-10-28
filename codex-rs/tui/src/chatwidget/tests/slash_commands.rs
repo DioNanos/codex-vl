@@ -450,6 +450,15 @@ async fn assert_cancelled_queued_menu_drains_next_input(
     complete_turn_with_message(&mut chat, "turn-1", Some("done"));
 
     assert_eq!(chat.input_queue.queued_user_messages.len(), 1);
+    if command.trim() == "/permissions" {
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::OpenPermissionsPopup)),
+            "permission menu must go through the app"
+        );
+        assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+        chat.open_permissions_popup();
+    }
     let popup = render_bottom_popup(&chat, /*width*/ 80);
     assert!(
         popup.contains(expected_popup_text),
@@ -488,7 +497,7 @@ async fn queued_slash_menu_cancel_drains_next_input() {
     )
     .await;
     assert_cancelled_queued_menu_drains_next_input(
-        "/permissions",
+        "/permissions   ",
         "Update Model Permissions",
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )
@@ -712,7 +721,6 @@ async fn queued_unknown_slash_reports_error_when_dequeued() {
     );
     assert!(chat.input_queue.queued_user_messages.is_empty());
 
-    chat.set_feature_enabled(Feature::Worktrees, /*enabled*/ true);
     chat.set_local_worktree_operations(/*enabled*/ false);
     let drain = chat.submit_queued_slash_prompt(UserMessage::from("/worktree extra").into());
     assert_matches!(drain, QueueDrain::Continue);

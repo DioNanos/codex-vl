@@ -33,8 +33,26 @@ pub fn create_env(
     policy: &ShellEnvironmentPolicy,
     thread_id: Option<ThreadId>,
 ) -> HashMap<String, String> {
+    create_env_for_target(policy, thread_id, std::env::consts::OS)
+}
+
+/// [`create_env`] against an explicit target platform.
+///
+/// The boundary's own composition lives here, the launcher scrub included; the
+/// wrapper above only selects the platform. A test enters this body with
+/// `"android"` and observes the map directly, without scrubbing it afterwards.
+pub(crate) fn create_env_for_target(
+    policy: &ShellEnvironmentPolicy,
+    thread_id: Option<ThreadId>,
+    target_os: &str,
+) -> HashMap<String, String> {
     let thread_id = thread_id.map(|thread_id| thread_id.to_string());
-    shell_environment::create_env(policy, thread_id.as_deref())
+    let mut env = shell_environment::create_env(policy, thread_id.as_deref());
+    // Tool environment maps feed external child processes: scrub the
+    // launcher-private install metadata on Android regardless of what the
+    // policy inherited. No-op on every other platform.
+    codex_utils_process::scrub_private_launcher_env(&mut env, target_os);
+    env
 }
 
 /// Exposes the shared root-session identity and harness version to shell commands.

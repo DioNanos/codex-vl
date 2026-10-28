@@ -227,12 +227,17 @@ async fn filesystem_lookup_distinguishes_thread_ids_from_rollout_ids() {
         "sessions/2025/01/04/rollout-{reverted_ts}-{thread_uuid}_{rollout_uuid}.jsonl"
     ));
     fs::rename(reverted_source, reverted_path.as_path()).unwrap();
+    let subsequent_rollout_uuid = Uuid::from_u128(403);
+    let subsequent_path = home.join(format!(
+        "sessions/2025/01/04/rollout-{reverted_ts}-{thread_uuid}_{subsequent_rollout_uuid}.jsonl"
+    ));
+    fs::copy(&reverted_path, &subsequent_path).unwrap();
 
     assert_eq!(
         find_thread_path_by_id_str(home, &thread_uuid.to_string(), /*state_db_ctx*/ None)
             .await
             .unwrap(),
-        Some(reverted_path.clone())
+        Some(subsequent_path)
     );
     assert_eq!(
         find_rollout_path_by_rollout_id(home, thread_id_from_uuid(rollout_uuid))
@@ -240,6 +245,39 @@ async fn filesystem_lookup_distinguishes_thread_ids_from_rollout_ids() {
             .unwrap(),
         Some(reverted_path)
     );
+}
+
+#[tokio::test]
+async fn sibling_rollout_prefetch_preserves_first_match_for_duplicate_ids() -> Result<()> {
+    let home = TempDir::new()?;
+    let sessions = home.path().join("sessions");
+    let directory = sessions.join("2025/01/03");
+    fs::create_dir_all(&directory)?;
+    let owner = ThreadId::new();
+    let child = ThreadId::new();
+    let first = ThreadId::new();
+    let second = ThreadId::new();
+    let child_path = directory.join(format!("rollout-2025-01-03T12-00-00-{owner}_{child}.jsonl"));
+    let first_sibling =
+        directory.join(format!("rollout-2025-01-03T12-00-00-{owner}_{first}.jsonl"));
+    let second_sibling = directory.join(format!(
+        "rollout-2025-01-03T12-00-00-{owner}_{second}.jsonl"
+    ));
+    let earlier_duplicate = sessions.join(format!("rollout-2025-01-02T12-00-00-{first}.jsonl"));
+    for path in [
+        &child_path,
+        &first_sibling,
+        &second_sibling,
+        &earlier_duplicate,
+    ] {
+        fs::write(path, b"")?;
+    }
+
+    let paths = crate::prefetch_sibling_rollout_paths(home.path(), &child_path, first).await?;
+
+    assert_eq!(paths.get(&first), Some(&earlier_duplicate));
+    assert_eq!(paths.get(&second), Some(&second_sibling));
+    Ok(())
 }
 
 #[tokio::test]
@@ -1553,8 +1591,9 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
     let meta_line = RolloutLine {
         timestamp: ts.to_string(),
         ordinal: None,
-        item: RolloutItem::SessionMeta(SessionMetaLine {
+        item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
             meta: SessionMeta {
+                attached_thread: false,
                 creator_user_id: None,
                 creator_account_id: None,
                 session_id: conversation_id.into(),
@@ -1584,7 +1623,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                 context_window: None,
             },
             git: None,
-        }),
+        })),
     };
     writeln!(file, "{}", serde_json::to_string(&meta_line)?)?;
 

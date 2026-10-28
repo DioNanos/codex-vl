@@ -33,6 +33,7 @@ fn legacy_art_for(stage: Stage, mode: CrtMode, tick: u64) -> Frame {
         CrtMode::Alert => Frame::new([" !  o o  !   ", "  --(_)--    ", " !  / \\  !   "], ALERT),
         CrtMode::Tired => Frame::new(["   o z o     ", "   -(_)-     ", "   _/ \\_     "], BODY),
         CrtMode::Hungry => Frame::new(["   o   o     ", "  --(_)--    ", "    / \\  *   "], BODY),
+        CrtMode::Error => Frame::new(["    x x      ", "  --(_)--    ", "    / \\  x   "], BODY),
         CrtMode::Idle => match (stage, tick % 6 == 0) {
             (Stage::Baby, true) => {
                 Frame::new(["   o   o     ", "  --(_)--    ", "    / \\      "], BODY)

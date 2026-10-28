@@ -52,21 +52,74 @@ fn login_with_api_key_reads_stdin_and_writes_auth_json() -> Result<()> {
     write_file_auth_config(codex_home.path())?;
 
     let mut cmd = codex_command(codex_home.path())?;
-    cmd.args([
-        "-c",
-        "forced_login_method=\"api\"",
-        "login",
-        "--with-api-key",
-    ])
-    .write_stdin("sk-test\n")
-    .assert()
-    .success()
-    .stderr(contains("Successfully logged in"));
+    let login = cmd
+        .args([
+            "-c",
+            "forced_login_method=\"api\"",
+            "login",
+            "--with-api-key",
+        ])
+        .write_stdin("sk-test\n")
+        .assert()
+        .success();
+    insta::assert_snapshot!(String::from_utf8_lossy(&login.get_output().stderr), @r"
+    Reading API key from stdin...
+    API key saved. Authentication is checked when you send a request.
+    ");
 
     let auth = read_auth_json(codex_home.path())?;
     assert_eq!(auth["OPENAI_API_KEY"], "sk-test");
     assert!(auth.get("tokens").is_none());
     assert!(auth.get("agent_identity").is_none());
+
+    let status = codex_command(codex_home.path())?
+        .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+        .env_remove(OPENAI_FEDERATION_RULE_ID_ENV_VAR)
+        .env_remove(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR)
+        .args(["login", "status"])
+        .assert()
+        .success();
+    insta::assert_snapshot!(String::from_utf8_lossy(&status.get_output().stderr), @r"
+    API key configured - ***
+    Authentication is checked when you send a request.
+    ");
+
+    Ok(())
+}
+
+#[test]
+fn api_key_auth_commands_work_when_log_dir_is_unavailable() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let log_dir = codex_home.path().join("unavailable-logs");
+    std::fs::write(&log_dir, "not a directory")?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!("cli_auth_credentials_store = \"file\"\nlog_dir = {log_dir:?}\n"),
+    )?;
+
+    codex_command(codex_home.path())?
+        .args(["login", "--with-api-key"])
+        .write_stdin("sk-test\n")
+        .assert()
+        .success()
+        .stderr(contains("Warning: failed to create login log directory"));
+    assert_eq!(
+        read_auth_json(codex_home.path())?["OPENAI_API_KEY"],
+        "sk-test"
+    );
+
+    codex_command(codex_home.path())?
+        .args(["login", "status"])
+        .assert()
+        .success()
+        .stderr(contains("API key"));
+
+    codex_command(codex_home.path())?
+        .arg("logout")
+        .assert()
+        .success()
+        .stderr(contains("Successfully logged out"));
+    assert!(!codex_home.path().join("auth.json").exists());
 
     Ok(())
 }

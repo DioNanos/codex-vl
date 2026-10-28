@@ -154,9 +154,11 @@ impl Harness {
             AnalyticsEventsClient::disabled(),
         ));
         let processor = Arc::new(MessageProcessor::new(MessageProcessorArgs {
+            cloud_skill_provider: None,
             outgoing: Arc::clone(&outgoing),
             analytics_events_client: AnalyticsEventsClient::disabled(),
             arg0_paths: Arg0DispatchPaths::default(),
+            startup_cwd: Some(config.cwd.to_path_buf()),
             config,
             config_manager,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),

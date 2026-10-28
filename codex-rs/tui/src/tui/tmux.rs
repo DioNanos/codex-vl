@@ -58,6 +58,9 @@ pub(super) fn options() -> Options {
                     .args(args)
                     .stdin(Stdio::null())
                     .stderr(Stdio::null());
+                // tmux is an external child: drop the launcher-private install
+                // metadata before the probe starts. No-op outside Android.
+                codex_utils_process::finalize_external_child(&mut command);
                 command_stdout_before_deadline(&mut command, deadline)
             });
             PROBE_IN_FLIGHT.store(false, Ordering::Release);

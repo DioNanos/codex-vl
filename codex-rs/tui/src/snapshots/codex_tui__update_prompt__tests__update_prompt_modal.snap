@@ -4,7 +4,7 @@ assertion_line: 301
 expression: terminal.backend()
 ---
 
-  Update available · 0.163.0 → 9.9.9
+  Update available · 0.165.0 → 9.9.9
   Release notes: https://github.com/DioNanos/codex-vl/releases/latest
 
 › 1. Update now (runs `npm install -g @mmmbuto/codex-vl`)                       

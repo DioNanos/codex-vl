@@ -531,6 +531,73 @@ async fn plugin_auth_projection_hides_matching_mcp_with_chatgpt_apps_route() {
 }
 
 #[tokio::test]
+async fn agent_plugin_app_routing_respects_marketplace_and_auth() {
+    for (marketplace, uses_apps, apps_enabled) in [
+        (REMOTE_GLOBAL_MARKETPLACE_NAME, true, true),
+        (REMOTE_GLOBAL_MARKETPLACE_NAME, true, false),
+        ("test", false, true),
+        ("test", false, false),
+    ] {
+        let codex_home = TempDir::new().unwrap();
+        let plugin_root = codex_home
+            .path()
+            .join("plugins/cache")
+            .join(marketplace)
+            .join("sample/local");
+        write_file(
+            &plugin_root.join("plugin.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"sample","extensions":{"com.openai":{"apps":"./.app.json"}}}"#,
+        );
+        write_file(
+            &plugin_root.join(".app.json"),
+            r#"{"apps":{"sample":{"id":"connector_sample"}}}"#,
+        );
+        write_file(
+            &plugin_root.join("mcp.json"),
+            r#"{"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json","mcpServers":{"sample":{"type":"stdio","command":"sample-mcp"},"unrelated":{"type":"stdio","command":"other-mcp"}}}"#,
+        );
+        let outcome = load_plugins_from_config(
+            &format!(
+                "[features]\nplugins = true\napps = {apps_enabled}\n[plugins.\"sample@{marketplace}\"]\nenabled = true\n"
+            ),
+            codex_home.path(),
+            Some(AuthMode::Chatgpt),
+        )
+        .await;
+        let expected_apps = if uses_apps {
+            vec![AppConnectorId("connector_sample".to_string())]
+        } else {
+            Vec::new()
+        };
+        let expected_mcp = if uses_apps {
+            vec!["unrelated".to_string()]
+        } else {
+            vec!["sample".to_string(), "unrelated".to_string()]
+        };
+        assert_eq!(outcome.effective_apps(), expected_apps);
+        assert_eq!(sorted_effective_mcp_server_names(&outcome), expected_mcp);
+        let [summary] = outcome.capability_summaries() else {
+            panic!("expected one installed plugin");
+        };
+        assert_eq!(summary.app_connector_ids, expected_apps);
+        assert_eq!(summary.mcp_server_names, expected_mcp);
+
+        // Remote curated plugins are not selected in API-key mode, but the standalone
+        // loader must still preserve direct MCP when no app route is available.
+        let mut direct_servers = crate::loader::load_plugin_mcp_servers(
+            &plugin_root,
+            &PluginId::parse(&format!("sample@{marketplace}")).unwrap(),
+            Some(AuthMode::ApiKey),
+        )
+        .await
+        .into_keys()
+        .collect::<Vec<_>>();
+        direct_servers.sort();
+        assert_eq!(direct_servers, vec!["sample", "unrelated"]);
+    }
+}
+
+#[tokio::test]
 async fn plugin_auth_projection_hides_dual_surface_mcp_with_agent_identity_apps_route() {
     let codex_home = TempDir::new().unwrap();
     write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
@@ -3294,6 +3361,9 @@ fn loaded_plugins_cache_evicts_least_recently_used_configuration() {
                 format!("plugin-{index}@test"),
                 PluginConfig {
                     enabled: Some(true),
+                    remote_plugin_id: None,
+                    release_id: None,
+                    auto_provision: None,
                     mcp_servers: HashMap::new(),
                 },
             )]),
@@ -7672,6 +7742,85 @@ remote_plugin = true
     assert!(renamed_malformed_cache.exists());
     assert!(previous_malformed_cache.exists());
     assert!(!linear_metadata.exists());
+}
+
+#[tokio::test]
+async fn failed_installed_plugin_pagination_preserves_inventory_and_releases_mutation_gate() {
+    let codex_home = TempDir::new().unwrap();
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        "[features]\nplugins = true\nremote_plugin = true\n",
+    );
+    write_cached_plugin(
+        codex_home.path(),
+        REMOTE_GLOBAL_MARKETPLACE_NAME,
+        "retained",
+    );
+    let server = MockServer::start().await;
+    // Both bundle sync and its metadata fallback must reject the incomplete inventory.
+    Mock::given(method("GET"))
+        .and(path("/backend-api/ps/plugins/installed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "plugins": [],
+            "pagination": {"next_page_token": "next"},
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    let mut config = load_config(codex_home.path(), codex_home.path()).await;
+    config.chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let auth_manager = test_auth_manager(Some(AuthMode::Chatgpt));
+    let auth = auth_manager.auth_cached().expect("test ChatGPT auth");
+    let manager = Arc::new(test_plugins_manager_with_auth_manager(
+        codex_home.path().to_path_buf(),
+        Some(Product::Codex),
+        auth_manager,
+    ));
+    let previous_inventory = vec![remote_installed_plugin("retained")];
+    manager.write_remote_installed_plugins_cache(previous_inventory.clone());
+
+    manager.maybe_start_remote_installed_plugin_bundle_sync(
+        &config,
+        Some(auth),
+        /*on_effective_plugins_changed*/ None,
+    );
+    // Starting the sync acquires the gate synchronously, so this waits for its release.
+    let _guard = tokio::time::timeout(
+        Duration::from_secs(5),
+        manager.acquire_remote_installed_plugin_sync_guard(),
+    )
+    .await
+    .expect("failed pagination should promptly release the mutation gate")
+    .expect("mutation gate should remain available");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while manager
+            .remote_installed_plugins_cache_refresh_state
+            .read()
+            .expect("refresh state lock")
+            .in_flight
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("fallback metadata refresh should finish");
+
+    assert_eq!(
+        manager
+            .remote_installed_plugins_cache
+            .read()
+            .expect("installed cache lock")
+            .plugins
+            .clone(),
+        Some(previous_inventory),
+    );
+    assert!(
+        codex_home
+            .path()
+            .join("plugins/cache/openai-curated-remote/retained")
+            .exists()
+    );
+    server.verify().await;
 }
 
 #[test]

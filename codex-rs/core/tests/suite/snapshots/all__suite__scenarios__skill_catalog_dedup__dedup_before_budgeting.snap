@@ -16,8 +16,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=e80da11342c6e6dd):
-        - namespace/functions; hash=bd9e182b4235cdc1
+00:additional_tools/developer (3; hash=5e8370540461db70):
+        - namespace/functions; hash=7d26e086c1dbba28
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -74,7 +74,6 @@ Settings:
         ## Skills
         A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that ...locators can be expanded using the skill roots table. [hash=f00d6a4d3e192f06]
         ### Skill roots
-        - `e0` = `skill://executor-a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` [hash=89039f2551ec08fb]
         - `e1` = `skill://executor-b/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb` [hash=aec7776011a3143f]
         Read a skill package directly with `skills.read({"package":"<package>"})` to read its `SKILL.md`; root a...ackage is not provided, use `skills.list` to find it. [hash=25bf84ea2123d647]
         ### Available skills
@@ -118,8 +117,9 @@ Settings:
     </environment_context>
 06:message/user:
     Which skills are available?
+07:configuration_update:reasoning={"effort":"low"}
 -- request 2 (turn) --
-07:message/assistant:
+08:message/assistant:
     Skills are available.
-08:message/user:
+09:message/user:
     Are those same skills still available?

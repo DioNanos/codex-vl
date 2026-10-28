@@ -47,7 +47,9 @@ impl SkillProviderSource {
     fn should_list(&self, query: &SkillListQuery) -> bool {
         match &self.kind {
             SkillSourceKind::Host => query.include_host_skills,
-            SkillSourceKind::Executor => !query.executor_roots.is_empty(),
+            SkillSourceKind::Executor => {
+                query.executor_capability_discovery_v2.is_some() || !query.executor_roots.is_empty()
+            }
             SkillSourceKind::Cloud => query.include_cloud_skills,
             SkillSourceKind::Custom(_) => true,
         }
@@ -105,6 +107,17 @@ impl SkillProviders {
         self.sources
             .iter()
             .any(|source| source.kind == SkillSourceKind::Cloud)
+    }
+
+    pub(crate) fn cloud_mcp_resources<'a>(
+        &self,
+        resources: Option<&'a codex_mcp::McpResourceClient>,
+    ) -> Option<&'a codex_mcp::McpResourceClient> {
+        resources.filter(|_| {
+            self.sources.iter().any(|source| {
+                source.kind == SkillSourceKind::Cloud && source.provider.uses_mcp_resources()
+            })
+        })
     }
 
     pub(crate) fn has_host_provider(&self) -> bool {

@@ -50,6 +50,8 @@ impl Config {
             )?
             .with_user_layer_from(&self.config_layer_stack),
         };
+        // User refreshes retain the session's managed configuration.
+        layers.ensure_config_server_applied()?;
         let cfg: McpRefreshToml = layers
             .effective_config()
             .try_into()
@@ -92,8 +94,8 @@ impl Config {
         let is_enterprise = |server: &McpServerConfig| {
             matches!(server.auth, McpServerAuth::EmaAuth) || server.ema_registration().is_some()
         };
-        // Refresh ordinary servers from the complete host-owned set. Keep the
-        // initially admitted EMA configuration until a fresh session is constructed.
+        // Refresh ordinary servers from the complete host-owned set. Keep EMA
+        // admission pinned, while applying current tool restrictions and approvals.
         let mut servers: HashMap<_, _> = incoming
             .mcp_servers
             .get()
@@ -109,7 +111,17 @@ impl Config {
                 .get()
                 .iter()
                 .filter(|(_, server)| is_enterprise(server))
-                .map(|(name, server)| (name.clone(), server.clone())),
+                .map(|(name, server)| {
+                    let mut server = server.clone();
+                    if let Some(incoming) = incoming.mcp_servers.get().get(name) {
+                        server.enabled_tools.clone_from(&incoming.enabled_tools);
+                        server.disabled_tools.clone_from(&incoming.disabled_tools);
+                        server.omit_tools_from.clone_from(&incoming.omit_tools_from);
+                        server.default_tools_approval_mode = incoming.default_tools_approval_mode;
+                        server.tools.clone_from(&incoming.tools);
+                    }
+                    (name.clone(), server)
+                }),
         );
         let mut config = self.clone();
         if !matches!(scope, RuntimeConfigRefresh::UserFiles) {
@@ -166,7 +178,8 @@ impl Config {
         if !matches!(scope, RuntimeConfigRefresh::Mcp) {
             config.tool_suggest = resolve_tool_suggest_config_from_layer_stack(&layers);
         }
-        config.config_layer_stack = layers;
+        config.config_layer_stack = layers
+            .with_mcp_ema_cancellation(self.config_layer_stack.mcp_ema_cancellation().clone());
         config.plugins = cfg.plugins;
         if enterprise_retired {
             config.disable_mcp_enterprise_auth();

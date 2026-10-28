@@ -13,7 +13,10 @@ use codex_guardian_reviewer::GuardianReviewError;
 use codex_guardian_reviewer::GuardianReviewOutcome;
 #[cfg(test)]
 use codex_guardian_reviewer::GuardianReviewSessionLimits;
+use codex_guardian_reviewer::ReviewDeadline;
 use codex_guardian_reviewer::ReviewModel;
+#[cfg(test)]
+use codex_guardian_reviewer::run_with_retry;
 use codex_prompts::ResolvedModelMessages;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::protocol::EventMsg;
@@ -165,7 +168,7 @@ pub(super) async fn guardian_review_session_config(
 struct ReviewAttemptOptions {
     authorization: Option<ReviewAuthorization>,
     external_cancel: Option<CancellationToken>,
-    deadline: Instant,
+    deadline: ReviewDeadline,
 }
 
 /// Runs the guardian in a locked-down reusable review session.
@@ -250,7 +253,7 @@ pub(super) async fn run_guardian_review_session_with_retry(
         external_cancel,
         GuardianReviewSessionLimits {
             max_attempts,
-            deadline: Instant::now() + GUARDIAN_REVIEW_TIMEOUT,
+            deadline: ReviewDeadline::from_timeout(Some(GUARDIAN_REVIEW_TIMEOUT)),
         },
     )
     .await
@@ -266,8 +269,11 @@ async fn run_guardian_review_session_with_retry_before_deadline(
     limits: GuardianReviewSessionLimits,
 ) -> (GuardianReviewOutcome, GuardianReviewAnalyticsResult) {
     let context = context.into();
-    let (outcome, analytics, _) =
-        codex_guardian_reviewer::run_with_retry(limits, external_cancel.as_ref(), |deadline| {
+    let (outcome, analytics, _) = run_with_retry(
+        limits,
+        external_cancel.as_ref(),
+        /*telemetry*/ None,
+        |deadline| {
             let attempt = run_guardian_review_session_before_deadline(
                 Arc::clone(&session),
                 context.clone(),
@@ -284,7 +290,8 @@ async fn run_guardian_review_session_with_retry_before_deadline(
                 let (outcome, analytics) = attempt.await;
                 (outcome, analytics, None::<()>)
             }
-        })
-        .await;
+        },
+    )
+    .await;
     (outcome, analytics)
 }

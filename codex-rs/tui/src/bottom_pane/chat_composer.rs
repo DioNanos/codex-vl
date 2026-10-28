@@ -5,6 +5,8 @@
 //! bursts, especially on Windows. Paste timing uses Tokio's clock so asynchronous flush deadlines
 //! and input classification share a clock, including in paused-time tests. Copy shortcuts and right
 //! clicks preserve selected draft text.
+//! Local recall retains full draft metadata for composer submissions and accepted command-line
+//! initial prompts; transcript replay seeds earlier prompts separately.
 //! When enabled, fullscreen right-click paste requires an editable composer without a selection,
 //! search, or blocking view. The app reads clipboard text asynchronously and delivers a normal
 //! paste only while the same thread, draft, and cursor remain eligible. Intervening input or focus
@@ -18,6 +20,9 @@
 //! Transcript interactions borrow the hint footer through `ComposerRenderOptions`;
 //! its resolved presentation drives height, painting, and the focused cursor together.
 //!
+//! Preset submenu hints borrow slots and reflow with the composer.
+//!
+//! Vim Replace preserves the overwritten leading grapheme until Backspace removes an absorbed `!`.
 //! The plain-text preset keeps command prefixes literal, including `!`, so Enter and Tab
 //! submit ordinary text without enabling shell mode.
 //!
@@ -26,6 +31,7 @@
 //! By default, `@` lists plugins, filesystem entries, and skills. Skills are hidden when their
 //! owning plugin is listed. `$` lists individual skills and apps, but not plugins.
 //! Disabling `mentions_v2` restores file-only `@` search and adds plugins back to `$`.
+//! Confirmed `$` picker selections inform future ordering within each match tier.
 //!
 //! # Key Event Routing
 //!
@@ -155,8 +161,8 @@
 //! Parent-owned subagent threads keep the draft editable while blocking agent-directed submission.
 //! On the `Enter` and `Tab` submission paths, normal prompts, disallowed slash commands, and `!`
 //! shell commands return `ParentOwnedInputBlocked` without clearing the draft. Bare local and
-//! navigation slash commands remain available so users can leave or manage the view. Transcript
-//! exports also remain available, including an explicit destination filename.
+//! navigation slash commands remain available so users can leave or manage the view.
+//! Exports and local display commands (`/title` and `/statusline`) also accept arguments.
 //!
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
@@ -249,7 +255,7 @@
 //! Submission flushes expired characters and buffers before classifying Enter, independent of
 //! UI flush ticks. `disable_paste_burst` bypasses detection; setting it flushes and clears in-flight state.
 //! Mouse edits flush pending typing; selection and copy behavior lives in [`mouse`]. Confirmed
-//! copies clear the selection while preserving the draft and cursor. Footer text uses a separate
+//! explicit copies clear the selection while preserving the draft and cursor. Footer text uses a separate
 //! read-only selection owner over its final rendered cells.
 //!
 //! See `codex-rs/tui/src/bottom_pane/paste_burst.rs` for the detailed state machine.
@@ -346,6 +352,7 @@ use super::footer::single_line_footer_layout;
 use super::footer::status_line_right_indicator_line;
 use super::footer::toggle_shortcut_mode;
 use super::footer::uses_passive_footer_status_layout;
+use super::mention_usage::MentionUsage;
 use super::mentions_v2::MentionV2Popup;
 use super::mentions_v2::MentionV2Selection;
 use super::paste_burst::CharDecision;
@@ -488,7 +495,10 @@ pub enum InputResult {
 }
 
 fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
-    if command == SlashCommand::Export {
+    if matches!(
+        command,
+        SlashCommand::Export | SlashCommand::Title | SlashCommand::Statusline
+    ) {
         return true;
     }
 
@@ -526,8 +536,6 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Usage
                 | SlashCommand::Ide
                 | SlashCommand::DebugConfig
-                | SlashCommand::Title
-                | SlashCommand::Statusline
                 | SlashCommand::Theme
                 | SlashCommand::Pets
                 | SlashCommand::Ps
@@ -606,6 +614,7 @@ impl ChatComposerConfig {
 pub(crate) struct ChatComposer {
     draft: DraftState,
     popups: PopupState,
+    pub(super) mention_usage: MentionUsage,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
     agents_navigation_enabled: bool,
@@ -740,6 +749,7 @@ impl ChatComposer {
         let mut this = Self {
             draft: DraftState::new(),
             popups: PopupState::default(),
+            mention_usage: MentionUsage::default(),
             app_event_tx,
             history: ChatComposerHistory::new(),
             agents_navigation_enabled: false,
@@ -961,11 +971,13 @@ impl ChatComposer {
     }
 
     pub fn set_plugins_command_enabled(&mut self, enabled: bool) {
-        self.plugins_command_enabled = enabled;
+        self.update_slash_command_catalog(|composer| composer.plugins_command_enabled = enabled);
     }
 
     pub fn set_token_activity_command_enabled(&mut self, enabled: bool) {
-        self.token_activity_command_enabled = enabled;
+        self.update_slash_command_catalog(|composer| {
+            composer.token_activity_command_enabled = enabled
+        });
     }
 
     pub fn set_mentions_v2_enabled(&mut self, enabled: bool) {
@@ -1007,28 +1019,36 @@ impl ChatComposer {
     }
 
     pub fn set_collaboration_modes_enabled(&mut self, enabled: bool) {
-        self.collaboration_modes_enabled = enabled;
+        self.update_slash_command_catalog(|composer| {
+            composer.collaboration_modes_enabled = enabled
+        });
     }
 
     pub fn set_connectors_enabled(&mut self, enabled: bool) {
-        self.connectors_enabled = enabled;
+        self.update_slash_command_catalog(|composer| composer.connectors_enabled = enabled);
     }
 
     pub fn set_service_tier_commands_enabled(&mut self, enabled: bool) {
-        self.service_tier_commands_enabled = enabled;
+        self.update_slash_command_catalog(|composer| {
+            composer.service_tier_commands_enabled = enabled
+        });
     }
 
     pub fn set_service_tier_commands(&mut self, commands: Vec<ServiceTierCommand>) {
-        self.service_tier_commands = commands;
-        self.sync_popups();
+        self.update_slash_command_catalog(|composer| composer.service_tier_commands = commands);
     }
 
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
-        self.goal_command_enabled = enabled;
+        self.update_slash_command_catalog(|composer| composer.goal_command_enabled = enabled);
     }
 
     pub fn set_voice_command_enabled(&mut self, enabled: bool) {
-        self.voice_command_enabled = enabled;
+        self.update_slash_command_catalog(|composer| composer.voice_command_enabled = enabled);
+    }
+
+    fn update_slash_command_catalog(&mut self, update: impl FnOnce(&mut Self)) {
+        update(self);
+        self.sync_popups();
     }
 
     /// Refresh the event destination when a retained editor survives reconnection.
@@ -1113,7 +1133,7 @@ impl ChatComposer {
     }
 
     pub fn set_side_conversation_active(&mut self, active: bool) {
-        self.side_conversation_active = active;
+        self.update_slash_command_catalog(|composer| composer.side_conversation_active = active);
     }
 
     /// Compatibility shim for tests that still toggle the removed steer mode flag.
@@ -1133,7 +1153,9 @@ impl ChatComposer {
     }
     #[cfg(target_os = "windows")]
     pub fn set_windows_degraded_sandbox_active(&mut self, enabled: bool) {
-        self.windows_degraded_sandbox_active = enabled;
+        self.update_slash_command_catalog(|composer| {
+            composer.windows_degraded_sandbox_active = enabled
+        });
     }
 
     fn footer_spacing(footer_hint_height: u16) -> u16 {
@@ -1232,6 +1254,10 @@ impl ChatComposer {
         };
         self.apply_history_search_result(result);
         true
+    }
+
+    pub(crate) fn record_local_user_message_history(&mut self, entry: HistoryEntry) {
+        self.history.record_local_submission(entry);
     }
 
     pub(crate) fn record_replayed_user_message_history(&mut self, entry: HistoryEntry) {
@@ -2260,6 +2286,9 @@ impl ChatComposer {
                 && let Some(target) = self.current_mention_target()
             {
                 self.insert_selected_mention(target.range, &insert_text, path.as_deref());
+                if let Some(path) = path {
+                    self.mention_usage.record(&path);
+                }
             }
             self.popups.active = ActivePopup::None;
         }
@@ -3723,10 +3752,14 @@ impl ChatComposer {
 
         if self.draft.is_bash_mode
             && self.draft.textarea.vim_query().is_none()
-            && matches!(input.code, KeyCode::Backspace)
+            && self.draft.textarea.mouse_selection_range().is_none()
+            && self.draft.textarea.is_delete_backward_key(input)
             && self.draft.textarea.cursor() == 0
         {
             let started_vim_edit = self.begin_direct_vim_edit();
+            if self.draft.textarea.is_vim_replace_mode() {
+                self.draft.textarea.input(input);
+            }
             self.draft.is_bash_mode = false;
             if started_vim_edit {
                 self.finish_vim_edit();
@@ -3767,7 +3800,7 @@ impl ChatComposer {
             && !self.draft.is_bash_mode
             && self.draft.textarea.text().starts_with('!')
         {
-            self.draft.textarea.replace_range(0..1, "");
+            self.draft.textarea.absorb_prompt_prefix(/*prefix_len*/ 1);
             self.draft.is_bash_mode = true;
         }
     }
@@ -4075,7 +4108,8 @@ impl ChatComposer {
                 popup.set_mentions(mentions);
             }
             _ => {
-                let mut popup = SkillPopup::new(mentions);
+                let mut popup =
+                    SkillPopup::new(mentions).with_frequencies(self.mention_usage.frequencies());
                 popup.set_query(&query);
                 self.popups.active = ActivePopup::Skill(popup);
             }
@@ -7067,6 +7101,41 @@ mod tests {
     }
 
     #[test]
+    fn skill_popup_prefers_confirmed_selections_within_match_tier() {
+        snapshot_composer_state(
+            "skill_popup_prefers_confirmed_selections_within_match_tier",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![
+                    test_skill_metadata("statsig"),
+                    test_skill_metadata("status"),
+                    test_skill_metadata("hello-statsig"),
+                ]));
+                for name in ["hello-statsig", "hello-statsig", "status"] {
+                    let text = format!("${name}");
+                    composer.set_text_content(text.clone(), Vec::new(), Vec::new());
+                    composer.set_current_cursor(text.len());
+                    composer.sync_popups();
+                    let _ = composer
+                        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+                composer.set_text_content("$stat".to_owned(), Vec::new(), Vec::new());
+                composer.set_current_cursor("$stat".len());
+                composer.sync_popups();
+                let ActivePopup::Skill(popup) = &composer.popups.active else {
+                    panic!("expected skill popup");
+                };
+                assert_eq!(
+                    popup
+                        .selected_mention()
+                        .map(|item| item.insert_text.as_str()),
+                    Some("$status")
+                );
+            },
+        );
+    }
+
+    #[test]
     fn skill_popup_targets_unbound_mention_right_of_adjacent_bound_mention_snapshot() {
         snapshot_composer_state(
             "skill_popup_targets_unbound_mention_right_of_adjacent_bound_mention",
@@ -9418,6 +9487,20 @@ mod tests {
                 description: "Fastest inference with increased plan usage".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn dynamic_slash_command_becomes_editable_and_is_not_exported() {
+        let (mut composer, _rx) = new_test_composer();
+        composer.set_voice_command_enabled(/*enabled*/ true);
+        type_chars_humanlike(&mut composer, &['/', 'v', 'o', 'i', 'c', 'e', ' ']);
+        assert_eq!(composer.draft.textarea.text_elements().len(), 1);
+
+        composer.set_voice_command_enabled(/*enabled*/ false);
+
+        assert_eq!(composer.current_text(), "/voice ");
+        assert!(composer.draft.textarea.text_elements().is_empty());
+        assert!(composer.text_elements().is_empty());
     }
 
     fn flush_after_paste_burst(composer: &mut ChatComposer) -> bool {

@@ -4,7 +4,7 @@ assertion_line: 1379
 expression: rendered
 ---
 ╭──────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.163.0 -> 9.9.9                │
+│ ✨ Update available! 0.165.0 -> 9.9.9                │
 │ Run npm install -g @mmmbuto/codex-vl to update.      │
 │                                                      │
 │ See full release notes:                              │

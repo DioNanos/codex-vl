@@ -26,6 +26,7 @@ pub(crate) fn overlay_accents(
         CrtMode::Alert => alert(surface, tick, palette, art_left, art_right, width),
         CrtMode::Tired => tired(surface, tick, palette, art_right, width),
         CrtMode::Hungry => hungry(surface, tick, palette, art_left, art_right, width),
+        CrtMode::Error => {}
     }
 }
 

@@ -1160,7 +1160,9 @@ async fn exiting_updater_removes_its_own_pid_record() {
     );
 
     // A successor's record must survive this updater's exit untouched.
-    std::fs::remove_file(&socket_path).expect("remove socket from the first run");
+    // The socket file guard added upstream removes the socket on teardown, so
+    // this cleanup only clears a leftover and must tolerate its absence.
+    let _ = std::fs::remove_file(&socket_path);
     std::fs::write(
         &daemon.update_pid_file,
         serde_json::json!({"pid": u32::MAX, "processStartTime": "successor-start"}).to_string(),
@@ -1253,7 +1255,26 @@ async fn test_control_server(
 #[ignore = "fork: no standalone installer"]
 async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
     let home = TempDir::new().expect("home");
-    let (daemon, _) = manual_update_daemon(&home);
+    let (mut daemon, release) = manual_update_daemon(&home);
+    let root = home.path().join("packages/app-server-daemon");
+    std::fs::rename(home.path().join("packages/standalone"), &root).unwrap();
+    daemon = daemon.current_installation().unwrap();
+    let stale = root
+        .join("releases")
+        .join(release.replace("1.0.0", "0.8.0"));
+    std::fs::create_dir_all(stale.join("bin")).unwrap();
+    std::fs::copy(&daemon.managed_codex_bin, stale.join("bin/codex")).unwrap();
+    std::fs::write(
+        stale.join("codex-package.json"),
+        serde_json::json!({
+            "version": "0.8.0",
+            "target": release.strip_prefix("1.0.0-").unwrap(),
+            "entrypoint": "bin/codex"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    crate::release_pruning::record_selection(&root, /*previous*/ None).unwrap();
     let settings = crate::settings::DaemonSettings::default();
     let backend = crate::backend::pid_backend(daemon.backend_paths(&settings));
     backend.start().await.expect("start daemon");
@@ -1262,7 +1283,7 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
         .expect("control server");
     let pid_record = std::fs::read(&daemon.pid_file).expect("daemon PID record");
     let no_op = FakeInstallerHttp::new(InstallerResponse::Success(
-        b"# CODEX_INSTALL_IF_LATEST\nexit 0\n".to_vec(),
+        b"# CODEX_INSTALL_IF_LATEST CODEX_INSTALL_DAEMON_ONLY\nexit 0\n".to_vec(),
     ));
 
     let outcome = super::update_once(
@@ -1286,6 +1307,8 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
         std::fs::read(&daemon.pid_file).expect("daemon PID record"),
         pid_record
     );
+    assert!(daemon.managed_codex_bin.is_file());
+    assert!(!stale.exists());
     backend.stop().await.expect("stop daemon");
     server.abort();
 }
@@ -1398,7 +1421,7 @@ async fn daemon_start_and_restart_preserve_launch_features() {
                 .map_err(|error| format!("control server: {error}"))?)
         };
         tokio::pin!(control);
-        let mut started_result;
+        let started_result;
         let mut control_result;
         tokio::select! {
             result = &mut start_task => {
@@ -1496,7 +1519,7 @@ async fn daemon_start_and_restart_preserve_launch_features() {
             std::fs::remove_file(&args_path)
                 .map_err(|error| format!("remove args failed: {error}"))?;
             let restarted = daemon
-                .restart()
+                .restart(&std::collections::BTreeMap::new())
                 .await
                 .map_err(|error| format!("restart failed: {error:#}"))?;
             let deadline = tokio::time::Instant::now() + Duration::from_secs(/*secs*/ 10);

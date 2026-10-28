@@ -9,8 +9,7 @@ use codex_guardian_context::estimate_input_tokens;
 use codex_guardian_reviewer::ConversationCheckpoint;
 use codex_guardian_reviewer::ConversationState;
 use codex_history::ResponseItemEnvelope;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseItem;
+use std::borrow::Cow;
 
 use super::sampler::LunaSampler;
 use super::sampler::LunaSamplingRequest;
@@ -23,7 +22,7 @@ impl LunaSamplingRequest {
         evidence: &CollectedTranscript,
         conversation: &mut ConversationState<Vec<ResponseItemEnvelope>>,
         max_input_tokens: usize,
-    ) -> Option<PreparedRequest<'_>> {
+    ) -> Option<PreparedRequest> {
         let cursor = conversation.cursor();
         if conversation.snapshot().is_some() != cursor.is_some() {
             return None;
@@ -41,16 +40,9 @@ impl LunaSamplingRequest {
             .unwrap_or_default();
         let (mut context, _) = evidence.clone().compose(cursor, history).ok()?;
         context.retain_new_instructions(history);
-        if let Some(snapshot) = conversation.snapshot() {
-            context.retain_images(|image, _| {
-                !snapshot.history().iter().any(|item| match &item.item {
-                    ResponseItem::Message { content, .. } => content.iter().any(|item| {
-                        matches!(item, ContentItem::InputImage { image: retained, .. } if retained == image)
-                    }),
-                    _ => false,
-                })
-            });
-        }
+        context.retain_new_images(history.iter().map(|item| &item.item), |image, _| {
+            Some(Cow::Borrowed(image))
+        });
         let truncations = std::mem::take(&mut context.truncations);
         let section_costs = context.section_costs().collect();
         let history = conversation.snapshot().map(ConversationCheckpoint::history);
@@ -76,7 +68,6 @@ impl LunaSamplingRequest {
             input = history;
         }
         Some(PreparedRequest {
-            sampling: self,
             input,
             cursor: next_cursor,
             truncations,
@@ -87,9 +78,8 @@ impl LunaSamplingRequest {
     }
 }
 
-/// Admitted input and its token count, tied to the sampling settings used to prepare it.
-pub(super) struct PreparedRequest<'a> {
-    pub(super) sampling: &'a LunaSamplingRequest,
+/// Admitted input and accounting for one retained review.
+pub(super) struct PreparedRequest {
     pub(super) input: Vec<ResponseItemEnvelope>,
     pub(super) cursor: TranscriptCursor,
     pub(super) truncations: Vec<TruncationObservation>,

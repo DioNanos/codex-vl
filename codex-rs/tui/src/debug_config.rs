@@ -557,6 +557,7 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
         dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets,
         domains,
+        review_domains,
         managed_allowed_domains_only,
         unix_sockets,
         allow_local_binding,
@@ -590,6 +591,9 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
             "domains={}",
             format_network_permission_entries(&domains.entries, format_network_domain_permission)
         ));
+    }
+    if let Some(review_domains) = review_domains {
+        parts.push(format!("review_domains={{{}}}", review_domains.join(", ")));
     }
     if let Some(managed_allowed_domains_only) = managed_allowed_domains_only {
         parts.push(format!(
@@ -917,6 +921,7 @@ interrupt_message = false
                             NetworkDomainPermissionToml::Allow,
                         )]),
                     }),
+                    review_domains: Some(vec!["api.example.com".to_string()]),
                     header_injections: Some(vec![NetworkHeaderInjectionToml {
                         host: "api.example.com".to_string(),
                         methods: vec!["POST".to_string()],
@@ -943,6 +948,7 @@ interrupt_message = false
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            config_server: None,
             application: None,
             allowed_login_methods: None,
             allowed_chatgpt_workspaces: None,
@@ -1064,7 +1070,7 @@ interrupt_message = false
             "enforce_residency: us (source: {requirements_source})"
         )));
         assert!(rendered.contains(&format!(
-            "experimental_network: enabled=true, domains={{example.com=allow}}, header_injections=1 hosts={{api.example.com}} (source: {requirements_source})"
+            "experimental_network: enabled=true, domains={{example.com=allow}}, review_domains={{api.example.com}}, header_injections=1 hosts={{api.example.com}} (source: {requirements_source})"
         )));
         assert!(!rendered.contains("secret-looking-value"));
         assert!(
@@ -1386,7 +1392,7 @@ approval_policy = "never"
                         std::path::PathBuf::from("/enterprise/hooks")
                     }),
                     windows_managed_dir: Some(std::path::PathBuf::from(r"C:\enterprise\hooks")),
-                    hooks: HookEventsToml {
+                    hooks: Box::new(HookEventsToml {
                         pre_tool_use: vec![MatcherGroup {
                             matcher: Some("^Bash$".to_string()),
                             hooks: vec![HookHandlerConfig::Command {
@@ -1399,7 +1405,7 @@ approval_policy = "never"
                             }],
                         }],
                         ..Default::default()
-                    },
+                    }),
                 }),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
             )),

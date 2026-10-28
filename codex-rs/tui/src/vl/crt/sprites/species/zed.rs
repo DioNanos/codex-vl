@@ -33,6 +33,7 @@ fn legacy_art_for(stage: Stage, mode: CrtMode, tick: u64) -> Frame {
         CrtMode::Alert => Frame::new([" !.-< >-.!   ", "  |  >_  |   ", " !'._|_.'!   "], ALERT),
         CrtMode::Tired => Frame::new(["  .-< >-. z  ", "  |  -_  |   ", "  '._|_.'    "], BODY),
         CrtMode::Hungry => Frame::new(["  .-< >-.    ", "  |  >_  | * ", "  '._|_.'    "], BODY),
+        CrtMode::Error => Frame::new(["  .-< >-. x  ", "  |  >_  |   ", "  '._|_.'    "], BODY),
         CrtMode::Idle => match (stage, tick % 6 == 0) {
             (Stage::Baby, true) => {
                 Frame::new(["   .->-.     ", "   | - |     ", "   '._.'     "], BODY)

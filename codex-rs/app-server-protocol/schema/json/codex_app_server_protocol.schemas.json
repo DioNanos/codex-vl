@@ -2419,6 +2419,30 @@
           "type": "object"
         },
         {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "feedback/save"
+              ],
+              "title": "Feedback/saveRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/FeedbackSaveParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Feedback/saveRequest",
+          "type": "object"
+        },
+        {
           "description": "Execute a standalone command (argv vector) under the server's sandbox.",
           "properties": {
             "id": {
@@ -7152,6 +7176,23 @@
             ],
             "title": "AmazonBedrockAccount",
             "type": "object"
+          },
+          {
+            "description": "Google Cloud Vertex AI with externally managed credentials.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "gcp"
+                ],
+                "title": "GcpAccountType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "GcpAccount",
+            "type": "object"
           }
         ]
       },
@@ -8098,6 +8139,42 @@
                 "type": "null"
               }
             ]
+          },
+          "storage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ApplicationStorageRequirements"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ApplicationStorageRequirements": {
+        "description": "Managed storage settings for new Desktop workspaces, not filesystem access restrictions.",
+        "properties": {
+          "defaultProjectParent": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LegacyAppPathString"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "projectlessWorkspaceRoot": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/LegacyAppPathString"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -8844,6 +8921,7 @@
               "rateLimitExceeded",
               "flexUnavailable",
               "serverOverloaded",
+              "modelNotFound",
               "cyberPolicy",
               "misalignmentPolicyViolation",
               "tooManyDenials",
@@ -12149,6 +12227,85 @@
         },
         "type": "object"
       },
+      "FeedbackSaveParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "classification": {
+            "type": "string"
+          },
+          "extraLogFiles": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "includeLogs": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "savePath": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/v2/LegacyAppPathString"
+              }
+            ],
+            "description": "Absolute, previously unused ZIP path on the app-server host. The caller owns this file, including after a disconnected RPC."
+          },
+          "tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "classification",
+          "savePath"
+        ],
+        "title": "FeedbackSaveParams",
+        "type": "object"
+      },
+      "FeedbackSaveResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "promptHash": {
+            "description": "Same prompt hash as feedback/upload; null when prompt metadata is absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "savedPath": {
+            "$ref": "#/definitions/v2/LegacyAppPathString"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "savedPath",
+          "threadId"
+        ],
+        "title": "FeedbackSaveResponse",
+        "type": "object"
+      },
       "FeedbackUploadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -13667,6 +13824,8 @@
       },
       "HookEventName": {
         "enum": [
+          "preModelRequest",
+          "postModelRequest",
           "preToolUse",
           "permissionRequest",
           "postToolUse",
@@ -14148,6 +14307,23 @@
             "type": "object"
           }
         ]
+      },
+      "ImageGenerationInputImage": {
+        "description": "A local image file successfully read for this exact image-generation request.",
+        "properties": {
+          "path": {
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
+          },
+          "sha256": {
+            "description": "Lowercase SHA-256 of the file bytes read before image normalization.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "type": "object"
       },
       "InAppBrowserRequirements": {
         "properties": {
@@ -14827,6 +15003,13 @@
             },
             "type": "array"
           },
+          "PostModelRequest": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
+            },
+            "type": "array"
+          },
           "PostToolUse": {
             "items": {
               "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
@@ -14834,6 +15017,13 @@
             "type": "array"
           },
           "PreCompact": {
+            "items": {
+              "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
+            },
+            "type": "array"
+          },
+          "PreModelRequest": {
+            "default": [],
             "items": {
               "$ref": "#/definitions/v2/ConfiguredHookMatcherGroup"
             },
@@ -15481,6 +15671,9 @@
                 "type": "null"
               }
             ]
+          },
+          "toolListMeta": {
+            "description": "Opaque `_meta` from the first page of the corresponding MCP tool catalog. Null when unavailable."
           },
           "tools": {
             "additionalProperties": {
@@ -16449,6 +16642,16 @@
               "null"
             ]
           },
+          "reviewDomains": {
+            "description": "Host patterns routed to network approval before ordinary allow rules.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "socksPort": {
             "format": "uint16",
             "minimum": 0.0,
@@ -16753,6 +16956,8 @@
           "edu",
           "edu_plus",
           "edu_pro",
+          "sci",
+          "sci_plus",
           "unknown"
         ],
         "type": "string"
@@ -23195,6 +23400,33 @@
             "type": "object"
           },
           {
+            "anyOf": [
+              {
+                "properties": {
+                  "fileId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fileId"
+                ],
+                "title": "FileIdThreadItem",
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "result": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "result"
+                ],
+                "title": "ResultThreadItem",
+                "type": "object"
+              }
+            ],
+            "description": "Either inline generated-image data or its durable attachment-store identity.\n\n`File` must remain first so rollouts written during the migration, which contain both an empty `result` and a `fileId`, retain the file reference when deserialized.",
             "properties": {
               "failure": {
                 "anyOf": [
@@ -23210,8 +23442,12 @@
               "id": {
                 "type": "string"
               },
-              "result": {
-                "type": "string"
+              "inputImages": {
+                "description": "Observed local inputs for a completed generation, absent on older items.",
+                "items": {
+                  "$ref": "#/definitions/v2/ImageGenerationInputImage"
+                },
+                "type": "array"
               },
               "revisedPrompt": {
                 "type": [
@@ -23249,7 +23485,6 @@
             },
             "required": [
               "id",
-              "result",
               "status",
               "type"
             ],

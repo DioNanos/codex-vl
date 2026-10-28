@@ -53,6 +53,7 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod cloud_config;
+mod config_override_args;
 mod daemon_install;
 mod daemon_telemetry;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -66,10 +67,12 @@ mod exec_args_tests;
 mod exec_server_args_tests;
 mod exec_server_auth;
 mod exec_server_command;
+mod exec_server_credential;
 mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
+mod migrate_nfs_db;
 mod migrate_rollouts;
 mod plugin_cmd;
 mod queue_cmd;
@@ -217,6 +220,9 @@ enum Subcommand {
 
     /// Inspect or migrate legacy local sessions to paginated thread history.
     MigrateRollouts(migrate_rollouts::MigrateRolloutsCommand),
+
+    /// [experimental] Migrate configured SQLite databases to DELETE mode in place.
+    MigrateNfsDb(migrate_nfs_db::MigrateNfsDbCommand),
 
     /// Unarchive a saved session by id or session name.
     Unarchive(SessionArchiveCommand),
@@ -612,6 +618,12 @@ struct LogoutCommand {
 
 #[derive(Debug, Parser)]
 struct AppServerCommand {
+    #[command(flatten)]
+    startup_config: codex_app_server::StartupConfigArgs,
+
+    /// Load frozen cloud skills from a JSON snapshot instead of a live skill service.
+    #[arg(long, value_name = "PATH")]
+    cloud_skills_snapshot: Option<PathBuf>,
     /// Omit to run the app server; specify a subcommand for tooling.
     #[command(subcommand)]
     subcommand: Option<AppServerSubcommand>,
@@ -899,9 +911,12 @@ fn run_update_action(
                 .iter()
                 .map(crate::wsl_paths::normalize_for_wsl)
                 .collect();
-            std::process::Command::new(&command_path)
-                .args(&normalized_args)
-                .status()?
+            external_update_command_for_target(
+                &command_path,
+                &normalized_args,
+                std::env::consts::OS,
+            )
+            .status()?
         }
     };
     if !status.success() {
@@ -909,6 +924,26 @@ fn run_update_action(
     }
     println!("\n🎉 Update ran successfully! Please restart Codex.");
     Ok(())
+}
+
+/// Build the external package-manager command that updates the installation
+/// on non-Windows platforms.
+///
+/// The shared body owns composition and finalization: it assembles program
+/// and argv exactly as before and then finalizes the `Command` for an
+/// external child, so the launcher-private install metadata cannot reach the
+/// update helper through inheritance or a later override. Program, argv, cwd,
+/// and exit-status handling stay untouched. The `Daemon` action is NOT routed
+/// here: it re-executes the fork's own binary and keeps its context.
+fn external_update_command_for_target(
+    command_path: &str,
+    normalized_args: &[String],
+    target_os: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(command_path);
+    command.args(normalized_args);
+    codex_utils_process::finalize_external_child_for(&mut command, target_os);
+    command
 }
 
 #[cfg(windows)]
@@ -1105,7 +1140,8 @@ async fn cli_main(
         remote,
         mut interactive,
         subcommand,
-    } = MultitoolCli::parse();
+    } = config_override_args::try_parse_from(std::env::args_os())
+        .unwrap_or_else(|error| error.exit());
     // Retain the launch target through TUI exit, even if a launcher changes selection.
     let daemon_cli_executable = arg0_paths
         .codex_self_exe
@@ -1293,6 +1329,8 @@ async fn cli_main(
         }
         Some(Subcommand::AppServer(app_server_cli)) => {
             let AppServerCommand {
+                startup_config,
+                cloud_skills_snapshot,
                 subcommand,
                 code_mode_host,
                 strict_config: app_server_strict_config,
@@ -1310,6 +1348,21 @@ async fn cli_main(
                 root_remote_auth_token_env.as_deref(),
                 subcommand.as_ref(),
             )?;
+            if startup_config.print_startup_config {
+                anyhow::ensure!(
+                    subcommand.is_none(),
+                    "--print-startup-config cannot run a subcommand"
+                );
+                return codex_app_server::print_startup_config(
+                    arg0_paths,
+                    root_config_overrides,
+                    LoaderOverrides::default(),
+                    strict_config,
+                    startup_config,
+                )
+                .await
+                .map_err(Into::into);
+            }
             match subcommand {
                 None => {
                     let transport = if stdio {
@@ -1318,7 +1371,16 @@ async fn cli_main(
                         listen
                     };
                     let auth = auth.try_into_settings()?;
+                    if managed_daemon
+                        && matches!(
+                            &transport,
+                            codex_app_server::AppServerTransport::UnixSocket { .. }
+                        )
+                    {
+                        let _ = codex_app_server_daemon::maintain_stderr_log();
+                    }
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
+                        cloud_skills_snapshot,
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
@@ -1365,7 +1427,46 @@ async fn cli_main(
                         println!("{}", serde_json::to_string(&output)?);
                     }
                     AppServerDaemonSubcommand::Restart => {
-                        print_app_server_daemon_output(AppServerLifecycleCommand::Restart).await?;
+                        let overrides = root_config_overrides
+                            .parse_overrides()
+                            .map_err(anyhow::Error::msg)?;
+                        let layer = codex_config::build_cli_overrides_layer(&overrides);
+                        let features = layer
+                            .get("features")
+                            .and_then(toml::Value::as_table)
+                            .into_iter()
+                            .flatten()
+                            .map(|(name, value)| (name.as_str(), value))
+                            .collect::<std::collections::BTreeMap<_, _>>();
+                        let mut feature_overrides = std::collections::BTreeMap::new();
+                        // Match Features::apply_map's alias precedence.
+                        for (&name, &value) in &features {
+                            if name == "imagegenext" && features.contains_key("image_generation") {
+                                continue;
+                            }
+                            let value = if let Some(table) = value.as_table() {
+                                let Some(enabled) = table.get("enabled") else {
+                                    continue;
+                                };
+                                enabled
+                            } else {
+                                value
+                            };
+                            let feature =
+                                codex_features::feature_for_key(name).ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "daemon restart requires a boolean feature toggle: {name}"
+                                    )
+                                })?;
+                            let enabled = value.as_bool().ok_or_else(|| {
+                                anyhow::anyhow!("daemon restart requires a boolean enablement for features.{name}")
+                            })?;
+                            feature_overrides.insert(feature.key().to_string(), enabled);
+                        }
+                        print_app_server_daemon_output(AppServerLifecycleCommand::Restart {
+                            feature_overrides,
+                        })
+                        .await?;
                     }
                     AppServerDaemonSubcommand::Update {
                         from_cli: true,
@@ -1585,6 +1686,19 @@ async fn cli_main(
                 "migrate-rollouts",
             )?;
             migrate_rollouts::run(command, root_config_overrides).await?;
+        }
+        Some(Subcommand::MigrateNfsDb(command)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "migrate-nfs-db",
+            )?;
+            migrate_nfs_db::run(
+                command,
+                root_config_overrides,
+                loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?,
+            )
+            .await?;
         }
         Some(Subcommand::Unarchive(cmd)) => {
             let output = run_session_archive_cli_command(
@@ -1998,12 +2112,13 @@ fn profile_v2_for_subcommand<'a>(
         | Subcommand::Unarchive(_)
         | Subcommand::Fork(_)
         | Subcommand::Mcp(_)
+        | Subcommand::MigrateNfsDb(_)
         | Subcommand::Sandbox(_)
         | Subcommand::Debug(DebugCommand {
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands, `codex mcp`, and `codex migrate-nfs-db`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex migrate-nfs-db`, `codex sandbox`, and `codex debug prompt-input`."
         ),
     }
 }
@@ -2155,6 +2270,13 @@ async fn run_debug_prompt_input_command(
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await?;
     let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    // Debug prompt construction bypasses app-server and needs its own extension registry.
+    if config
+        .features
+        .enabled(codex_features::Feature::MultiEnvCopyFile)
+    {
+        codex_multi_env_copy_file::install(&mut extensions);
+    }
     codex_git_attribution::install(
         &mut extensions,
         auth_manager,
@@ -2369,6 +2491,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Mcp(_)) => Some("mcp"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         Some(Subcommand::MigrateRollouts(_)) => Some("migrate-rollouts"),
+        Some(Subcommand::MigrateNfsDb(_)) => Some("migrate-nfs-db"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         Some(Subcommand::App(_)) => Some("app"),
         Some(Subcommand::Login(_)) => Some("login"),
@@ -5149,6 +5272,60 @@ mod exit_reporting_writer_tests {
                     .kind(),
                 kind
             );
+        }
+    }
+
+    mod launcher_env_sentinels {
+        use crate::external_update_command_for_target;
+
+        fn command_env_names(command: &std::process::Command) -> Vec<std::ffi::OsString> {
+            command
+                .get_envs()
+                .map(|(name, _)| name.to_os_string())
+                .collect()
+        }
+
+        /// Sentinel through the shared production body: the prepared update
+        /// command keeps program and argv verbatim, registers an unset for
+        /// every launcher-private name on the Android target (covering both
+        /// inheritance and any explicit override written before the
+        /// finalizer), and stays untouched on other targets. The dynamic
+        /// inheritance/override proof for the same finalizer runs isolated in
+        /// `codex-utils-process`; the device gate covers the real updater.
+        #[test]
+        fn sentinel_update_command_is_finalized_for_android() {
+            let args = vec!["install".to_string(), "-g".to_string()];
+            let command = external_update_command_for_target(
+                "package-manager",
+                &args,
+                codex_utils_process::ANDROID_TARGET_OS,
+            );
+
+            assert_eq!(command.get_program(), "package-manager");
+            let prepared_args = command
+                .get_args()
+                .map(std::ffi::OsStr::to_os_string)
+                .collect::<Vec<_>>();
+            assert_eq!(prepared_args, vec!["install", "-g"]);
+
+            for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+                let leaked = command
+                    .get_envs()
+                    .any(|(env_name, value)| env_name == *name && value.is_some());
+                assert!(!leaked, "{name} must not carry a value");
+            }
+            let names = command_env_names(&command);
+            for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+                assert!(
+                    names.contains(&std::ffi::OsString::from(*name)),
+                    "{name} must be recorded as an unset for the Android target"
+                );
+            }
+
+            let host = external_update_command_for_target("package-manager", &args, "linux");
+            assert_eq!(host.get_program(), "package-manager");
+            let host_unsets = host.get_envs().filter(|(_, value)| value.is_none()).count();
+            assert_eq!(host_unsets, 0, "the non-Android target must not scrub");
         }
     }
 }

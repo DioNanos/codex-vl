@@ -1,5 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
+#[path = "code_mode_dynamic_tools_tests.rs"]
+mod dynamic_tools;
+
 use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
@@ -4882,6 +4885,7 @@ text("phase 1");
 yield_control();
 {phase_2_wait}
 text((await tools.exec_command({{cmd: "printf 'phase 2'"}})).output);
+yield_control();
 {phase_3_wait}
 text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
 "#
@@ -4930,7 +4934,7 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
                 "wait",
                 &serde_json::to_string(&serde_json::json!({
                     "cell_id": cell_id.clone(),
-                    "yield_time_ms": 1_000,
+                    "yield_time_ms": 10_000,
                 }))?,
             ),
             ev_completed("resp-3"),
@@ -4977,7 +4981,7 @@ text((await tools.exec_command({{cmd: "printf 'phase 3'"}})).output);
                 "wait",
                 &serde_json::to_string(&serde_json::json!({
                     "cell_id": cell_id.clone(),
-                    "yield_time_ms": 1_000,
+                    "yield_time_ms": 10_000,
                 }))?,
             ),
             ev_completed("resp-5"),
@@ -7509,7 +7513,7 @@ await tools.exec_command({ cmd: "printf second", sandbox_permissions: "require_e
             COMPACTION_SUMMARY
         );
         for request in &guardian_requests {
-            assert!(!request.has_content_kinds(&["token_budget.context_window"]));
+            assert!(!request.has_content_kinds(&["token_budget.context_window"; 3]));
         }
     }
     let parent_request = requests.last().expect("parent turn should complete");

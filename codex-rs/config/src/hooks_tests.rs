@@ -257,6 +257,7 @@ command = "python3 /tmp/pre.py"
                 super::HookStateToml {
                     enabled: Some(false),
                     trusted_hash: Some("sha256:abc123".to_string()),
+                    trusted_content_hash: None,
                 },
             )]),
         }
@@ -284,7 +285,7 @@ command = "python3 /enterprise/place/pre.py"
         ManagedHooksRequirementsToml {
             managed_dir: Some(std::path::PathBuf::from("/enterprise/place")),
             windows_managed_dir: None,
-            hooks: HookEventsToml {
+            hooks: Box::new(HookEventsToml {
                 pre_tool_use: vec![MatcherGroup {
                     matcher: Some("^Bash$".to_string()),
                     hooks: vec![HookHandlerConfig::Command {
@@ -297,7 +298,7 @@ command = "python3 /enterprise/place/pre.py"
                     }],
                 }],
                 ..Default::default()
-            },
+            }),
         }
     );
 }

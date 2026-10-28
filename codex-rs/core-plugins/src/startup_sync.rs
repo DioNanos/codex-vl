@@ -638,18 +638,22 @@ fn git_ls_remote_head_sha(codex_home: &Path, git_binary: &Path) -> Result<String
 }
 
 fn git_head_sha(repo_path: &Path, git_binary: &Path) -> Result<String, String> {
-    let output = git_command(git_binary)?
+    let mut command = git_command(git_binary)?;
+    command
         .arg("-C")
         .arg(repo_path)
         .arg("rev-parse")
-        .arg("HEAD")
-        .output()
-        .map_err(|err| {
-            format!(
-                "failed to run git rev-parse HEAD in {}: {err}",
-                repo_path.display()
-            )
-        })?;
+        .arg("HEAD");
+    // Git is an external child: drop the launcher-private install metadata
+    // after the last environment write and before the child starts.
+    // No-op outside Android.
+    codex_utils_process::finalize_external_child(&mut command);
+    let output = command.output().map_err(|err| {
+        format!(
+            "failed to run git rev-parse HEAD in {}: {err}",
+            repo_path.display()
+        )
+    })?;
     ensure_git_success(&output, "git rev-parse HEAD")?;
 
     let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -685,6 +689,10 @@ fn run_git_command_with_timeout(
     context: &str,
     timeout: Duration,
 ) -> Result<Output, String> {
+    // Last boundary before the spawn: git is an external child and must not
+    // receive the launcher-private install metadata. No-op outside Android.
+    codex_utils_process::finalize_external_child(command);
+
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

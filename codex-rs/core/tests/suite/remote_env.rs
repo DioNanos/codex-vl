@@ -63,6 +63,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::SandboxPermissions;
+use codex_protocol::models::input_text;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -188,14 +189,21 @@ impl ContextContributor for ReadyCapabilityRootsTestExtension {
         &'a self,
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
+        let roots = input
+            .step_store
+            .get::<Vec<codex_exec_server::ResolvedSelectedCapabilityRoot>>()
+            .expect("captured capability roots should be present in step state");
+        let selected_roots = roots
+            .iter()
+            .map(|root| root.selected_root().clone())
+            .collect::<Vec<_>>();
         if let Some(observed_roots) = &self.observed_roots {
             observed_roots
                 .lock()
                 .expect("observed capability roots should not be poisoned")
-                .push(input.ready_selected_capability_roots.to_vec());
+                .push(selected_roots.clone());
         }
-        let root_ids = input
-            .ready_selected_capability_roots
+        let root_ids = selected_roots
             .iter()
             .map(|root| root.id.clone())
             .collect::<Vec<_>>();
@@ -209,7 +217,7 @@ impl ContextContributor for ReadyCapabilityRootsTestExtension {
                         Some(RenderedWorldStateFragment::new(
                             "user",
                             ("<ready_capability_roots>", "</ready_capability_roots>"),
-                            body.clone(),
+                            input_text(body.clone()),
                         )),
                     )
                 },
@@ -611,6 +619,7 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
                 test.config.cwd.clone(),
                 vec![TurnEnvironmentRequest {
                     config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                        environment_hooks: Default::default(),
                         allow_login_shell: test.config.permissions.allow_login_shell,
                         workspace_roots: selection.workspace_roots.clone(),
                         permission_profile: owner_permission_profile,
@@ -1448,7 +1457,7 @@ async fn serve_environment_info(listener: TcpListener) {
     send_environment_info(&mut websocket).await;
 }
 
-async fn serve_environment_with_agents_md(
+pub(super) async fn serve_environment_with_agents_md(
     listener: TcpListener,
     contents: &str,
     attach: tokio::sync::oneshot::Receiver<()>,
@@ -1614,7 +1623,9 @@ impl NoiseRendezvousConnectProvider for OfflineThenReadyNoiseConnectProvider {
 struct NoopRegistryAuthProvider;
 
 impl AuthProvider for NoopRegistryAuthProvider {
-    fn add_auth_headers(&self, _: &mut HeaderMap) {}
+    fn add_auth_headers(&self, _: &mut HeaderMap) -> Result<(), codex_api::AuthError> {
+        Ok(())
+    }
 }
 
 async fn wait_for_response_request_count(response_mock: &ResponseMock, expected_count: usize) {
@@ -1654,6 +1665,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
     for config in [
         EnvironmentConfigState::Pending,
         EnvironmentConfigState::Ready(EnvironmentConfig {
+            environment_hooks: Default::default(),
             allow_login_shell: false,
             workspace_roots: selection.workspace_roots.clone(),
             permission_profile: permission_profile.clone(),
@@ -1696,6 +1708,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
         .start_thread(StartThreadOptions {
             environments: Some(vec![TurnEnvironmentRequest {
                 config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                    environment_hooks: Default::default(),
                     allow_login_shell: true,
                     workspace_roots: selection.workspace_roots.clone(),
                     permission_profile: permission_profile.clone(),
@@ -1722,6 +1735,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                 test.config.cwd.clone(),
                 vec![TurnEnvironmentRequest {
                     config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                        environment_hooks: Default::default(),
                         allow_login_shell: false,
                         workspace_roots: selection.workspace_roots.clone(),
                         permission_profile: permission_profile.clone(),
@@ -1783,6 +1797,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                     test.config.cwd.clone(),
                     vec![TurnEnvironmentRequest {
                         config: EnvironmentConfigState::Ready(EnvironmentConfig {
+                            environment_hooks: Default::default(),
                             allow_login_shell: false,
                             workspace_roots: selection.workspace_roots.clone(),
                             permission_profile: permission_profile.clone(),
@@ -1843,6 +1858,7 @@ async fn owner_network_policy_rejects_unsupported_environment_authority() -> Res
         .first()
         .context("thread should select its executor environment")?;
     let owner_config = EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell: test.config.permissions.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
@@ -1911,10 +1927,6 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
     let mut builder = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
-            config
-                .features
-                .enable(Feature::StableEnvironmentTools)
-                .expect("enable stable environment tools");
             assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
             assert!(
                 config
@@ -1948,6 +1960,7 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
         },
     };
     let owner_config = |id: &str, allow_login_shell: bool| EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell,
         workspace_roots: vec![selection.cwd.clone(), owner_workspace_root.clone()],
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
@@ -2390,6 +2403,7 @@ async fn future_pending_environment_can_finish_without_retargeting_the_active_tu
         ..active.clone()
     };
     let owner_config = |selection: &TurnEnvironmentSelection, id: &str| EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell: test.config.permissions.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
@@ -2860,6 +2874,7 @@ async fn ready_before_selection_resolves_resumed_thread_capability_root_after_wa
     // The first request may legally see either Starting or Ready; the wait makes step two ready.
     let first_tools = tool_names(&requests[0].body_json());
     assert!(first_tools.contains(&"wait_for_environment".to_string()));
+    assert!(first_tools.contains(&"exec_command".to_string()));
     let first_user_context = requests[0].message_input_texts("user");
     let first_environment_context = first_user_context
         .iter()
@@ -2868,13 +2883,8 @@ async fn ready_before_selection_resolves_resumed_thread_capability_root_after_wa
     let first_has_ready_root = first_user_context
         .iter()
         .any(|text| text.contains("<ready_capability_roots>ready-first-root"));
-    let first_is_starting = first_environment_context.contains("<status>starting</status>");
-    assert_eq!(
-        first_tools.contains(&"exec_command".to_string()),
-        !first_is_starting,
-        "without stable_environment_tools, commands require a ready transport"
-    );
-    if first_is_starting {
+    // Tool availability no longer distinguishes Starting from Ready.
+    if first_environment_context.contains("<status>starting</status>") {
         assert!(!first_has_ready_root);
     } else {
         assert!(first_environment_context.contains("<shell>"));
@@ -3097,6 +3107,7 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
         cwd: PathUri::from_abs_path(&test.config.cwd),
         workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
         config: EnvironmentConfigState::Ready(EnvironmentConfig {
+            environment_hooks: Default::default(),
             allow_login_shell: test.config.permissions.allow_login_shell,
             workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
             permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(

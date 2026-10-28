@@ -95,20 +95,7 @@ impl ProcessExecRequestProcessor {
         if size.is_some() && !tty {
             return Err(invalid_params("process/spawn size requires tty: true"));
         }
-        let mut env = std::env::vars().collect::<HashMap<_, _>>();
-        if let Some(env_overrides) = env_overrides {
-            for (key, value) in env_overrides {
-                match value {
-                    Some(value) => {
-                        env.insert(key, value);
-                    }
-                    None => {
-                        env.remove(&key);
-                    }
-                }
-            }
-        }
-        env.retain(|name, _| !is_non_inheritable_env_var(name));
+        let env = external_process_env_for_target(env_overrides, std::env::consts::OS);
         let expiration = match timeout_ms {
             Some(Some(timeout_ms)) => match u64::try_from(timeout_ms) {
                 Ok(timeout_ms) => timeout_ms.into(),
@@ -190,6 +177,47 @@ impl ProcessExecRequestProcessor {
             .then_some(())
             .ok_or_else(|| internal_error("local environment is not configured"))
     }
+}
+
+/// Compose the environment map handed to the external process spawned by
+/// `process/spawn`.
+///
+/// The shared body owns both composition and finalization: it layers the
+/// protocol overrides on the inherited map, drops the non-inheritable auth
+/// names, and then scrubs the launcher-private install metadata for the
+/// target platform — the same finalizer ordering the tool environments use.
+/// The test sentinels below enter this body with an explicit target and
+/// observe the returned map without scrubbing it afterwards.
+fn external_process_env_from_inherited_for_target(
+    inherited: impl Iterator<Item = (String, String)>,
+    env_overrides: Option<HashMap<String, Option<String>>>,
+    target_os: &str,
+) -> HashMap<String, String> {
+    let mut env = inherited.collect::<HashMap<_, _>>();
+    if let Some(env_overrides) = env_overrides {
+        for (key, value) in env_overrides {
+            match value {
+                Some(value) => {
+                    env.insert(key, value);
+                }
+                None => {
+                    env.remove(&key);
+                }
+            }
+        }
+    }
+    env.retain(|name, _| !is_non_inheritable_env_var(name));
+    codex_utils_process::scrub_private_launcher_env(&mut env, target_os);
+    env
+}
+
+/// [`external_process_env_from_inherited_for_target`] over the running
+/// process's environment for the compiling target.
+fn external_process_env_for_target(
+    env_overrides: Option<HashMap<String, Option<String>>>,
+    target_os: &str,
+) -> HashMap<String, String> {
+    external_process_env_from_inherited_for_target(std::env::vars(), env_overrides, target_os)
 }
 
 #[derive(Clone, Default)]
@@ -731,4 +759,105 @@ fn no_active_process_error(process_handle: &str) -> JSONRPCErrorError {
 
 fn process_no_longer_running_error(process_handle: &str) -> JSONRPCErrorError {
     invalid_request(format!("process {process_handle:?} is no longer running"))
+}
+
+#[cfg(test)]
+mod launcher_env_tests {
+    use super::*;
+
+    /// Sentinel through the shared production body: the map delivered to the
+    /// three spawn branches drops inherited launcher metadata and protocol
+    /// overrides alike, in every case variant, while foreign entries and the
+    /// pre-existing auth scrub stay intact. The non-Android target keeps the
+    /// names; the test never scrubs the result afterwards.
+    #[test]
+    fn sentinel_process_spawn_env_drops_launcher_metadata_for_android() {
+        let mut inherited = HashMap::new();
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            inherited.insert((*name).to_string(), format!("inherited-{name}"));
+        }
+        inherited.insert("codex_self_exe".to_string(), "case-variant".to_string());
+        inherited.insert("PROCESS_SPAWN_KEEP_ME".to_string(), "kept".to_string());
+        inherited.insert(
+            "NODE_REPL_AUTH_TOKEN".to_string(),
+            "synthetic-auth-secret".to_string(),
+        );
+        inherited.insert("OPENAI_API_KEY".to_string(), "auth-secret".to_string());
+
+        // One reserved name stays un-overridden so the host case can also
+        // observe plain inheritance through the same body.
+        const INHERITED_ONLY_NAME: &str = "CODEX_MANAGED_PACKAGE_ROOT";
+        assert!(
+            codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS.contains(&INHERITED_ONLY_NAME),
+            "INHERITED_ONLY_NAME must stay part of the reserved list"
+        );
+        let mut overrides = HashMap::new();
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            if *name == INHERITED_ONLY_NAME {
+                continue;
+            }
+            overrides.insert(name.to_string(), Some("override-value".to_string()));
+        }
+        overrides.insert(
+            "PROCESS_SPAWN_KEEP_ME".to_string(),
+            Some("overridden-kept".to_string()),
+        );
+        overrides.insert("UNSET_ME".to_string(), None);
+
+        let android = external_process_env_from_inherited_for_target(
+            inherited.clone().into_iter(),
+            Some(overrides.clone()),
+            codex_utils_process::ANDROID_TARGET_OS,
+        );
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            assert!(!android.contains_key(*name), "{name} leaked");
+        }
+        assert!(
+            !android.contains_key("codex_self_exe"),
+            "case-variant of a reserved name leaked"
+        );
+        assert!(
+            !android.contains_key("NODE_REPL_AUTH_TOKEN"),
+            "the pre-existing auth scrub must drop a name from the list"
+        );
+        assert_eq!(
+            android.get("OPENAI_API_KEY").map(String::as_str),
+            Some("auth-secret"),
+            "OPENAI_API_KEY is not in the non-inheritable list and must stay"
+        );
+        assert!(!android.contains_key("UNSET_ME"));
+        assert_eq!(
+            android.get("PROCESS_SPAWN_KEEP_ME").map(String::as_str),
+            Some("overridden-kept")
+        );
+
+        let host = external_process_env_from_inherited_for_target(
+            inherited.into_iter(),
+            Some(overrides),
+            "linux",
+        );
+        assert_eq!(
+            host.get("CODEX_SELF_EXE").map(String::as_str),
+            Some("override-value"),
+            "nothing is dropped on non-Android targets, so the explicit override wins"
+        );
+        assert_eq!(
+            host.get(INHERITED_ONLY_NAME).map(String::as_str),
+            Some("inherited-CODEX_MANAGED_PACKAGE_ROOT"),
+            "an un-overridden reserved name keeps its inherited value on non-Android targets"
+        );
+        assert_eq!(
+            host.get("codex_self_exe").map(String::as_str),
+            Some("case-variant")
+        );
+        assert!(
+            !host.contains_key("NODE_REPL_AUTH_TOKEN"),
+            "the auth scrub applies on every target"
+        );
+        assert_eq!(
+            host.get("OPENAI_API_KEY").map(String::as_str),
+            Some("auth-secret"),
+            "OPENAI_API_KEY is not in the non-inheritable list and must stay"
+        );
+    }
 }

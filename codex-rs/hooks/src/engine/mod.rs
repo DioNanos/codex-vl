@@ -4,6 +4,8 @@ pub(crate) mod dispatcher;
 mod matcher;
 pub(crate) mod mcp_runner;
 pub(crate) mod output_parser;
+mod plugin_fingerprint;
+mod plugin_trust;
 pub(crate) mod schema_loader;
 
 pub(crate) use matcher::HookMatcher;
@@ -45,6 +47,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use serde_json::Map;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -62,6 +65,7 @@ pub(crate) struct CommandShell {
 pub(crate) struct ConfiguredHandler {
     /// Internally admitted cleanup hook, enabled independently of per-hook state.
     pub builtin: bool,
+    pub plugin_trust: Option<plugin_trust::PluginHookTrust>,
     pub event_name: codex_protocol::protocol::HookEventName,
     pub matcher: Option<HookMatcher>,
     pub timeout_sec: u64,
@@ -76,6 +80,11 @@ pub(crate) struct ConfiguredHandler {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HandlerSourcePath {
     Local(AbsolutePathBuf),
+    Environment {
+        environment_id: String,
+        cwd: PathUri,
+        source_path: AbsolutePathBuf,
+    },
     /// Executor-scoped handlers are currently excluded from user-visible hook reporting
     /// (events, summary, telemetry). Their handlers are always executed async.
     ///
@@ -92,6 +101,24 @@ pub(crate) enum HandlerSourcePath {
     },
 }
 
+impl HandlerSourcePath {
+    /// Use the environment's working directory and withhold controller-owned transcript paths.
+    fn event_input<'a>(&self, input: &'a Value) -> Cow<'a, Value> {
+        match self {
+            Self::Environment { cwd, .. } => {
+                let mut input = input.clone();
+                input["cwd"] = Value::String(cwd.inferred_native_path_string());
+                input["transcript_path"] = Value::Null;
+                if let Some(path) = input.get_mut("agent_transcript_path") {
+                    *path = Value::Null;
+                }
+                Cow::Owned(input)
+            }
+            Self::Local(_) | Self::ExecutorScoped { .. } => Cow::Borrowed(input),
+        }
+    }
+}
+
 impl From<AbsolutePathBuf> for HandlerSourcePath {
     fn from(path: AbsolutePathBuf) -> Self {
         Self::Local(path)
@@ -102,6 +129,7 @@ impl std::fmt::Display for HandlerSourcePath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Local(path) => write!(formatter, "{}", path.display()),
+            Self::Environment { source_path, .. } => write!(formatter, "{}", source_path.display()),
             Self::ExecutorScoped {
                 environment_id,
                 manifest_path,
@@ -131,6 +159,7 @@ pub(crate) enum ConfiguredHandlerKind {
 
 #[derive(Debug)]
 pub(crate) struct HandlerRunResult {
+    pub context_metadata: codex_protocol::models::ContentItemMetadata,
     pub started_at: i64,
     pub completed_at: i64,
     pub duration_ms: i64,
@@ -141,6 +170,25 @@ pub(crate) struct HandlerRunResult {
 }
 
 impl ConfiguredHandler {
+    /// Internal memory work runs policy and executor hooks, not user or project hooks.
+    pub(crate) fn runs_for_memory_consolidation(&self) -> bool {
+        matches!(self.source_path, HandlerSourcePath::ExecutorScoped { .. })
+            || match self.source {
+                HookSource::User
+                | HookSource::Project
+                | HookSource::SessionFlags
+                | HookSource::Plugin => false,
+                HookSource::System
+                | HookSource::Mdm
+                | HookSource::CloudRequirements
+                | HookSource::CloudManagedConfig
+                | HookSource::LegacyManagedConfigFile
+                | HookSource::LegacyManagedConfigMdm
+                // Required hooks can have unknown attribution; retain them fail-closed.
+                | HookSource::Unknown => true,
+            }
+    }
+
     pub(crate) fn execution_mode(&self) -> HookExecutionMode {
         if matches!(self.source_path, HandlerSourcePath::ExecutorScoped { .. }) {
             return HookExecutionMode::Async;
@@ -174,6 +222,8 @@ impl ConfiguredHandler {
             codex_protocol::protocol::HookEventName::PostToolUse => "post-tool-use",
             codex_protocol::protocol::HookEventName::PreCompact => "pre-compact",
             codex_protocol::protocol::HookEventName::PostCompact => "post-compact",
+            codex_protocol::protocol::HookEventName::PreModelRequest => "pre-model-request",
+            codex_protocol::protocol::HookEventName::PostModelRequest => "post-model-request",
             codex_protocol::protocol::HookEventName::SessionStart => "session-start",
             codex_protocol::protocol::HookEventName::SessionEnd => "session-end",
             codex_protocol::protocol::HookEventName::UserPromptSubmit => "user-prompt-submit",
@@ -212,6 +262,8 @@ pub struct HookListEntry {
     pub source_path: AbsolutePathBuf,
     pub source: HookSource,
     pub plugin_id: Option<String>,
+    /// The owning execution environment, if this hook came from its requirements.
+    pub environment_id: Option<String>,
     pub display_order: i64,
     pub enabled: bool,
     pub is_managed: bool,
@@ -221,9 +273,12 @@ pub struct HookListEntry {
 
 #[derive(Clone)]
 pub(crate) struct ClaudeHooksEngine {
+    pub(crate) enabled: bool,
     // Per-turn views share configuration; executor overlays copy handlers on mutation.
     pub(crate) handlers: Arc<Vec<ConfiguredHandler>>,
-    warnings: Arc<[String]>,
+    /// Retain the session inventory without copying it for every hook dispatch.
+    pub(crate) hook_entries: Arc<Vec<HookListEntry>>,
+    pub(crate) warnings: Arc<[String]>,
     required_load_errors: Arc<[String]>,
     pub(crate) command_runtime: CommandHookRuntime,
     pub(crate) mcp_executor: Arc<dyn HookMcpExecutor>,
@@ -241,7 +296,9 @@ impl ClaudeHooksEngine {
     ) -> Self {
         if !enabled && plugin_hook_sources.is_empty() {
             return Self {
+                enabled,
                 handlers: Arc::default(),
+                hook_entries: Arc::default(),
                 warnings: Arc::default(),
                 required_load_errors: Arc::default(),
                 command_runtime,
@@ -255,15 +312,19 @@ impl ClaudeHooksEngine {
             plugin_hook_sources,
             plugin_hook_load_warnings,
             bypass_hook_trust,
+            discovery::DiscoveryMode::Runtime,
         );
         if !enabled {
             discovered.handlers.retain(|handler| handler.builtin);
+            discovered.hook_entries.clear();
             // Disabled ordinary hooks must not emit warnings or reject session startup.
             discovered.warnings.clear();
             discovered.required_load_errors.clear();
         }
         Self {
+            enabled,
             handlers: Arc::new(discovered.handlers),
+            hook_entries: Arc::new(discovered.hook_entries),
             warnings: discovered.warnings.into(),
             required_load_errors: discovered.required_load_errors.into(),
             command_runtime,
@@ -334,6 +395,7 @@ impl ClaudeHooksEngine {
                 }
                 handlers.push(ConfiguredHandler {
                     builtin: true,
+                    plugin_trust: None,
                     event_name,
                     matcher: None,
                     timeout_sec: timeout_sec.unwrap_or(5).max(1),

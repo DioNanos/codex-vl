@@ -26,6 +26,7 @@ codex-login = { path = "../login" }
 codex-model-provider = { workspace = true }
 codex-tui = { workspace = true }
 codex-utils-cli = { workspace = true }
+codex-utils-process = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 http = { workspace = true }
 owo-colors = { workspace = true, features = ["supports-colors"] }

@@ -431,7 +431,15 @@ impl ChatComposer {
         if !matches!(search.status, HistorySearchStatus::Match) || search.query.is_empty() {
             return Vec::new();
         }
-        Self::case_insensitive_match_ranges(self.draft.textarea.text(), &search.query)
+        let prefix_len = usize::from(self.draft.is_bash_mode);
+        Self::case_insensitive_match_ranges(&self.current_text(), &search.query)
+            .into_iter()
+            .filter_map(|range| {
+                let start = range.start.saturating_sub(prefix_len);
+                let end = range.end.saturating_sub(prefix_len);
+                (start < end).then_some(start..end)
+            })
+            .collect()
     }
 
     fn case_insensitive_match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
@@ -1022,6 +1030,16 @@ mod tests {
             assert!(!modifier.contains(Modifier::REVERSED));
             assert!(!modifier.contains(Modifier::BOLD));
         }
+
+        composer
+            .history
+            .record_local_submission(HistoryEntry::new("!git status".to_string()));
+        let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        for ch in ['!', 'g', 'i', 't'] {
+            let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(composer.current_text(), "!git status");
+        assert_eq!(composer.history_search_highlight_ranges(), vec![0..3]);
     }
 
     #[test]

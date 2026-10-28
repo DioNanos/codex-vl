@@ -2060,6 +2060,8 @@ async fn relaxed_tool_collisions_preserve_first_nonempty_namespace_description()
             Some("Second namespace description."),
             "Second namespace description.",
         ),
+        (None, None, "Tools in the shared namespace."),
+        (Some(""), Some(" \t\n"), "Tools in the shared namespace."),
     ] {
         let runtime = |name, description: Option<&str>| {
             let mut tool = mcp_tool("shared", "shared", name);
@@ -3441,7 +3443,7 @@ async fn dynamic_tools_register_flat_and_namespaced_manage_loops_aliases() {
     };
     assert_eq!(
         parameters.required.as_ref(),
-        Some(&vec!["action".to_string()])
+        Some(&vec!["action".to_string()].into_boxed_slice())
     );
 
     // Namespaced alias is registered under codex_app.

@@ -108,8 +108,8 @@ Check the version under the local prefix.
 
 ## Release Channels
 
-The `latest` and `next` channels both point to `0.163.0-vl.1`, based on
-upstream Codex `rust-v0.163.0`. The conservative `stable` tag currently points
+The `latest` and `next` channels both point to `0.165.0-vl.1`, based on
+upstream Codex `rust-v0.165.0`. The conservative `stable` tag currently points
 to `0.153.2-vl.2`.
 
 Packages cover Linux x64, Linux arm64 (musl), Android arm64, and macOS arm64

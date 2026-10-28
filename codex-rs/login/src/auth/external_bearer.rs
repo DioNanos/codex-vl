@@ -101,15 +101,7 @@ struct CachedExternalBearerToken {
 }
 
 async fn run_provider_auth_command(config: &ModelProviderAuthInfo) -> io::Result<String> {
-    let program = resolve_provider_auth_program(&config.command, &config.cwd)?;
-    let mut command = Command::from(codex_utils_process::background_command(&program));
-    command
-        .args(config.args.iter().map(Deref::deref))
-        .current_dir(config.cwd.as_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let mut command = provider_auth_command_for_target(config, std::env::consts::OS)?;
 
     let output = tokio::time::timeout(config.timeout(), command.output())
         .await
@@ -158,6 +150,27 @@ async fn run_provider_auth_command(config: &ModelProviderAuthInfo) -> io::Result
     Ok(access_token)
 }
 
+/// Build the external provider-auth command and drop launcher metadata last.
+///
+/// The wrapper [`run_provider_auth_command`] only selects the compiling
+/// platform. Stdio and the working directory stay as they were.
+fn provider_auth_command_for_target(
+    config: &ModelProviderAuthInfo,
+    target_os: &str,
+) -> io::Result<Command> {
+    let program = resolve_provider_auth_program(&config.command, &config.cwd)?;
+    let mut command = Command::from(codex_utils_process::background_command(&program));
+    command
+        .args(config.args.iter().map(Deref::deref))
+        .current_dir(config.cwd.as_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    codex_utils_process::finalize_external_child_for(command.as_std_mut(), target_os);
+    Ok(command)
+}
+
 fn resolve_provider_auth_program(command: &str, cwd: &Path) -> io::Result<PathBuf> {
     let path = Path::new(command);
     if path.is_absolute() {
@@ -169,4 +182,56 @@ fn resolve_provider_auth_program(command: &str, cwd: &Path) -> io::Result<PathBu
     }
 
     Ok(PathBuf::from(command))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::num::NonZeroU64;
+
+    fn auth_config() -> ModelProviderAuthInfo {
+        ModelProviderAuthInfo {
+            command: "token-fetcher".to_string(),
+            args: Vec::new(),
+            timeout_ms: NonZeroU64::new(5_000).expect("timeout"),
+            refresh_interval_ms: 0,
+            cwd: std::env::current_dir()
+                .expect("current directory")
+                .try_into()
+                .expect("absolute cwd"),
+        }
+    }
+
+    fn valued_names(command: &Command) -> Vec<OsString> {
+        command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| name.to_os_string())
+            .collect()
+    }
+
+    /// The shared body finalizes. Android records the six names as unset;
+    /// the host records nothing. The test does not finalize afterwards.
+    #[test]
+    fn sentinel_provider_auth_command_drops_launcher_metadata_for_android() {
+        let config = auth_config();
+        let android = provider_auth_command_for_target(&config, "android").expect("command");
+        for name in codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS {
+            let entry = android.as_std().get_envs().find(|(key, _)| *key == *name);
+            assert_eq!(entry.map(|(_, value)| value), Some(None), "{name}");
+        }
+        assert!(!valued_names(&android).iter().any(|name| {
+            name.to_str()
+                .is_some_and(|name| codex_utils_process::PRIVATE_LAUNCHER_ENV_VARS.contains(&name))
+        }));
+
+        let host = provider_auth_command_for_target(&config, "linux").expect("command");
+        assert!(
+            valued_names(&host).is_empty(),
+            "the host target must not scrub: {:?}",
+            valued_names(&host)
+        );
+    }
 }

@@ -24,6 +24,7 @@ use crate::sqlite::GOALS_DB_FILENAME;
 use crate::sqlite::LOGS_DB_FILENAME;
 use crate::sqlite::MEMORIES_DB_FILENAME;
 use crate::sqlite::STATE_DB_FILENAME;
+use crate::sqlite::SqliteWriteQueryExt;
 use crate::sqlite::THREAD_HISTORY_DB_FILENAME;
 use crate::telemetry::DbKind;
 use crate::telemetry::DbTelemetry;
@@ -777,7 +778,7 @@ ON CONFLICT(id) DO NOTHING
     .bind(1_i64)
     .bind(crate::BackfillStatus::Pending.as_str())
     .bind(Utc::now().timestamp())
-    .execute(pool)
+    .execute_with_busy_retry(pool)
     .await?;
     Ok(())
 }
