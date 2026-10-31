@@ -33,9 +33,11 @@ use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
 use codex_http_client::HttpClientFactory;
 use codex_login::CodexAuth;
+use codex_login::auth::is_fedramp_api_key;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
 use codex_login::read_openai_api_key_from_env;
+use codex_model_provider::resolve_api_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
@@ -152,7 +154,8 @@ impl RealtimeHandoffAdmission {
             return Ok(());
         };
         if !self.retired.load(Ordering::Acquire) {
-            session.route_realtime_text_input(text).await?;
+            // Bound the layout of the handoff future while retaining the admission permit.
+            Box::pin(session.route_realtime_text_input(text)).await?;
         }
         Ok(())
     }
@@ -352,14 +355,14 @@ impl RealtimeStreamedItem {
             if self.buffered_text.is_empty() {
                 return None;
             }
-            let text = std::mem::take(&mut self.buffered_text);
+            let text = self.buffered_text.drain(..).collect::<String>();
             let text = format!("{prefix}{text}");
             self.sent_bytes += text.len();
             return Some(text);
         }
 
-        let head = std::mem::take(&mut self.buffered_text);
-        let tail = std::mem::take(&mut self.tail_text);
+        let head = self.buffered_text.drain(..).collect::<String>();
+        let tail = self.tail_text.drain(..).collect::<String>();
         let text = format!("{prefix}{head}{HANDOFF_STREAM_TRUNCATION_MARKER}{tail}");
         self.sent_bytes += text.len();
         Some(text)
@@ -815,6 +818,7 @@ impl RealtimeConversationManager {
         {
             let mut guard = self.state.lock().await;
             if let Some(state) = guard.conversation.as_mut()
+                // Only attach the task to the conversation currently stored in the manager.
                 && Arc::ptr_eq(&state.realtime_active, realtime_active)
             {
                 state.fanout_task = fanout_task.take();
@@ -1442,6 +1446,12 @@ async fn prepare_realtime_start(
     let mut extra_headers = match transport {
         ConversationStartTransport::Websocket => {
             let realtime_api_key = realtime_api_key(auth.as_ref(), &provider)?;
+            if realtime_sideband_base_url.is_none() {
+                api_provider = resolve_api_provider(
+                    &provider,
+                    Some(&CodexAuth::from_api_key(&realtime_api_key)),
+                )?;
+            }
             realtime_request_headers(
                 requested_realtime_session_id.as_deref(),
                 params.voice_session_id.as_deref(),
@@ -1990,6 +2000,9 @@ fn realtime_request_headers(
             CodexErr::InvalidRequest(format!("invalid realtime api key header: {err}"))
         })?;
         headers.insert(AUTHORIZATION, auth_value);
+        if is_fedramp_api_key(api_key) {
+            headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
+        }
     }
 
     add_originator_header(&mut headers, originator);
@@ -2122,6 +2135,7 @@ enum RealtimeSidebandSessionInitialization {
     },
 }
 
+// The main loop for realtime inputs, including user audio/text and model commentary/results.
 async fn run_realtime_input_task(
     input: RealtimeInputTask,
     pending_outbound: Option<Box<RealtimePendingOutbound>>,
@@ -2142,6 +2156,7 @@ async fn run_realtime_input_task(
     let mut output_audio_state: Option<OutputAudioState> = None;
     let mut response_create_queue = RealtimeResponseCreateQueue::default();
 
+    // Send any previously unsent messages before entering the main event loop.
     if let Some(pending_outbound) = pending_outbound
         && let Err(err) = send_realtime_pending_outbound(
             &pending_outbound,

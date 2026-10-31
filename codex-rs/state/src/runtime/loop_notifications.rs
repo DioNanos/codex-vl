@@ -212,7 +212,7 @@ mod tests {
             job_id: "job-notify".to_string(),
             label: "nightly".to_string(),
             kind,
-            summary_json: format!(r#"{{"label":"nightly"}}"#),
+            summary_json: r#"{"label":"nightly"}"#.to_string(),
             created_at_ms,
         }
     }

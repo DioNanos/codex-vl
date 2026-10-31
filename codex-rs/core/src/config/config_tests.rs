@@ -74,6 +74,7 @@ use codex_config::types::WindowsToml;
 use codex_exec_server::LOCAL_FS;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
+use codex_login::CodexAuth;
 use codex_login::default_client::RESIDENCY_HEADER_NAME;
 use codex_login::test_support::auth_manager_from_optional_auth;
 use codex_model_provider::ProviderCapabilities;
@@ -257,9 +258,9 @@ async fn load_config_applies_optional_mcp_startup_grace() -> std::io::Result<()>
 async fn load_config_resolves_thread_unload_delay() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
     for (toml, seconds) in [
-        ("", 1800),
+        ("", 60),
         ("thread_unload_delay_secs = 0", 0),
-        ("thread_unload_delay_secs = 60", 60),
+        ("thread_unload_delay_secs = 1800", 1800),
     ] {
         let config = Config::load_from_base_config_with_overrides(
             toml::from_str(toml)?,
@@ -335,6 +336,7 @@ min_rollout_idle_hours = 24
 min_rate_limit_remaining_percent = 12
 extract_model = "gpt-5-mini"
 consolidation_model = "gpt-5.2"
+consolidation_service_tier = "fast"
 "#;
     let memories_cfg =
         toml::from_str::<ConfigToml>(memories).expect("TOML deserialization should succeed");
@@ -354,6 +356,7 @@ consolidation_model = "gpt-5.2"
             min_rate_limit_remaining_percent: Some(12),
             extract_model: Some("gpt-5-mini".to_string()),
             consolidation_model: Some("gpt-5.2".to_string()),
+            consolidation_service_tier: Some("fast".to_string()),
         }),
         memories_cfg.memories
     );
@@ -382,6 +385,7 @@ consolidation_model = "gpt-5.2"
             min_rate_limit_remaining_percent: 12,
             extract_model: Some("gpt-5-mini".to_string()),
             consolidation_model: Some("gpt-5.2".to_string()),
+            consolidation_service_tier: "priority".to_string(),
         }
     );
 
@@ -941,6 +945,7 @@ prefill_token_weight = 0.1
     assert_eq!(
         config.rollout_budget,
         Some(RolloutBudgetConfig {
+            enforce_limit: true,
             limit_tokens: 100_000,
             reminder_at_remaining_tokens: vec![50_000, 25_000, 10_000],
             sampling_token_weight: 1.0,
@@ -1683,6 +1688,8 @@ strip_request_headers = ["authorization"]
                             actions: Some(IndexMap::from([(
                                 "strip_auth".to_string(),
                                 NetworkMitmActionToml {
+                                    body_secret_substitution: None,
+                                    aws_sigv4: None,
                                     strip_request_headers: vec!["authorization".to_string()],
                                     inject_request_headers: Vec::new(),
                                 },
@@ -1765,6 +1772,8 @@ fn permissions_profile_network_to_proxy_config_preserves_mitm_hooks() {
             actions: Some(IndexMap::from([(
                 "strip_auth".to_string(),
                 NetworkMitmActionToml {
+                    body_secret_substitution: None,
+                    aws_sigv4: None,
                     strip_request_headers: vec!["authorization".to_string()],
                     inject_request_headers: Vec::new(),
                 },
@@ -6543,11 +6552,14 @@ async fn config_resolves_explicit_keyring_auth_store_mode() -> std::io::Result<(
     Ok(())
 }
 
+#[test_case::test_case("https://managed.example/backend-api/"; "custom")]
+#[test_case::test_case(DEFAULT_CHATGPT_BASE_URL; "explicit_default")]
 #[tokio::test]
-async fn config_applies_managed_auth_store_and_chatgpt_base_url() -> std::io::Result<()> {
+async fn config_applies_managed_auth_store_and_chatgpt_base_url(
+    managed_url: &str,
+) -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let managed_store = AuthCredentialsStoreMode::Keyring;
-    let managed_url = "https://managed.example/backend-api/";
     let requirements = codex_config::ConfigRequirements {
         cli_auth_credentials_store: Some(Sourced::new(managed_store, RequirementSource::Unknown)),
         chatgpt_base_url: Some(Sourced::new(
@@ -6580,6 +6592,13 @@ async fn config_applies_managed_auth_store_and_chatgpt_base_url() -> std::io::Re
 
     assert_eq!(config.cli_auth_credentials_store_mode, managed_store);
     assert_eq!(config.chatgpt_base_url, managed_url);
+    assert!(config.chatgpt_base_url_is_explicit);
+    assert_eq!(
+        config
+            .chatgpt_backend_url()
+            .resolve(&CodexAuth::from_api_key("sk-proj-fedramp-test-key")),
+        managed_url
+    );
     assert!(config.startup_warnings.iter().any(|warning| {
         warning.contains("Configured value for `cli_auth_credentials_store` is overridden")
     }));
@@ -6587,6 +6606,50 @@ async fn config_applies_managed_auth_store_and_chatgpt_base_url() -> std::io::Re
         warning.contains("Configured value for `chatgpt_base_url` is overridden")
     }));
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn chatgpt_backend_url_defaults_follow_captured_auth() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let legacy = CodexAuth::from_api_key("legacy-key");
+    let marked = CodexAuth::from_api_key("sk-proj-fedramp-test-key");
+    let custom_url = "https://custom.example/backend-api/";
+    for configured_url in [None, Some(custom_url), Some(DEFAULT_CHATGPT_BASE_URL)] {
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            configured_url
+                .map(|url| format!("chatgpt_base_url = '{url}'\n"))
+                .unwrap_or_default(),
+        )?;
+        let mut config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+        let raw_url = configured_url.unwrap_or(DEFAULT_CHATGPT_BASE_URL);
+        let raw_auth_config = config.auth_config();
+        assert_eq!(
+            config.chatgpt_base_url_is_explicit,
+            configured_url.is_some()
+        );
+        for (auth, default_url) in [
+            (&legacy, DEFAULT_CHATGPT_BASE_URL),
+            (&marked, "https://gov.chatgpt.com/backend-api/"),
+            (&legacy, DEFAULT_CHATGPT_BASE_URL),
+        ] {
+            assert_eq!(
+                config.chatgpt_backend_url().resolve(auth),
+                configured_url.unwrap_or(default_url)
+            );
+            assert_eq!(config.chatgpt_base_url, raw_url);
+            assert_eq!(config.auth_config(), raw_auth_config);
+        }
+        if configured_url.is_none() {
+            config.chatgpt_base_url = custom_url.to_owned();
+            assert_eq!(config.chatgpt_backend_url().resolve(&marked), custom_url);
+        }
+    }
     Ok(())
 }
 
@@ -8733,6 +8796,8 @@ experimental_policy_template = "Configured template: {{ tenant_policy_config }}"
 #[test_case::test_case("", codex_protocol::TranscriptFormat::Line; "default_line")]
 #[test_case::test_case("[guardianv2]\ntranscript_mode = 'line'", codex_protocol::TranscriptFormat::Line; "explicit_line")]
 #[test_case::test_case("[guardianv2]\ntranscript_mode = 'json'", codex_protocol::TranscriptFormat::Json; "explicit_json")]
+#[test_case::test_case("[guardianv2]\nasync_classifier_mode = 'snapshot'", codex_protocol::TranscriptFormat::Line; "legacy_snapshot")]
+#[test_case::test_case("[guardianv2]\nasync_classifier_mode = 'conversation'", codex_protocol::TranscriptFormat::Line; "legacy_conversation")]
 #[tokio::test]
 async fn load_config_uses_auto_review_guardian_policy_config_and_template(
     features: &str,
@@ -8778,6 +8843,12 @@ async fn load_config_uses_auto_review_guardian_policy_config_and_template(
             Some("Use the user-configured additional policy."),
             Some("Configured template: {{ tenant_policy_config }}"),
         )
+    );
+
+    assert_eq!(
+        config.startup_warnings.iter().any(|warning| warning
+            .contains("`[features.guardianv2].async_classifier_mode` is deprecated and ignored.")),
+        features.contains("async_classifier_mode"),
     );
 
     Ok(())
@@ -10266,7 +10337,7 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
     let fixture = create_test_fixture()?;
     let mut cfg = fixture.cfg.clone();
     cfg.otel = Some(OtelConfigToml {
-        tool_result: toml::from_str("max_bytes = 8192").expect("tool-result logging config"),
+        tool_result: Some(toml::from_str("max_bytes = 8192").expect("tool-result logging config")),
         log_agent_responses: Some(true),
         log_guardian_assessments: Some(true),
         exporter: Some(OtelExporterKind::OtlpHttp {
@@ -10329,7 +10400,7 @@ beta = "two"
 
     assert_eq!(
         config.otel.span_attributes,
-        BTreeMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
+        HashMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
     );
     assert_eq!(
         config.otel.tracestate,
@@ -10379,7 +10450,7 @@ alpha = "one\ntwo"
     assert_eq!(config.otel.environment, "test");
     assert_eq!(
         config.otel.span_attributes,
-        BTreeMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
+        HashMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
     );
     assert_eq!(
         config.otel.tracestate,
@@ -10592,6 +10663,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         cli_auth_credentials_store: None,
         chatgpt_base_url: None,
         sqlite_home: None,
+        unsafe_enforce_sqlite_journal_mode: None,
         log_dir: None,
         model_catalog_json: None,
         check_for_update_on_startup: None,
@@ -10618,6 +10690,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         mcp_servers: None,
         plugins: None,
         marketplaces: None,
+        otel: None,
         apps: None,
         rules: None,
         enforce_residency: None,
@@ -13767,8 +13840,12 @@ async fn load_with_enterprise_requirement(
         .await
 }
 
+#[test_case::test_case(true; "enforce_sqlite_journal_mode")]
+#[test_case::test_case(false; "preserve_sqlite_journal_mode")]
 #[tokio::test]
-async fn exact_requirements_apply_to_runtime_config() -> std::io::Result<()> {
+async fn exact_requirements_apply_to_runtime_config(
+    enforce_delete_on_nfs: bool,
+) -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let unused_diagnostics = codex_home.path().join("unused-diagnostics");
     std::fs::write(&unused_diagnostics, "not a directory")?;
@@ -13787,6 +13864,7 @@ async fn exact_requirements_apply_to_runtime_config() -> std::io::Result<()> {
 log_dir = {unused_diagnostics:?}
 check_for_update_on_startup = true
 allow_login_shell = true
+unsafe_enforce_sqlite_journal_mode = false
 
 [feedback]
 enabled = true
@@ -13799,6 +13877,7 @@ enabled = true
     let requirements = format!(
         r#"
 sqlite_home = {:?}
+unsafe_enforce_sqlite_journal_mode = {enforce_delete_on_nfs}
 log_dir = {:?}
 model_catalog_json = {:?}
 check_for_update_on_startup = false
@@ -13813,7 +13892,13 @@ enabled = false
     );
     let config = load_with_enterprise_requirement(&codex_home, requirements).await?;
 
-    assert_eq!(config.sqlite.home(), required_sqlite_home.as_path());
+    assert_eq!(
+        config.sqlite,
+        codex_state::SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(
+            required_sqlite_home.clone()
+        )?)
+        .enable_delete_mode_on_nfs(enforce_delete_on_nfs)
+    );
     assert_eq!(config.log_dir, required_log_dir);
     assert_eq!(
         (
@@ -13832,6 +13917,135 @@ enabled = false
     assert!(config.startup_warnings.iter().any(|warning| {
         warning.contains("Configured value for `check_for_update_on_startup` is overridden")
     }));
+    Ok(())
+}
+
+#[test_case::test_case(
+    r#"
+[otel]
+tool_result = { max_bytes = 4096 }
+log_user_prompt = true
+environment = "user"
+exporter = { otlp-http = { endpoint = "https://user.example/logs", protocol = "json", headers = { Authorization = "user-secret" } } }
+trace_exporter = { otlp-grpc = { endpoint = "https://user.example:4317" } }
+metrics_exporter = "statsig"
+span_attributes = { "deployment.environment" = "user", machine = "laptop" }
+tracestate = { vendor = { tenant = "user", region = "us" }, other = { keep = "yes" } }
+"#,
+    r#"
+[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = false
+environment = "production"
+exporter = { otlp-http = { endpoint = "https://managed.example/logs", protocol = "binary", headers = { Authorization = "managed-secret" } } }
+trace_exporter = "none"
+metrics_exporter = { otlp-grpc = { endpoint = "https://managed.example:4317" } }
+span_attributes = { "deployment.environment" = "production", team = "platform" }
+tracestate = { vendor = { tenant = "managed" }, managed = { required = "yes" } }
+"#,
+    r#"
+[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = false
+environment = "production"
+exporter = { otlp-http = { endpoint = "https://managed.example/logs", protocol = "binary", headers = { Authorization = "managed-secret" } } }
+trace_exporter = "none"
+metrics_exporter = { otlp-grpc = { endpoint = "https://managed.example:4317" } }
+span_attributes = { "deployment.environment" = "production", machine = "laptop", team = "platform" }
+tracestate = { vendor = { tenant = "managed", region = "us" }, other = { keep = "yes" }, managed = { required = "yes" } }
+"#,
+    true; "managed_exact_values_and_unmanaged_metadata"
+)]
+#[test_case::test_case(
+    "[otel]\nenvironment = 'user'", "[otel]\ntool_result = { max_bytes = 1024 }",
+    "[otel]\nenvironment = 'user'\ntool_result = { max_bytes = 1024 }", false; "unset_user_limit"
+)]
+#[test_case::test_case(
+    "[otel]\ntool_result = { max_bytes = 2048 }", "[otel]\ntool_result = { max_bytes = 1024 }",
+    "[otel]\ntool_result = { max_bytes = 1024 }", true; "explicit_default_user_limit"
+)]
+#[test_case::test_case(
+    "", "[otel]\ntool_result = {}", "[otel]\ntool_result = { max_bytes = 2048 }", false; "managed_default_limit"
+)]
+#[test_case::test_case(
+    "", "[otel]\ntool_result = { max_bytes = 0 }", "[otel]\ntool_result = { max_bytes = 0 }", false; "managed_zero_limit"
+)]
+#[test_case::test_case(
+    "[otel]\nlog_agent_responses = false\nlog_guardian_assessments = true",
+    "[otel]\nlog_agent_responses = true\nlog_guardian_assessments = false",
+    "[otel]\nlog_agent_responses = true\nlog_guardian_assessments = false", true; "managed_logging_flags"
+)]
+#[tokio::test]
+async fn otel_requirements_resolve_config(
+    user_config: &str,
+    requirements: &str,
+    expected_config: &str,
+    expect_override_warning: bool,
+) -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), user_config)?;
+    let config = load_with_enterprise_requirement(&codex_home, requirements).await?;
+    let expected: ConfigToml =
+        toml::from_str(expected_config).expect("expected OTEL config should deserialize");
+    let mut warnings = Vec::new();
+    assert_eq!(
+        config.otel,
+        super::otel::resolve_config(expected.otel.unwrap_or_default(), &mut warnings)
+    );
+    assert_eq!(
+        config
+            .startup_warnings
+            .iter()
+            .find(|warning| warning.contains("Configured values under `otel` are overridden"))
+            .map(String::as_str),
+        expect_override_warning.then_some(
+            "Configured values under `otel` are overridden by requirements from enterprise-managed requirements Base requirements (req_1).",
+        ),
+    );
+    assert!(
+        config
+            .startup_warnings
+            .iter()
+            .all(|warning| !warning.contains("managed-secret"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn analytics_disabled_preserves_managed_metrics_exporter() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"
+[analytics]
+enabled = false
+"#,
+    )?;
+
+    let config = load_with_enterprise_requirement(
+        &codex_home,
+        r#"
+[otel]
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/metrics", protocol = "json" } }
+"#,
+    )
+    .await?;
+
+    assert!(matches!(
+        config.otel.metrics_exporter,
+        OtelExporterKind::OtlpHttp { .. }
+    ));
+    assert!(
+        crate::otel_init::build_provider(
+            &config,
+            env!("CARGO_PKG_VERSION"),
+            /*service_name_override*/ None,
+            /*default_analytics_enabled*/ true,
+        )
+        .expect("managed metrics configuration should remain valid")
+        .is_some(),
+        "analytics.enabled=false should preserve the custom managed metrics exporter"
+    );
     Ok(())
 }
 

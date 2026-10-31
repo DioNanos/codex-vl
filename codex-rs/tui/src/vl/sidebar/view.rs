@@ -602,7 +602,7 @@ mod tests {
         let huge = "supercalifragilisticexpialidocious".repeat(2);
         let entry = VivlingLogEntry {
             kind: VivlingLogKind::Chat,
-            text: huge.clone(),
+            text: huge,
             ts: Instant::now(),
             vivling_id: None,
         };

@@ -171,6 +171,7 @@ impl Vivling {
     ///   2. user has never expanded the sidebar this session
     ///      (passed by caller via `sidebar_opened`)
     ///   3. `chat_hint_shown` on the active Vivling state is `false`
+    ///
     /// On `true`, the persisted flag is set so the hint never fires
     /// again for this Vivling.
     pub(crate) fn chat_panel_hint(&mut self, sidebar_opened: bool) -> Option<String> {
@@ -240,7 +241,7 @@ impl Vivling {
             self.clear_animation_text();
             return;
         }
-        self.shadow.animation_text = Some(text.clone());
+        self.shadow.animation_text = Some(text);
         self.shadow.animation_text_expires_at = Some(now + ANIMATION_TEXT_TTL);
         self.request_frame();
     }

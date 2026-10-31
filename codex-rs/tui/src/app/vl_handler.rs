@@ -179,10 +179,7 @@ impl App {
                     }
                 };
 
-                match self
-                    .chat_widget
-                    .assign_vivling_brain_profile(profile_name.clone())
-                {
+                match self.chat_widget.assign_vivling_brain_profile(profile_name) {
                     Ok(message) => self.chat_widget.add_info_message(
                         format!("{message} Resolved model `{model_to_show}`."),
                         /*hint*/ None,

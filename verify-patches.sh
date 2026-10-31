@@ -379,27 +379,20 @@ else
 fi
 
 printf "Area B13 (advisory locks degrade where the filesystem lacks them): "
-# ENOTSUP inventory: eight guarded files. unix_socket and writer_lock carry
-# multiple lock sites each, hence the higher floors. An unguarded lock here
-# does not fail any test: the CLI just stops starting on the device.
-enotsup_ok=1
-for f in \
-  codex-rs/app-server-transport/src/transport/unix_socket.rs \
-  codex-rs/rollout/src/writer_lock.rs \
-  codex-rs/message-history/src/lib.rs \
-  codex-rs/message-history/src/batch.rs \
-  codex-rs/arg0/src/lib.rs \
-  codex-rs/execpolicy/src/amend.rs \
-  codex-rs/core/src/installation_id.rs \
-  codex-rs/app-server-daemon/src/lib.rs; do
-  [ "$(count_in 'is_unsupported_file_lock_error' "$f")" -ge 1 ] || enotsup_ok=0
-done
-if [ "$enotsup_ok" -eq 1 ] \
+# Static workspace check: every std File lock call site must degrade on
+# ErrorKind::Unsupported or be a reviewed fail-closed exception in the
+# script's allowlist. Replaces the fixed eight-file inventory so a new
+# upstream lock site fails this gate at the next merge instead of failing
+# on the device. Area 9 floors stay: writer_lock and unix_socket carry
+# multiple lock sites each. An unguarded lock does not fail any test: the
+# affected flow just stops working on the device.
+if python3 scripts/fork-overlay/check_file_lock_guards.py \
   && [ "$(count_in 'is_unsupported_file_lock_error' \
       codex-rs/app-server-transport/src/transport/unix_socket.rs)" -ge 2 ] \
   && [ "$(count_in 'is_unsupported_file_lock_error' \
       codex-rs/rollout/src/writer_lock.rs)" -ge 2 ] \
-  && grep -q 'ErrorKind::Unsupported' codex-rs/rollout/src/writer_lock.rs; then
+  && grep -q 'ErrorKind::Unsupported' codex-rs/rollout/src/writer_lock.rs \
+  && grep -q 'libc::EOPNOTSUPP' codex-rs/app-server-daemon/src/backend/pid.rs; then
   pass
 else
   fail

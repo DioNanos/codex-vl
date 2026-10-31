@@ -42,6 +42,16 @@ impl SharedTransport {
         let transport = channel.map_err(|error| Status::from_error(Box::new(error)));
         Self::Connected(
             CodeModeHostClient::new(BoxCloneSyncService::new(transport))
+                .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+                .max_decoding_message_size(MAX_FRAME_BYTES)
+                .max_encoding_message_size(MAX_FRAME_BYTES),
+        )
+    }
+
+    pub(super) fn with_transport(transport: GrpcTransport) -> Self {
+        Self::Connected(
+            CodeModeHostClient::new(transport)
+                .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
                 .max_decoding_message_size(MAX_FRAME_BYTES)
                 .max_encoding_message_size(MAX_FRAME_BYTES),
         )
@@ -132,6 +142,7 @@ impl SharedTransport {
             CodeModeHostClient::with_origin(BoxCloneSyncService::new(transport), origin)
         };
         let client = client
+            .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
             .max_decoding_message_size(MAX_FRAME_BYTES)
             .max_encoding_message_size(MAX_FRAME_BYTES);
         *cached = Some((bound_factory, client.clone()));

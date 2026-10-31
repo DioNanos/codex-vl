@@ -642,7 +642,7 @@ pub struct ThreadForkParams {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
     /// Persist the fork as an attached thread of its resolved source, hidden from ordinary
-    /// lists. The source cannot be deleted while attached threads exist. Requires local storage;
+    /// lists. The source cannot be deleted while attached threads exist. Requires a paginated source and local storage;
     /// incompatible with ephemeral and deferGoalContinuation. Omitted or false creates an ordinary fork.
     #[experimental("thread/fork.attachToSource")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1861,6 +1861,16 @@ pub struct ThreadItemEntry {
     /// Unix timestamp (milliseconds) when the item completed, if recorded by the producer.
     #[ts(type = "number | null")]
     pub completed_at_ms: Option<i64>,
+}
+
+impl From<ThreadItemEntry> for ThreadItem {
+    fn from(entry: ThreadItemEntry) -> Self {
+        Self {
+            started_at_ms: entry.item.started_at_ms.or(entry.started_at_ms),
+            completed_at_ms: entry.item.completed_at_ms.or(entry.completed_at_ms),
+            ..entry.item
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

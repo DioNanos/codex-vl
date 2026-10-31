@@ -237,6 +237,9 @@ impl TraceReducer {
             RawTraceEventPayload::ThreadEnded { thread_id, status } => {
                 self.end_thread(event.seq, event.wall_time_unix_ms, thread_id, status)?;
             }
+            RawTraceEventPayload::ThreadResumed { thread_id } => {
+                self.resume_thread(&thread_id)?;
+            }
             RawTraceEventPayload::CodexTurnStarted {
                 codex_turn_id,
                 thread_id,
@@ -340,12 +343,14 @@ impl TraceReducer {
             }
             RawTraceEventPayload::ToolCallRuntimeStarted {
                 tool_call_id,
+                kind,
                 runtime_payload,
             } => {
                 self.start_tool_runtime_observation(
                     event.seq,
                     event.wall_time_unix_ms,
                     tool_call_id,
+                    kind,
                     runtime_payload,
                 )?;
             }
@@ -549,7 +554,9 @@ impl TraceReducer {
             }
         }
 
-        Ok(())
+        // Compaction appends input and replacement histories separately. Pending cells
+        // must see both before finding their source and outputs in the ordered history.
+        self.flush_pending_code_cell_starts()
     }
 
     fn insert_raw_payload(&mut self, payload: &RawPayloadRef) {

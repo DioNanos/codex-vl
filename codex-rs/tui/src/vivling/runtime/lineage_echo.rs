@@ -159,7 +159,7 @@ fn absorb_parent_summaries(
 ) -> Vec<super::super::model::VivlingWorkMemoryEntry> {
     let mut ordered: Vec<&super::super::model::VivlingDistilledSummary> =
         parent_distilled.iter().collect();
-    ordered.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
+    ordered.sort_by_key(|a| std::cmp::Reverse(a.last_seen_at));
 
     let mut absorbed = Vec::new();
     for summary in ordered {

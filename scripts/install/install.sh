@@ -634,11 +634,24 @@ record_standalone_releases_in_use() {
     if /usr/sbin/lsof -nP -F n +D "$releases" > "$tmp_dir/in-use" 2> "$tmp_dir/lsof-error"; then
       :
     else
-      # lsof returns 1 for an empty result as well as for errors.
-      [ ! -s "$tmp_dir/in-use" ] && [ ! -s "$tmp_dir/lsof-error" ] || return 1
+      # macOS lsof +D can return 1 with matches when some files are not open.
+      # Keep those matches, but reject other failures and any stderr below.
+      [ "$?" -eq 1 ] || return 1
     fi
     [ ! -s "$tmp_dir/lsof-error" ] || return 1
   fi
+}
+
+release_is_unused() {
+  if [ "$os" = "linux" ]; then
+    path_field="n$1"
+  else
+    # lsof +D scopes the scan to this tree, but may escape bytes in CODEX_HOME.
+    # Match the installer-owned ASCII path, including the temporary retirement name.
+    path_field="/packages/${STANDALONE_ROOT##*/}/releases/${1#"$releases"/}"
+  fi
+  # Appending / also matches a process whose cwd is the release root itself.
+  LC_ALL=C RELEASE_PATH="$path_field/" awk 'index($0 "/", ENVIRON["RELEASE_PATH"]) { exit 1 }' "$tmp_dir/in-use"
 }
 
 # Run under the install lock, after the visible command has been verified.
@@ -674,7 +687,7 @@ prune_standalone_releases() (
   for candidate in "$releases"/*; do
     [ -d "$candidate" ] && [ ! -L "$candidate" ] &&
       [ "$candidate" != "$selected" ] && [ "${candidate##*/}" != "$previous" ] || continue
-    grep -F "n$candidate/" "$tmp_dir/in-use" >/dev/null && continue
+    release_is_unused "$candidate" || continue
     [ -f "$candidate/codex-package.json" ] && [ ! -L "$candidate/codex-package.json" ] || continue
     metadata="$(parse_release_metadata < "$candidate/codex-package.json")" || continue
     version="$(printf '%s\n' "$metadata" | awk -F '\t' '$1 == "version" {print $2}')"
@@ -720,7 +733,7 @@ prune_standalone_releases() (
       # Block new launches at the original path before the final use check.
       # Some systems report the old executable path, so check both names.
       if ! record_standalone_releases_in_use ||
-        grep -F -e "n$candidate/" -e "n$retired/release/" "$tmp_dir/in-use" >/dev/null; then
+        ! release_is_unused "$candidate" || ! release_is_unused "$retired/release"; then
         [ ! -e "$candidate" ] && [ ! -L "$candidate" ] || return 1
         mv "$retired/release" "$candidate" && rmdir "$retired" || return 1
         restore_candidate=""
@@ -939,6 +952,9 @@ install_package_release() {
   if [ -f "$stage_release/codex-resources/bwrap" ]; then
     chmod 0755 "$stage_release/codex-resources/bwrap"
   fi
+  if [ -f "$stage_release/bin/codex-exec-server" ]; then
+    chmod 0755 "$stage_release/bin/codex-exec-server"
+  fi
   ln -sf "bin/codex" "$stage_release/codex"
 
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
@@ -992,6 +1008,10 @@ release_dir_is_complete() {
         [ -x "$release_dir/codex" ] &&
         [ -x "$release_dir/codex-path/rg" ] ||
         return 1
+      # Older canonical packages do not advertise or contain the executor.
+      if grep -Eq '"execServer"[[:space:]]*:' "$release_dir/codex-package.json"; then
+        [ -x "$release_dir/bin/codex-exec-server" ] || return 1
+      fi
       ;;
     legacy-platform-npm)
       [ -x "$release_dir/codex" ] &&

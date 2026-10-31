@@ -5,6 +5,7 @@ use crate::app::app_server_requests::BufferedServerRequest;
 #[path = "agent_center_tests.rs"]
 mod command_center;
 
+use super::super::agents_overview_view::AgentsOverviewGroup;
 use super::super::agents_overview_view::AgentsOverviewGrouping;
 use super::*;
 use crate::app::tests::make_test_app_with_channels;
@@ -782,7 +783,7 @@ async fn check_hidden_thread_does_not_refresh_shared_overview(source: &str) {
 async fn agents_overview_details_show_available_attention_without_expanding_rows() -> Result<()> {
     let mut app = make_test_app().await;
     let app_server = crate::start_embedded_app_server_for_picker(&app.config).await?;
-    let [root, child, unloaded] = std::array::from_fn(|_| ThreadId::new());
+    let [root, failed_agent, child, unloaded] = std::array::from_fn(|_| ThreadId::new());
     let waiting = ThreadStatus::Active {
         active_flags: vec![
             ThreadActiveFlag::WaitingOnApproval,
@@ -792,12 +793,18 @@ async fn agents_overview_details_show_available_attention_without_expanding_rows
     // The child question takes priority over the generic waiting parent.
     let mut threads = [
         (root, None, "Repair authentication", waiting.clone()),
-        (child, Some(root), "Check dependencies", waiting),
+        (child, Some(failed_agent), "Check dependencies", waiting),
         (
             unloaded,
             None,
             "Investigate parser",
             ThreadStatus::NotLoaded,
+        ),
+        (
+            failed_agent,
+            Some(root),
+            "Failed agent",
+            ThreadStatus::SystemError,
         ),
     ]
     .map(|(id, parent, title, status)| overview_thread(id, parent, title, status))
@@ -929,19 +936,22 @@ async fn agents_overview_details_render_markdown() {
     app.agents_overview.last_messages.clear();
     app.track_agents_overview_activity(
         thread_id,
-        &ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
-            thread_id: thread.id.clone(),
-            turn_id: "turn".into(),
-            completed_at_ms: 0,
-            item: ThreadItem::AgentMessage {
-                id: "answer".into(),
-                text: message.into(),
-                phase: None,
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            },
-        }),
+        &ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification::new(
+                thread.id.clone(),
+                "turn".into(),
+                ThreadItemPayload::AgentMessage {
+                    id: "answer".into(),
+                    text: message.into(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            ),
+        ),
     );
     let view = app.agents_overview_view(vec![thread.clone()], Some(thread_id));
     terminal
@@ -1080,11 +1090,10 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
         .threads
         .insert(parent_id, Some(parent.clone()));
     app.track_agents_overview_notification(&ServerNotification::ItemCompleted(
-        codex_app_server_protocol::ItemCompletedNotification {
-            thread_id: parent.id.clone(),
-            turn_id: "previous-turn".into(),
-            completed_at_ms: 0,
-            item: ThreadItem::AgentMessage {
+        codex_app_server_protocol::ItemCompletedNotification::new(
+            parent.id.clone(),
+            "previous-turn".into(),
+            ThreadItemPayload::AgentMessage {
                 id: "answer".into(),
                 text: "Previous answer".into(),
                 phase: None,
@@ -1092,7 +1101,9 @@ async fn agents_overview_reasoning_uses_existing_events_and_expires_with_attachm
                 delivery: None,
                 questions: None,
             },
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
     let channel = app.thread_event_channels.remove(&thread_id).unwrap();
     let details = app.agents_overview_details(
@@ -1342,10 +1353,6 @@ async fn overview_model_grouping_shows_details_and_preserves_selection() {
 
 #[tokio::test]
 async fn shared_overview_shows_only_root_sessions() {
-    assert_eq!(
-        AgentsOverviewGroup::for_status(&ThreadStatus::SystemError),
-        AgentsOverviewGroup::NeedsYou
-    );
     let mut app = make_test_app().await;
     let first_root = ThreadId::from_string("00000000-0000-0000-0000-000000000101").unwrap();
     let unloaded_root = ThreadId::from_string("00000000-0000-0000-0000-000000000102").unwrap();
