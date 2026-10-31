@@ -1,5 +1,8 @@
 //! Multi-turn Astra scenarios snapshot the model-visible request history of shipped features.
 
+use super::image_rollout::RecordingFileAttachmentStore;
+use super::permissions_messages::PermissionPathScenario;
+use codex_attachment_store::AttachmentStoreErrorKind;
 use codex_protocol_test_support::ContentItemTestExt;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -43,12 +46,16 @@ use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::AgentMessageDelivery;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::CodeModeToolMessages;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::openai_models::ToolMode;
+use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
 #[cfg(not(target_os = "windows"))]
@@ -99,6 +106,9 @@ use tokio::sync::oneshot;
 
 const ONE_PIXEL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 
+#[path = "scenarios_dynamic_tools.rs"]
+mod dynamic_tools;
+
 #[path = "scenarios_retained_tool_outputs.rs"]
 mod retained_tool_outputs;
 
@@ -109,6 +119,9 @@ mod incremental_tools_resume;
 
 #[path = "scenarios_model_instructions.rs"]
 mod model_instructions;
+
+#[path = "scenarios_catalog_approval_instructions_tests.rs"]
+mod catalog_approval_instructions;
 
 #[path = "scenarios_context_management_tools.rs"]
 mod context_management_tools;
@@ -127,6 +140,9 @@ mod mailbox_preemption;
 
 #[path = "scenarios_agent_eviction_tests.rs"]
 mod agent_eviction;
+
+#[path = "scenarios_reserved_spawn.rs"]
+mod reserved_spawn;
 
 #[path = "scenarios_partial_answers.rs"]
 mod partial_answers;
@@ -152,6 +168,9 @@ mod mcp_resource_messages;
 #[path = "scenarios_mcp_ema.rs"]
 mod mcp_ema;
 
+#[path = "scenarios_mcp_sharing.rs"]
+mod mcp_sharing;
+
 #[path = "scenarios_guardian_agent_messages_tests.rs"]
 mod guardian_agent_messages;
 
@@ -175,6 +194,9 @@ mod credential_masking;
 #[path = "scenarios_provider_capabilities.rs"]
 mod provider_capabilities;
 
+#[path = "scenarios_web_search.rs"]
+mod web_search;
+
 #[path = "scenarios_shared_instructions.rs"]
 mod shared_instructions;
 
@@ -193,10 +215,17 @@ mod frozen_cloud_skills;
 #[path = "scenarios_compaction_tests.rs"]
 mod compaction;
 
+#[path = "scenarios_world_state_prefix_tests.rs"]
+mod world_state_prefix;
+
 fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
         include_instructions: config.include_skill_instructions,
+        catalog_deltas_enabled: config.features.enabled(Feature::SkillCatalogDeltas),
+        omit_descriptions: config
+            .features
+            .enabled(codex_features::Feature::OmitSkillDescriptions),
         max_context_tokens: config.skill_max_context_tokens,
         bundled_skills_enabled: config.bundled_skills_enabled(),
         cloud_skill_enabled: config.cloud_skill_enabled,
@@ -310,6 +339,187 @@ fn configure_scenario_catalog(config: &mut Config) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admitted_prompt_id_reaches_responses() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            configure_scenario_catalog(config);
+            config.include_environment_context = false;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("first")]),
+            sse(vec![ev_completed("second")]),
+        ],
+    )
+    .await;
+    let uuid = uuid::Uuid::new_v4();
+    for id in [Some(uuid), None] {
+        let mut request = TurnInputRequest::user_input(vec![text("Repeat this input.")]);
+        request.user_item_uuid = id;
+        test.codex.start_or_steer_turn(request).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let reserved = codex_protocol::ResponseItemId::for_admitted_user_input(uuid);
+    for (index, request) in requests.iter().enumerate() {
+        let input = request.input();
+        let prompts: Vec<_> = input
+            .iter()
+            .filter(|item| {
+                item["role"] == "user" && item["content"][0]["text"] == "Repeat this input."
+            })
+            .collect();
+        assert_eq!(prompts.len(), index + 1);
+        assert_eq!(prompts[0]["id"], reserved.as_str());
+        if let Some(legacy) = prompts.get(1) {
+            let id = legacy["id"].as_str().expect("legacy message id");
+            assert!(id.starts_with("msg_") && !id.starts_with("msg_input_"));
+        }
+    }
+    insta::assert_snapshot!(context_snapshot::format_request_history_snapshot(
+        "An admitted prompt and an ordinary prompt with identical text reach Responses on successive turns.",
+        &requests,
+        &ContextSnapshotOptions::default().rewrite_known_segments(),
+    ));
+    Ok(())
+}
+
+#[test_case::test_case(false; "messages")]
+#[test_case::test_case(true; "tool_outputs")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn additional_context_tool_outputs(tool_outputs: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(move |config| {
+            configure_scenario_catalog(config);
+            config.include_environment_context = false;
+            config
+                .features
+                .set_enabled(Feature::UntrustedAsToolOutput, tool_outputs)
+                .expect("test config should allow feature update");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let mock = mount_sse_sequence(
+        &server,
+        (0..4)
+            .map(|index| sse(vec![ev_completed(&format!("response-{index}"))]))
+            .collect(),
+    )
+    .await;
+
+    for (prompt, name, value) in [
+        (
+            "Summarize the selected document.",
+            Some("browser"),
+            "The launch is on Monday.",
+        ),
+        (
+            "The same document is now open in the editor.",
+            Some("editor"),
+            "The launch is on Monday.",
+        ),
+        (
+            "Check the date again.",
+            Some("editor"),
+            "The launch is on Monday.",
+        ),
+        (
+            "Summarize the updated document.",
+            None,
+            "The launch is on Tuesday.",
+        ),
+    ] {
+        test.codex
+            .start_or_steer_turn(
+                TurnInputRequest::user_input(vec![text(prompt)]).with_additional_context(
+                    std::collections::BTreeMap::from([
+                        (
+                            "selection".to_owned(),
+                            AdditionalContextEntry {
+                                value: value.to_owned(),
+                                kind: AdditionalContextKind::Untrusted,
+                                name: name.map(str::to_owned),
+                            },
+                        ),
+                        (
+                            "application".to_owned(),
+                            AdditionalContextEntry::new(
+                                "Keep the answer brief.".to_owned(),
+                                AdditionalContextKind::Application,
+                            ),
+                        ),
+                    ]),
+                ),
+            )
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    if tool_outputs {
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.inputs_of_type("function_call_output").len())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 2, 3]
+        );
+        assert_eq!(requests[3].message_input_texts("user").len(), 4);
+        let input = requests[0].input();
+        let context_index = input
+            .iter()
+            .position(|item| item["type"] == "function_call_output")
+            .expect("context output");
+        let user_index = input
+            .iter()
+            .position(|item| item["role"] == "user")
+            .expect("user message");
+        assert!(context_index < user_index);
+    } else {
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.inputs_of_type("function_call_output").is_empty())
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.message_input_texts("user").len())
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4, 6]
+        );
+    }
+    insta::assert_snapshot!(
+        if tool_outputs {
+            "additional_context_tool_outputs"
+        } else {
+            "additional_context_legacy_messages"
+        },
+        context_snapshot::format_request_history_snapshot(
+            "Named context changes are appended before the user; unchanged values are deduplicated.",
+            &requests,
+            &ContextSnapshotOptions::default().rewrite_known_segments(),
+        )
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn realtime_attachment_replacement_preserves_handoff_context() -> Result<()> {
     let requests = super::realtime_attachment::attachment_replacement_scenario().await?;
     insta::assert_snapshot!(
@@ -320,6 +530,161 @@ async fn realtime_attachment_replacement_preserves_handoff_context() -> Result<(
             &ContextSnapshotOptions::default().rewrite_known_segments(),
         )
     );
+    Ok(())
+}
+
+/// Expiring files change request copies while canonical history retains the original references.
+/// A shared barrier requires the three distinct file IDs to resolve concurrently on each request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_images_are_rechecked_without_rewriting_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let image_store = Arc::new(RecordingFileAttachmentStore {
+        resolve_barrier: Some(Arc::new(tokio::sync::Barrier::new(/*n*/ 3))),
+        ..Default::default()
+    });
+    let test = test_codex()
+        .with_model("gpt-6-astra")
+        .with_image_store(image_store.clone())
+        .with_config(configure_scenario_catalog)
+        .build_with_auto_env(&server)
+        .await?;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("first", "The images are available."),
+                ev_completed("first"),
+            ]),
+            sse(vec![
+                ev_assistant_message("second", "Some images are no longer available."),
+                ev_completed("second"),
+            ]),
+        ],
+    )
+    .await;
+    let file_ids = [
+        "file_expiring",
+        "file_available",
+        "file_expiring",
+        "file_backend_error",
+    ];
+    let mut input = vec![text("Compare these images.")];
+    input.extend(file_ids.map(|file_id| UserInput::Image {
+        image: ImageReference::File {
+            file_id: file_id.to_string(),
+        },
+        detail: Some(ImageDetail::High),
+    }));
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(input))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(
+        *image_store.resolves.lock().expect("resolves lock"),
+        HashMap::from([
+            ("file_expiring".to_string(), 1),
+            ("file_available".to_string(), 1),
+            ("file_backend_error".to_string(), 1),
+        ])
+    );
+
+    image_store
+        .resolve_errors
+        .lock()
+        .expect("resolve errors lock")
+        .extend([
+            (
+                "file_expiring".to_string(),
+                AttachmentStoreErrorKind::NotFound,
+            ),
+            (
+                "file_backend_error".to_string(),
+                AttachmentStoreErrorKind::Backend,
+            ),
+        ]);
+    test.submit_text_turn("Compare them again.").await?;
+    assert_eq!(
+        *image_store.resolves.lock().expect("resolves lock"),
+        HashMap::from([
+            ("file_expiring".to_string(), 2),
+            ("file_available".to_string(), 2),
+            ("file_backend_error".to_string(), 2),
+        ])
+    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0]
+            .body_json()
+            .to_string()
+            .contains("file_expiring")
+    );
+    let unavailable_parts = requests[1]
+        .input()
+        .into_iter()
+        .filter_map(|item| {
+            item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                .as_array()
+                .cloned()
+        })
+        .flatten()
+        .filter(|kind| kind == "images.unavailable")
+        .count();
+    assert_eq!(unavailable_parts, 2);
+    assert!(requests[1].body_contains_text("[image unavailable]"));
+    assert!(
+        !requests[1]
+            .body_json()
+            .to_string()
+            .contains("file_expiring")
+    );
+    assert!(
+        requests[1]
+            .body_json()
+            .to_string()
+            .contains("file_backend_error")
+    );
+    assert!(
+        requests[1]
+            .body_json()
+            .to_string()
+            .contains("file_available")
+    );
+
+    let recorded_images = test
+        .codex
+        .load_history(/*include_archived*/ false)
+        .await?
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(envelope) => match envelope.item {
+                ResponseItem::Message { content, .. } => Some(content),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .filter(|content| matches!(content, ContentItem::InputImage { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recorded_images,
+        file_ids.map(|file_id| ContentItem::InputImage {
+            image: ImageReference::File {
+                file_id: file_id.to_string()
+            },
+            detail: Some(ImageDetail::High),
+        })
+    );
+    insta::assert_snapshot!(context_snapshot::format_request_history_snapshot(
+        "Available file references pass through. A later request replaces missing files, preserves references on backend errors, rechecks each distinct ID once, and keeps canonical history intact.",
+        &requests,
+        &ContextSnapshotOptions::default().rewrite_known_segments(),
+    ));
     Ok(())
 }
 
@@ -802,8 +1167,10 @@ async fn astra_kickoff_with_skills_plugins_and_remote_compaction() -> Result<()>
     Ok(())
 }
 
+#[test_case::test_case(false; "descriptions")]
+#[test_case::test_case(true; "omit_descriptions")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn astra_plugin_policy_limits_visible_skills() -> Result<()> {
+async fn astra_plugin_policy_limits_visible_skills(omit_descriptions: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -861,6 +1228,10 @@ enabled = true
         .with_extensions(skills_extensions())
         .with_config(move |config| {
             configure_scenario_catalog(config);
+            config
+                .features
+                .set_enabled(Feature::OmitSkillDescriptions, omit_descriptions)
+                .expect("set omit_skill_descriptions feature");
             config.chatgpt_base_url = chatgpt_base_url;
             config.workspace_roots = vec![config.cwd.clone()];
         })
@@ -876,7 +1247,11 @@ enabled = true
 
     let requests = mock.requests();
     insta::assert_snapshot!(
-        "astra_plugin_policy_limits_visible_skills",
+        if omit_descriptions {
+            "astra_plugin_policy_without_skill_descriptions"
+        } else {
+            "astra_plugin_policy_limits_visible_skills"
+        },
         context_snapshot::format_request_history_snapshot(
             "Astra sees the permitted calendar plugin and standalone skills, but not the unlisted notes plugin.",
             &requests,
@@ -986,6 +1361,10 @@ async fn astra_omits_disabled_executor_and_plugin_skills_from_model_context(
         SkillProviders::new().with_executor_provider(Arc::new(provider)),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
+            catalog_deltas_enabled: config.features.enabled(Feature::SkillCatalogDeltas),
+            omit_descriptions: config
+                .features
+                .enabled(codex_features::Feature::OmitSkillDescriptions),
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: false,
             cloud_skill_enabled: false,
@@ -1409,7 +1788,8 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
         }
     }
 
-    let executor = core_test_support::exec_server::ExecServerProcess::start().await?;
+    let executor =
+        core_test_support::exec_server::ExecServerProcess::start_with_version("0.164.0").await?;
     // Keep byte-budget decisions stable across host temporary-directory lengths.
     let temp_root = fs::canonicalize(std::env::temp_dir())?;
     let workspace = tempfile::Builder::new()
@@ -1472,6 +1852,10 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
             )),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
+            catalog_deltas_enabled: config.features.enabled(Feature::SkillCatalogDeltas),
+            omit_descriptions: config
+                .features
+                .enabled(codex_features::Feature::OmitSkillDescriptions),
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: false,
             cloud_skill_enabled: true,
@@ -2256,15 +2640,21 @@ text(result.tools[0].description);"#,
     Ok(())
 }
 
+#[test_case::test_case(false; "simplified_selection_hints_off")]
+#[test_case::test_case(true; "simplified_selection_hints_on")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread() -> Result<()> {
+async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread(
+    simplified_selection_hints: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
     core_test_support::skip_if_remote!(Ok(()), "plugin and MCP fixtures use host-local paths");
 
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
-    let config = "[features]\nplugins = true\n\n[skills.bundled]\nenabled = false\n";
-    fs::write(home.path().join("config.toml"), config)?;
+    let config = format!(
+        "[features]\nplugins = true\nsimplified_selection_hints = {simplified_selection_hints}\n\n[skills.bundled]\nenabled = false\n"
+    );
+    fs::write(home.path().join("config.toml"), &config)?;
     let lookup = r#"text(ALL_TOOLS.filter(({ name }) => name === "mcp__notes__echo").map(({ name }) => name));"#;
     let mock = mount_sse_sequence(
         &server,
@@ -2360,8 +2750,13 @@ async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread() -> Resu
     test.submit_text_turn("Use the Notes tool again to check that the kickoff is Friday.")
         .await?;
 
+    let snapshot_name = if simplified_selection_hints {
+        "astra_plugin_refresh_simplified_selection_hints_on"
+    } else {
+        "astra_plugin_refresh_simplified_selection_hints_off"
+    };
     insta::assert_snapshot!(
-        "astra_plugin_refresh",
+        snapshot_name,
         context_snapshot::format_request_history_snapshot(
             "Astra checks for Notes, refreshes its installed plugin without restarting, and uses the new skill and Code Mode MCP tool across turns.",
             &mock.requests(),
@@ -2677,17 +3072,65 @@ async fn model_catalog_refresh_preserves_tools_and_history() -> Result<()> {
     Ok(())
 }
 
+#[test_case::test_case(PermissionPathScenario::OmittedPaths; "omitted_paths")]
+#[test_case::test_case(PermissionPathScenario::DeniedReads; "denied_reads")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn catalog_writable_roots_follow_selected_model() -> Result<()> {
+async fn catalog_permission_paths_follow_selected_model(
+    scenario: PermissionPathScenario,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
+    if matches!(scenario, PermissionPathScenario::DeniedReads) {
+        core_test_support::skip_if_target_windows!(
+            Ok(()),
+            "Windows restricted-token sandbox cannot enforce deny-read policies"
+        );
+    }
     let requests =
-        super::permissions_messages::catalog_writable_roots_model_change_requests().await?;
-    let snapshot = context_snapshot::format_request_history_snapshot(
-        "Catalog writable-root wording follows the selected model, appending changed permissions once while preserving prior input.",
-        &requests,
-        &ContextSnapshotOptions::default().include_request_settings(),
+        super::permissions_messages::catalog_permission_paths_model_change_requests(scenario)
+            .await?;
+    let mut bodies = requests
+        .iter()
+        .map(core_test_support::responses::ResponsesRequest::body_json)
+        .collect::<Vec<_>>();
+    // Keep the complete history, but collapse the large platform-specific fixture path lists
+    // before snapshot hashing. The helper verifies selected roots, denial facts, and omission.
+    let roots = regex_lite::Regex::new(r"(?m)^(Model [AB] roots: ).*$")?;
+    let filesystem = regex_lite::Regex::new(r"<filesystem>.*</filesystem>")?;
+    for body in &mut bodies {
+        for item in body["input"].as_array_mut().expect("request input") {
+            for content in item["content"].as_array_mut().into_iter().flatten() {
+                if let Some(text) = content["text"].as_str() {
+                    let text = roots.replace_all(text, "${1}<BOUNDED_ROOT_LIST>.");
+                    content["text"] = filesystem
+                        .replace_all(
+                            &text,
+                            "<filesystem><LARGE_PERMISSION_PATH_FIXTURE/></filesystem>",
+                        )
+                        .into_owned()
+                        .into();
+                }
+            }
+        }
+    }
+    let entries = bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>();
+    let (snapshot_name, description) = match scenario {
+        PermissionPathScenario::OmittedPaths => (
+            "catalog_writable_roots_follow_selected_model",
+            "Catalog root and omitted-path wording follows the selected model, appending changed permissions once while preserving prior input and the mandatory omission warning.",
+        ),
+        PermissionPathScenario::DeniedReads => (
+            "catalog_denied_reads_follow_selected_model",
+            "Catalog denied-read wording follows the selected model, appending changed permissions once while preserving prior input, denial facts, and mandatory policy warnings.",
+        ),
+    };
+    insta::assert_snapshot!(
+        snapshot_name,
+        context_snapshot::format_context_snapshot(
+            description,
+            &entries,
+            &ContextSnapshotOptions::default().include_request_settings(),
+        )
     );
-    insta::assert_snapshot!(snapshot);
     Ok(())
 }
 
@@ -2740,6 +3183,109 @@ async fn async_compaction_test(
         .build_with_auto_env(&config_server)
         .await?;
     Ok((config_server, test))
+}
+
+/// Pending image checks for optional compaction do not delay foreground turn completion.
+/// Its request still replaces files that expire after the sampling request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn async_compaction_image_checks_do_not_block_turn_completion() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let barrier = Arc::new(tokio::sync::Barrier::new(/*n*/ 2));
+    let image_store = Arc::new(RecordingFileAttachmentStore {
+        resolve_barrier: Some(Arc::clone(&barrier)),
+        ..Default::default()
+    });
+    let (release_sampling, sampling_gate) = oneshot::channel();
+    let (streaming, _completions) = start_streaming_sse_server(vec![
+        vec![compaction_chunk(
+            Some(sampling_gate),
+            vec![
+                ev_assistant_message("answer", "I examined the image."),
+                ev_completed_with_tokens("answer", /*total_tokens*/ 70_000),
+            ],
+        )],
+        vec![compaction_chunk(
+            /*gate*/ None,
+            vec![
+                compaction_output("IMAGE_CHECKPOINT"),
+                ev_completed_with_tokens("compact", /*total_tokens*/ 3_000),
+            ],
+        )],
+    ])
+    .await;
+    let config_server = start_mock_server().await;
+    let base_url = format!("{}/v1", streaming.uri());
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_image_store(image_store.clone())
+        .with_config(move |config| {
+            configure_scenario_catalog(config);
+            config.model_provider.base_url = Some(base_url);
+            config.model_context_window = Some(100_000);
+            config.features.enable(Feature::AsyncCompaction).unwrap();
+            config
+                .features
+                .disable(Feature::EnableRequestCompression)
+                .unwrap();
+        })
+        .with_model("gpt-6-astra")
+        .build_with_auto_env(&config_server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            text("Describe this image."),
+            UserInput::Image {
+                image: ImageReference::File {
+                    file_id: "file_expiring".to_string(),
+                },
+                detail: Some(ImageDetail::High),
+            },
+        ]))
+        .await?;
+    // Release the sampling lookup, then expire the file before its response finishes.
+    barrier.wait().await;
+    image_store
+        .resolve_errors
+        .lock()
+        .expect("resolve errors lock")
+        .insert(
+            "file_expiring".to_string(),
+            AttachmentStoreErrorKind::NotFound,
+        );
+    release_sampling.send(()).expect("finish sampling");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(streaming.requests().await.len(), 1);
+
+    // The turn completed without releasing the optional compaction lookup.
+    barrier.wait().await;
+    tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 20),
+        test.codex.wait_for_background_compaction_for_test(),
+    )
+    .await?;
+    let requests = streaming
+        .requests()
+        .await
+        .iter()
+        .map(|body| serde_json::from_slice::<serde_json::Value>(body))
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        *image_store.resolves.lock().expect("resolves lock"),
+        HashMap::from([("file_expiring".to_string(), 2)])
+    );
+    assert!(requests[0]["input"].to_string().contains("file_expiring"));
+    assert!(
+        requests[1]["input"]
+            .to_string()
+            .contains("[image unavailable]")
+    );
+    assert!(!requests[1]["input"].to_string().contains("file_expiring"));
+    test.codex.shutdown_and_wait().await?;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -2935,7 +3481,7 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
     )
     .await?;
     assert_eq!(compaction_events.len(), if over_budget { 4 } else { 2 });
-    for pair in compaction_events.as_chunks::<2>().0 {
+    for pair in compaction_events.chunks_exact(2) {
         assert_eq!((pair[0].0, pair[1].0), ("started", "completed"));
         assert_eq!(pair[0].1, pair[1].1);
     }
@@ -3309,5 +3855,21 @@ async fn async_compaction_reuses_pending_work(
         .map(|item| &item["encrypted_content"])
         .collect();
     assert_eq!(summaries, [&json!(if succeeds { "ASYNC" } else { "SYNC" })]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unshared_apps_catalog_across_turns() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let requests =
+        super::mcp_tool_cache::apps_requests_during_peer_discovery(/*share*/ false).await?;
+    let snapshot = context_snapshot::format_request_history_snapshot(
+        "A peer finishes Apps discovery during submit. The thread uses its own catalog on its first and second model requests.",
+        &requests,
+        &ContextSnapshotOptions::default()
+            .rewrite_known_segments()
+            .include_request_settings(),
+    );
+    insta::assert_snapshot!("unshared_apps_catalog_across_turns", snapshot);
     Ok(())
 }

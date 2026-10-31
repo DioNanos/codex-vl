@@ -910,6 +910,7 @@ impl ProviderAuthCommandFixture {
             codex_utils_cargo_bin::write_executable(
                 &script_path,
                 r#"#!/bin/sh
+printf '%s\n' "$GOOGLE_APPLICATION_CREDENTIALS" >> credential-env.txt
 if [ -f fail-until-401 ]; then
     exit 1
 fi
@@ -929,6 +930,9 @@ mv tokens.next tokens.txt
                 &script_path,
                 r#"@echo off
 setlocal EnableExtensions DisableDelayedExpansion
+setlocal EnableDelayedExpansion
+echo(!GOOGLE_APPLICATION_CREDENTIALS!>> credential-env.txt
+endlocal
 if exist fail-until-401 exit /b 1
 
 set "first_line="
@@ -969,6 +973,41 @@ move /y tokens.next tokens.txt >nul
                 .expect("tempdir should be absolute"),
         }
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn provider_auth_command_logs_credential_paths_with_cmd_metacharacters() -> anyhow::Result<()> {
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"])?;
+    let credential_file = auth_fixture
+        .tempdir
+        .path()
+        .join("ADC (team)&^!credentials!%PATH%.json");
+
+    for (credential_path, token) in [
+        (Some(credential_file.as_os_str()), "first-token"),
+        (None, "second-token"),
+    ] {
+        let mut command = codex_utils_process::background_command(&auth_fixture.command);
+        command
+            .args(&auth_fixture.args)
+            .current_dir(auth_fixture.tempdir.path());
+        if let Some(credential_path) = credential_path {
+            command.env("GOOGLE_APPLICATION_CREDENTIALS", credential_path);
+        } else {
+            command.env_remove("GOOGLE_APPLICATION_CREDENTIALS");
+        }
+        let output = command.output()?;
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout)?, format!("{token}\r\n"));
+        assert_eq!(output.stderr, Vec::<u8>::new());
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(auth_fixture.tempdir.path().join("credential-env.txt"))?,
+        format!("{}\r\n\r\n", credential_file.display()),
+    );
+    Ok(())
 }
 
 fn non_zero_u64(value: u64) -> NonZeroU64 {
@@ -1483,8 +1522,14 @@ async fn resume_replays_image_tool_outputs_with_detail() {
     );
 }
 
+#[test_case::test_case("Test API Key", None; "legacy_key")]
+#[test_case::test_case("sk-proj-fedramp-synthetic-test-key", Some("true"); "fedramp_project_key")]
+#[test_case::test_case("sk-svcacct-fedramp-synthetic-test-key", Some("true"); "fedramp_service_account_key")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn includes_session_id_thread_id_and_model_headers_in_request() {
+async fn includes_session_id_thread_id_and_model_headers_in_request(
+    api_key: &str,
+    expected_fedramp_header: Option<&str>,
+) {
     skip_if_no_network!();
 
     // Mock server
@@ -1496,7 +1541,7 @@ async fn includes_session_id_thread_id_and_model_headers_in_request() {
     )
     .await;
 
-    let mut builder = test_codex().with_auth(CodexAuth::from_api_key("Test API Key"));
+    let mut builder = test_codex().with_auth(CodexAuth::from_api_key(api_key));
     let test = builder
         .build(&server)
         .await
@@ -1511,7 +1556,7 @@ async fn includes_session_id_thread_id_and_model_headers_in_request() {
             text_elements: Vec::new(),
         }]))
         .await
-        .unwrap();
+        .expect("start test turn");
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
@@ -1534,7 +1579,11 @@ async fn includes_session_id_thread_id_and_model_headers_in_request() {
     assert_eq!(request_session_id, session_id_string.as_str());
     assert_eq!(request_thread_id, thread_id_string.as_str());
     assert_eq!(request_originator, originator().value);
-    assert_eq!(request_authorization, "Bearer Test API Key");
+    assert_eq!(request_authorization, format!("Bearer {api_key}"));
+    assert_eq!(
+        request.header("x-openai-fedramp").as_deref(),
+        expected_fedramp_header
+    );
     assert_eq!(
         request_body["prompt_cache_key"].as_str(),
         Some(session_id_string.as_str())
@@ -1735,6 +1784,9 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         supports_websockets: false,
         supports_standalone_web_search: false,
         capabilities: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
     };
 
@@ -3242,6 +3294,9 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
         supports_websockets: false,
         supports_standalone_web_search: false,
         capabilities: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
     };
 
@@ -3523,6 +3578,7 @@ async fn token_count_includes_rate_limits_snapshot() {
                     "reasoning_output_tokens": 0,
                     "total_tokens": 123
                 },
+                "last_usage_includes_reasoning": false,
                 // Default model is gpt-5.4 in tests → 95% usable context window
                 "model_context_window": 258400
             },
@@ -4091,6 +4147,9 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         supports_websockets: false,
         supports_standalone_web_search: false,
         capabilities: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
     };
 
@@ -4180,6 +4239,9 @@ async fn env_var_overrides_loaded_auth() {
         supports_websockets: false,
         supports_standalone_web_search: false,
         capabilities: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
     };
 

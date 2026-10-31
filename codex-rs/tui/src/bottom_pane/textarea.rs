@@ -1,5 +1,6 @@
 //! The textarea owns editable composer text, placeholder elements, cursor/wrap state, and a
-//! single-entry kill buffer. Single-line inputs ignore line breaks and scroll horizontally.
+//! single-entry kill buffer, including atomic ranges; rich payloads remain composer-owned.
+//! Single-line inputs ignore line breaks and scroll horizontally.
 //!
 //! Whole-buffer replacement APIs intentionally rebuild only the visible draft state. They clear
 //! element ranges and derived cursor/wrapping caches, but they keep the kill buffer intact so a
@@ -55,6 +56,7 @@ use unicode_segmentation::UnicodeSegmentation;
 mod editing;
 mod hyperlinks;
 mod mouse;
+pub(in crate::bottom_pane) mod register;
 mod single_line;
 mod vim;
 mod vim_commands;
@@ -153,6 +155,7 @@ pub(crate) struct TextArea {
     next_element_id: u64,
     kill_buffer: String,
     kill_buffer_kind: KillBufferKind,
+    register_elements: register::RegisterElements,
     vim_enabled: bool,
     vim_mode: VimMode,
     vim_pending: VimPending,
@@ -199,6 +202,7 @@ enum KillBufferKind {
 pub(crate) struct KillBufferSnapshot {
     text: String,
     kind: KillBufferKind,
+    pub(in crate::bottom_pane) elements: Arc<Vec<TextElementSnapshot>>,
 }
 
 impl Default for TextArea {
@@ -223,6 +227,7 @@ impl TextArea {
             next_element_id: 1,
             kill_buffer: String::new(),
             kill_buffer_kind: KillBufferKind::Characterwise,
+            register_elements: register::RegisterElements::default(),
             vim_enabled: false,
             vim_mode: VimMode::Insert,
             vim_pending: VimPending::None,
@@ -700,7 +705,9 @@ impl TextArea {
             return;
         }
         if keymap.yank.is_pressed(event) {
-            self.yank();
+            self.apply_vim_insert_action(VimAction::Yank(std::sync::Arc::new(
+                self.register_snapshot(),
+            )));
             return;
         }
         if keymap.move_word_left.is_pressed(event) {
@@ -1312,29 +1319,51 @@ impl TextArea {
         }
     }
 
-    /// Insert the most recently killed text at the cursor.
-    ///
-    /// This uses the textarea's single-entry kill buffer. Because whole-buffer replacement APIs do
-    /// not clear that buffer, `yank` can restore text after composer-level clears such as submit
-    /// and slash-command dispatch.
-    pub fn yank(&mut self) {
-        if self.kill_buffer.is_empty() {
+    pub(in crate::bottom_pane) fn take_register_event(
+        &mut self,
+    ) -> Option<register::RegisterEvent> {
+        self.register_elements.event.take()
+    }
+
+    fn register_snapshot(&self) -> register::RegisterSnapshot {
+        register::RegisterSnapshot {
+            text: self.kill_buffer.clone(),
+            elements: self.register_elements.elements.clone(),
+        }
+    }
+
+    /// Insert captured register contents without recording literal placeholder text.
+    fn yank_snapshot(&mut self, snapshot: &register::RegisterSnapshot) {
+        let text = &snapshot.text;
+        if text.is_empty() {
             return;
         }
-        let text = self.kill_buffer.clone();
-        self.insert_str(&text);
+        let start = self.edit_target().start();
+        let replaying = self.vim_commands.replaying;
+        self.vim_commands.replaying = true;
+        if snapshot.elements.is_empty() {
+            self.insert_str(text);
+        } else {
+            // Rich objects use the same insertion boundary as insert_element, including in R.
+            self.replace_range(self.mouse_selection_range().unwrap_or(start..start), text);
+        }
+        self.vim_commands.replaying = replaying;
+        register::paste_elements(self, start, snapshot.elements.clone());
     }
 
     pub(crate) fn take_kill_buffer_snapshot(&mut self) -> KillBufferSnapshot {
         KillBufferSnapshot {
             text: std::mem::take(&mut self.kill_buffer),
             kind: self.kill_buffer_kind,
+            elements: std::mem::take(&mut self.register_elements.elements),
         }
     }
 
     pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
         self.kill_buffer = snapshot.text;
         self.kill_buffer_kind = snapshot.kind;
+        self.register_elements.elements = snapshot.elements;
+        self.register_elements.event = None;
     }
 
     fn kill_range(&mut self, range: Range<usize>) {
@@ -1351,12 +1380,7 @@ impl TextArea {
             return;
         }
 
-        let removed = self.text[range.clone()].to_string();
-        if removed.is_empty() {
-            return;
-        }
-
-        self.store_kill_buffer(removed, kind);
+        self.store_kill_buffer(range.clone(), kind);
         self.replace_range_raw(range, "");
     }
 
@@ -1373,15 +1397,12 @@ impl TextArea {
         if range.start >= range.end {
             return;
         }
-        let removed = self.text[range].to_string();
-        if removed.is_empty() {
-            return;
-        }
-        self.store_kill_buffer(removed, kind);
+        self.store_kill_buffer(range, kind);
     }
 
-    fn store_kill_buffer(&mut self, text: String, kind: KillBufferKind) {
-        self.kill_buffer = text;
+    fn store_kill_buffer(&mut self, range: Range<usize>, kind: KillBufferKind) {
+        register::copy(self, range.clone());
+        self.kill_buffer = self.text[range].to_string();
         self.kill_buffer_kind = kind;
     }
 
@@ -1396,7 +1417,12 @@ impl TextArea {
         let insert_at = self.next_atomic_boundary(self.cursor_pos);
         self.set_cursor(insert_at);
         let text = self.kill_buffer.clone();
+        let start = self.cursor_pos;
+        let replaying = self.vim_commands.replaying;
+        self.vim_commands.replaying = true;
         self.insert_str(&text);
+        self.vim_commands.replaying = replaying;
+        register::paste(self, start);
     }
 
     fn paste_line_after_current_line(&mut self) {
@@ -1417,6 +1443,7 @@ impl TextArea {
             format!("\n{}", self.kill_buffer.trim_end_matches('\n'))
         };
         self.insert_str_at(insert_at, &text);
+        register::paste(self, cursor);
         self.set_cursor(cursor.min(self.text.len()));
     }
 
@@ -1699,6 +1726,13 @@ impl TextArea {
             return false;
         };
 
+        self.replace_element_payload_by_id(self.elements[idx].id, new)
+    }
+
+    pub(crate) fn replace_element_payload_by_id(&mut self, id: u64, new: &str) -> bool {
+        let Some(idx) = self.elements.iter().position(|element| element.id == id) else {
+            return false;
+        };
         let range = self.elements[idx].range.clone();
         let start = range.start;
         let end = range.end;
@@ -1740,8 +1774,8 @@ impl TextArea {
             }
         }
 
-        // Update the cursor position to account for the edit.
-        self.cursor_pos = if self.cursor_pos < start {
+        // Relabeling preserves a cursor on the element's leading boundary.
+        self.cursor_pos = if self.cursor_pos <= start {
             self.cursor_pos
         } else if self.cursor_pos <= end {
             start + inserted_len
@@ -3354,7 +3388,7 @@ mod tests {
         assert_eq!(t.text(), "");
         assert_eq!(t.cursor(), 0);
 
-        t.yank();
+        t.yank_snapshot(&t.register_snapshot());
         assert_eq!(t.text(), "hello");
         assert_eq!(t.cursor(), 5);
 
@@ -3364,7 +3398,7 @@ mod tests {
         assert_eq!(t.text(), "hello ");
         assert_eq!(t.cursor(), 6);
 
-        t.yank();
+        t.yank_snapshot(&t.register_snapshot());
         assert_eq!(t.text(), "hello world");
         assert_eq!(t.cursor(), 11);
 
@@ -3374,7 +3408,7 @@ mod tests {
         assert_eq!(t.text(), "");
         assert_eq!(t.cursor(), 0);
 
-        t.yank();
+        t.yank_snapshot(&t.register_snapshot());
         assert_eq!(t.text(), "hello");
         assert_eq!(t.cursor(), 5);
     }
@@ -3388,7 +3422,7 @@ mod tests {
 
         t.set_text_clearing_elements("/diff");
         t.set_text_clearing_elements("");
-        t.yank();
+        t.yank_snapshot(&t.register_snapshot());
 
         assert_eq!(t.text(), "restore me");
         assert_eq!(t.cursor(), "restore me".len());

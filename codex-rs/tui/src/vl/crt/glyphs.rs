@@ -8,9 +8,9 @@ pub(crate) fn fixed_sprite(raw: &str) -> String {
 
 pub(crate) fn code(raw: &str, max: usize) -> String {
     raw.chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .take(max)
-        .flat_map(|ch| ch.to_uppercase())
+        .flat_map(char::to_uppercase)
         .collect()
 }
 

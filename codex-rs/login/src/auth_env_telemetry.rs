@@ -81,6 +81,9 @@ mod tests {
             namespace_tools: None,
             supports_standalone_web_search: false,
             capabilities: None,
+            project_id: None,
+            location: None,
+            credential_file: None,
             include_internal_metadata: false,
         };
 

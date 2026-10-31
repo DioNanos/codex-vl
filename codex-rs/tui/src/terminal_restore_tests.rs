@@ -35,6 +35,10 @@ fn await_terminal_disconnect() {
     record("disconnected-eio");
 }
 
+#[allow(
+    clippy::print_stderr,
+    reason = "test diagnostics on the PTY child/parent"
+)]
 fn run_pty_child(name: &str, mode: &str) -> (std::process::ExitStatus, String) {
     let dir = tempfile::tempdir().expect("private marker directory");
     let marker = dir.path().join("reached");
@@ -134,6 +138,10 @@ fn restore_guard_survives_disconnected_pty() {
 
 #[test]
 #[ignore = "subprocess entry point; invoked only by the PTY regression"]
+#[allow(
+    clippy::print_stderr,
+    reason = "test diagnostics on the PTY child/parent"
+)]
 fn pty_cleanup_child() {
     color_eyre::install().expect("install production error reporter");
     await_terminal_disconnect();

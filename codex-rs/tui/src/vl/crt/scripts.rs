@@ -99,7 +99,10 @@ mod tests {
         );
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 3));
         surface.render(Rect::new(0, 0, width, 3), &mut buf);
-        buf.content.iter().map(|c| c.symbol()).collect()
+        buf.content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     #[test]
@@ -145,7 +148,10 @@ mod tests {
             );
             let mut buf = Buffer::empty(Rect::new(0, 0, 24, 3));
             surface.render(Rect::new(0, 0, 24, 3), &mut buf);
-            buf.content.iter().map(|c| c.symbol()).collect::<String>()
+            buf.content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
         };
         assert_ne!(play_a, play_b);
         assert!(!play_a.contains("play"));

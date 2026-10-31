@@ -57,18 +57,15 @@ impl VivlingState {
             return Vec::new();
         }
         let mut granted = Vec::new();
-        match self.species.as_str() {
-            SYLLO_ID => {
-                if self.unlock_species(ORCHESTRA_ID) {
-                    granted.push(ORCHESTRA_ID.to_string());
-                }
-            }
-            ORCHESTRA_ID => {
-                if self.unlock_species(CHRONOSWORN_ID) {
-                    granted.push(CHRONOSWORN_ID.to_string());
-                }
-            }
-            _ => {}
+        let unlock_target = match self.species.as_str() {
+            SYLLO_ID => Some(ORCHESTRA_ID),
+            ORCHESTRA_ID => Some(CHRONOSWORN_ID),
+            _ => None,
+        };
+        if let Some(target) = unlock_target
+            && self.unlock_species(target)
+        {
+            granted.push(target.to_string());
         }
         granted
     }

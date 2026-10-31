@@ -64,7 +64,9 @@ impl Vivling {
             _ => Vec::new(),
         };
         let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             let now = Utc::now();
             state.apply_decay(now);
             // Memory V2 Step 5.A: feed the assist payload into the
@@ -123,7 +125,9 @@ impl Vivling {
             _ => Vec::new(),
         };
         let (vivling_id, vivling_name, brain_target, prompt_context, task) = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             let now = Utc::now();
             state.apply_decay(now);
             // Memory V2 Step 5.A: same sampling hook as `prepare_assist_request`.
@@ -204,7 +208,9 @@ impl Vivling {
     pub(crate) fn active_loop_owner_identity(&mut self) -> Result<(String, String), String> {
         self.ensure_hatched()?;
         let phase = self.shadow.lifecycle.clone();
-        let state = self.state.as_mut().expect("state checked");
+        let Some(state) = self.state.as_mut() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
         state.apply_decay(Utc::now());
         if let Err(reason) = Self::vivling_runnable_from(&phase, state) {
             return Err(match reason {
@@ -323,7 +329,7 @@ impl Vivling {
         )?;
         Ok(VivlingLoopTickRequest {
             vivling_id: state.vivling_id.clone(),
-            vivling_name: state.name.clone(),
+            vivling_name: state.name,
             brain_target,
             loop_label: job.label.clone(),
             loop_goal: goal,
@@ -338,7 +344,9 @@ impl Vivling {
         profile: String,
     ) -> Result<VivlingBrainProfileRequest, String> {
         self.ensure_hatched()?;
-        let state = self.state.as_ref().expect("state checked");
+        let Some(state) = self.state.as_ref() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
         Ok(VivlingBrainProfileRequest {
             vivling_id: state.vivling_id.clone(),
             vivling_name: state.name.clone(),
@@ -353,7 +361,9 @@ impl Vivling {
         effort: Option<ReasoningEffortConfig>,
     ) -> Result<VivlingBrainProfileRequest, String> {
         self.ensure_hatched()?;
-        let state = self.state.as_ref().expect("state checked");
+        let Some(state) = self.state.as_ref() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
         Ok(VivlingBrainProfileRequest {
             vivling_id: state.vivling_id.clone(),
             vivling_name: state.name.clone(),
@@ -680,9 +690,7 @@ impl Vivling {
         if self.shadow.startup_dispatched {
             return None;
         }
-        if self.state.is_none() {
-            return None;
-        }
+        self.state.as_ref()?;
         // Set BEFORE the dispatch attempt: any refusal downstream
         // must not let the next frame retry.
         self.shadow.startup_dispatched = true;
@@ -766,7 +774,9 @@ impl Vivling {
                 crate::vivling::VivlingInteractionKind::BrainAssistSucceeded
             }
         };
-        let state = self.state.as_mut().expect("state checked");
+        let Some(state) = self.state.as_mut() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
         state.bond.record_interaction(bond_kind, Utc::now());
         self.save_state().map_err(|err| err.to_string())
     }

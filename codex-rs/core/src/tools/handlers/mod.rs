@@ -71,6 +71,7 @@ pub use mcp_resource::ListMcpResourcesHandler;
 pub use mcp_resource::ReadMcpResourceHandler;
 pub use new_context_window::NewContextWindowHandler;
 pub use plan::PlanHandler;
+pub(crate) use request_permissions::PreparedPermissionRequest;
 pub use request_permissions::RequestPermissionsHandler;
 pub use request_plugin_install::RequestPluginInstallHandler;
 pub use request_user_input::RequestUserInputHandler;
@@ -283,7 +284,8 @@ pub(crate) fn normalize_and_validate_additional_permissions(
     }
 }
 
-pub(super) struct EffectiveAdditionalPermissions {
+#[derive(Debug)]
+pub(crate) struct EffectiveAdditionalPermissions {
     pub sandbox_permissions: SandboxPermissions,
     pub additional_permissions: Option<AdditionalPermissionProfile>,
     pub permissions_preapproved: bool,

@@ -52,7 +52,7 @@ use crate::notifications::detect_backend;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::plain_hyperlink_lines;
 use crate::tui::alternate_screen::ALTERNATE_SCREEN;
-use crate::tui::event_stream::EventBroker;
+pub(super) use crate::tui::event_stream::EventBroker;
 use crate::tui::event_stream::TuiEventStream;
 #[cfg(unix)]
 use crate::tui::job_control::SuspendContext;
@@ -114,6 +114,10 @@ pub(crate) use keyboard_modes::detect_vscode_terminal;
 
 pub(crate) fn running_in_vscode_terminal() -> bool {
     keyboard_modes::running_in_vscode_terminal()
+}
+
+pub(crate) fn reports_key_releases() -> bool {
+    keyboard_modes::reports_key_releases()
 }
 
 fn should_emit_notification(condition: NotificationCondition, terminal_focused: bool) -> bool {
@@ -311,6 +315,7 @@ impl Command for DisableAlternateScroll {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RawModeRestore {
+    DrainAndDisable,
     Disable,
     Keep,
 }
@@ -352,7 +357,14 @@ fn restore_common(
         first_error.get_or_insert(err);
     }
     let _ = execute!(stdout(), DisableFocusChange);
-    if matches!(raw_mode_restore, RawModeRestore::Disable)
+    if raw_mode_restore == RawModeRestore::DrainAndDisable {
+        #[cfg(unix)]
+        if let Err(err) = crate::terminal_probe::wait_for_exit_reports() {
+            tracing::debug!(%err, "failed to drain outstanding terminal reports");
+        }
+        flush_terminal_input_buffer();
+    }
+    if raw_mode_restore != RawModeRestore::Keep
         && let Err(err) = disable_raw_mode()
     {
         first_error.get_or_insert(err);
@@ -402,8 +414,25 @@ pub(super) fn reapply_raw_mode_after_resume() -> Result<()> {
 /// Uses a stronger keyboard reset than `restore` so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
+    restore_after_exit_with_events(/*events*/ None)
+}
+
+/// Discard reports and interleaved keystrokes before handing the terminal back to the shell.
+pub(super) fn restore_after_exit_with_events(events: Option<&EventBroker>) -> Result<()> {
+    let raw_mode_restore = match events {
+        Some(_) if std::thread::panicking() => {
+            // The panic hook restored terminal modes. Flush queued reports without locking the reader.
+            flush_terminal_input_buffer();
+            RawModeRestore::Disable
+        }
+        Some(events) => {
+            events.pause_events();
+            RawModeRestore::DrainAndDisable
+        }
+        None => RawModeRestore::Disable,
+    };
     let mut first_error = restore_common(
-        RawModeRestore::Disable,
+        raw_mode_restore,
         KeyboardRestore::ResetAfterExit,
         TerminalHandoff::Restore,
     )
@@ -638,23 +667,23 @@ pub enum TuiEvent {
     FocusLost,
 }
 
-/// The current screen's pointer policy; ordinary pickers retain alternate-scroll input.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum OverlayInput {
+/// Controls whether the TUI requests mouse events from the terminal.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MouseCapture {
     #[default]
-    Default,
-    Onboarding,
-    Transcript,
-    StaticPager,
-    Usage,
+    /// Follow the session default: capture only when the TUI owns the screen.
+    Inherit,
+    Enabled,
+    /// Let the terminal handle gestures, including selection and opening links.
+    Disabled,
 }
 
-impl OverlayInput {
+impl MouseCapture {
     fn captures_mouse(self, owned_screen: bool) -> bool {
         match self {
-            Self::Default => owned_screen,
-            Self::Onboarding | Self::StaticPager => false,
-            Self::Transcript | Self::Usage => true,
+            Self::Inherit => owned_screen,
+            Self::Enabled => true,
+            Self::Disabled => false,
         }
     }
 }
@@ -663,7 +692,7 @@ pub struct Tui {
     pub(crate) link_hover: link_pointer::LinkHover,
     frame_requester: FrameRequester,
     draw_tx: broadcast::Sender<()>,
-    event_broker: Arc<EventBroker>,
+    pub(super) event_broker: Arc<EventBroker>,
     pub(crate) terminal_size_tags: crate::terminal_size_telemetry::LaunchTags,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
@@ -689,7 +718,7 @@ pub struct Tui {
     alt_screen_enabled: bool,
     // Keep the alternate screen alive when an overlay closes.
     owned_screen: bool,
-    pub(crate) overlay_input: OverlayInput,
+    pub(crate) mouse_capture: MouseCapture,
     // Copies and native ownership survive closing an overlay or startup picker.
     pub(crate) clipboard: crate::clipboard_copy::worker::ClipboardWorker,
     // Keeps unmanaged process stderr writes out of the inline viewport.
@@ -763,7 +792,7 @@ impl Tui {
             scrollback,
             alt_screen_enabled: true,
             owned_screen: false,
-            overlay_input: OverlayInput::Default,
+            mouse_capture: MouseCapture::Inherit,
             clipboard: Default::default(),
             _stderr_guard: stderr_guard,
         }
@@ -827,18 +856,18 @@ impl Tui {
         crate::transcript_mode::TranscriptMode::resolve(self.owned_screen, self.alt_screen_enabled)
     }
 
-    /// Retain the overlay input request across temporary editor, suspend and panic handoffs.
+    /// Retain the mouse capture policy across temporary editor, suspend and panic handoffs.
     /// Actual terminal capture is tracked by AlternateScreen so partial writes remain cleanable.
-    pub(crate) fn set_overlay_input(&mut self, input: OverlayInput) -> Result<()> {
+    pub(crate) fn set_mouse_capture(&mut self, mouse_capture: MouseCapture) -> Result<()> {
         if self.alt_screen_enabled && self.is_alt_screen_active() {
-            self.overlay_input.apply(
+            self.mouse_capture.apply(
                 &ALTERNATE_SCREEN,
                 self.terminal.backend_mut(),
-                input,
+                mouse_capture,
                 self.owned_screen,
             )
         } else {
-            self.overlay_input = input;
+            self.mouse_capture = mouse_capture;
             Ok(())
         }
     }
@@ -898,7 +927,7 @@ impl Tui {
         set_modes()?;
         self._stderr_guard.recover_after_caught_panic()?;
         self.terminal.invalidate_cursor_state();
-        if self.is_owned_screen() || self.overlay_input != OverlayInput::Default {
+        if self.is_owned_screen() || self.mouse_capture != MouseCapture::Inherit {
             let saved = self.alt_saved_viewport;
             self.alt_screen_active
                 .store(/*val*/ false, Ordering::Relaxed);
@@ -1092,7 +1121,7 @@ impl Tui {
         }
         let result = ALTERNATE_SCREEN.enter(
             self.terminal.backend_mut(),
-            self.overlay_input.captures_mouse(self.owned_screen),
+            self.mouse_capture.captures_mouse(self.owned_screen),
         );
         self.alt_screen_active
             .store(ALTERNATE_SCREEN.is_active(), Ordering::Relaxed);
@@ -1119,7 +1148,7 @@ impl Tui {
 
     /// Close an overlay, preserving the alternate screen when the session owns it.
     pub fn leave_alt_screen(&mut self) -> Result<()> {
-        let input_result = self.set_overlay_input(OverlayInput::Default);
+        let input_result = self.set_mouse_capture(MouseCapture::Inherit);
         if self.is_owned_screen() {
             self.terminal.invalidate_viewport();
             return input_result;
@@ -1309,7 +1338,7 @@ impl Tui {
                     &mut self.terminal,
                     screen_size,
                     self.owned_screen,
-                    self.overlay_input.captures_mouse(self.owned_screen),
+                    self.mouse_capture.captures_mouse(self.owned_screen),
                 )?;
             }
 
@@ -1458,7 +1487,7 @@ impl Tui {
                     &mut self.terminal,
                     screen_size,
                     self.owned_screen,
-                    self.overlay_input.captures_mouse(self.owned_screen),
+                    self.mouse_capture.captures_mouse(self.owned_screen),
                 )?;
             }
 

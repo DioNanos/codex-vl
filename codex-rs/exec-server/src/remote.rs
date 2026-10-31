@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use codex_api::AuthProvider;
 use codex_api::SharedAuthProvider;
+use codex_http_client::CHATGPT_ACCOUNT_ID_HEADER;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::HttpResponse;
@@ -304,7 +305,7 @@ impl EnvironmentRegistryClient {
     async fn resolve_auth(&self) -> Result<(HeaderMap, Option<HeaderValue>), ExecServerError> {
         let mut headers = self
             .auth_provider
-            .resolve_auth_headers()
+            .apply_auth_headers(HeaderMap::new())
             .await
             .map_err(|error| {
                 ExecServerError::EnvironmentRegistryAuth(format!(
@@ -560,7 +561,7 @@ impl AuthProvider for StaticBearerAuthProvider {
         headers.insert(http::header::AUTHORIZATION, self.authorization.clone());
         if let Some(chatgpt_account_id) = &self.chatgpt_account_id {
             headers.insert(
-                HeaderName::from_static("chatgpt-account-id"),
+                HeaderName::from_static(CHATGPT_ACCOUNT_ID_HEADER),
                 chatgpt_account_id.clone(),
             );
         }
@@ -1131,9 +1132,8 @@ mod tests {
             Ok(())
         }
 
-        fn resolve_auth_headers(&self) -> codex_api::AuthHeadersFuture<'_> {
-            Box::pin(async {
-                let mut headers = HeaderMap::new();
+        fn apply_auth_headers(&self, mut headers: HeaderMap) -> codex_api::AuthHeadersFuture<'_> {
+            Box::pin(async move {
                 let _ = headers.insert(
                     http::header::AUTHORIZATION,
                     HeaderValue::from_static("Bearer registry-token"),

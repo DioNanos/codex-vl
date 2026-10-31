@@ -8,7 +8,9 @@ impl Vivling {
     pub(crate) fn open_zed_companion(&mut self) -> Result<VivlingPanelData, String> {
         self.ensure_hatched()?;
         let panel = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.apply_decay(Utc::now());
             let summary = super::super::super::zed::zed_companion_summary(state);
             state.last_zed_topic = Some("companion".to_string());
@@ -41,7 +43,9 @@ impl Vivling {
         // show`.
         let now = Utc::now();
         let reservation = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.try_reserve_llm_call(
                 codex_vivling_core::model::VivlingLlmCallKind::Chat,
                 now,
@@ -59,7 +63,9 @@ impl Vivling {
             }
             Err(reason) => {
                 let label = {
-                    let state = self.state.as_ref().expect("state checked");
+                    let Some(state) = self.state.as_ref() else {
+                        return Err("No Vivling yet. Use /vivling hatch.".to_string());
+                    };
                     chat_skip_reason_label(reason, state)
                 };
                 self.update_existing_result(|state| state.direct_chat_reply(text))
@@ -123,7 +129,9 @@ impl Vivling {
         // The previous "you must pick a profile first" hard block made
         // the inheritance path unreachable from the normal flow.
         let needs_guidance = {
-            let state = self.state.as_ref().expect("state checked");
+            let Some(state) = self.state.as_ref() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             if state.stage() != Stage::Adult {
                 return Err("Vivling brain unlocks only at level 60.".to_string());
             }

@@ -48,19 +48,11 @@ pub(crate) struct GuardianV2Config {
     pub(crate) max_parent_compaction_tokens: usize,
     pub(super) policy: GuardianPolicyLoader,
     pub(crate) transcript: TranscriptConfig,
+    pub(crate) review_multi_agent_calls: bool,
+    pub(crate) multi_agent_namespace: Option<String>,
 }
 
 impl GuardianV2Config {
-    pub(super) fn classifier_mode(
-        &self,
-        model_defaults: Option<&GuardianV2ModelConfig>,
-    ) -> codex_protocol::openai_models::AsyncClassifierMode {
-        self.local_overrides
-            .async_classifier_mode
-            .or_else(|| model_defaults.and_then(|defaults| defaults.async_classifier_mode))
-            .unwrap_or_default()
-    }
-
     pub(crate) fn resolve(config: &Config) -> Result<Self, String> {
         let effective_config = config.config_layer_stack.effective_config();
         let mut configured = match effective_config
@@ -89,6 +81,10 @@ impl GuardianV2Config {
         });
         resolved.policy =
             GuardianPolicyLoader::new(Some(&legacy), config.config_layer_stack.requirements());
+        resolved.review_multi_agent_calls = config
+            .features
+            .enabled(codex_features::Feature::GuardianNativeMultiAgentHistory);
+        resolved.multi_agent_namespace = config.multi_agent_v2.tool_namespace.clone();
         Ok(resolved)
     }
 
@@ -180,6 +176,8 @@ impl GuardianV2Config {
         let mut resolved = Self::from_overrides(configured)?;
         resolved.local_overrides = self.local_overrides.clone();
         resolved.policy = self.policy.clone();
+        resolved.review_multi_agent_calls = self.review_multi_agent_calls;
+        resolved.multi_agent_namespace = self.multi_agent_namespace.clone();
         Ok(resolved)
     }
 
@@ -278,6 +276,8 @@ impl GuardianV2Config {
         );
         Ok(Self {
             local_overrides: configured.clone(),
+            review_multi_agent_calls: false,
+            multi_agent_namespace: None,
             async_classifier_conversation_token_limit,
             persist_scores: configured.persist_scores.unwrap_or(false),
             classifier_instructions: configured.classifier_instructions.unwrap_or_else(|| {

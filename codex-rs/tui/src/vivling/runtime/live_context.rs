@@ -27,10 +27,10 @@ impl VivlingLiveContext {
             return Some(truncate_chars(progress, 28));
         }
 
-        if let Some(run_state) = self.run_state.as_deref().and_then(clean_value) {
-            if run_state != "Ready" {
-                return Some(run_state.to_ascii_lowercase());
-            }
+        if let Some(run_state) = self.run_state.as_deref().and_then(clean_value)
+            && run_state != "Ready"
+        {
+            return Some(run_state.to_ascii_lowercase());
         }
 
         if let Some(branch) = self.git_branch.as_deref().and_then(clean_value) {

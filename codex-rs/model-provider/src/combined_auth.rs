@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::auth::ResolvedProviderAuth;
 use codex_api::AuthError;
+use codex_api::AuthHeaderTelemetry;
 use codex_api::AuthHeadersFuture;
 use codex_api::AuthProvider;
 use codex_api::AuthProviderFuture;
@@ -57,16 +58,6 @@ pub(crate) async fn compose_auth(
         ))
     })?;
     let (name, value) = gateway_header(config, &token)?;
-    if resolved
-        .auth
-        .to_auth_headers()
-        .map_err(|error| codex_api::map_api_error(error.into()))?
-        .contains_key(&name)
-    {
-        return Err(CodexErr::InvalidRequest(
-            "gateway OAuth conflicts with primary auth headers".into(),
-        ));
-    }
     resolved.auth = Arc::new(CombinedAuth {
         primary: resolved.auth,
         name,
@@ -111,24 +102,33 @@ struct CombinedAuth {
     value: HeaderValue,
 }
 
-impl AuthProvider for CombinedAuth {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) -> std::result::Result<(), AuthError> {
-        self.primary.add_auth_headers(headers)?;
-        headers
-            .entry(self.name.clone())
-            .or_insert(self.value.clone());
+impl CombinedAuth {
+    fn insert_gateway_header(&self, headers: &mut HeaderMap) -> std::result::Result<(), AuthError> {
+        if headers.contains_key(&self.name) {
+            return Err(AuthError::Build(format!(
+                "The request already sets the {} header. Choose a different header or cookie in gateway_oauth.delivery for the gateway token.",
+                self.name
+            )));
+        }
+        headers.insert(self.name.clone(), self.value.clone());
         Ok(())
     }
+}
 
-    fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {
+impl AuthProvider for CombinedAuth {
+    fn auth_header_telemetry(&self) -> std::result::Result<AuthHeaderTelemetry, AuthError> {
+        self.primary.auth_header_telemetry()
+    }
+
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> std::result::Result<(), AuthError> {
+        self.primary.add_auth_headers(headers)?;
+        self.insert_gateway_header(headers)
+    }
+
+    fn apply_auth_headers(&self, headers: HeaderMap) -> AuthHeadersFuture<'_> {
         Box::pin(async move {
-            let mut headers = self.primary.resolve_auth_headers().await?;
-            if headers.contains_key(&self.name) {
-                return Err(AuthError::Build(
-                    "gateway OAuth conflicts with primary auth headers".into(),
-                ));
-            }
-            headers.insert(self.name.clone(), self.value.clone());
+            let mut headers = self.primary.apply_auth_headers(headers).await?;
+            self.insert_gateway_header(&mut headers)?;
             Ok(headers)
         })
     }
@@ -136,14 +136,7 @@ impl AuthProvider for CombinedAuth {
     fn apply_auth(&self, request: codex_http_client::Request) -> AuthProviderFuture<'_> {
         Box::pin(async move {
             let mut request = self.primary.apply_auth(request).await?;
-            if request.headers.contains_key(&self.name) {
-                return Err(AuthError::Build(
-                    "gateway OAuth conflicts with request headers".into(),
-                ));
-            }
-            request
-                .headers
-                .insert(self.name.clone(), self.value.clone());
+            self.insert_gateway_header(&mut request.headers)?;
             Ok(request)
         })
     }
