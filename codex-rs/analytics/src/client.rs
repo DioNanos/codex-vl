@@ -65,6 +65,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::item_event_to_server_notification;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_model_provider::ChatgptBaseUrl;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
 use codex_protocol::ThreadId;
@@ -116,7 +117,7 @@ pub struct AnalyticsEventsClient {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AnalyticsEventsDestination {
     Http {
-        url: String,
+        base_url: ChatgptBaseUrl,
     },
     #[cfg(debug_assertions)]
     CaptureFile {
@@ -125,12 +126,15 @@ enum AnalyticsEventsDestination {
 }
 
 impl AnalyticsEventsDestination {
-    fn from_base_url(base_url: String) -> Self {
+    fn from_base_url(base_url: ChatgptBaseUrl) -> Self {
         let capture_file = analytics_capture_file_from_env();
         Self::from_base_url_and_capture_file(base_url, capture_file)
     }
 
-    fn from_base_url_and_capture_file(base_url: String, capture_file: Option<PathBuf>) -> Self {
+    fn from_base_url_and_capture_file(
+        base_url: ChatgptBaseUrl,
+        capture_file: Option<PathBuf>,
+    ) -> Self {
         #[cfg(debug_assertions)]
         if let Some(path) = capture_file {
             if let Err(err) = crate::analytics_capture::initialize(&path) {
@@ -149,9 +153,17 @@ impl AnalyticsEventsDestination {
         #[cfg(not(debug_assertions))]
         let _ = capture_file;
 
-        let base_url = base_url.trim_end_matches('/');
-        Self::Http {
-            url: format!("{base_url}/codex/analytics-events/events"),
+        Self::Http { base_url }
+    }
+
+    fn url_for_auth(&self, auth: &CodexAuth) -> Option<String> {
+        match self {
+            Self::Http { base_url } => {
+                let base_url = base_url.resolve(auth).trim_end_matches('/');
+                Some(format!("{base_url}/codex/analytics-events/events"))
+            }
+            #[cfg(debug_assertions)]
+            Self::CaptureFile { .. } => None,
         }
     }
 }
@@ -313,10 +325,10 @@ impl AnalyticsEventsClient {
 
     pub fn new(
         auth_manager: Arc<AuthManager>,
-        base_url: String,
+        base_url: impl Into<ChatgptBaseUrl>,
         analytics_enabled: Option<bool>,
     ) -> Self {
-        let destination = AnalyticsEventsDestination::from_base_url(base_url);
+        let destination = AnalyticsEventsDestination::from_base_url(base_url.into());
         Self {
             queue: (analytics_enabled != Some(false))
                 .then(|| AnalyticsEventsQueue::new(Arc::clone(&auth_manager), destination)),
@@ -436,22 +448,29 @@ impl AnalyticsEventsClient {
         completed_at_ms: i64,
     ) {
         let thread_id = item.sender_thread_id.to_string();
-        let completed_item = TurnItem::CollabAgentToolCall(item.clone()).into();
+        let completed_item = codex_app_server_protocol::ThreadItemPayload::from(
+            TurnItem::CollabAgentToolCall(item.clone()),
+        );
         item.status = CollabAgentToolCallStatus::InProgress;
 
-        self.track_notification(&ServerNotification::ItemStarted(ItemStartedNotification {
-            item: TurnItem::CollabAgentToolCall(item).into(),
-            thread_id: thread_id.clone(),
-            turn_id: turn_id.clone(),
-            started_at_ms,
-        }));
+        self.track_notification(&ServerNotification::ItemStarted(
+            ItemStartedNotification::new(
+                thread_id.clone(),
+                turn_id.clone(),
+                codex_app_server_protocol::ThreadItemPayload::from(TurnItem::CollabAgentToolCall(
+                    item,
+                )),
+                started_at_ms,
+            ),
+        ));
         self.track_notification(&ServerNotification::ItemCompleted(
-            ItemCompletedNotification {
-                item: completed_item,
+            ItemCompletedNotification::new(
                 thread_id,
                 turn_id,
+                completed_item,
+                Some(started_at_ms),
                 completed_at_ms,
-            },
+            ),
         ));
     }
 
@@ -935,7 +954,7 @@ fn session_event_to_analytics_notification(
     match &notification {
         ServerNotification::ItemStarted(ItemStartedNotification { item, .. })
         | ServerNotification::ItemCompleted(ItemCompletedNotification { item, .. }) => {
-            tracked_tool_item_id(item)?;
+            tracked_tool_item_id(&item.payload)?;
         }
         _ => {}
     }
@@ -1050,10 +1069,8 @@ async fn send_track_events_request(
         return;
     }
 
-    let url = match destination {
-        AnalyticsEventsDestination::Http { url } => url,
-        #[cfg(debug_assertions)]
-        AnalyticsEventsDestination::CaptureFile { .. } => return,
+    let Some(url) = destination.url_for_auth(auth) else {
+        return;
     };
     let headers = match codex_model_provider::auth_provider_from_auth(auth).to_auth_headers() {
         Ok(headers) => headers,
@@ -1077,7 +1094,7 @@ async fn send_track_events_request(
         }
     };
     let mut request = client
-        .post(url)
+        .post(&url)
         .timeout(ANALYTICS_EVENTS_TIMEOUT)
         .headers(headers)
         .header("Content-Type", "application/json")

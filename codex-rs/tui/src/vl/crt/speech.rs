@@ -176,8 +176,8 @@ fn word_wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     }
     let mut lines: Vec<String> = Vec::with_capacity(max_lines);
     let mut current = String::new();
-    let mut iter = text.split_whitespace().peekable();
-    while let Some(word) = iter.next() {
+    let iter = text.split_whitespace().peekable();
+    for word in iter {
         let word_len = word.chars().count();
         if current.is_empty() {
             if word_len <= width {
@@ -259,7 +259,11 @@ mod tests {
         let drew = draw_bubble(&mut surface, 4, panel_w, msg, &palette).is_some();
         let mut buf = Buffer::empty(Rect::new(0, 0, total, 3));
         surface.render(Rect::new(0, 0, total, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         (drew, rendered)
     }
 
@@ -322,7 +326,11 @@ mod tests {
         );
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         surface.render(Rect::new(0, 0, 40, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(rendered.contains("< greet"));
         assert!(!rendered.contains("greets"));
     }
@@ -348,7 +356,11 @@ mod tests {
         );
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         surface.render(Rect::new(0, 0, 40, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(rendered.contains("< idle"), "rendered: {rendered:?}");
     }
 
@@ -370,7 +382,11 @@ mod tests {
         assert!(drew.is_some());
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         surface.render(Rect::new(0, 0, 40, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|c| c.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(rendered.contains("< "));
         assert!(!rendered.contains("hello"));
     }
@@ -386,8 +402,16 @@ mod tests {
         let mut buf_b = Buffer::empty(Rect::new(0, 0, 40, 3));
         a.render(Rect::new(0, 0, 40, 3), &mut buf_a);
         b.render(Rect::new(0, 0, 40, 3), &mut buf_b);
-        let ra: String = buf_a.content.iter().map(|c| c.symbol()).collect();
-        let rb: String = buf_b.content.iter().map(|c| c.symbol()).collect();
+        let ra: String = buf_a
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        let rb: String = buf_b
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert_eq!(ra, rb);
     }
 

@@ -211,7 +211,12 @@ impl RouteAwareClientPool {
             if redirects >= MAX_REDIRECTS {
                 return Err(RouteAwareRequestError::TooManyRedirects);
             }
-            remove_sensitive_headers(next_request.headers_mut(), &current_url, &next_request_url);
+            remove_sensitive_headers(
+                next_request.headers_mut(),
+                &current_url,
+                &next_request_url,
+                self.http_client_factory.protects_sensitive_headers(),
+            );
             insert_referer(next_request.headers_mut(), &current_url, &next_request_url);
             request = next_request;
             redirects += 1;
@@ -322,7 +327,8 @@ impl RouteAwareClientPool {
         let client = self.windows_proxy_client(current_route, selected_tls_backend, &pipe)?;
         set_remaining_timeout(&mut request, timeout_deadline)?;
         // Keep the listener alive through a possible TLS retry.
-        match client.execute_without_request_logging(request).await {
+        let result = client.execute_without_request_logging(request).await;
+        match result {
             Ok(response) => Ok(response),
             Err(error) => {
                 self.retry_with_rustls(

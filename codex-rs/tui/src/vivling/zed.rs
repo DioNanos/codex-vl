@@ -56,6 +56,10 @@ pub(crate) fn zed_panel_data(topic: ZedTopic, summary: &str) -> ZedPanelData {
     }
 }
 
+#[expect(
+    clippy::if_same_then_else,
+    reason = "narrow ZED card art is not drawn yet; both widths share the full art until it is"
+)]
 fn zed_card_lines(width_hint: usize) -> Vec<String> {
     let full = vec![
         "         _....................._".to_string(),

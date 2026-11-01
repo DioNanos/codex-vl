@@ -126,6 +126,95 @@ fn fork_identity_public_install_surfaces_are_fork_owned() {
     );
 }
 
+/// Pin: installer and repack surfaces must stay leak-free. These files ship
+/// in the public tree, and the repack step's outputs (the
+/// `codex-vl-package-*` archives and the pinned `install.sh`) are attached to
+/// public GitHub releases, so internal paths, hostnames, operator markers,
+/// and AI attribution trailers must never appear in them.
+///
+/// The repack script legitimately lists those same substrings in its
+/// `LEAK_NEEDLES` scan table (it is the gate for the release assets
+/// themselves), so for that file each needle must appear exactly once — the
+/// table entry — and the scan/verification hooks must stay in place.
+#[test]
+fn fork_identity_install_and_repack_surfaces_are_leak_free() {
+    const INSTALL_SH: &str = include_str!("../../../scripts/install/install.sh");
+    const INSTALL_PS1: &str = include_str!("../../../scripts/install/install.ps1");
+    const REPACK: &str = include_str!("../../../scripts/release/repack_standalone_packages.py");
+
+    let forbidden = [
+        "DocsHub",
+        "NexusFiles",
+        "/home/dag",
+        "git@forge",
+        "alpacalibre",
+        "Co-Authored-By",
+        "Generated with",
+    ];
+
+    for (path, source) in [
+        ("scripts/install/install.sh", INSTALL_SH),
+        ("scripts/install/install.ps1", INSTALL_PS1),
+    ] {
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "{path} must not contain internal marker {needle:?}.",
+            );
+        }
+        assert!(
+            !contains_internal_task_marker(source),
+            "{path} must not contain internal task markers (D-<digits>).",
+        );
+    }
+
+    for needle in forbidden {
+        let occurrences = REPACK.matches(needle).count();
+        assert_eq!(
+            occurrences, 1,
+            "repack_standalone_packages.py must list {needle:?} exactly once \
+             (the LEAK_NEEDLES entry) and never use it elsewhere.",
+        );
+    }
+    assert!(
+        !contains_internal_task_marker(REPACK),
+        "repack_standalone_packages.py must not contain internal task markers.",
+    );
+
+    // The repack step is the gate for the repack assets themselves: it must
+    // keep leak-scanning the text payloads it ships and keep proving the
+    // repacked members byte-identical to the frozen tarballs. Removing either
+    // hook silently would leave the release assets unscanned.
+    assert!(
+        REPACK.contains("leak_scan("),
+        "repack_standalone_packages.py must leak-scan the payloads it ships.",
+    );
+    assert!(
+        REPACK.contains("verify_roundtrip"),
+        "repack_standalone_packages.py must verify repacked members against \
+         the frozen tarballs.",
+    );
+}
+
+/// Detects internal task markers of the form `D-` followed by at least two
+/// digits without pulling in a regex dependency.
+fn contains_internal_task_marker(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut from = 0usize;
+    while let Some(found) = source[from..].find("D-") {
+        let at = from + found;
+        let digits = bytes[at + 2..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits >= 2 {
+            return true;
+        }
+        from = at + 2;
+    }
+    false
+}
+
 /// Pin: the app-server daemon resolves npm/bun managed installs to
 /// the running fork binary instead of the upstream standalone layout.
 #[test]

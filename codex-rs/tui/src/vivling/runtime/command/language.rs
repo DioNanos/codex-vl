@@ -14,7 +14,9 @@ use codex_vivling_core::model::VivlingLanguageMode;
 impl Vivling {
     pub(crate) fn show_language_status(&mut self) -> Result<String, String> {
         self.ensure_hatched()?;
-        let state = self.state.as_ref().expect("state checked");
+        let Some(state) = self.state.as_ref() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
         let system_lang = std::env::var("LANG").ok();
         let effective = state
             .language_state

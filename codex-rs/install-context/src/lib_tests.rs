@@ -146,6 +146,36 @@ fn detects_standalone_install_from_release_layout() -> std::io::Result<()> {
 }
 
 #[test]
+fn detects_fork_standalone_install_from_standalone_vl_release_layout() -> std::io::Result<()> {
+    // The fork installer (scripts/install/install.sh) installs under
+    // packages/standalone-vl/ so it can coexist with an official
+    // packages/standalone/ install; both roots must classify as Standalone.
+    let codex_home = tempfile::tempdir()?;
+    let release_dir = codex_home
+        .path()
+        .join("packages/standalone-vl/releases/1.2.3-x86_64-unknown-linux-musl");
+    fs::create_dir_all(&release_dir)?;
+    let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    fs::write(&exe_path, "")?;
+
+    let context = InstallContext::from_exe_with_codex_home(
+        /*is_macos*/ false,
+        /*current_exe*/ Some(&exe_path),
+        /*method_override*/ None,
+        /*codex_home*/ Some(codex_home.path()),
+    );
+    assert_eq!(
+        context.method,
+        InstallMethod::Standalone {
+            release_dir: AbsolutePathBuf::from_absolute_path(release_dir.canonicalize()?)?,
+            resources_dir: None,
+            platform: standalone_platform(),
+        }
+    );
+    Ok(())
+}
+
+#[test]
 fn standalone_rg_falls_back_when_resources_are_missing() -> std::io::Result<()> {
     let codex_home = tempfile::tempdir()?;
     let release_dir = codex_home

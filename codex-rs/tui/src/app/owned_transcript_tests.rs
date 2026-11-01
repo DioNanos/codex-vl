@@ -25,7 +25,7 @@ use ratatui::buffer::Buffer;
 
 pub(in crate::app) fn user_cell(message: &str) -> Arc<dyn HistoryCell> {
     Arc::new(UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: message.to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),
@@ -863,6 +863,138 @@ async fn owned_search_and_selection_consume_input_before_composer_and_backtrack(
         "composer draft"
     );
     tui.set_owned_screen(/*owned*/ false)?;
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn keyboard_select_mode_preserves_the_draft_and_absorbs_enter_repeat() -> Result<()> {
+    let mut app = crate::app::test_support::make_test_app().await;
+    attach_thread(&mut app, ThreadId::new());
+    app.transcript_cells = vec![user_cell("select this transcript")];
+    app.chat_widget
+        .apply_external_edit("composer draft".to_string());
+    app.keymap.app.find_transcript = vec![crate::key_hint::KeyBinding::from_event(
+        KeyCode::Char('v').into(),
+    )];
+    app.keymap.pager.find = vec![crate::key_hint::KeyBinding::from_event(
+        KeyCode::Enter.into(),
+    )];
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    app.render_owned_transcript(&mut tui, Size::new(/*width*/ 80, /*height*/ 24))?;
+
+    for key in [
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        KeyCode::Char('[').into(),
+    ] {
+        app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(key))
+            .await?;
+    }
+    assert!(app.transcript_view.is_select_mode());
+
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyCode::Char('v').into()),
+    )
+    .await?;
+    assert!(app.transcript_view.is_select_mode());
+    assert!(!app.transcript_view.is_search_editing());
+    for event in [
+        TuiEvent::Paste("ignored".to_string()),
+        TuiEvent::Key(KeyCode::Esc.into()),
+    ] {
+        app.handle_tui_event(&mut tui, &mut app_server, event)
+            .await?;
+    }
+    assert!(app.transcript_view.is_select_mode());
+    assert!(app.backtrack.select_exit_key.is_none());
+
+    for (kind, exit_guard) in [
+        (KeyEventKind::Press, true),
+        (KeyEventKind::Repeat, false),
+        (KeyEventKind::Release, false),
+    ] {
+        app.handle_tui_event(
+            &mut tui,
+            &mut app_server,
+            TuiEvent::Key(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                kind,
+            )),
+        )
+        .await?;
+        assert_eq!(app.backtrack.select_exit_key.is_some(), exit_guard);
+    }
+    assert!(!app.transcript_view.is_select_mode());
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "composer draft"
+    );
+
+    tui.set_owned_screen(/*owned*/ false)?;
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn inline_select_mode_routes_find_and_returns_to_the_preserved_draft() -> Result<()> {
+    let mut app = crate::app::test_support::make_test_app().await;
+    attach_thread(&mut app, ThreadId::new());
+    app.transcript_cells = vec![user_cell("needle in history")];
+    app.chat_widget
+        .apply_external_edit("preserved inline draft".to_string());
+    app.keymap = RuntimeKeymap::from_config(&serde_json::from_value(serde_json::json!({
+        "global": {"find_transcript": "f4"},
+        "pager": {"scroll_down": "f4"}
+    }))?)
+    .expect("pager motion takes precedence in select mode");
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.open_transcript_overlay(&mut tui);
+
+    for key in [
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        KeyCode::Char('[').into(),
+    ] {
+        app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(key))
+            .await?;
+    }
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyCode::F(4).into()),
+    )
+    .await?;
+    assert!(matches!(
+        &app.overlay,
+        Some(Overlay::Transcript(overlay))
+            if overlay.is_select_mode() && !overlay.is_search_editing()
+    ));
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Key(KeyCode::F(3).into()),
+    )
+    .await?;
+    assert!(matches!(
+        &app.overlay,
+        Some(Overlay::Transcript(overlay)) if overlay.is_search_editing()
+    ));
+
+    for key in [KeyCode::Esc, KeyCode::Char('q')] {
+        app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(key.into()))
+            .await?;
+    }
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "preserved inline draft"
+    );
+
     app_server.shutdown().await?;
     Ok(())
 }
@@ -1795,10 +1927,10 @@ async fn footer_selection_defers_warning_clicks_and_preserves_the_draft() -> Res
     let size = tui.terminal.size()?;
     app.chat_widget
         .apply_external_edit("draft stays here".into());
-    app.insert_history_cell(
-        &mut tui,
-        Box::new(history_cell::new_warning_event("Example warning".into())),
-    );
+    let url = "https://docs.example.invalid/troubleshooting/mcp/oauth/sign-in/this-is-a-long-reference-for-terminal-copy";
+    let padding = "\n".repeat(8);
+    let message = format!("Example warning\n{url}\nNext line{padding}Last line");
+    app.insert_history_cell(&mut tui, Box::new(history_cell::new_warning_event(message)));
     app.render_owned_transcript(&mut tui, size)?;
     let draft = app.chat_widget.capture_thread_input_state();
     let cursor = tui.terminal.last_known_cursor_pos;
@@ -1847,6 +1979,28 @@ async fn footer_selection_defers_warning_clicks_and_preserves_the_draft() -> Res
         assert!(app.handle_rendered_selection_event(&mut tui, &event)?);
     }
     assert!(app.chat_widget.keymap_contexts().is_warnings());
+    app.render_owned_transcript(&mut tui, size)?;
+    let body = app.chat_widget.rendered_selection.borrow().areas[0];
+    assert!(
+        !app.handle_rendered_selection_event(&mut tui, &mouse(Down(Left), body.x, body.y - 1))?
+    );
+    let end_row = row_containing(&tui, "Next line");
+    for event in [
+        mouse(Down(Left), body.x, body.y + 1),
+        mouse(Drag(Left), body.x + 4, end_row),
+        mouse(Up(Left), body.x + 4, end_row),
+    ] {
+        assert!(app.handle_rendered_selection_event(&mut tui, &event)?);
+    }
+    let mut selection = app.chat_widget.rendered_selection.borrow_mut();
+    let crate::rendered_selection::RenderedSelection { view, cells, .. } = &mut *selection;
+    assert_eq!(view.selected_text(cells), Some(format!("{url}\nNext")));
+    drop(selection);
+    let page = KeyCode::PageDown.into();
+    assert!(!app.handle_rendered_selection_event(&mut tui, &TuiEvent::Key(page))?);
+    app.chat_widget.handle_key_event(page);
+    app.render_owned_transcript(&mut tui, size)?;
+    assert!((body.y..body.bottom()).contains(&row_containing(&tui, "Last line")));
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())
 }

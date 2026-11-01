@@ -13,9 +13,11 @@ use codex_install_context::StandalonePlatform;
 /// shell snippets pointing at the upstream chatgpt-hosted installer
 /// URLs). Running the upstream installer would replace the fork
 /// binary with unrelated upstream codex and silently strip every
-/// codex-vl feature. Until a fork-owned standalone installer exists,
-/// the `Standalone*` variants redirect to the fork's npm package as
-/// the supported update path.
+/// codex-vl feature. `StandaloneUnix` re-runs the fork-owned
+/// standalone installer (`install.sh`, attached to every GitHub
+/// release with embedded checksums); `StandaloneWindows` still
+/// redirects to the fork's npm package because the fork publishes
+/// no Windows installer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
@@ -31,15 +33,13 @@ pub enum UpdateAction {
     PnpmGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
-    /// codex-vl fork (F-bis): the upstream standalone updater is
-    /// disabled. The fork redirects this update path to
-    /// `npm install -g @mmmbuto/codex-vl` to avoid silently
-    /// overwriting the fork with upstream codex.
+    /// codex-vl fork (F-bis): re-runs the fork's own standalone
+    /// installer. The installer updates `packages/standalone-vl` in
+    /// place and never touches an upstream standalone install.
     StandaloneUnix,
-    /// codex-vl fork (F-bis): the upstream standalone updater is
-    /// disabled. The fork redirects this update path to
-    /// `npm install -g @mmmbuto/codex-vl` to avoid silently
-    /// overwriting the fork with upstream codex.
+    /// codex-vl fork (F-bis): the fork publishes no Windows
+    /// installer, so this update path redirects to
+    /// `npm install -g @mmmbuto/codex-vl`.
     StandaloneWindows,
 }
 
@@ -62,15 +62,24 @@ impl UpdateAction {
 
     /// Returns the list of command-line arguments for invoking the update.
     ///
-    /// codex-vl fork (F-bis): `Standalone*` variants redirect to the
-    /// fork's npm install path instead of executing the upstream
-    /// chatgpt-hosted installer shell scripts.
+    /// codex-vl fork (F-bis): `StandaloneUnix` re-runs the fork-owned
+    /// installer attached to the latest GitHub release (downloaded first,
+    /// then evaluated, never piped straight into a shell);
+    /// `StandaloneWindows` redirects to the fork's npm install path because
+    /// the fork publishes no Windows installer.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
             UpdateAction::Daemon(source) => ("codex", source.command_args()),
-            UpdateAction::NpmGlobalLatest
-            | UpdateAction::StandaloneUnix
-            | UpdateAction::StandaloneWindows => ("npm", &["install", "-g", "@mmmbuto/codex-vl"]),
+            UpdateAction::StandaloneUnix => (
+                "sh",
+                &[
+                    "-c",
+                    r#"s=$(curl -fsSL https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh) && CODEX_NON_INTERACTIVE=1 eval "$s""#,
+                ],
+            ),
+            UpdateAction::NpmGlobalLatest | UpdateAction::StandaloneWindows => {
+                ("npm", &["install", "-g", "@mmmbuto/codex-vl"])
+            }
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@mmmbuto/codex-vl"]),
             UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@mmmbuto/codex-vl"]),
@@ -167,10 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn standalone_update_commands_redirect_to_fork_npm_install() {
-        // codex-vl fork (F-bis): npm/bun stay on the fork package, and
-        // `Standalone*` redirects to npm instead of the upstream
-        // chatgpt-hosted installer shell scripts.
+    fn standalone_update_commands_use_fork_channels() {
+        // codex-vl fork (F-bis): npm/bun stay on the fork package,
+        // `StandaloneUnix` re-runs the fork-owned installer, and
+        // `StandaloneWindows` redirects to npm (no fork Windows installer).
         assert_eq!(
             UpdateAction::NpmGlobalLatest.command_args(),
             ("npm", &["install", "-g", "@mmmbuto/codex-vl"][..],)
@@ -179,11 +188,24 @@ mod tests {
             UpdateAction::BunGlobalLatest.command_args(),
             ("bun", &["install", "-g", "@mmmbuto/codex-vl"][..],)
         );
-        assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            ("npm", &["install", "-g", "@mmmbuto/codex-vl"][..],),
-            "StandaloneUnix must redirect to the fork npm install path \
-             instead of the upstream chatgpt installer",
+        let (command, args) = UpdateAction::StandaloneUnix.command_args();
+        assert_eq!(command, "sh");
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        let script = args[1];
+        assert!(
+            script.contains(
+                "https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh"
+            ),
+            "StandaloneUnix must run the fork-owned installer, was: {script}",
+        );
+        assert!(
+            !script.contains("chatgpt.com"),
+            "StandaloneUnix must not surface the upstream installer, was: {script}",
+        );
+        assert!(
+            script.contains("CODEX_NON_INTERACTIVE=1"),
+            "the installer must run non-interactively from the TUI, was: {script}",
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),

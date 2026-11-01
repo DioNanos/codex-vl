@@ -349,7 +349,7 @@ pub struct ConfigToml {
     pub background_terminal_max_timeout: Option<u64>,
 
     /// Seconds a thread must have no subscribers and no activity before app-server
-    /// unloads it. Defaults to 1800 (30 minutes); zero unloads immediately.
+    /// unloads it. Defaults to 60 (1 minute); zero unloads immediately.
     /// Resolved when each thread is loaded; request config overrides apply per thread.
     pub thread_unload_delay_secs: Option<u64>,
 
@@ -940,6 +940,14 @@ pub fn validate_reserved_model_provider_ids(
     let mut conflicts = model_providers
         .keys()
         .filter(|key| {
+            if key.as_str() == "openai" {
+                let provider = &model_providers[*key];
+                return provider
+                    != &ModelProviderInfo {
+                        model_catalog_url: provider.model_catalog_url.clone(),
+                        ..Default::default()
+                    };
+            }
             !matches!(
                 key.as_str(),
                 AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID | GCP_PROVIDER_ID
@@ -980,11 +988,17 @@ pub fn validate_model_providers(
         if !matches!(
             key.as_str(),
             AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID | GCP_PROVIDER_ID
-        ) && provider.name.trim().is_empty()
+        ) && key != "openai"
+            && provider.name.trim().is_empty()
         {
             return Err(format!(
                 "model_providers.{key}: provider name must not be empty"
             ));
+        }
+        if key == GCP_PROVIDER_ID {
+            provider
+                .validate_gcp_credential_file()
+                .map_err(|message| format!("model_providers.{key}: {message}"))?;
         }
         provider
             .validate()
@@ -1158,5 +1172,22 @@ command = "print-token"
             ),
             (Some("https://vertex.example.com/v1"), Some("print-token"))
         );
+    }
+
+    #[test]
+    fn gcp_provider_rejects_relative_credential_file() {
+        for credential_file in ["", "adc.json", "../adc.json"] {
+            let error = toml::from_str::<ConfigToml>(&format!(
+                r#"
+[model_providers.gcp]
+credential_file = "{credential_file}"
+"#,
+            ))
+            .expect_err("GCP overrides must validate credential paths before merging defaults");
+
+            assert!(error.to_string().contains(
+                "model_providers.gcp: provider credential_file must be an absolute path"
+            ));
+        }
     }
 }

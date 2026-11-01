@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
-use codex_code_mode_protocol::CellId;
 use codex_code_mode_protocol::CodeModeSession;
 use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::CodeModeSessionResultFuture;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
 use tokio::sync::Semaphore;
@@ -34,7 +33,6 @@ struct ReconnectInner {
     limits: CodeModeSessionCellExecutionLimits,
     binding: Mutex<Option<SessionBinding>>,
     opening_permit: Semaphore,
-    next_generation: AtomicU64,
     shutdown_requested: CancellationToken,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
 }
@@ -56,7 +54,6 @@ impl ReconnectableSession {
                 limits,
                 binding: Mutex::new(None),
                 opening_permit: Semaphore::new(/*permits*/ 1),
-                next_generation: AtomicU64::new(1),
                 shutdown_requested: CancellationToken::new(),
                 shutdown_result: Mutex::new(None),
             }),
@@ -97,6 +94,7 @@ impl CodeModeSession for ReconnectableSession {
         Box::pin(async move {
             let binding = self.inner.binding_for_request(generation).await?;
             let request = WaitRequest {
+                max_output_tokens: request.max_output_tokens,
                 cell_id: generation::remote_cell_id(binding.generation, &request.cell_id)?,
                 yield_time_ms: request.yield_time_ms,
             };
@@ -105,15 +103,21 @@ impl CodeModeSession for ReconnectableSession {
         })
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+    fn terminate<'a>(
+        &'a self,
+        request: TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
         Box::pin(async move {
             // Cleanup must not replace the runtime and hide its loss from the next request.
             let binding = self
                 .inner
                 .binding()
                 .ok_or_else(|| SHUTDOWN_ERROR.to_string())?;
-            let cell_id = generation::remote_cell_id(binding.generation, &cell_id)?;
-            let outcome = binding.session.terminate(cell_id).await?;
+            let cell_id = generation::remote_cell_id(binding.generation, &request.cell_id)?;
+            let outcome = binding
+                .session
+                .terminate(TerminateRequest { cell_id, ..request })
+                .await?;
             Ok(generation::public_wait_outcome(binding.generation, outcome))
         })
     }
@@ -171,7 +175,10 @@ impl ReconnectInner {
             wait_for_watch(binding.session.inner.request_shutdown()).await?;
         }
 
-        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        let generation = self
+            .provider
+            .next_generation
+            .fetch_add(1, Ordering::Relaxed);
         let session = tokio::select! {
             biased;
             _ = self.shutdown_requested.cancelled() => {

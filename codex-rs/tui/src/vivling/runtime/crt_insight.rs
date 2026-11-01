@@ -665,14 +665,16 @@ mod tests {
 
     #[test]
     fn focus_phrase_uses_dominant_archetype_when_affinities_present() {
-        let mut state = VivlingState::default();
-        // Reviewer must dominate even after the species bias (Syllo defaults
-        // to BuilderResearch); pick a large enough value to swamp the bias.
-        state.work_affinities = WorkAffinitySet {
-            builder: 0,
-            reviewer: 200,
-            researcher: 0,
-            operator: 0,
+        let state = VivlingState {
+            // Reviewer must dominate even after the species bias (Syllo defaults
+            // to BuilderResearch); pick a large enough value to swamp the bias.
+            work_affinities: WorkAffinitySet {
+                builder: 0,
+                reviewer: 200,
+                researcher: 0,
+                operator: 0,
+            },
+            ..Default::default()
         };
         let phrase = compute_insight(&state, None, false).expect("insight");
         assert_eq!(phrase, "focus reviewer");
@@ -746,7 +748,11 @@ mod tests {
             let mut buf =
                 ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, width, 3));
             surface.render(ratatui::layout::Rect::new(0, 0, width, 3), &mut buf);
-            let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+            let rendered: String = buf
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
             assert_eq!(
                 rendered.len(),
                 width as usize * 3,
@@ -760,31 +766,41 @@ mod tests {
     }
 
     fn sample_states() -> Vec<VivlingState> {
-        let mut churn = VivlingState::default();
-        churn.loop_admin_churn = 4;
+        let churn = VivlingState {
+            loop_admin_churn: 4,
+            ..Default::default()
+        };
 
-        let mut blocked = VivlingState::default();
-        blocked.loop_blocked_busy = 1;
+        let mut blocked = VivlingState {
+            loop_blocked_busy: 1,
+            ..Default::default()
+        };
         blocked
             .work_memory
             .push(loop_blocked_memory("loop_blocked_busy"));
 
-        let mut error = VivlingState::default();
-        error.brain_last_error = Some("oops".to_string());
+        let error = VivlingState {
+            brain_last_error: Some("oops".to_string()),
+            ..Default::default()
+        };
 
-        let mut active = VivlingState::default();
-        active.loop_runtime_submissions = 2;
+        let mut active = VivlingState {
+            loop_runtime_submissions: 2,
+            ..Default::default()
+        };
         active.work_memory.push(loop_submitted_memory());
 
         let mut summary = state_with_message("watching");
         summary.last_work_summary = Some("loop runtime work continues".to_string());
 
-        let mut focus = VivlingState::default();
-        focus.work_affinities = WorkAffinitySet {
-            builder: 5,
-            reviewer: 0,
-            researcher: 0,
-            operator: 0,
+        let focus = VivlingState {
+            work_affinities: WorkAffinitySet {
+                builder: 5,
+                reviewer: 0,
+                researcher: 0,
+                operator: 0,
+            },
+            ..Default::default()
         };
 
         let plain = state_with_message("watching upstream");
@@ -807,9 +823,10 @@ mod step_12bd1_cache_tests {
     }
 
     fn state_with_message(msg: &str) -> VivlingState {
-        let mut s = VivlingState::default();
-        s.last_message = Some(msg.to_string());
-        s
+        VivlingState {
+            last_message: Some(msg.to_string()),
+            ..Default::default()
+        }
     }
 
     fn loop_blocked_memory(kind: &str) -> VivlingWorkMemoryEntry {
@@ -890,9 +907,11 @@ mod step_12bd1_cache_tests {
     #[test]
     fn brain_error_phrase_wins_over_cached_crt() {
         let now = pin_now();
-        let mut state = VivlingState::default();
-        state.brain_last_error = Some("brain oops".to_string());
-        state.cached_crt_phrase = Some(fresh_crt("should be masked", now));
+        let state = VivlingState {
+            brain_last_error: Some("brain oops".to_string()),
+            cached_crt_phrase: Some(fresh_crt("should be masked", now)),
+            ..Default::default()
+        };
         let out = compute_insight_at(&state, None, now, false).expect("phrase");
         assert_ne!(out, "should be masked");
     }
@@ -900,8 +919,10 @@ mod step_12bd1_cache_tests {
     #[test]
     fn blocked_loop_phrase_wins_over_cached_crt() {
         let now = pin_now();
-        let mut state = VivlingState::default();
-        state.loop_blocked_busy = 1;
+        let mut state = VivlingState {
+            loop_blocked_busy: 1,
+            ..Default::default()
+        };
         state
             .work_memory
             .push(loop_blocked_memory("loop_blocked_busy"));

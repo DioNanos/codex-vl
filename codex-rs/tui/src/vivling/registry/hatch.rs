@@ -8,7 +8,7 @@ use super::types::VivlingSpeciesDefinition;
 const PHASE_ACTIVE_IDS: &[&str] = &["syllo", "orchestra"];
 
 fn is_phase_active(id: &str) -> bool {
-    PHASE_ACTIVE_IDS.iter().any(|candidate| *candidate == id)
+    PHASE_ACTIVE_IDS.contains(&id)
 }
 
 pub(crate) fn active_species_registry() -> Vec<&'static VivlingSpeciesDefinition> {

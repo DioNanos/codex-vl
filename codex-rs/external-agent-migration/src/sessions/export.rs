@@ -200,6 +200,7 @@ fn token_count_item(last_model_visible_tokens: i64) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
         info: Some(TokenUsageInfo {
             total_token_usage: usage.clone(),
+            last_usage_includes_reasoning: None,
             last_token_usage: usage,
             model_context_window: None,
         }),
@@ -227,7 +228,7 @@ fn turn_complete_item(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_app_server_protocol::ThreadItem;
+    use codex_app_server_protocol::ThreadItemPayload;
     use codex_app_server_protocol::build_turns_from_rollout_items;
     use serde_json::Value as JsonValue;
     use std::path::Path;
@@ -258,15 +259,15 @@ mod tests {
         assert_eq!(turns[0].items.len(), 2);
         assert_eq!(turns[1].items.len(), 2);
         assert_eq!(
-            turns[1].items[1],
-            ThreadItem::AgentMessage {
+            turns[1].item_payloads().next_back(),
+            Some(&ThreadItemPayload::AgentMessage {
                 id: "item-4".into(),
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 phase: None,
                 memory_citation: None,
                 delivery: None,
                 questions: None,
-            }
+            })
         );
     }
 
@@ -292,8 +293,8 @@ mod tests {
 
         assert_eq!(turns.len(), 1);
         assert_eq!(
-            turns[0].items.last(),
-            Some(&ThreadItem::AgentMessage {
+            turns[0].item_payloads().next_back(),
+            Some(&ThreadItemPayload::AgentMessage {
                 id: "item-3".into(),
                 text: EXTERNAL_SESSION_IMPORTED_MARKER.into(),
                 phase: None,

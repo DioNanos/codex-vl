@@ -20,6 +20,10 @@ const LEFT_MARGIN_THRESHOLD: u16 = 18;
 /// Threshold below which `insight_slide` triggers the bubble glow accent.
 const INSIGHT_GLOW_THRESHOLD: f32 = 0.6;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CRT scene composition takes the full per-frame scene state; a parameter struct would churn callers for no behavior gain"
+)]
 pub(crate) fn compose_expression(
     surface: &mut CrtSurface,
     mode: CrtMode,
@@ -161,7 +165,10 @@ mod tests {
         );
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 3));
         surface.render(Rect::new(0, 0, width, 3), &mut buf);
-        buf.content.iter().map(|c| c.symbol()).collect()
+        buf.content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     #[test]
@@ -185,9 +192,7 @@ mod tests {
                 assert_eq!(
                     rendered.len(),
                     width as usize * 3,
-                    "{:?} at width {} overflowed",
-                    mode,
-                    width
+                    "{mode:?} at width {width} overflowed"
                 );
             }
         }
@@ -277,10 +282,7 @@ mod tests {
                 for needle in FORBIDDEN {
                     assert!(
                         !rendered.contains(needle),
-                        "{:?} at width {} contained forbidden token {:?}",
-                        mode,
-                        width,
-                        needle
+                        "{mode:?} at width {width} contained forbidden token {needle:?}"
                     );
                 }
             }

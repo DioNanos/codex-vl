@@ -32,6 +32,7 @@ use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookSource;
 use codex_protocol::protocol::HookTrustStatus;
+use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -645,6 +646,7 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd: cwd.clone(),
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
@@ -654,7 +656,10 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
         tool_input: serde_json::json!({ "command": "echo hello" }),
     });
     assert_eq!(preview.len(), 1);
-    assert_eq!(preview[0].source_path, managed_dir);
+    assert_eq!(
+        preview[0].source_path,
+        LegacyAppPathString::from_abs_path(&managed_dir)
+    );
 
     let outcome = engine
         .run_pre_tool_use(PreToolUseRequest {
@@ -662,6 +667,7 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
             turn_id: "turn-1".to_string(),
             subagent: None,
             cwd,
+            tool_cwd: None,
             transcript_path: None,
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
@@ -736,6 +742,7 @@ async fn requirements_managed_hooks_execute_windows_command_override() {
             turn_id: "turn-1".to_string(),
             subagent: None,
             cwd: cwd(),
+            tool_cwd: None,
             transcript_path: None,
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
@@ -1138,6 +1145,7 @@ fn requirements_managed_hooks_load_when_managed_dir_is_missing() {
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd,
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
@@ -1571,6 +1579,7 @@ fn discovers_hooks_from_json_and_toml_in_the_same_layer() {
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd,
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
@@ -1588,8 +1597,14 @@ fn discovers_hooks_from_json_and_toml_in_the_same_layer() {
             .collect::<Vec<_>>(),
         vec![HookSource::System, HookSource::System]
     );
-    assert_eq!(preview[0].source_path, hooks_json_path);
-    assert_eq!(preview[1].source_path, config_path);
+    assert_eq!(
+        preview[0].source_path,
+        LegacyAppPathString::from_abs_path(&hooks_json_path)
+    );
+    assert_eq!(
+        preview[1].source_path,
+        LegacyAppPathString::from_abs_path(&config_path)
+    );
 }
 
 #[test]
@@ -1662,6 +1677,7 @@ fn profile_user_layers_load_shared_hooks_json_once() {
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd: cwd(),
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
@@ -1671,7 +1687,10 @@ fn profile_user_layers_load_shared_hooks_json_once() {
         tool_input: serde_json::json!({ "command": "echo hello" }),
     });
     assert_eq!(preview.len(), 1);
-    assert_eq!(preview[0].source_path, hooks_json_path);
+    assert_eq!(
+        preview[0].source_path,
+        LegacyAppPathString::from_abs_path(&hooks_json_path)
+    );
 
     let listed = crate::list_hooks(crate::HooksConfig {
         feature_enabled: true,
@@ -2099,6 +2118,7 @@ print(json.dumps({
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd: cwd(),
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
@@ -2109,7 +2129,10 @@ print(json.dumps({
     });
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0].source, HookSource::Plugin);
-    assert_eq!(preview[0].source_path, source_path);
+    assert_eq!(
+        preview[0].source_path,
+        LegacyAppPathString::from_abs_path(&source_path)
+    );
     let listed = crate::list_hooks(crate::HooksConfig {
         legacy_notify_argv: None,
         feature_enabled: true,
@@ -2131,6 +2154,7 @@ print(json.dumps({
             turn_id: "turn-1".to_string(),
             subagent: None,
             cwd: cwd(),
+            tool_cwd: None,
             transcript_path: None,
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
@@ -2457,7 +2481,8 @@ async fn subagent_stop_paths_are_scoped_to_each_hook() {
         source_path: HandlerSourcePath::Environment {
             environment_id: "remote".to_string(),
             cwd: PathUri::parse("file:///C:/team%20workspace").expect("Windows working directory"),
-            source_path,
+            source_path: PathUri::parse("file:///C:/team%20workspace/requirements.toml")
+                .expect("Windows source path"),
         },
         source: HookSource::System,
         ..local.clone()
@@ -2836,6 +2861,7 @@ async fn mcp_tool_hooks_expand_event_input_and_apply_pre_tool_decisions() {
         turn_id: "turn-1".to_string(),
         subagent: None,
         cwd: cwd(),
+        tool_cwd: None,
         transcript_path: None,
         model: "gpt-test".to_string(),
         permission_mode: "default".to_string(),
