@@ -142,7 +142,10 @@ impl Vivling {
 
     pub(crate) fn model_summary(&mut self) -> Result<String, String> {
         self.ensure_hatched()?;
-        let summary = self.state.as_ref().expect("state checked").brain_summary();
+        let Some(state) = self.state.as_ref() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
+        let summary = state.brain_summary();
         if self
             .state
             .as_ref()
@@ -200,7 +203,7 @@ impl Vivling {
             let effort = config
                 .model_reasoning_effort
                 .as_ref()
-                .map(|value| value.to_string())
+                .map(ToString::to_string)
                 .unwrap_or_else(|| "default".to_string());
             lines.push(format!(
                 "- model {model} · provider {provider} · effort {effort}"
@@ -220,6 +223,10 @@ impl Vivling {
             profile_names.sort();
             lines.push("Vivling brain profiles:".to_string());
             for profile_name in profile_names {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "profile_name comes from this map's keys"
+                )]
                 let profile = config.profiles.get(&profile_name).expect("profile exists");
                 let mark = if assigned.as_deref() == Some(profile_name.as_str()) {
                     "*"
@@ -231,7 +238,7 @@ impl Vivling {
                 let effort = profile
                     .model_reasoning_effort
                     .as_ref()
-                    .map(|value| value.to_string())
+                    .map(ToString::to_string)
                     .unwrap_or_else(|| "default".to_string());
                 lines.push(format!(
                     "{mark} {profile_name} -> model {model} · provider {provider} · effort {effort}"
@@ -446,7 +453,9 @@ impl Vivling {
         {
             return Ok(None);
         }
-        let path = legacy_path.expect("checked legacy path");
+        let Some(path) = legacy_path else {
+            return Ok(None);
+        };
         let text = fs::read_to_string(&path)?;
         let mut state: VivlingState = serde_json::from_str(&text).map_err(io::Error::other)?;
         if state.vivling_id.trim().is_empty() {
@@ -596,12 +605,11 @@ impl Vivling {
         // pre-migration backup captures the legacy schema unchanged.
         // `backup_pre_migration` is one-shot: it refuses to overwrite an
         // existing `.v<old>.bak`.
-        if let Some(old_version) = read_on_disk_version(&path)? {
-            if old_version < VERSION {
-                let pre_bak =
-                    pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
-                backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
-            }
+        if let Some(old_version) = read_on_disk_version(&path)?
+            && old_version < VERSION
+        {
+            let pre_bak = pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
+            backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
         }
         let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
         backup_last_write(&path, &backup).map_err(safety_io_err)?;
@@ -646,12 +654,11 @@ impl Vivling {
         let text = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
         // Memory V2 Step 2.B: same one-shot pre-migration backup as
         // `save_state`. See comment there for the ordering rationale.
-        if let Some(old_version) = read_on_disk_version(&path)? {
-            if old_version < VERSION {
-                let pre_bak =
-                    pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
-                backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
-            }
+        if let Some(old_version) = read_on_disk_version(&path)?
+            && old_version < VERSION
+        {
+            let pre_bak = pre_migration_backup_path(&roster_dir, &state.vivling_id, old_version);
+            backup_pre_migration(&path, &pre_bak).map_err(safety_io_err)?;
         }
         let backup = last_write_backup_path(&roster_dir, &state.vivling_id);
         backup_last_write(&path, &backup).map_err(safety_io_err)?;
@@ -673,18 +680,17 @@ impl Vivling {
             return Ok(Some(id.clone()));
         }
         for vivling_id in roster.vivling_ids {
-            if let Some(state) = self.load_state_for_id(&vivling_id)? {
-                if state.name.eq_ignore_ascii_case(trimmed)
+            if let Some(state) = self.load_state_for_id(&vivling_id)?
+                && (state.name.eq_ignore_ascii_case(trimmed)
                     || state
                         .instance_label
                         .as_deref()
                         .is_some_and(|value| value.eq_ignore_ascii_case(trimmed))
                     || format!("{} {}", state.name, state.vivling_id)
                         .to_ascii_lowercase()
-                        .contains(&lower)
-                {
-                    return Ok(Some(state.vivling_id));
-                }
+                        .contains(&lower))
+            {
+                return Ok(Some(state.vivling_id));
             }
         }
         Ok(None)

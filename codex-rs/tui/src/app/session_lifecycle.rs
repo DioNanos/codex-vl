@@ -513,10 +513,7 @@ impl App {
             chat_widget.windows_sandbox_elevated_setup_complete =
                 self.chat_widget.windows_sandbox_elevated_setup_complete;
         }
-        chat_widget.set_agents_navigation_enabled(matches!(
-            self.app_server_target,
-            AppServerTarget::LocalDaemon { .. }
-        ));
+        chat_widget.set_command_center_enabled(self.app_server_target.supports_command_center());
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
         chat_widget.inherit_security_setup(&mut self.chat_widget);
         chat_widget
@@ -945,7 +942,7 @@ impl App {
                 }
                 // Lifecycle notifications may arrive before the thread/start response.
                 if !self.config.ephemeral
-                    && !matches!(self.app_server_target, AppServerTarget::Embedded)
+                    && self.app_server_target.supports_command_center()
                     && !self.pending_primary_events.iter().any(|event| {
                         matches!(event, ThreadBufferedEvent::Notification(notification)
                             if matches!(notification.as_ref(),
@@ -962,6 +959,12 @@ impl App {
                 // A full usage read can finish before thread/start. Apply its cached fallback
                 // after attachment but before the initial prompt or queued draft is submitted.
                 let recovery_was_pending = self.chat_widget.hold_rate_limit_recovery();
+                if self.loader_overrides.user_config_profile.is_none() {
+                    self.chat_widget.accept_startup_approval_policy(
+                        &mut self.config.permissions.approval_policy,
+                        started.session.approval_policy,
+                    )?;
+                }
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.apply_backend_banner_fallback(app_server).await;
@@ -1098,9 +1101,7 @@ impl App {
                     None
                 };
                 let thread_id = started.session.thread_id;
-                if !self.config.ephemeral
-                    && !matches!(self.app_server_target, AppServerTarget::Embedded)
-                {
+                if !self.config.ephemeral && self.app_server_target.supports_command_center() {
                     self.agents_overview
                         .blank_sessions
                         .insert(thread_id, started.clone());
@@ -1365,60 +1366,43 @@ impl App {
         if self.reject_pending_permission_root_switch() {
             return Ok(AppRunControl::Continue);
         }
-        let (mut resume_config, local_settings) = match self
-            .resume_config_for_target(tui, app_server, &target_session)
+        let prepared = match self
+            .prepare_target_session(
+                tui,
+                app_server,
+                &target_session,
+                super::resume_preparation::ResumeSource::Active,
+            )
             .await
         {
-            Ok(config) => config,
+            Ok(prepared) => prepared,
             Err(control) => return Ok(control),
         };
-        if let Err(error) = self.apply_runtime_policy_overrides(
-            &mut resume_config,
-            RuntimePolicyOverrideScope::ExplicitOnly,
-        ) {
-            self.add_session_picker_error(format!("{error:#}"));
+        self.activate_prepared_session(tui, app_server, prepared)
+            .await
+    }
+
+    pub(super) async fn activate_prepared_session(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        prepared: super::resume_preparation::PreparedResume,
+    ) -> Result<AppRunControl> {
+        let super::resume_preparation::PreparedResume {
+            backend_id,
+            config: resume_config,
+            local_settings,
+            thread: resumed,
+            read_only,
+            history_notice,
+        } = prepared;
+        if backend_id != app_server.backend_id() {
+            self.add_session_picker_error(
+                "This session belongs to a different backend. Open the session picker again."
+                    .to_string(),
+            );
             return Ok(AppRunControl::Continue);
         }
-        let permission_overrides = self.resume_permission_overrides(&resume_config);
-
-        if let Some(history_mode) = target_session.history_mode {
-            app_server.remember_thread_history_mode(target_session.thread_id, history_mode);
-        }
-        let resumed = app_server
-            .resume_thread_with_permission_overrides(
-                &local_settings,
-                resume_config.clone(),
-                target_session.thread_id,
-                self.resume_model_settings(),
-                permission_overrides,
-            )
-            .await;
-        let mut history_notice = None;
-        let (resumed, read_only) = match resumed {
-            Ok(resumed) => (resumed, false),
-            Err(err) if crate::app_server_session::is_active_writer_error(&err) => match app_server
-                .read_thread_for_viewing(&resume_config, &local_settings, target_session.thread_id)
-                .await
-            {
-                Ok((thread, notice)) => {
-                    history_notice = notice;
-                    (thread, true)
-                }
-                Err(read_err) => {
-                    self.add_session_picker_error(format!(
-                        "Failed to view thread open elsewhere: {read_err}"
-                    ));
-                    return Ok(AppRunControl::Continue);
-                }
-            },
-            Err(err) => {
-                let path_display = target_session.display_label();
-                self.add_session_picker_error(format!(
-                    "Failed to resume session from {path_display}: {err}"
-                ));
-                return Ok(AppRunControl::Continue);
-            }
-        };
         let resumed_thread_id = resumed.session.thread_id;
         let retained_input = (self.chat_widget.is_external_writer_view()
             && self.chat_widget.thread_id() == Some(resumed_thread_id))

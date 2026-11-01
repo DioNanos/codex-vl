@@ -1,8 +1,8 @@
 use super::*;
-use crate::shell::Shell;
-use crate::shell::ShellInvocation;
-use crate::shell::ShellType;
+use crate::tools::handlers::unified_exec::preparation::ExecCommandLifetime;
+use crate::tools::handlers::unified_exec::preparation::ParsedExecCommand;
 use crate::unified_exec::clamp_yield_time;
+use codex_exec_server::ExecOutputStream;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
@@ -366,7 +366,10 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     );
     let produce = async {
         for chunk in chunks {
-            output_buffer.lock().await.push_chunk(chunk);
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(ExecOutputStream::Stdout, chunk);
             output_notify.notify_one();
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
@@ -398,8 +401,8 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
 #[tokio::test]
 async fn output_collection_preserves_omissions_from_drained_buffer() {
     let mut buffered_output = OutputBuffers::<10>::default();
-    buffered_output.push_chunk(&[b'a'; 10]);
-    buffered_output.push_chunk(b"overflow");
+    buffered_output.push_chunk(ExecOutputStream::Stdout, &[b'a'; 10]);
+    buffered_output.push_chunk(ExecOutputStream::Stdout, b"overflow");
     let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(&[b'a'; 10]);
     expected.push_chunk(b"overflow");
@@ -460,51 +463,37 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         tokio_util::sync::CancellationToken::new(),
         "call-unified-denied".to_string(),
     );
+    let environment = turn
+        .initial_environments
+        .primary()
+        .expect("primary environment");
+    let prepared = ParsedExecCommand::parse(
+        r#"{"cmd":"echo before"}"#,
+        &session,
+        &context.step_context,
+        environment,
+    )
+    .expect("parse command")
+    .prepare(ExecCommandLifetime::Interactive)
+    .expect("prepare command");
     let request = ExecCommandRequest {
-        command: vec![
-            "sh".to_string(),
-            "-lc".to_string(),
-            "echo before".to_string(),
-        ],
-        shell: ShellInvocation {
-            shell: Shell {
-                shell_type: ShellType::Sh,
-                shell_path: "sh".into(),
-            },
-            use_login_shell: true,
-        },
-        hook_command: "echo before".to_string(),
+        prepared,
         process_id: 123,
-        yield_time_ms: 1000,
-        max_output_tokens: None,
-        #[allow(deprecated)]
-        cwd: turn.cwd.clone().into(),
-        #[allow(deprecated)]
-        sandbox_cwd: turn.cwd.clone().into(),
-        turn_environment: turn
-            .initial_environments
-            .primary()
-            .cloned()
-            .expect("primary environment"),
         network: None,
-        tty: true,
-        sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
-        additional_permissions: None,
-        additional_permissions_preapproved: false,
-        justification: None,
-        prefix_rule: None,
     };
 
     let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::default()));
-    output_buffer.lock().await.push_chunk(b"PARTIAL_TRANSCRIPT");
+    output_buffer
+        .lock()
+        .await
+        .push_chunk(ExecOutputStream::Stdout, b"PARTIAL_TRANSCRIPT");
 
     emit_failed_initial_exec_end_if_unstored(
         /*process_stored*/ false,
         Some(codex_protocol::sandbox::SandboxType::WindowsMxc),
         &context,
         &request,
-        #[allow(deprecated)]
-        turn.cwd.clone().into(),
+        request.prepared.cwd.clone(),
         /*plugin_attribution*/ None,
         output_buffer,
         "PRE_DENIAL_MARKER".to_string(),

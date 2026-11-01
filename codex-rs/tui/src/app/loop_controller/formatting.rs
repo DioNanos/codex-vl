@@ -162,6 +162,10 @@ pub(super) fn loop_success_payload(
         "action": action,
         "thread_id": thread_id.to_string(),
     });
+    #[expect(
+        clippy::expect_used,
+        reason = "payload is the json! object literal above"
+    )]
     let object = payload.as_object_mut().expect("payload must be object");
     if let Some(job) = job {
         object.insert("job".to_string(), loop_job_json(job));

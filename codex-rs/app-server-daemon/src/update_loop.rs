@@ -794,13 +794,17 @@ async fn run_installer_script(
     }
 }
 
-/// The fork has no owned standalone installer. Returning before any HTTP
-/// work guarantees that the upstream script cannot replace this binary.
+/// The fork keeps the standalone auto-updater disabled. Returning before any
+/// HTTP work guarantees that the upstream script cannot replace this binary
+/// (the fork's own installer at scripts/install/install.sh is a deliberate,
+/// user-run channel and is never invoked from here).
 async fn install_latest_standalone() -> Result<()> {
     anyhow::bail!(
-        "codex-vl fork: standalone auto-updater is disabled. The fork does \
-         not fetch the upstream openai/codex install script. To update the \
-         fork, run: npm install -g @mmmbuto/codex-vl@latest"
+        "codex-vl fork: standalone auto-updater is disabled. The daemon does \
+         not fetch any install script in the background. To update the fork \
+         standalone install, re-run the installer attached to the \
+         DioNanos/codex-vl releases, or run: \
+         npm install -g @mmmbuto/codex-vl@latest"
     )
 }
 

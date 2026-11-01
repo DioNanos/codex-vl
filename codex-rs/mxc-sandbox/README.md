@@ -26,6 +26,26 @@ direct non-loopback egress and general inbound network access.
 Win32k calls and desktop handles remain available for PowerShell startup;
 clipboard, input-injection, and desktop/system-control restrictions remain.
 
+Filesystem conflicts in the emitted policy are enforced by BaseContainer:
+equivalent path spellings and symlink/junction aliases use the strictest access
+(`deny` > read-only > read-write), while more-specific paths override ancestor
+grants. See the [BaseContainer path-precedence rules](https://github.com/microsoft/mxc/blob/main/docs/schema.md#overlapping-paths-for-windows-basecontainer).
+
+Do not call MXC's shared `normalize_object_conflicts` before or after volume
+expansion. Its identity preflight is used by mount-based backends and can reject
+an otherwise usable Windows policy when a network share does not support
+`FileIdInfo`, or a protected deny path cannot be opened for metadata. Codex sends
+explicit path grants to BaseContainer without requiring that additional lookup.
+We intentionally accept two limitations:
+
+- Hard-link names retain independent path permissions. An allowed name can read
+  or modify the same file as a denied or read-only name; we do not tighten all
+  names to an object-wide restriction.
+- Volume-root expansion uses each root's declared access without reconciling
+  aliases first. For example, a writable `V:\` plus a read-only junction to
+  `V:\` can produce a writable `V:\projects` grant. That generated, more-specific
+  grant permits writes through either name despite the read-only root alias.
+
 ## Selection and rollout
 
 `windows.sandbox = "mxc"` is strict. The default-off `features.prefer_mxc`
@@ -75,6 +95,9 @@ to 4096 bytes; the helper removes them before native process creation. Use
 - Windows volume-root grants do not recurse. The adapter grants the root and
   its immediate children; directories added or newly mounted during a running
   command are not implicitly granted.
+- Default read access excludes network shares unrelated to the policy or command
+  cwd. Explicit read/write grants remain supported. Unrelated shares are not
+  probed for object identity or enumerated for implicit reads.
 - The native API represents paths and environment values as Unicode strings.
   Non-Unicode values fail instead of undergoing lossy conversion.
 - An empty child environment still uses the Windows user-profile defaults.

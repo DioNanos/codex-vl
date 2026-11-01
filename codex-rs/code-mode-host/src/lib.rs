@@ -44,13 +44,16 @@ use self::delegate::RemoteDelegate;
 use self::peer::HostPeer;
 
 pub use self::grpc::GrpcCodeModeHost;
+pub use self::process_metrics::CodeModeProcessMetricsCollector;
 pub use self::transport::DEFAULT_LISTEN_URL;
+pub use codex_code_mode_protocol::CodeModeProcessMetrics;
 
 mod delegate;
 mod grpc;
 mod grpc_stdio;
 mod grpc_transport;
 mod peer;
+mod process_metrics;
 mod transport;
 
 const MAX_IN_FLIGHT_REQUESTS: usize = 256;
@@ -95,7 +98,20 @@ impl HostLimits {
     fields(otel.name = "code_mode_host.run_main")
 )]
 pub async fn run_main(listen_url: &str) -> Result<()> {
-    transport::run_transport(listen_url).await
+    transport::run_transport(listen_url, GrpcCodeModeHost::new()).await
+}
+
+/// Runs with an optional gRPC metrics collector initialized before sandbox entry.
+/// The legacy stdio transport remains unchanged.
+pub async fn run_main_with_process_metrics(
+    listen_url: &str,
+    collector: CodeModeProcessMetricsCollector,
+) -> Result<()> {
+    transport::run_transport(
+        listen_url,
+        GrpcCodeModeHost::with_process_metrics(collector),
+    )
+    .await
 }
 
 /// Runs one code-mode host connection over the process standard streams.
@@ -382,6 +398,7 @@ impl HostState {
             HostRequest::OpenSession {
                 session_id,
                 cell_execution_limits,
+                ..
             } => {
                 let result = CodeModeSessionCellExecutionLimits::try_from(
                     cell_execution_limits.unwrap_or_default(),
@@ -452,6 +469,7 @@ impl HostState {
             HostRequest::Wait {
                 session_id,
                 request,
+                ..
             } => {
                 let result = match self.session(&session_id) {
                     Ok(session) => {
@@ -476,15 +494,20 @@ impl HostState {
             HostRequest::Terminate {
                 session_id,
                 cell_id,
+                ..
             } => {
                 let result = match self.session(&session_id) {
-                    Ok(session) => session.terminate(cell_id.into()).await.and_then(|outcome| {
-                        let outcome = outcome.with_code_mode_host_duration(received_at.elapsed());
-                        Ok(HostResponse::WaitCompleted {
-                            outcome: WireWaitOutcome::try_from(outcome)
-                                .map_err(|error| error.to_string())?,
-                        })
-                    }),
+                    Ok(session) => session
+                        .terminate(codex_code_mode_protocol::CellId::from(cell_id).into())
+                        .await
+                        .and_then(|outcome| {
+                            let outcome =
+                                outcome.with_code_mode_host_duration(received_at.elapsed());
+                            Ok(HostResponse::WaitCompleted {
+                                outcome: WireWaitOutcome::try_from(outcome)
+                                    .map_err(|error| error.to_string())?,
+                            })
+                        }),
                     Err(err) => Err(err),
                 };
                 self.respond(request_id, result);

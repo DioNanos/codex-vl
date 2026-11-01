@@ -213,12 +213,14 @@ impl ExecutorSkillProvider {
             let discovery = match &root.result {
                 Ok(discovery) => discovery.as_ref(),
                 Err(error) => {
+                    catalog.is_partial = true;
                     catalog.warnings.push(format!(
                         "Selected capability root `{selected_root_id}` discovery failed: {error}"
                     ));
                     continue;
                 }
             };
+            catalog.is_partial |= discovery.error.is_some();
             let outcome =
                 load_environment_skills_from_discovery(discovery, self.restriction_product);
             catalog.warnings.extend(outcome.warnings);
@@ -328,10 +330,10 @@ async fn read_bounded_text(
     let mut stream = file_system
         .read_file_stream(path)
         .await
-        .map_err(read_error)?;
+        .map_err(&read_error)?;
     let mut contents = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(read_error)?;
+        let chunk = chunk.map_err(&read_error)?;
         if contents.len().saturating_add(chunk.len()) > MAX_SKILL_RESOURCE_CONTENT_BYTES {
             return Err(SkillProviderError::new(format!(
                 "executor skill resource {resource} exceeds {MAX_SKILL_RESOURCE_CONTENT_BYTES} bytes"

@@ -1,1228 +1,537 @@
 #!/usr/bin/env python3
+"""Offline regression suite for scripts/install/install.sh.
 
-from concurrent.futures import ThreadPoolExecutor
+Runs the real installer against fully isolated HOME/CODEX_HOME trees with
+locally built release assets (``--from-dir``) and fixture shell payloads, so
+no network access is ever required. The cases reproduce the counterexamples
+from the 0.166.0-vl.1 final audit:
+
+* command ownership: only the exact link managed by the installer is its own,
+  and a foreign command at the destination is refused before any write;
+* conflict resolution happens before the first mutation (a declined or
+  impossible consent leaves the system untouched);
+* the payload is verified in staging (manifest, target, version, per-target
+  extras) before promotion; a rejection preserves the previous destination
+  and selection;
+* a wrong checksum or wrong version is refused;
+* the embedded (release-pinned) variant refuses a different version before
+  any download;
+* uninstall runs under the install lock and never deletes foreign commands;
+* Android (Termux) detection selects the Android target.
+
+Usage: python3 scripts/install/test_install_sh.py [-v]
+"""
+
+from __future__ import annotations
+
+import fcntl
 import hashlib
+import io
 import json
 import os
-from pathlib import Path
-import select
-import shlex
-import shutil
+import platform
 import subprocess
 import tarfile
 import tempfile
-import textwrap
+import time
 import unittest
+from pathlib import Path
+
+INSTALLER = Path(__file__).resolve().parent / "install.sh"
+VERSION = "0.166.0-vl.1"
+OLD_VERSION = "0.166.0-vl.0"
+PACKAGE_PREFIX = "codex-vl-package-"
+CHECKSUM_ASSET = "SHA256SUMS"
+
+BASE_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "HOME")
 
 
-INSTALL_SCRIPT = Path(__file__).with_name("install.sh")
-VERSION = "0.142.5"
+def host_target() -> str:
+    machine = platform.machine().lower()
+    arch = "x86_64" if machine in ("x86_64", "amd64") else "aarch64"
+    return f"{arch}-unknown-linux-musl"
 
 
-class InstallShTest(unittest.TestCase):
-    def test_metadata_fetch_failure_is_not_reported_as_missing_assets(self) -> None:
-        result, requests = run_installer(VERSION, metadata_failure=True)
+def fake_binary(label: str) -> bytes:
+    script = f"""#!/bin/sh
+case "$1" in
+  --version) printf 'codex-vl {label}\\n' ;;
+  *) printf 'fake {label} payload\\n' ;;
+esac
+exit 0
+"""
+    return script.encode()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            requests,
-            [
-                "https://api.github.com/repos/DioNanos/codex-vl/releases/tags/"
-                f"v{VERSION}"
-            ],
-        )
-        self.assertIn(
-            f"Could not fetch GitHub release metadata for Codex {VERSION}",
-            result.stderr,
-        )
-        self.assertNotIn("Could not find Codex package", result.stderr)
 
-    def test_exact_release_fetches_metadata_once(self) -> None:
-        result, requests = run_installer(VERSION)
+def helper_binary() -> bytes:
+    return b"#!/bin/sh\nexit 0\n"
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            requests,
-            [
-                "https://api.github.com/repos/DioNanos/codex-vl/releases/tags/"
-                f"v{VERSION}",
-                "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"v{VERSION}/codex-package_SHA256SUMS",
-            ],
-        )
-        self.assertIn(f"Resolved version: {VERSION}", result.stdout)
 
-    def test_latest_release_reuses_version_metadata(self) -> None:
-        result, requests = run_installer("latest")
+class InstallerSuite(unittest.TestCase):
+    """Each test builds its own assets and runs the real install.sh."""
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            requests,
-            [
-                "https://api.github.com/repos/DioNanos/codex-vl/releases/latest",
-                "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"v{VERSION}/codex-package_SHA256SUMS",
-            ],
-        )
-        self.assertIn(f"Resolved version: {VERSION}", result.stdout)
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="codexvl-install-test.")
+        root = Path(self._tmp.name)
+        self.home = root / "home"
+        self.codex_home = root / "codex-home"
+        self.bin_dir = root / "bin"
+        self.foreign_dir = root / "npm-bin"
+        self.assets = root / "assets"
+        for directory in (self.home, self.codex_home, self.bin_dir, self.foreign_dir, self.assets):
+            directory.mkdir()
+        self.npm_target = self.foreign_dir / "codex-vl-from-npm"
+        self.npm_target.write_bytes(fake_binary("npm"))
+        self.npm_target.chmod(0o755)
+        self.standalone_root = self.codex_home / "packages" / "standalone-vl"
+        self.build_assets()
 
-    def test_compact_metadata_is_independent_of_field_order(self) -> None:
-        result, requests = run_installer(
-            "latest", metadata_json=release_metadata(compact=True, reorder=True)
-        )
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(
-            requests,
-            [
-                "https://api.github.com/repos/DioNanos/codex-vl/releases/latest",
-                "https://github.com/DioNanos/codex-vl/releases/download/"
-                f"v{VERSION}/codex-package_SHA256SUMS",
-            ],
-        )
-        self.assertIn(f"Resolved version: {VERSION}", result.stdout)
+    # ---- fixture helpers -------------------------------------------------
 
-    def test_json_like_strings_and_nested_fields_do_not_define_assets(self) -> None:
-        result, requests = run_installer(
-            VERSION, metadata_json=legacy_release_metadata_with_decoys()
-        )
-
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(requests), 2)
-        self.assertIn("/codex-npm-", requests[1])
-        self.assertNotIn("codex-package_SHA256SUMS", requests[1])
-
-    def test_macos_install_exposes_code_mode_host_beside_codex(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-
-            result, _requests = run_installer_in(
-                root,
-                VERSION,
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            install_bin = root / "install-bin"
-            current = root / "codex-home" / "packages" / "standalone" / "current"
-            codex_path = install_bin / "codex"
-            host_path = install_bin / "codex-code-mode-host"
-            self.assertEqual(os.readlink(codex_path), str(current / "bin" / "codex"))
-            self.assertEqual(
-                os.readlink(host_path),
-                str(current / "bin" / "codex-code-mode-host"),
-            )
-            self.assertTrue(os.access(host_path, os.X_OK))
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_latest_installs_verified_package_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-
-    def test_daemon_install_preserves_visible_cli_and_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir).resolve()
-            archive, checksum, metadata = create_package_release(root)
-            options = dict(
-                metadata_json=metadata,
-                archive_path=archive,
-                checksum_path=checksum,
-                force_macos=True,
-            )
-            pinned, _ = run_installer_in(root, VERSION, **options)
-            self.assertEqual(pinned.returncode, 0, pinned.stderr)
-            visible = root / "install-bin/codex"
-            original = visible.resolve()
-            pending = visible.with_name(".codex.12345")
-            pending.symlink_to(original)
-            profile = root / "home/.profile"
-            profile.write_text("unchanged profile\n")
-
-            installed, _ = run_installer_in(root, "latest", daemon_only=True, **options)
-            self.assertEqual(installed.returncode, 0, installed.stderr)
-            daemon = root / "codex-home/packages/app-server-daemon-vl"
-            release_name = f"{VERSION}-aarch64-apple-darwin"
-            self.assertEqual(
-                (daemon / "current").resolve(), daemon / "releases" / release_name
-            )
-            self.assertEqual((daemon / "auto-update-version").read_text(), release_name)
-            history = daemon / "selection-history"
-            original_history = history.read_bytes()
-            self.assertEqual(history.read_text().splitlines()[:2], [release_name, ""])
-            repeated, _ = run_installer_in(root, "latest", daemon_only=True, **options)
-            self.assertEqual(repeated.returncode, 0, repeated.stderr)
-            self.assertEqual(history.read_bytes(), original_history)
-            options["daemon_only"] = True
-            local = daemon / "releases/local-development"
-            local.mkdir()
-            (daemon / "current").unlink()
-            (daemon / "current").symlink_to(local)
-            marker = daemon / "auto-update-version"
-            marker.unlink()
-
-            scheduled, _ = run_installer_in(
-                root, "latest", update_guard_from_release=local.name, **options
-            )
-            self.assertEqual(scheduled.returncode, 0, scheduled.stderr)
-            self.assertEqual((daemon / "current").resolve(), local)
-            self.assertFalse(marker.exists())
-
-            raced, _ = run_installer_in(
-                root,
-                "latest",
-                update_guard_from_release="a-different-release",
-                manual_update=True,
-                **options,
-            )
-            self.assertNotEqual(raced.returncode, 0, raced.stderr)
-            self.assertEqual((daemon / "current").resolve(), local)
-            self.assertFalse(marker.exists())
-
-            binary = daemon / "releases" / release_name / "bin/codex"
-            contents = binary.read_text()
-            binary.write_text(
-                '#!/bin/sh\n[ "$1" = "--version" ] || exit 2\n'
-                f"echo codex-cli {VERSION}\n"
-            )
-            incompatible, _ = run_installer_in(
-                root,
-                "latest",
-                update_guard_from_release=local.name,
-                manual_update=True,
-                **options,
-            )
-            self.assertNotEqual(incompatible.returncode, 0)
-            self.assertIn("does not support daemon-owned packages", incompatible.stderr)
-            self.assertEqual((daemon / "current").resolve(), local)
-            self.assertFalse(marker.exists())
-            binary.write_text(contents)
-
-            restored, _ = run_installer_in(
-                root,
-                "latest",
-                update_guard_from_release=local.name,
-                manual_update=True,
-                **options,
-            )
-            self.assertEqual(restored.returncode, 0, restored.stderr)
-            self.assertEqual(
-                (daemon / "current").resolve(), daemon / "releases" / release_name
-            )
-            self.assertEqual(marker.read_text(), release_name)
-            self.assertEqual(visible.resolve(), original)
-            self.assertTrue(pending.is_symlink())
-            self.assertEqual(profile.read_text(), "unchanged profile\n")
-            self.assertFalse(
-                (root / "codex-home/packages/standalone/auto-update-version").exists()
-            )
-
-    def test_explicit_release_pins_even_the_current_latest_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive, checksum, metadata = create_package_release(root)
-            options = dict(
-                metadata_json=metadata,
-                archive_path=archive,
-                checksum_path=checksum,
-                force_macos=True,
-            )
-            marker = root / "codex-home/packages/standalone/auto-update-version"
-            latest, _ = run_installer_in(root, "latest", **options)
-            self.assertEqual(latest.returncode, 0, latest.stderr)
-            release_name = f"{VERSION}-aarch64-apple-darwin"
-            self.assertEqual(marker.read_text(), release_name)
-
-            pinned, _ = run_installer_in(root, VERSION, **options)
-            self.assertEqual(pinned.returncode, 0, pinned.stderr)
-            self.assertFalse(marker.exists())
-
-            updater_record = (
-                root / "codex-home/app-server-daemon/app-server-updater.pid"
-            )
-            updater_record.parent.mkdir(parents=True)
-            updater_record.write_text(
-                json.dumps(
-                    {"pid": os.getpid(), "processStartTime": process_start_time()}
-                )
-            )
-            old_updater, _ = run_installer_in(
-                root, "latest", old_updater_parent_pid=os.getpid(), **options
-            )
-            self.assertEqual(old_updater.returncode, 0, old_updater.stderr)
-            self.assertFalse(marker.exists())
-
-            skipped, _ = run_installer_in(
-                root, "latest", update_guard_from_release=release_name, **options
-            )
-            self.assertEqual(skipped.returncode, 0, skipped.stderr)
-            self.assertFalse(marker.exists())
-
-            updater_record.write_text(
-                json.dumps({"pid": os.getpid(), "processStartTime": "stale"})
-            )
-            latest_again, _ = run_installer_in(
-                root, "latest", old_updater_parent_pid=os.getpid(), **options
-            )
-            self.assertEqual(latest_again.returncode, 0, latest_again.stderr)
-            self.assertEqual(marker.read_text(), release_name)
-
-            managed = (
-                root
-                / f"codex-home/packages/standalone/releases/{release_name}/bin/codex"
-            )
-            managed.unlink()
-            guarded, _ = run_installer_in(
-                root,
-                "latest",
-                update_guard_from_release=release_name,
-                **options,
-            )
-            self.assertEqual(guarded.returncode, 0, guarded.stderr)
-            self.assertTrue(managed.exists())
-
-    def test_standalone_retains_previous_and_running_releases_across_installs(
+    def build_assets(
         self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Exercise real process inspection, including paths containing spaces.
-            root = Path(temp_dir).resolve() / "codex install"
-            root.mkdir()
-            system = os.uname()
-            if system.sysname == "Linux":
-                # The race requires pruning to proceed. A live but unreadable
-                # Codex/helper (e.g. the agent's sandbox) must prevent that.
-                for process in Path("/proc").glob("[0-9]*"):
-                    try:
-                        (process / "exe").readlink()
-                    except OSError:
-                        try:
-                            name = (process / "comm").read_text().strip()
-                            status = (process / "status").read_text()
-                        except OSError:
-                            continue  # The process may have exited.
-                        if (
-                            name.startswith("codex") or name in ("rg", "bwrap")
-                        ) and not any(
-                            line.startswith("State:") and "Z" in line
-                            for line in status.splitlines()
-                        ):
-                            self.skipTest(
-                                f"Cannot inspect live {name} process {process.name}"
-                            )
-            arch = "aarch64" if system.machine in ("arm64", "aarch64") else "x86_64"
-            target = f"{arch}-{'apple-darwin' if system.sysname == 'Darwin' else 'unknown-linux-musl'}"
-            packages = root / "codex-home/packages/standalone"
-            releases = packages / "releases"
-            versions = ("0.140.0", "0.141.0", VERSION)
-            install_options = {}
-            for version in versions:
-                source = root / version
-                source.mkdir()
-                archive, checksum, metadata = create_package_release(
-                    source,
-                    metadata_version=version,
-                    binary_version=version,
-                    target=target,
-                )
-                install_options[version] = dict(
-                    metadata_json=metadata, archive_path=archive, checksum_path=checksum
-                )
+        *,
+        target: str | None = None,
+        version: str = VERSION,
+        binary_version: str | None = None,
+        manifest_version: str | None = None,
+        manifest_target: str | None = None,
+        with_rg: bool = True,
+        checksum: str | None = None,
+    ) -> Path:
+        """Build a local release directory with archive + SHA256SUMS."""
+        target = target or host_target()
+        binary_version = version if binary_version is None else binary_version
+        manifest_version = version if manifest_version is None else manifest_version
+        manifest_target = target if manifest_target is None else manifest_target
 
-            first, _ = run_installer_in(
-                root, versions[0], **install_options[versions[0]]
-            )
-            self.assertEqual(first.returncode, 0, first.stderr)
-            oldest = releases / f"{versions[0]}-{target}"
-            helper = oldest / "bin/codex-code-mode-host"
-            shutil.copy("/bin/sleep", helper)
-            if system.sysname == "Darwin":
-                # A copied macOS system binary cannot run with its platform signature.
-                subprocess.run(
-                    ["/usr/bin/codesign", "--force", "--sign", "-", str(helper)],
-                    check=True,
-                    capture_output=True,
-                )
-            # A helper can outlive its parent CLI; retain its whole release.
-            with subprocess.Popen([str(helper), "300"]) as running:
-                try:
-                    second, _ = run_installer_in(
-                        root, versions[1], **install_options[versions[1]]
-                    )
-                    self.assertEqual(second.returncode, 0, second.stderr)
-
-                    unowned = releases / f"0.139.0-{target}"
-                    unowned.mkdir()
-                    (unowned / "codex-package.json").write_text("{}")
-                    retired = releases / ".retired.old-attempt"
-                    retired.mkdir()
-                    (retired / "leave-alone").write_text("not retried")
-                    external = root / "external"
-                    external.mkdir()
-                    (external / "user-file").write_text("untouched")
-                    (releases / f"0.138.0-{target}").symlink_to(external)
-
-                    # Failed installs must not advance history or prune anything.
-                    history = packages / "selection-history"
-                    before_failure = history.read_bytes()
-                    bad_source = root / "wrong-version"
-                    bad_source.mkdir()
-                    archive, checksum, metadata = create_package_release(
-                        bad_source, metadata_version="0.199.0", target=target
-                    )
-                    failed, _ = run_installer_in(
-                        root,
-                        "0.199.0",
-                        metadata_json=metadata,
-                        archive_path=archive,
-                        checksum_path=checksum,
-                    )
-                    self.assertNotEqual(failed.returncode, 0, failed.stderr)
-                    self.assertEqual(history.read_bytes(), before_failure)
-                    self.assertTrue(oldest.is_dir())
-
-                    latest, _ = run_installer_in(
-                        root, "latest", **install_options[VERSION]
-                    )
-                    self.assertEqual(latest.returncode, 0, latest.stderr)
-                    self.assertIsNone(running.poll())
-                    self.assertTrue(oldest.is_dir(), latest.stderr)
-                    previous = releases / f"{versions[1]}-{target}"
-                    current = releases / f"{VERSION}-{target}"
-                    self.assertEqual((packages / "current").resolve(), current)
-                    self.assertTrue(previous.is_dir())
-                    self.assertEqual(
-                        history.read_text().splitlines()[:2],
-                        [current.name, previous.name],
-                    )
-                    recorded = history.read_bytes()
-                finally:
-                    running.terminate()
-                    running.wait()
-
-            if system.sysname == "Darwin":
-                # lsof sees no running helper now. ps can still see names for
-                # a different user, whose open files lsof silently omits.
-                fake_ps = root / "bin/ps"
-                foreign_uid = 0 if os.geteuid() != 0 else 501
-                try:
-                    for executable in (oldest / "bin/codex", helper):
-                        with self.subTest(foreign_executable=executable.name):
-                            fake_ps.write_text(
-                                "#!/bin/sh\n"
-                                'case "$*" in\n'
-                                "  '-axo uid=,comm=')\n"
-                                f"    printf '%s\\n' {shlex.quote(f'{foreign_uid} {executable}')}\n"
-                                "    ;;\n"
-                                '  *) exec /bin/ps "$@" ;;\n'
-                                "esac\n"
-                            )
-                            fake_ps.chmod(0o755)
-                            retained, _ = run_installer_in(
-                                root, "latest", **install_options[VERSION]
-                            )
-                            self.assertEqual(retained.returncode, 0, retained.stderr)
-                            self.assertTrue(oldest.is_dir(), retained.stderr)
-                            self.assertEqual(history.read_bytes(), recorded)
-                finally:
-                    fake_ps.unlink()
-
-            # Start the helper after the first scan but immediately before the
-            # retirement rename. The second scan must restore its release.
-            fake_mv = root / "bin/mv"
-            ready = root / "retirement-ready"
-            resume = root / "retirement-resume"
-            os.mkfifo(ready)
-            os.mkfifo(resume)
-            real_mv = shutil.which("mv")
-            fake_mv.write_text(
-                "#!/bin/sh\n"
-                'case "$2" in\n'
-                "  */.retired.*/release)\n"
-                f'    printf "ready\\n" > {shlex.quote(str(ready))}\n'
-                f"    read -r _ < {shlex.quote(str(resume))}\n"
-                "    ;;\n"
-                "esac\n"
-                f'exec {shlex.quote(real_mv)} "$@"\n'
-            )
-            fake_mv.chmod(0o755)
-            ready_fd = os.open(ready, os.O_RDWR | os.O_NONBLOCK)
-            resume_fd = os.open(resume, os.O_RDWR | os.O_NONBLOCK)
-            try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    installing = executor.submit(
-                        run_installer_in, root, "latest", **install_options[VERSION]
-                    )
-                    try:
-                        readable, _, _ = select.select([ready_fd], [], [], 30)
-                        self.assertTrue(
-                            readable, "installer did not attempt retirement"
-                        )
-                        self.assertEqual(os.read(ready_fd, 128), b"ready\n")
-                        with subprocess.Popen([str(helper), "300"]) as late_helper:
-                            try:
-                                os.write(resume_fd, b"continue\n")
-                                raced, _ = installing.result(timeout=30)
-                                self.assertEqual(raced.returncode, 0, raced.stderr)
-                                self.assertTrue(oldest.is_dir(), raced.stderr)
-                                self.assertEqual(history.read_bytes(), recorded)
-                            finally:
-                                late_helper.terminate()
-                                late_helper.wait()
-                    finally:
-                        # Release the intercepted mv even if an assertion fails.
-                        os.write(resume_fd, b"continue\n")
-            finally:
-                os.close(ready_fd)
-                os.close(resume_fd)
-                fake_mv.unlink()
-
-            # A no-op latest install (also the codex update path) cleans up the
-            # now-unused release without rotating previous to current.
-            repeated, _ = run_installer_in(root, "latest", **install_options[VERSION])
-            self.assertEqual(repeated.returncode, 0, repeated.stderr)
-            self.assertFalse(oldest.exists(), repeated.stderr)
-            self.assertTrue(previous.is_dir())
-            self.assertEqual(history.read_bytes(), recorded)
-            self.assertTrue(unowned.is_dir())
-            self.assertEqual((retired / "leave-alone").read_text(), "not retried")
-            self.assertEqual((external / "user-file").read_text(), "untouched")
-
-            # Downgrades keep the actual previously selected version.
-            pinned, _ = run_installer_in(
-                root, versions[1], **install_options[versions[1]]
-            )
-            self.assertEqual(pinned.returncode, 0, pinned.stderr)
-            self.assertEqual((packages / "current").resolve(), previous)
-            self.assertEqual(
-                history.read_text().splitlines()[:2], [previous.name, current.name]
-            )
-            self.assertTrue(current.is_dir())
-
-    def test_uninspectable_legacy_updater_does_not_clear_pin(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive, checksum, metadata = create_package_release(root)
-            options = dict(
-                metadata_json=metadata,
-                archive_path=archive,
-                checksum_path=checksum,
-                force_macos=True,
-            )
-            pinned, _ = run_installer_in(root, VERSION, **options)
-            self.assertEqual(pinned.returncode, 0, pinned.stderr)
-            updater_record = (
-                root / "codex-home/app-server-daemon/app-server-updater.pid"
-            )
-            updater_record.parent.mkdir(parents=True)
-            updater_record.write_text(
-                json.dumps(
-                    {"pid": os.getpid(), "processStartTime": process_start_time()}
-                )
-            )
-
-            attempted, _ = run_installer_in(
-                root,
-                "latest",
-                old_updater_parent_pid=os.getpid(),
-                fail_ps=True,
-                **options,
-            )
-            self.assertEqual(attempted.returncode, 0, attempted.stderr)
-            self.assertFalse(
-                (root / "codex-home/packages/standalone/auto-update-version").exists()
-            )
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_unusable_metadata_falls_back_to_github(self) -> None:
-        unusable_metadata = {
-            "html": "<html>proxy error</html>",
-            "empty": "",
-            "malformed_json": '{"tag_name":',
-            "missing_tag": json.dumps({"assets": []}),
-            "missing_assets": json.dumps(
-                {"tag_name": f"rust-v{VERSION}", "assets": []}
-            ),
-            "invalid_checksum_digest": json.dumps(
+        members: dict[str, bytes] = {
+            "bin/codex": fake_binary(binary_version),
+            "bin/codex-code-mode-host": helper_binary(),
+            "codex-package.json": json.dumps(
                 {
-                    "tag_name": f"rust-v{VERSION}",
-                    "assets": [
-                        {
-                            "name": "codex-package-aarch64-apple-darwin.tar.gz",
-                            "digest": "sha256:" + "a" * 64,
-                        },
-                        {
-                            "name": "codex-package_SHA256SUMS",
-                            "digest": "sha256:" + "z" * 64,
-                        },
-                    ],
+                    "layoutVersion": 1,
+                    "version": manifest_version,
+                    "target": manifest_target,
+                    "variant": "standalone",
+                    "entrypoint": "bin/codex",
+                    "execServer": "bin/codex-exec-server",
+                    "resourcesDir": "codex-resources",
+                    "pathDir": "codex-path",
                 }
-            ),
-            "invalid_version": json.dumps({"tag_name": "rust-vinvalid"}),
+            ).encode(),
         }
+        if target == "aarch64-linux-android":
+            members["bin/libc++_shared.so"] = b"fake shared libc++"
+            if with_rg:
+                members["codex-path/rg"] = helper_binary()
+        else:
+            if with_rg:
+                members["codex-path/rg"] = helper_binary()
+            members["codex-resources/bwrap"] = helper_binary()
 
-        for name, releases_metadata_json in unusable_metadata.items():
-            with self.subTest(metadata=name):
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    root = Path(temp_dir)
-                    archive_path, checksum_path, metadata_json = create_package_release(
-                        root
-                    )
+        asset = f"{PACKAGE_PREFIX}{target}.tar.gz"
+        archive_path = self.assets / asset
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for name, data in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o755
+                archive.addfile(info, io.BytesIO(data))
 
-                    result, requests = run_installer_in(
-                        root,
-                        "latest",
-                        metadata_json=metadata_json,
-                        releases_metadata_json=releases_metadata_json,
-                        archive_path=archive_path,
-                        checksum_path=checksum_path,
-                        force_macos=True,
-                        use_mirror=None,
-                    )
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        if checksum is not None:
+            digest = checksum
+        (self.assets / CHECKSUM_ASSET).write_text(f"{digest}  {asset}\n")
+        return archive_path
 
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(
-                        requests,
-                        [
-                            "https://releases.openai.com/codex/channels/latest",
-                            "https://api.github.com/repos/openai/codex/releases/latest",
-                            "https://github.com/openai/codex/releases/download/"
-                            f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                            "https://github.com/openai/codex/releases/download/"
-                            f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                        ],
-                    )
-                    self.assertIn("falling back to GitHub Releases", result.stderr)
+    def base_env(self) -> dict[str, str]:
+        env = {key: os.environ[key] for key in BASE_ENV_KEYS if key in os.environ}
+        env["HOME"] = str(self.home)
+        env["CODEX_HOME"] = str(self.codex_home)
+        env["CODEX_NON_INTERACTIVE"] = "1"
+        # A fixed minimal PATH keeps the host user's own commands (for
+        # example a real ~/.local/bin/codex-vl) out of the conflict scan.
+        env["PATH"] = "/usr/bin:/bin"
+        return env
 
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_exact_metadata_version_mismatch_falls_back_to_github(
+    def run_installer(
         self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-            releases_metadata = json.loads(metadata_json)
-            releases_metadata["tag_name"] = f"rust-v{MISMATCH_VERSION}"
-
-            result, requests = run_installer_in(
-                root,
-                VERSION,
-                metadata_json=metadata_json,
-                releases_metadata_json=json.dumps(releases_metadata),
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn("falling back to GitHub Releases", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_asset_download_falls_back_to_github(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-                releases_mode="asset_fallback",
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn("retrying from GitHub Releases", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_corrupt_assets_fall_back_to_github(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-                releases_mode="corrupt_assets",
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn("checksum did not match expected digest", result.stderr)
-            self.assertIn("retrying from GitHub Releases", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_wrong_checksum_digest_uses_github_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-            mirror_metadata = json.loads(metadata_json)
-            for release_asset in mirror_metadata["assets"]:
-                if release_asset["name"] == "codex-package_SHA256SUMS":
-                    release_asset["digest"] = "sha256:" + "0" * 64
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                releases_metadata_json=json.dumps(mirror_metadata),
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn("checksum did not match expected digest", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_incomplete_checksum_manifest_falls_back_to_github(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-            mirror_checksum_path = root / "mirror-SHA256SUMS"
-            mirror_checksum_path.write_text(
-                f"{'a' * 64}  codex-package-other-platform.tar.gz\n",
-                encoding="utf-8",
-            )
-            mirror_metadata = json.loads(metadata_json)
-            for release_asset in mirror_metadata["assets"]:
-                if release_asset["name"] == "codex-package_SHA256SUMS":
-                    release_asset["digest"] = (
-                        "sha256:"
-                        + hashlib.sha256(mirror_checksum_path.read_bytes()).hexdigest()
-                    )
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                releases_metadata_json=json.dumps(mirror_metadata),
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                releases_checksum_path=mirror_checksum_path,
-                force_macos=True,
-                use_mirror=None,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn("retrying from GitHub Releases", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_corrupt_github_fallback_still_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(root)
-
-            result, requests = run_installer_in(
-                root,
-                "latest",
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=None,
-                releases_mode="corrupt_checksum_and_github",
-            )
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(
-                requests,
-                [
-                    "https://releases.openai.com/codex/channels/latest",
-                    f"https://releases.openai.com/codex/releases/{VERSION}/codex-package_SHA256SUMS",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-package_SHA256SUMS",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                ],
-            )
-            self.assertIn("checksum did not match expected digest", result.stderr)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_exact_rejects_wrong_binary_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, checksum_path, metadata_json = create_package_release(
-                root,
-                metadata_version=MISMATCH_VERSION,
-            )
-
-            result, requests = run_installer_in(
-                root,
-                MISMATCH_VERSION,
-                metadata_json=metadata_json,
-                archive_path=archive_path,
-                checksum_path=checksum_path,
-                force_macos=True,
-                use_mirror=True,
-            )
-
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(
-                requests,
-                [
-                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/release.json",
-                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/codex-package_SHA256SUMS",
-                    f"https://releases.openai.com/codex/releases/{MISMATCH_VERSION}/codex-package-aarch64-apple-darwin.tar.gz",
-                ],
-            )
-            self.assertIn(
-                f"did not report expected version {MISMATCH_VERSION}",
-                result.stderr,
-            )
-            self.assertNotIn("installed successfully", result.stdout)
-
-    @unittest.skip(
-        "fork: installer resolves releases from the fork's GitHub releases; the releases.openai.com source is not shipped"
-    )
-    def test_releases_exact_legacy_fallback_reuses_offline_install(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            archive_path, metadata_json = create_legacy_release(root)
-
-            first_result, first_requests = run_installer_in(
-                root,
-                VERSION,
-                metadata_json=metadata_json,
-                legacy_archive_path=archive_path,
-                force_macos=True,
-                use_mirror=True,
-                releases_mode="channel_failure",
-            )
-
-            self.assertEqual(first_result.returncode, 0, first_result.stderr)
-            self.assertEqual(
-                first_requests,
-                [
-                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                    "https://github.com/openai/codex/releases/download/"
-                    f"rust-v{VERSION}/codex-npm-darwin-arm64-{VERSION}.tgz",
-                ],
-            )
-
-            (root / "requests.log").unlink()
-            second_result, second_requests = run_installer_in(
-                root,
-                VERSION,
-                metadata_json=metadata_json,
-                force_macos=True,
-                use_mirror=True,
-                releases_mode="channel_failure",
-            )
-
-            self.assertEqual(second_result.returncode, 0, second_result.stderr)
-            self.assertEqual(
-                second_requests,
-                [
-                    f"https://releases.openai.com/codex/releases/{VERSION}/release.json",
-                    "https://api.github.com/repos/openai/codex/releases/tags/"
-                    f"rust-v{VERSION}",
-                ],
-            )
-            self.assertNotIn("Downloading Codex CLI", second_result.stdout)
-
-
-def run_installer(
-    release: str,
-    *,
-    metadata_failure: bool = False,
-    metadata_json: str | None = None,
-) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        return run_installer_in(
-            Path(temp_dir),
-            release,
-            metadata_failure=metadata_failure,
-            metadata_json=metadata_json,
+        *args: str,
+        env: dict[str, str] | None = None,
+        path_prefix: str = "",
+        extra_path: str = "",
+        timeout: float = 60.0,
+    ) -> subprocess.CompletedProcess:
+        run_env = dict(env or self.base_env())
+        if path_prefix or extra_path:
+            parts = [p for p in (path_prefix, run_env["PATH"], extra_path) if p]
+            run_env["PATH"] = ":".join(parts)
+        # start_new_session detaches from any controlling terminal so
+        # prompt_yes_no can never read a real /dev/tty from a dev machine.
+        return subprocess.run(
+            ["sh", str(INSTALLER), *args],
+            env=run_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            start_new_session=True,
         )
 
+    def install_ok(self, release: str = VERSION, **kwargs) -> subprocess.CompletedProcess:
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            release,
+            "--bin-dir",
+            str(self.bin_dir),
+            **kwargs,
+        )
+        self.assertEqual(result.returncode, 0, f"installer failed:\n{result.stderr}")
+        return result
 
-def run_installer_in(
-    root: Path,
-    release: str,
-    *,
-    metadata_failure: bool = False,
-    metadata_json: str | None = None,
-    archive_path: Path | None = None,
-    checksum_path: Path | None = None,
-    force_macos: bool = False,
-    use_mirror: bool | None = False,
-    releases_mode: str = "",
-    update_guard_from_release: str | None = None,
-    old_updater_parent_pid: int | None = None,
-    fail_ps: bool = False,
-    daemon_only: bool = False,
-    manual_update: bool = False,
-) -> tuple[subprocess.CompletedProcess[str], list[str]]:
-    bin_dir = root / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    request_log = root / "requests.log"
-    fake_curl = bin_dir / "curl"
-    fake_curl.write_text(
-        textwrap.dedent(
-            """\
-            #!/bin/sh
-            url=""
-            output=""
-            previous=""
-            for arg in "$@"; do
-              case "$arg" in
-                https://*) url="$arg" ;;
-              esac
-              if [ "$previous" = "-o" ]; then
-                output="$arg"
-              fi
-              previous="$arg"
-            done
-            printf '%s\n' "$url" >>"$CODEX_TEST_REQUEST_LOG"
+    def command_link(self) -> Path:
+        return self.bin_dir / "codex-vl"
 
-            case "$url" in
-              https://api.github.com/*)
-                if [ "$CODEX_TEST_METADATA_FAILURE" = "1" ]; then
-                  echo "curl: (22) The requested URL returned error: 403" >&2
-                  exit 22
-                fi
-                printf '%s\n' "$CODEX_TEST_METADATA_JSON"
-                ;;
-              */codex-package_SHA256SUMS)
-                if [ -n "$CODEX_TEST_CHECKSUM_PATH" ]; then
-                  cp "$CODEX_TEST_CHECKSUM_PATH" "$output"
-                else
-                  exit 22
-                fi
-                ;;
-              */codex-package-*.tar.gz)
-                if [ -n "$CODEX_TEST_ARCHIVE_PATH" ]; then
-                  cp "$CODEX_TEST_ARCHIVE_PATH" "$output"
-                else
-                  exit 22
-                fi
-                ;;
-              *)
-                exit 22
-                ;;
-            esac
-            """
-        ),
-        encoding="utf-8",
-    )
-    fake_curl.chmod(0o755)
-    if force_macos:
-        fake_uname = bin_dir / "uname"
-        fake_uname.write_text(
+    def releases_dir(self) -> Path:
+        return self.standalone_root / "releases"
+
+    def release_dir(self, version: str = VERSION, target: str | None = None) -> Path:
+        return self.releases_dir() / f"{version}-{target or host_target()}"
+
+    def link_version(self) -> str:
+        output = subprocess.run(
+            [str(self.command_link()), "--version"],
+            capture_output=True,
+            text=True,
+            env=self.base_env(),
+        )
+        return output.stdout.strip()
+
+    # ---- ownership of the visible command --------------------------------
+
+    def test_install_creates_owned_link_and_release(self) -> None:
+        self.install_ok()
+
+        self.assertTrue(self.command_link().is_symlink())
+        self.assertEqual(
+            os.readlink(self.command_link()),
+            str(self.standalone_root / "current" / "bin" / "codex"),
+        )
+        self.assertTrue(self.release_dir().is_dir())
+        self.assertIn(VERSION, self.link_version())
+
+    def test_dangling_owned_link_is_not_a_conflict(self) -> None:
+        # A previous install left our exact link but the tree is gone: the
+        # link is still ours and a reinstall must not treat it as foreign.
+        os.symlink(
+            str(self.standalone_root / "current" / "bin" / "codex"),
+            self.command_link(),
+        )
+        result = self.install_ok()
+        self.assertNotIn("another codex-vl", result.stderr)
+        self.assertIn(VERSION, self.link_version())
+
+    def test_reinstall_over_own_link_succeeds(self) -> None:
+        self.install_ok()
+        result = self.install_ok()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(VERSION, self.link_version())
+
+    def test_foreign_link_at_destination_refused_without_effects(self) -> None:
+        # Audit counterexample: a fake npm link already in the expected
+        # BIN_DIR used to be silently replaced with zero warnings.
+        os.symlink(str(self.npm_target), self.command_link())
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("left untouched", result.stderr)
+        # The conflict is resolved before any write: the foreign link is
+        # intact and nothing of the standalone tree exists yet.
+        self.assertTrue(self.command_link().is_symlink())
+        self.assertEqual(os.readlink(self.command_link()), str(self.npm_target))
+        self.assertFalse(self.standalone_root.exists())
+
+    def test_conflict_elsewhere_declined_before_any_write(self) -> None:
+        # Audit counterexample: with no tty the declined prompt used to exit
+        # 1 only after the new command and current had already been created.
+        foreign = self.foreign_dir / "codex-vl"
+        foreign.write_bytes(fake_binary("foreign"))
+        foreign.chmod(0o755)
+
+        env = self.base_env()
+        env.pop("CODEX_NON_INTERACTIVE")
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+            env=env,
+            extra_path=str(self.foreign_dir),
+        )
+
+        self.assertEqual(result.returncode, 1)
+        # stderr must still work after the lock is released: the abort
+        # message is visible, not swallowed by a lingering redirect.
+        self.assertIn("aborted", result.stderr)
+        self.assertIn("left untouched", result.stderr)
+        # No write happened at all.
+        self.assertFalse(self.standalone_root.exists())
+        self.assertFalse(self.command_link().exists())
+
+    def test_conflict_elsewhere_non_interactive_only_warns(self) -> None:
+        foreign = self.foreign_dir / "codex-vl"
+        foreign.write_bytes(fake_binary("foreign"))
+        foreign.chmod(0o755)
+
+        result = self.install_ok(extra_path=str(self.foreign_dir))
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("another codex-vl", result.stderr)
+        # The foreign command elsewhere in PATH is never touched.
+        self.assertTrue(foreign.is_file())
+        self.assertIn(VERSION, self.link_version())
+
+    # ---- staging verification before promotion ---------------------------
+
+    def test_wrong_payload_version_rejected_in_staging(self) -> None:
+        # Audit counterexample: checksum fine but bin/codex --version = 9.9.9
+        # used to leave the rejected payload in the final release directory.
+        self.build_assets(binary_version="9.9.9")
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("9.9.9", result.stderr)
+        self.assertFalse(self.release_dir().exists())
+        staging = list(self.releases_dir().glob(".staging.*")) if self.releases_dir().is_dir() else []
+        self.assertEqual(staging, [])
+
+    def test_rejection_preserves_previous_installation(self) -> None:
+        self.build_assets(version=OLD_VERSION)
+        self.install_ok(OLD_VERSION)
+        previous_link = os.readlink(self.command_link())
+
+        self.build_assets(binary_version="9.9.9")
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        # The previous destination and the selection are untouched.
+        self.assertTrue(self.release_dir(OLD_VERSION).is_dir())
+        self.assertTrue((self.release_dir(OLD_VERSION) / "bin" / "codex").is_file())
+        self.assertEqual(os.readlink(self.command_link()), previous_link)
+        self.assertFalse(self.release_dir(VERSION).exists())
+        self.assertIn(OLD_VERSION, self.link_version())
+
+    def test_wrong_checksum_rejected(self) -> None:
+        self.build_assets(checksum="0" * 64)
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checksum mismatch", result.stderr)
+        self.assertFalse(self.release_dir().exists())
+
+    def test_manifest_target_mismatch_rejected(self) -> None:
+        self.build_assets(manifest_target="aarch64-unknown-linux-musl")
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("manifest target", result.stderr)
+        self.assertFalse(self.release_dir().exists())
+
+    def test_missing_linux_helper_makes_release_incomplete(self) -> None:
+        # Audit: the completeness predicate ignored per-target extras, so an
+        # existing release with a missing helper looked reusable.
+        self.build_assets(version=OLD_VERSION)
+        self.install_ok(OLD_VERSION)
+        rg = self.release_dir(OLD_VERSION) / "codex-path" / "rg"
+        rg.unlink()
+
+        self.build_assets(version=OLD_VERSION)
+        self.install_ok(OLD_VERSION)
+
+        self.assertTrue(rg.is_file(), "incomplete release must be reinstalled")
+
+    # ---- embedded (release-pinned) variant --------------------------------
+
+    def test_embedded_variant_refuses_other_version_before_download(self) -> None:
+        source = INSTALLER.read_text()
+        begin = "# --- BEGIN embedded release checksums"
+        end = "# --- END embedded release checksums"
+        head, rest = source.split(begin, 1)
+        _, tail = rest.split(end, 1)
+        block = f'''
+EMBEDDED_RELEASE_VERSION="{VERSION}"
+embedded_package_digest() {{
+  case "$1" in
+    x86_64-unknown-linux-musl | aarch64-unknown-linux-musl) printf '%s\\n' "{"a" * 64}' ;;
+  esac
+  return 1
+}}
+'''
+        pinned_path = self.assets / "install-pinned.sh"
+        pinned_path.write_text(head + begin + block + end + tail)
+        pinned_path.chmod(0o755)
+
+        env = self.base_env()
+        env["CODEX_RELEASE"] = "9.9.9"
+        result = subprocess.run(
+            ["sh", str(pinned_path)],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            start_new_session=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pinned", result.stderr)
+        # The refusal happens before any download: nothing was installed.
+        self.assertFalse(self.standalone_root.exists())
+
+    # ---- uninstall --------------------------------------------------------
+
+    def test_uninstall_removes_owned_tree_and_link(self) -> None:
+        self.install_ok()
+        result = self.run_installer("--uninstall", "--bin-dir", str(self.bin_dir))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.standalone_root.exists())
+        self.assertFalse(self.command_link().exists())
+        # User data under CODEX_HOME is preserved.
+        self.assertTrue(self.codex_home.is_dir())
+
+    def test_uninstall_preserves_foreign_command_at_destination(self) -> None:
+        # Audit counterexample: with no standalone root, --uninstall used to
+        # exit 0 and delete the foreign (npm) link anyway.
+        os.symlink(str(self.npm_target), self.command_link())
+        result = self.run_installer("--uninstall", "--bin-dir", str(self.bin_dir))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.command_link().is_symlink())
+        self.assertEqual(os.readlink(self.command_link()), str(self.npm_target))
+        self.assertIn("not managed", result.stderr)
+
+    def test_uninstall_preserves_foreign_link_replacing_ours(self) -> None:
+        self.install_ok()
+        # The user repointed the visible command at an npm install: only the
+        # owned tree goes away, the foreign link stays.
+        self.command_link().unlink()
+        os.symlink(str(self.npm_target), self.command_link())
+
+        result = self.run_installer("--uninstall", "--bin-dir", str(self.bin_dir))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.standalone_root.exists())
+        self.assertEqual(os.readlink(self.command_link()), str(self.npm_target))
+
+    def test_uninstall_takes_the_install_lock(self) -> None:
+        self.install_ok()
+
+        self.standalone_root.mkdir(exist_ok=True)
+        lock_file = self.standalone_root / "install.lock"
+        with open(lock_file, "w") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            process = subprocess.Popen(
+                [
+                    "sh",
+                    str(INSTALLER),
+                    "--uninstall",
+                    "--bin-dir",
+                    str(self.bin_dir),
+                ],
+                env=self.base_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            # While the lock is held the uninstall must not complete.
+            self.assertIsNone(process.poll(), "uninstall ran without the install lock")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+        returncode = process.wait(timeout=60)
+        self.assertEqual(returncode, 0)
+        self.assertFalse(self.standalone_root.exists())
+
+    # ---- Android (Termux) detection ---------------------------------------
+
+    def test_android_detection_selects_android_target(self) -> None:
+        fake_bin = self.assets / "fake-uname"
+        fake_bin.mkdir()
+        (fake_bin / "uname").write_text(
             "#!/bin/sh\n"
             'case "$1" in\n'
-            "  -s) printf 'Darwin\\n' ;;\n"
-            "  -m) printf 'arm64\\n' ;;\n"
-            "esac\n",
-            encoding="utf-8",
+            '  -s) printf "Linux\\n" ;;\n'
+            '  -o) printf "Android\\n" ;;\n'
+            '  -m) printf "aarch64\\n" ;;\n'
+            '  *) printf "Linux\\n" ;;\n'
+            "esac\n"
         )
-        fake_uname.chmod(0o755)
-    if old_updater_parent_pid is not None:
-        fake_ps = bin_dir / "ps"
-        fake_ps.write_text(
-            "#!/bin/sh\nexit 1\n"
-            if fail_ps
-            else "#!/bin/sh\n"
-            'case "$*" in\n'
-            '  *lstart*) printf "S %s\\n" "$CODEX_TEST_PARENT_START" ;;\n'
-            '  *) printf "%s\\n" "$CODEX_TEST_PARENT_PID" ;;\n'
-            "esac\n",
-            encoding="utf-8",
+        (fake_bin / "uname").chmod(0o755)
+
+        self.build_assets(target="aarch64-linux-android")
+        env = self.base_env()
+        env["PREFIX"] = "/data/data/com.termux/files/usr"
+        env["TERMUX_VERSION"] = "0.118"
+        result = self.run_installer(
+            "--from-dir",
+            str(self.assets),
+            "--release",
+            VERSION,
+            "--bin-dir",
+            str(self.bin_dir),
+            env=env,
+            path_prefix=str(fake_bin),
         )
-        fake_ps.chmod(0o755)
 
-    home = root / "home"
-    home.mkdir(exist_ok=True)
-    env = os.environ.copy()
-    env.update(
-        {
-            "CODEX_HOME": str(root / "codex-home"),
-            "CODEX_INSTALL_DIR": str(root / "install-bin"),
-            "CODEX_NON_INTERACTIVE": "1",
-            "CODEX_RELEASE": release,
-            "CODEX_INSTALL_DAEMON_ONLY": "1" if daemon_only else "0",
-            "CODEX_TEST_ARCHIVE_PATH": str(archive_path or ""),
-            "CODEX_TEST_CHECKSUM_PATH": str(checksum_path or ""),
-            "CODEX_TEST_METADATA_FAILURE": "1" if metadata_failure else "0",
-            "CODEX_TEST_METADATA_JSON": (
-                metadata_json if metadata_json is not None else release_metadata()
-            ),
-            "CODEX_TEST_REQUEST_LOG": str(request_log),
-            "HOME": str(home),
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
-            "SHELL": "/bin/sh",
-        }
-    )
-    env["CODEX_INSTALL_IF_CURRENT"] = "1" if manual_update else "0"
-    if update_guard_from_release is None:
-        env.pop("CODEX_INSTALL_IF_LATEST", None)
-        env.pop("CODEX_UPDATE_FROM_RELEASE", None)
-    else:
-        env["CODEX_INSTALL_IF_LATEST"] = "0" if manual_update else "1"
-        env["CODEX_UPDATE_FROM_RELEASE"] = update_guard_from_release
-    if old_updater_parent_pid is not None:
-        env["CODEX_TEST_PARENT_PID"] = str(old_updater_parent_pid)
-        env["CODEX_TEST_PARENT_START"] = process_start_time()
-    if use_mirror is None:
-        env.pop("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", None)
-    else:
-        env["CODEX_INSTALLER_USE_RELEASES_OPENAI_COM"] = (
-            "TRUE" if use_mirror else "false"
-        )
-    result = subprocess.run(
-        ["/bin/sh", str(INSTALL_SCRIPT)],
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-    )
-    requests = (
-        request_log.read_text(encoding="utf-8").splitlines()
-        if request_log.exists()
-        else []
-    )
-    return result, requests
-
-
-def process_start_time() -> str:
-    details = subprocess.check_output(
-        ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="], text=True
-    ).strip()
-    return details.split(maxsplit=1)[1]
-
-
-def create_package_release(
-    root: Path,
-    *,
-    metadata_version: str = VERSION,
-    binary_version: str = VERSION,
-    target: str = "aarch64-apple-darwin",
-) -> tuple[Path, Path, str]:
-    package_dir = root / "package"
-    (package_dir / "bin").mkdir(parents=True)
-    (package_dir / "codex-path").mkdir()
-    (package_dir / "codex-package.json").write_text(
-        json.dumps(
-            {"version": binary_version, "target": target, "entrypoint": "bin/codex"}
-        ),
-        encoding="utf-8",
-    )
-    write_executable(
-        package_dir / "bin" / "codex",
-        f"#!/bin/sh\nprintf 'codex-cli {binary_version}\\n'\n",
-    )
-    write_executable(
-        package_dir / "bin" / "codex-code-mode-host",
-        "#!/bin/sh\nexit 0\n",
-    )
-    write_executable(package_dir / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
-    if "linux" in target:
-        (package_dir / "codex-resources").mkdir()
-        write_executable(package_dir / "codex-resources/bwrap", "#!/bin/sh\nexit 0\n")
-
-    asset = f"codex-package-{target}.tar.gz"
-    archive_path = root / asset
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for path in package_dir.iterdir():
-            archive.add(path, arcname=path.name)
-
-    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    checksum_path = root / "codex-package_SHA256SUMS"
-    checksum_path.write_text(f"{archive_digest}  {asset}\n", encoding="utf-8")
-    checksum_digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
-    metadata_json = json.dumps(
-        {
-            "assets": [
-                {"name": asset, "digest": f"sha256:{archive_digest}"},
-                {
-                    "name": "codex-package_SHA256SUMS",
-                    "digest": f"sha256:{checksum_digest}",
-                },
-            ],
-            "tag_name": f"v{VERSION}",
-        },
-        indent=2,
-    )
-    return archive_path, checksum_path, metadata_json
-
-
-def write_executable(path: Path, contents: str) -> None:
-    path.write_text(contents, encoding="utf-8")
-    path.chmod(0o755)
-
-
-def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
-    assets = [
-        asset_metadata(
-            f"codex-package-{target}.tar.gz",
-            f"sha256:{'a' * 64}",
-            reorder=reorder,
-        )
-        for target in (
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "aarch64-unknown-linux-musl",
-            "x86_64-unknown-linux-musl",
-        )
-    ]
-    assets.append(
-        asset_metadata(
-            "codex-package_SHA256SUMS",
-            f"sha256:{'b' * 64}",
-            reorder=reorder,
-        )
-    )
-    separators = (",", ":") if compact else None
-    return json.dumps(
-        {"assets": assets, "body": "braces: { } [ ]", "tag_name": f"v{VERSION}"},
-        indent=None if compact else 2,
-        separators=separators,
-    )
-
-
-def asset_metadata(name: str, digest: str, *, reorder: bool) -> dict[str, str]:
-    if reorder:
-        return {"digest": digest, "name": name}
-    return {"name": name, "digest": digest}
-
-
-def legacy_release_metadata_with_decoys() -> str:
-    fake_digest = f"sha256:{'0' * 64}"
-    assets = [
-        {
-            "metadata": {
-                "name": "codex-package-x86_64-unknown-linux-musl.tar.gz",
-                "digest": fake_digest,
-            },
-            "digest": f"sha256:{'c' * 64}",
-            "name": f"codex-npm-{target}-{VERSION}.tgz",
-        }
-        for target in ("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64")
-    ]
-    return json.dumps(
-        {
-            "body": (
-                f'fake: {{"name":"codex-package_SHA256SUMS","digest":"{fake_digest}"}}'
-            ),
-            "assets": assets,
-            "tag_name": f"v{VERSION}",
-        },
-        separators=(",", ":"),
-    )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        android_release = self.release_dir(target="aarch64-linux-android")
+        self.assertTrue(android_release.is_dir())
+        self.assertTrue((android_release / "bin" / "libc++_shared.so").is_file())
+        self.assertIn("Android", result.stdout)
 
 
 if __name__ == "__main__":
