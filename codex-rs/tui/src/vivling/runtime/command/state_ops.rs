@@ -7,7 +7,9 @@ impl Vivling {
     {
         self.ensure_hatched()?;
         let message = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.apply_decay(Utc::now());
             f(state)
         };
@@ -21,7 +23,9 @@ impl Vivling {
     {
         self.ensure_hatched()?;
         let value = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.apply_decay(Utc::now());
             f(state)
         };
@@ -35,7 +39,9 @@ impl Vivling {
     {
         self.ensure_hatched()?;
         let message = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.apply_decay(Utc::now());
             f(state)?
         };

@@ -7,7 +7,10 @@ impl Vivling {
         maybe_path: Option<&str>,
     ) -> Result<String, String> {
         self.ensure_hatched()?;
-        let mut state = self.state.as_mut().expect("state checked").clone();
+        let Some(state) = self.state.as_mut() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
+        let mut state = state.clone();
         if !state.export_unlocked() {
             return Err("`/vivling export` unlocks only at level 30.".to_string());
         }

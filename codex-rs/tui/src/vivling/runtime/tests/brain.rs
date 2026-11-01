@@ -349,7 +349,6 @@ fn adult_chat_with_brain_disabled_dispatches_via_session_default() {
                 BrainTarget::SessionDefault,
                 "brain off must inherit /model via SessionDefault"
             );
-            return;
         }
         other => panic!("expected DispatchAssist, got {other:?}"),
     }
@@ -1193,7 +1192,7 @@ fn baby_chat_dispatches_llm_with_italian_language_context() {
             || request.prompt_context.to_lowercase().contains("italian")
             || request.prompt_context.contains("'it'"),
         "Italian language hint must appear in the brain prompt context: {}",
-        &request.prompt_context.chars().take(400).collect::<String>()
+        request.prompt_context.chars().take(400).collect::<String>()
     );
 }
 

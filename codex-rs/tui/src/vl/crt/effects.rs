@@ -150,7 +150,10 @@ mod tests {
     fn collect(surface: &CrtSurface, w: u16) -> String {
         let mut buf = Buffer::empty(Rect::new(0, 0, w, 3));
         surface.render(Rect::new(0, 0, w, 3), &mut buf);
-        buf.content.iter().map(|c| c.symbol()).collect()
+        buf.content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     fn seed_face_row(surface: &mut CrtSurface, palette: &Palette) {

@@ -1,31 +1,30 @@
 # `rusty_v8` Consumer Artifacts
 
-This directory wires the `v8` crate to exact-version Bazel inputs.
-Bazel consumer builds use:
+This directory wires the `v8` crate to exact-version Bazel inputs. Bazel
+consumers build V8 archives from source and generate matching Rust bindings on
+Darwin, GNU/musl Linux, and Windows MSVC/GNU. `MODULE.bazel` wires
+`RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH` to the `@v8_targets` copy of
+these consumer-facing selectors:
 
-- Codex-published sandbox archive/binding pairs on Darwin, GNU/musl Linux,
-  and Windows MSVC (x64 and arm64), with checksums pinned from the trusted
-  release manifests
-- source-built V8 archives on Windows GNU
+- `//third_party/v8:rusty_v8_archive_for_target`
+- `//third_party/v8:rusty_v8_binding_for_target`
+
+The Bazel `v8` crate and its native source targets enable V8's in-process
+sandbox and pointer compression.
 
 Local Cargo builds still use upstream prebuilt `rusty_v8` archives by default.
 Selected Cargo CI, release, and package builds override
-`RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` with Codex release assets. Bazel
-sets those variables independently in `MODULE.bazel`, selecting the pair above
-for its consumers. All Bazel compilation modes use the same published V8
-release archive on supported platforms.
+`RUSTY_V8_ARCHIVE`/`RUSTY_V8_SRC_BINDING_PATH` with Codex release assets.
 
-The Bazel `v8` crate feature selection enables V8's in-process sandbox.
-Darwin/Linux consumers select prebuilts only when both the V8 sandbox and pointer
-compression settings match the published artifact. For source instrumentation
-or custom V8 C++ settings, use `--//:rusty_v8_from_source=true`; the archive
-and binding then both come from the source path. The published release archive
-cannot incorporate local V8 C++ flags or native debug/sanitizer settings.
+Source targets enforce the workspace runtime and sandbox/pointer-compression
+ABI. Release-pair targets enforce either the legacy or sandbox ABI plus
+Chromium's pinned runtime. Target CPU follows the named artifact. These V8
+settings are internal; callers do not pass separate V8 feature or libc++ flags.
 
 Current pinned versions:
 
 - Rust crate: `v8 = =152.2.0`
-- Embedded upstream V8 source for Bazel-produced release builds: `15.2.124.1`
+- Embedded upstream V8 source for Bazel builds: `15.2.124.1`
 
 ## Updating to a new `v8` release
 
@@ -35,6 +34,10 @@ Use this as the maintainer flow for a version bump:
 2. Update the Bazel versioned inputs in `MODULE.bazel` and the source pins
    in `third_party/v8/dependencies.bzl` and `abseil_repository.bzl` using
    [the source dependency update procedure](#updating-source-dependencies).
+   Verify the imported source groups by querying the source archive and generating Torque
+   and snapshots for each supported platform. If V8 changes its BUILD section
+   layout, the importer fails instead of silently using an old inventory;
+   update that boundary and review its fixed feature and CPU selections.
    Then refresh the matching checksum manifest and generated checksums below.
 3. Publish a release-candidate PR and validate that `v8-canary` passes.
 4. If the canary is green, publish the release tag and release build.
@@ -58,11 +61,6 @@ For all eight published pairs, verify each published
 and binding checksums into `rusty_v8_<version>.sha256`, then run these
 commands. They validate every matching `http_file` entry, and CI blocks
 checksum drift.
-
-The consumer-facing selectors are:
-
-- `//third_party/v8:rusty_v8_archive_for_target`
-- `//third_party/v8:rusty_v8_binding_for_target`
 
 Published release assets are expected at the tag:
 
@@ -106,14 +104,14 @@ from upstream `rusty_v8` source. Those ABI-specific outputs cannot be produced
 by Codex's Bazel Windows GNU toolchain.
 
 The Bazel graph pins the same libc++, libc++abi, and llvm-libc source revisions
-used by `rusty_v8 v152.2.0`, compiles published artifact targets with
-`--config=rusty-v8-upstream-libcxx`, and folds the matching runtime objects into
-the final static archive so consumers can link it with the `v8` crate's default
-`use_custom_libcxx` feature. The config keeps the object files and the bundled
+used by `rusty_v8 v152.2.0`. The named release and sandbox-release pair targets
+select those headers and fold the matching runtime objects into the final static
+archive so consumers can link it with the `v8` crate's default
+`use_custom_libcxx` feature. The profile keeps the object files and the bundled
 runtime on Chromium's `std::__Cr` ABI namespace instead of mixing those objects
-with the toolchain libc++ default namespace. Bazel consumers use these
-published archives for supported Darwin/Linux platforms, as do Cargo release and
-package builds. On Linux, Bazel decompresses to a private output and weakens
+with the toolchain libc++ default namespace. Selected Cargo release and package
+builds use these published archives. The explicit Bazel prebuilt archive targets
+remain available; on Linux, they decompress to a private output and weaken
 the ten shared `std::logic_error` and `std::runtime_error` constructors and
 assignment entry points listed in `gnu_libcxx_shared_exception_symbols.txt`.
 libc++ keeps these exception functions in `std::` across inline ABI namespaces;
@@ -121,13 +119,52 @@ the toolchain's definitions then take precedence if both runtimes are linked.
 Constructors accepting Chromium's `std::__Cr::string` remain strong in the V8
 archive. The verified input and the producer's archive are never mutated.
 This depends on libc++'s shared exception-object ABI; updates to either libc++
-revision must keep the native GNU link/runtime checks passing. The Bazel pair targets above still point directly to source
-targets so a new release or canary never depends on an older published copy.
+revision must keep the native GNU link/runtime checks passing. The Bazel pair
+targets above point directly to source targets so a new release or canary never
+depends on an older published copy.
 
-MSVC is not part of the Bazel-produced matrix yet. The repository's current
-hermetic Windows C++ platform is `windows-gnullvm`/`x86_64-w64-windows-gnu`, so
-it cannot truthfully reproduce upstream's `*-pc-windows-msvc` archives until we
-add a real MSVC-targeting C++ toolchain to the Bazel graph.
+Native Windows x64 and ARM64 hosts can build sandbox archives and matching
+Rust bindings with pinned clang-cl and the installed Microsoft SDK using
+`//third_party/v8:v8_152_2_0_x86_64_pc_windows_msvc_bazel` and
+`//third_party/v8:v8_152_2_0_aarch64_pc_windows_msvc_bazel`.
+The producer selectors `//third_party/v8:rusty_v8_native_windows_archive_for_target`
+and `//third_party/v8:rusty_v8_native_windows_binding_for_target` select source
+outputs directly. Both use the same sandbox, pointer compression, target CPU,
+and Chromium libc++ profile. The bindings use V8's compiled headers and defines
+so their sizes follow the archive, including CppGC members. Bazel MSVC consumers
+use the newly built archive and bindings together.
+
+The owned engine policy preserves the GN MSVC defaults for GC-managed microtask
+queues, random Wasm module generation, disabled imminent-deprecation warnings,
+and external TypedArray backing stores. Other source targets retain the published
+Unix policy, including a 64-byte inline TypedArray threshold. Generated Rust
+bindings use that same threshold; never pair a native 64-byte threshold with
+GN's size-zero binding constant. These are fixed platform choices, not additional
+developer build switches.
+
+Use a native Visual Studio Developer PowerShell with the C++ tools and Windows
+SDK available. The SDK supplies headers, libraries, `dumpbin.exe`, and the
+assembler. From the repo root, build the archive for that host:
+
+```powershell
+bazel build --config=ci-windows-msvc `
+  --host_platform=//:local_windows_msvc --platforms=//:local_windows_msvc `
+  //third_party/v8:rusty_v8_native_windows_archive_for_target `
+  //third_party/v8:rusty_v8_native_windows_binding_for_target
+```
+
+Bazel fetches and verifies LLVM 22.1.8 for the host, the same major and patch
+version as the libclang that generates bindings. The V8 artifact profile selects
+clang-cl, lld-link, llvm-lib and compiler-rt only for its Windows MSVC source
+archive and bindings, together with the installed SDK. Bazel consumers now
+cross this same boundary automatically. Other C++
+dependencies in the same `ci-windows-msvc` build keep the installed MSVC
+compiler; no whole-build V8 compiler flag is needed.
+
+This is a native Windows build, not an x64-to-ARM64 or remote Linux build:
+V8's snapshot generator must execute on the target architecture. The repository
+inputs pinned in #4009 are MSVC/SDK files, not a registered clang-cl toolchain;
+making them replace the installed SDK is the separate hermetic MSVC migration.
 
 Release and CI Cargo builds for Darwin and Linux use `RUSTY_V8_ARCHIVE` plus a
 downloaded `RUSTY_V8_SRC_BINDING_PATH` to point at those `openai/codex` release
@@ -140,17 +177,29 @@ the exact resolved `v8` crate version in `codex-rs/Cargo.lock`.
 
 ## Source dependency ownership
 
-The Darwin, Linux GNU/musl and Windows GNU source targets consume Codex-owned
+The Darwin, Linux GNU/musl and Windows source targets consume Codex-owned
 Abseil, Highway, simdutf, ICU, fast_float, dragonbox and fp16 repositories.
 `dependencies.bzl` declares the pinned imports; the `*.BUILD.bazel` overlays
 here declare the targets V8 uses. Abseil, Highway and simdutf apply their C++ runtime
 settings through `dependency_config.bzl`; ICU defines its settings in its own
 overlay.
 
-V8's module has a small dependency ingress. The root `MODULE.bazel` injects
-the seven Codex repositories there, so V8's `@highway`, `@icu`, etc. resolve to
-the same repositories Codex declares. The bridge has no fallback downloads.
-V8's BUILD patch still wires these targets into its generator and library graph.
+`engine_repository.bzl` fetches the V8 source pin and installs Codex's engine
+BUILD into `@v8`. Source filegroups are read from the pinned upstream BUILD
+each fetch, including added, removed or reordered groups. The importer rejects
+missing boundaries, malformed or empty sections, and new compiled targets. Only
+the two known Dragonbox and FP16 declarations are skipped, since the dependency
+overlays already supply them. `v8_binary` is valid V8 syntax, but compiled targets
+must be reviewed against the owned engine BUILD on an upgrade.
+The upstream `bazel/config` platform and CPU package is reused; only the CPU
+setting changes from a CLI flag to an internal setting. `v8_defs.patch` records
+that change and the Codex differences to upstream's `bazel/defs.bzl`:
+internal ABI/runtime settings, their visibility, libc++ headers/runtime, Windows
+compiler and linker settings, and snapshot generation. All engine rules,
+including Torque and V8's test configuration helpers, load from that file.
+The engine BUILD owns feature policy and dependency targets. ABI, runtime and
+CPU settings are selected together by `artifact_profile.bzl` for source and
+release-pair targets.
 
 V8's private Abseil is built from the pinned 20250814.1 sources and uses
 `codex_v8_lts_20250814` for its supported inline-namespace option. Protobuf
@@ -165,9 +214,12 @@ autoupdater: the prebuilt checksum commands above and their CI check validate
 published archive/binding pairs, not these source revisions. Bazel verifies
 the declared download hashes and Git revisions; it does not choose them for us.
 
-Use the V8 tag in the root `MODULE.bazel` `archive_override(module_name = "v8")`
+Use the V8 tag in the root `MODULE.bazel` `engine_repository(name = "v8")`
 (currently `15.2.124.1`) as the input. Read that tag's **unpatched** `DEPS`
-and `MODULE.bazel`; the fetched `@v8` MODULE has Codex's bridge applied.
+and `MODULE.bazel`; `@v8` deliberately does not include upstream's MODULE.
+On an upgrade, also review `v8_defs.patch` against the new `bazel/defs.bzl`
+and run the V8 source canary. A cleanly applying patch does not by itself
+verify new upstream defaults or code-generation behavior.
 
 ```bash
 v8_tag=15.2.124.1 # Replace with the V8 source tag selected for this upgrade.

@@ -33,7 +33,11 @@ fn instructions_preserve_source_order_and_whole_records() {
         },
         RetainedInputSource::Local(None),
     );
-    let rendered = render_retained_instructions(&context, retained_assistant_message);
+    let rendered = render_retained_instructions(
+        &context,
+        retained_assistant_message,
+        crate::ContextTarget::Async,
+    );
     assert_eq!(
         rendered
             .into_iter()
@@ -62,7 +66,23 @@ fn instructions_preserve_source_order_and_whole_records() {
         },
         RetainedInputSource::Local(None),
     );
-    let rendered = render_retained_instructions(&context, retained_assistant_message);
+    let rendered = render_retained_instructions(
+        &context,
+        retained_assistant_message,
+        crate::ContextTarget::Async,
+    );
+    let history = RetainedTranscript {
+        retained: context,
+        messages: Vec::new(),
+    };
+    assert_eq!(
+        transcript_context(&history, &crate::ContextProfile::synchronous())
+            .retained_instructions()
+            .into_messages(),
+        transcript_context(&history, &crate::ContextProfile::asynchronous())
+            .retained_instructions()
+            .into_messages(),
+    );
     assert_eq!(rendered.len(), 2);
     assert!(rendered[0].content.starts_with("Host notice:"));
     assert!(
@@ -106,7 +126,11 @@ fn ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions(
     ] {
         let composed = crate::composition::CollectedContext {
             sections: vec![ContextSection::RetainedUserInstructions {
-                items: render_retained_instructions(&context, retained_assistant_message),
+                items: render_retained_instructions(
+                    &context,
+                    retained_assistant_message,
+                    crate::ContextTarget::Async,
+                ),
             }],
         }
         .compose(
@@ -141,21 +165,34 @@ fn ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions(
         assert!(text.contains("Some context was omitted."));
         assert!(!text.contains("Deploy to staging?"));
     }
-    let user_instruction = render_retained_instructions(&context, retained_assistant_message)
-        .pop()
-        .unwrap();
+    let user_instruction = render_retained_instructions(
+        &context,
+        retained_assistant_message,
+        crate::ContextTarget::Async,
+    )
+    .pop()
+    .unwrap();
     let mut checkpoint = serde_json::to_value(&context).unwrap();
     checkpoint["assistant_messages"][0]["text"] = "".into();
     let restored = serde_json::from_value(checkpoint.clone()).unwrap();
     assert_eq!(
-        render_retained_instructions(&restored, retained_assistant_message),
+        render_retained_instructions(
+            &restored,
+            retained_assistant_message,
+            crate::ContextTarget::Async
+        ),
         vec![user_instruction]
     );
     checkpoint["assistant_messages"][0]["complete"] = false.into();
     let restored = serde_json::from_value(checkpoint).unwrap();
     assert_eq!(
-        render_retained_instructions(&restored, retained_assistant_message)[0],
+        render_retained_instructions(
+            &restored,
+            retained_assistant_message,
+            crate::ContextTarget::Async
+        )[0],
         RetainedInstructionItem {
+            original_assistant_bytes: 0,
             content: GuardianRootMessage::IncompleteAssistantContext.render(),
             kind: RetainedInstructionKind::HostNotice,
             source: None,
@@ -167,15 +204,32 @@ fn ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions(
             origin: codex_history::UserInputOrigin::User,
             turn_id: "large".to_owned(),
             message_id: Some("large".to_owned()),
-            text: "x".repeat(4_000),
+            text: "x".repeat(3_570 - "assistant: \n".len()),
             complete: true,
         },
         RetainedInputSource::Local(Some(2)),
     );
-    let rendered = render_retained_instructions(&context, retained_assistant_message);
+    let rendered = render_retained_instructions(
+        &context,
+        retained_assistant_message,
+        crate::ContextTarget::Async,
+    );
+    let history = RetainedTranscript {
+        retained: context,
+        messages: Vec::new(),
+    };
+    assert_eq!(
+        transcript_context(&history, &crate::ContextProfile::synchronous())
+            .retained_instructions()
+            .into_messages(),
+        transcript_context(&history, &crate::ContextProfile::asynchronous())
+            .retained_instructions()
+            .into_messages(),
+    );
     assert_eq!(
         rendered[0],
         RetainedInstructionItem {
+            original_assistant_bytes: 0,
             content: GuardianRootMessage::IncompleteAssistantContext.render(),
             kind: RetainedInstructionKind::HostNotice,
             source: None,
@@ -190,7 +244,7 @@ fn ordinary_exchanges_keep_roles_and_drop_assistant_context_before_restrictions(
 
 #[test]
 fn legacy_verified_answers_keep_distinct_source_order() {
-    let context: RetainedContext = serde_json::from_value(serde_json::json!({
+    let mut context: RetainedContext = serde_json::from_value(serde_json::json!({
         "verified_answers": [
             {"turn_id": "old", "call_id": "grant", "questions": [{"question": "Publish?", "answer": "Yes."}]},
             {"turn_id": "old", "call_id": "revoke", "questions": [{"question": "Still publish?", "answer": "No."}]}
@@ -204,6 +258,38 @@ fn legacy_verified_answers_keep_distinct_source_order() {
             "Retained source order: 1\nassistant: Still publish?\nuser: No.\n".to_owned(),
         ]
     );
+    context.record(&RetainedContextEvent::VerifiedAnswer {
+        answer: VerifiedAnswer {
+            turn_id: "large".into(),
+            call_id: "large".into(),
+            questions: vec![VerifiedQuestionAnswer {
+                question: "Publish?".into(),
+                answer: "Only if conditions hold. ".repeat(200),
+            }],
+        },
+        acceptance_order: None,
+    });
+    let raw = crate::collect_verified_answer_candidates(&context);
+    let old = crate::render_verified_answers(&context);
+    assert!(!old.complete);
+    let [actual, expected] =
+        [raw, old.fragments.into_iter().map(Into::into).collect()].map(|items| {
+            crate::CollectedContext {
+                sections: vec![ContextSection::TrustedUserAnswers { items }],
+            }
+            .compose(
+                crate::ContextPresentation::SyncFull {
+                    session_id: "worker",
+                },
+                crate::ContextProfile::synchronous().prepare_transcript(
+                    /*transcript_entries*/ &[],
+                    /*entry_number_offset*/ 0,
+                ),
+            )
+            .unwrap()
+            .into_messages()
+        });
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -224,7 +310,7 @@ fn delivery_uses_source_revision_and_complete_host_metadata() {
                 retained: retained.clone(),
                 messages: Vec::new(),
             },
-            crate::ContextProfile::asynchronous(),
+            &crate::ContextProfile::asynchronous(),
         )
         .retained_instructions()
     };
@@ -266,12 +352,6 @@ fn delivery_uses_source_revision_and_complete_host_metadata() {
     let mut omitted = RetainedContext::default();
     omitted.mark_user_messages_incomplete();
     let original = compose(&omitted);
-    let mut independent = original.clone();
-    independent.deduplicate_transcript_instructions();
-    assert_eq!(
-        independent.into_annotated_messages(),
-        original.clone().into_annotated_messages()
-    );
     let mut next = original.clone();
     next.retain_new_instructions(&delivered);
     assert!(next.into_messages().is_empty());
@@ -341,7 +421,7 @@ impl crate::SectionHistory for RetainedTranscript {
 
 fn transcript_context(
     history: &RetainedTranscript,
-    profile: crate::ContextProfile,
+    profile: &crate::ContextProfile,
 ) -> ComposedContext {
     let answers = crate::render_verified_answers(&history.retained);
     let collected = crate::default_registry()
@@ -350,7 +430,12 @@ fn transcript_context(
             history,
             transcript: &profile.transcript,
             root_conversation: &[],
-            trusted_user_answers: &answers.fragments,
+            root_conversation_candidates: None,
+            trusted_user_answers: &answers
+                .fragments
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>(),
             planned_action: None,
             permissions: None,
             previous_reviews: None,
@@ -424,12 +509,8 @@ fn transcript_original_requires_complete_source_proof_and_survives_budgeting() {
         crate::ContextProfile::synchronous(),
         crate::ContextProfile::asynchronous(),
     ] {
-        let deduplicate = |context: &mut ComposedContext| match profile.target {
-            crate::ContextTarget::Sync => context.retain_new_instructions(&[]),
-            crate::ContextTarget::Async => context.deduplicate_transcript_instructions(),
-        };
-        let mut context = transcript_context(&history, profile);
-        deduplicate(&mut context);
+        let mut context = transcript_context(&history, &profile);
+        context.retain_new_instructions(&[]);
         let guidance = vec![crate::composition::user_message(vec![
             ContentItem::InputText {
                 text: format!("{START}\n"),
@@ -439,20 +520,18 @@ fn transcript_original_requires_complete_source_proof_and_survives_budgeting() {
             },
         ])];
         assert_eq!(context.retained_instructions().into_messages(), guidance);
-        if profile.target == crate::ContextTarget::Sync {
-            let mut delivered = context.clone().into_annotated_messages();
-            let mut next = transcript_context(&history, profile);
-            next.retain_new_instructions(&delivered);
-            assert!(next.retained_instructions().into_messages().is_empty());
-            for envelope in &mut delivered {
-                if let Some(metadata) = &mut envelope.metadata {
-                    metadata.mark_retained_sources_incomplete();
-                }
+        let mut delivered = context.clone().into_annotated_messages();
+        let mut next = transcript_context(&history, &profile);
+        next.retain_new_instructions(&delivered);
+        assert!(next.retained_instructions().into_messages().is_empty());
+        for envelope in &mut delivered {
+            if let Some(metadata) = &mut envelope.metadata {
+                metadata.mark_retained_sources_incomplete();
             }
-            let mut next = transcript_context(&history, profile);
-            next.retain_new_instructions(&delivered);
-            assert_eq!(next.retained_instructions().into_messages(), guidance);
         }
+        let mut next = transcript_context(&history, &profile);
+        next.retain_new_instructions(&delivered);
+        assert_eq!(next.retained_instructions().into_messages(), guidance);
         let budget = crate::RequestBudget {
             max_input_tokens: context.estimated_tokens() - 1,
             existing_context_tokens: 0,
@@ -472,9 +551,9 @@ fn transcript_original_requires_complete_source_proof_and_survives_budgeting() {
             .mark_retained_sources_incomplete();
         for metadata in [history.messages[0].metadata.take(), None] {
             history.messages[0].metadata = metadata;
-            let mut context = transcript_context(&history, profile);
+            let mut context = transcript_context(&history, &profile);
             let originals = context.retained_instructions().into_annotated_messages();
-            deduplicate(&mut context);
+            context.retain_new_instructions(&[]);
             assert_eq!(
                 context.retained_instructions().into_annotated_messages(),
                 originals
@@ -502,7 +581,7 @@ fn coalesced_repl_text_cannot_attest_to_host_omission_delivery() {
         RetainedInputSource::Local(Some(0)),
     );
     let profile = crate::ContextProfile::synchronous();
-    let mut previous = transcript_context(&history, profile);
+    let mut previous = transcript_context(&history, &profile);
     // Multimodal REPL results preserve raw text parts, coalesced with host guidance.
     previous.sections.push(crate::composition::SectionOutput {
         id: "node_repl_evidence",
@@ -522,7 +601,7 @@ fn coalesced_repl_text_cannot_attest_to_host_omission_delivery() {
     let (_, sync_metadata) = previous.into_annotated_user_inputs().unwrap();
     assert_eq!(sync_metadata, delivered[0].metadata);
     history.retained.mark_user_messages_incomplete();
-    let current = transcript_context(&history, profile).retained_instructions();
+    let current = transcript_context(&history, &profile).retained_instructions();
     let expected = vec![crate::composition::user_message(
         [START, USER_OMISSION, END]
             .map(|text| ContentItem::InputText {

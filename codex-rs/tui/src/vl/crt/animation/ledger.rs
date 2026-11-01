@@ -131,7 +131,7 @@ impl CrtAnimationLedger {
         let push = |wake: &mut Option<Duration>, d: Duration| {
             if d.is_zero() {
                 *wake = Some(Duration::from_millis(16));
-            } else if wake.map_or(true, |w| d < w) {
+            } else if wake.is_none_or(|w| d < w) {
                 *wake = Some(d);
             }
         };

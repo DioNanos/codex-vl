@@ -116,7 +116,11 @@ mod tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         surface.render(Rect::new(0, 0, 40, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(rendered.contains("(  o  o  )") || rendered.contains("(  -  o  )"));
         assert!(!rendered.contains("L05"));
         assert!(!rendered.contains("EN73"));
@@ -155,7 +159,11 @@ mod tests {
 
             let mut buf = Buffer::empty(Rect::new(0, 0, width, 3));
             surface.render(Rect::new(0, 0, width, 3), &mut buf);
-            let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+            let rendered: String = buf
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
             assert_eq!(rendered.len(), width as usize * 3);
             assert!(!rendered.contains("watching"));
             assert!(!rendered.contains("focus"));

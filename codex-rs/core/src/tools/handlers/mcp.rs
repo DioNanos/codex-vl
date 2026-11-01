@@ -90,8 +90,7 @@ impl McpHandlerDefinition {
 
 pub struct McpHandler {
     definition: Arc<McpHandlerDefinition>,
-    code_mode_tool_definitions:
-        OnceLock<(Option<usize>, bool, Vec<codex_code_mode::ToolDefinition>)>,
+    code_mode_tool_definitions: OnceLock<(Option<usize>, Vec<codex_code_mode::ToolDefinition>)>,
 }
 
 #[cfg(test)]
@@ -278,7 +277,8 @@ impl McpHandler {
             .map(TruncationPolicy::Tokens)
             .unwrap_or(step_context.settings.model_info.truncation_policy.into());
         let started = Instant::now();
-        let result = handle_mcp_tool_call(
+        // Bound the compiler's async-layout query depth for approval and dispatch.
+        let result = Box::pin(handle_mcp_tool_call(
             Arc::clone(&session),
             &step_context,
             &cancellation_token,
@@ -290,7 +290,7 @@ impl McpHandler {
             tool_name,
             &source,
             payload,
-        )
+        ))
         .await;
 
         Ok(boxed_tool_output(McpToolOutput {
@@ -329,29 +329,19 @@ impl CoreToolRuntime for McpHandler {
     fn cached_code_mode_definitions(
         &self,
         code_mode_input_schema_max_bytes: Option<usize>,
-        tool_description_first: bool,
     ) -> Option<&[codex_code_mode::ToolDefinition]> {
-        let (cached_budget, cached_tool_description_first, definitions) =
-            self.code_mode_tool_definitions.get_or_init(|| {
-                let mut definitions = codex_tools::collect_code_mode_tool_definitions(
-                    std::iter::once(self.definition.spec.as_ref()),
-                    code_mode_input_schema_max_bytes,
-                    tool_description_first,
-                );
-                for definition in &mut definitions {
-                    definition.input_schema = None;
-                    definition.output_schema = None;
-                }
-                (
-                    code_mode_input_schema_max_bytes,
-                    tool_description_first,
-                    definitions,
-                )
-            });
-        // Reuse definitions only when both rendering inputs match.
-        (*cached_budget == code_mode_input_schema_max_bytes
-            && *cached_tool_description_first == tool_description_first)
-            .then_some(definitions.as_slice())
+        let (cached_budget, definitions) = self.code_mode_tool_definitions.get_or_init(|| {
+            let mut definitions = codex_tools::collect_code_mode_tool_definitions(
+                std::iter::once(self.definition.spec.as_ref()),
+                code_mode_input_schema_max_bytes,
+            );
+            for definition in &mut definitions {
+                definition.input_schema = None;
+                definition.output_schema = None;
+            }
+            (code_mode_input_schema_max_bytes, definitions)
+        });
+        (*cached_budget == code_mode_input_schema_max_bytes).then_some(definitions.as_slice())
     }
 
     fn wait_until_ready<'a>(&'a self, session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
@@ -545,6 +535,7 @@ impl CoreToolRuntime for McpHandler {
         let tool_response =
             result.post_tool_use_response(&invocation.call_id, &invocation.payload)?;
         Some(PostToolUsePayload {
+            tool_cwd: result.post_tool_use_cwd(),
             tool_name: self.hook_tool_name(),
             tool_use_id: invocation.call_id.clone(),
             tool_input: result.post_tool_use_input(&invocation.payload)?,
@@ -834,6 +825,7 @@ mod tests {
         assert_eq!(
             handler.post_tool_use_payload(&invocation, &output),
             Some(PostToolUsePayload {
+                tool_cwd: None,
                 tool_name: HookToolName::new("mcp__filesystem__read_file"),
                 tool_use_id: "call-mcp-post".to_string(),
                 tool_input: json!({
@@ -902,36 +894,17 @@ mod tests {
         ));
 
         let first = handler
-            .cached_code_mode_definitions(
-                /*code_mode_input_schema_max_bytes*/ None,
-                /*tool_description_first*/ false,
-            )
+            .cached_code_mode_definitions(/*code_mode_input_schema_max_bytes*/ None)
             .expect("MCP definitions should be cached");
         assert_eq!(first.len(), 1);
         assert!(first[0].input_schema.is_none());
         assert!(first[0].output_schema.is_none());
 
-        assert!(
-            handler
-                .cached_code_mode_definitions(
-                    /*code_mode_input_schema_max_bytes*/ None,
-                    /*tool_description_first*/ true,
-                )
-                .is_none()
-        );
-
         let second = handler
-            .cached_code_mode_definitions(
-                /*code_mode_input_schema_max_bytes*/ None,
-                /*tool_description_first*/ false,
-            )
+            .cached_code_mode_definitions(/*code_mode_input_schema_max_bytes*/ None)
             .expect("MCP definitions should be cached");
         assert!(std::ptr::eq(first, second));
-        assert!(
-            handler
-                .cached_code_mode_definitions(Some(32_000), /*tool_description_first*/ false)
-                .is_none()
-        );
+        assert!(handler.cached_code_mode_definitions(Some(32_000)).is_none());
     }
 
     #[test]

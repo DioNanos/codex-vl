@@ -121,7 +121,7 @@ impl LoopJobPayload {
                 format!("internal_fn:{fn_name}")
             }
             Self::InternalFn { fn_name, args } => {
-                format!("internal_fn:{fn_name} {}", args)
+                format!("internal_fn:{fn_name} {args}")
             }
         }
     }

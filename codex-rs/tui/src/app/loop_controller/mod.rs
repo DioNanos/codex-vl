@@ -286,6 +286,10 @@ impl App {
     }
 
     /// codex-vl: dispatch a Vivling-managed loop tick.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal loop/VL signature still evolving; a parameter struct would churn callers for no behavior gain"
+    )]
     pub(super) fn run_vivling_loop_tick(
         &mut self,
         thread_id: ThreadId,

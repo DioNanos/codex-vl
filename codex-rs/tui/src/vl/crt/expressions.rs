@@ -41,7 +41,7 @@ fn put_if_space(surface: &mut CrtSurface, x: u16, y: u16, ch: char, style: Style
 
 fn idle(surface: &mut CrtSurface, tick: u64, palette: &Palette, art_right: u16, width: u16) {
     // very subtle "breath" tick to the right of the face
-    if tick % 8 == 0 && art_right + 1 < width {
+    if tick.is_multiple_of(8) && art_right + 1 < width {
         put_if_space(surface, art_right + 1, 0, '`', palette.dim);
     }
 }
@@ -71,7 +71,7 @@ fn working(surface: &mut CrtSurface, tick: u64, palette: &Palette, art_right: u1
         _ => '_',
     };
     put_if_space(surface, art_right + 1, 1, tool, palette.signal);
-    if phase % 2 == 0 && art_right + 2 < width {
+    if phase.is_multiple_of(2) && art_right + 2 < width {
         put_if_space(surface, art_right + 2, 0, '*', palette.signal);
     }
 }
@@ -84,7 +84,7 @@ fn alert(
     art_right: u16,
     width: u16,
 ) {
-    let blink = tick % 2 == 0;
+    let blink = tick.is_multiple_of(2);
     let ch = if blink { '!' } else { ':' };
     if art_right + 1 < width {
         put_if_space(surface, art_right + 1, 0, ch, palette.alert);

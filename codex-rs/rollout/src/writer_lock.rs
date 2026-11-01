@@ -1,5 +1,5 @@
 //! Shared cross-process ownership for local thread writers and rollout publication.
-//! Thread lock-file creation and removal uses the existing home coordination lock.
+//! Thread lock-file creation and removal uses a bounded wait for the home coordination lock.
 
 use std::fs;
 use std::fs::File;
@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 
 use codex_protocol::ThreadId;
 use tracing::warn;
@@ -133,12 +135,26 @@ impl WriterLockCoordinator {
             .create(true)
             .truncate(false)
             .open(self.directory.join(COORDINATION_LOCK_FILE))?;
-        if let Err(err) = file.lock()
-            && !is_unsupported_file_lock_error(&err)
-        {
-            return Err(io::Error::other(format!(
-                "failed to acquire thread writer coordination lock: {err}"
-            )));
+        let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(/*millis*/ 50));
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
+                    ));
+                }
+                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
+                    // No advisory locking on this filesystem: proceed unlocked
+                    // rather than refuse to open the thread.
+                    break;
+                }
+                Err(fs::TryLockError::Error(err)) => return Err(err),
+            }
         }
         Ok(file)
     }
