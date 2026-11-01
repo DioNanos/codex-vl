@@ -25,6 +25,49 @@ Linux x64, Linux arm64 (Raspberry Pi 4 / 5 and other arm64 boards) and Termux
 Android arm64 installs use packaged native binaries. npm 11 and later require
 explicit permission for the package postinstall script.
 
+### Quick install (standalone installer)
+
+The standalone installer downloads a prebuilt package from the GitHub
+releases, verifies it against the release `SHA256SUMS` manifest and the
+GitHub-published asset digest, checks the installed binary reports the
+expected version, and installs the `codex-vl` command under
+`~/.codex/packages/standalone-vl/`. It never touches the official `codex`
+command, `~/.codex/packages/standalone`, Homebrew, or any npm install, and it
+never runs as root.
+
+Download, read, then run:
+
+```bash
+curl -fsSLO https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh
+less install.sh
+sh install.sh
+```
+
+Or the one-liner, if you prefer:
+
+```bash
+curl -fsSL https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh | sh
+```
+
+Pin a specific release with `CODEX_RELEASE`:
+
+```bash
+CODEX_RELEASE=0.165.0-vl.1 sh install.sh
+```
+
+On Termux the installer detects Android automatically, installs the
+`aarch64-linux-android` package, and puts the symlink in `$PREFIX/bin`; also
+install ripgrep, which the Android package does not bundle:
+
+```bash
+pkg install ripgrep
+```
+
+Remove the standalone install later with `sh install.sh --uninstall`. The
+installer disables automatic updates by design: re-run it (with or without
+`CODEX_RELEASE`) to update. macOS arm64 has no prebuilt package yet; on macOS
+use the npm source build below.
+
 Install the latest release on Linux x64, Linux arm64, or Termux arm64.
 
 ```bash
@@ -108,8 +151,8 @@ Check the version under the local prefix.
 
 ## Release Channels
 
-The `latest` and `next` channels both point to `0.165.0-vl.1`, based on
-upstream Codex `rust-v0.165.0`. The conservative `stable` tag currently points
+The `latest` and `next` channels both point to `0.166.0-vl.1`, based on
+upstream Codex `rust-v0.166.0`. The conservative `stable` tag currently points
 to `0.153.2-vl.2`.
 
 Packages cover Linux x64, Linux arm64 (musl), Android arm64, and macOS arm64

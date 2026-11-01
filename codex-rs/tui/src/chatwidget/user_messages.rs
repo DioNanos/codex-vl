@@ -65,6 +65,7 @@ pub(super) enum ShellEscapePolicy {
 pub(super) enum UserMessageSource {
     Prompt,
     QuestionAnswer,
+    SafetyRecourse,
 }
 
 /// Whether a recovered message can be submitted without risking a duplicate.
@@ -77,6 +78,7 @@ pub(super) enum MessageDelivery {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct QueuedUserMessage {
     pub(super) user_message: UserMessage,
+    pub(super) prepared_images: Option<Vec<UserInput>>,
     pub(super) action: QueuedInputAction,
     pub(super) delivery: MessageDelivery,
     pub(super) pending_pastes: Vec<(String, String)>,
@@ -87,6 +89,7 @@ impl QueuedUserMessage {
     pub(super) fn new(user_message: UserMessage, action: QueuedInputAction) -> Self {
         Self {
             user_message,
+            prepared_images: None,
             action,
             delivery: MessageDelivery::Unsent,
             pending_pastes: Vec::new(),
@@ -578,7 +581,7 @@ pub(super) fn merge_user_messages_with_history_record(
 pub(crate) struct UserMessageDisplay {
     pub(crate) message: String,
     // Keep distinct replies distinct when their visible question and answer text match.
-    question_ids: Vec<String>,
+    pub(super) replies: Vec<crate::async_question_reply::AsyncQuestionReply>,
     pub(crate) remote_image_urls: Vec<String>,
     pub(crate) local_images: Vec<PathBuf>,
     pub(crate) text_elements: Vec<TextElement>,
@@ -709,20 +712,13 @@ impl ChatWidget {
         local_images: Vec<PathBuf>,
         remote_image_urls: Vec<String>,
     ) -> UserMessageDisplay {
-        let question_ids = crate::async_question_reply::parse(&message)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|reply| reply.question_item_id)
-            .collect();
-        let reply_text = crate::async_question_reply::display_text(&message);
+        let replies = crate::async_question_reply::parse(&message);
         let (message, prompt_request_offset) =
             crate::user_prompt::extract_prompt_request_with_offset(&message);
-        if let Some(message) =
-            reply_text.or_else(|| crate::async_question_reply::display_text(message))
-        {
+        if let Some(replies) = replies.or_else(|| crate::async_question_reply::parse(message)) {
             return UserMessageDisplay {
-                message,
-                question_ids,
+                message: crate::async_question_reply::display_replies(&replies),
+                replies,
                 text_elements: Vec::new(),
                 local_images,
                 remote_image_urls,
@@ -750,7 +746,7 @@ impl ChatWidget {
 
         UserMessageDisplay {
             message: message.to_string(),
-            question_ids: Vec::new(),
+            replies: Vec::new(),
             remote_image_urls,
             local_images,
             text_elements,

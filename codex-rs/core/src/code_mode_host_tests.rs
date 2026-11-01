@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_code_mode::CodeModeProcessMetricsSample;
 use codex_code_mode::CodeModeSession;
 use codex_code_mode::CodeModeSessionProvider;
 use codex_code_mode::ExecuteRequest;
@@ -20,6 +21,10 @@ use super::HostConnection;
 use super::ProcessOwnedGrpcCodeModeSessionProvider;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 20);
+
+#[cfg(unix)]
+#[path = "code_mode_host_lifecycle_tests.rs"]
+mod lifecycle;
 
 async fn execute(
     session: &Arc<dyn CodeModeSession>,
@@ -64,8 +69,24 @@ async fn grpc_stdio_sessions_share_a_host_and_isolate_state() -> Result<()> {
     #[cfg(not(unix))]
     let host_program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
     let provider = ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(host_program);
+    assert_eq!(
+        provider
+            .sample_process_metrics()
+            .await
+            .map_err(anyhow::Error::msg)?,
+        CodeModeProcessMetricsSample::NotRunning
+    );
+    #[cfg(unix)]
+    assert!(recorder.invocations()?.is_empty());
     let (first, second) = tokio::try_join!(provider.create_session(), provider.create_session())
         .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        provider
+            .sample_process_metrics()
+            .await
+            .map_err(anyhow::Error::msg)?,
+        CodeModeProcessMetricsSample::Unsupported
+    );
     assert_eq!(
         execute(&first, "store(\"stored\", 42); text(load(\"stored\"));").await?,
         vec![FunctionCallOutputContentItem::InputText {
@@ -92,6 +113,23 @@ async fn grpc_stdio_sessions_share_a_host_and_isolate_state() -> Result<()> {
         vec!["--listen grpc+stdio://".to_string()],
         "both sessions must share one gRPC host process"
     );
+    drop(first);
+    drop(second);
+    drop(provider);
+    #[cfg(unix)]
+    {
+        let pid = recorder.pid()?;
+        timeout(TEST_TIMEOUT, async {
+            while unsafe {
+                libc::kill(pid as libc::pid_t, /*sig*/ 0)
+            } == 0
+            {
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        })
+        .await
+        .context("metrics retained the host after provider teardown")?;
+    }
     Ok(())
 }
 
@@ -122,6 +160,16 @@ async fn hung_grpc_stdio_host_is_reaped_and_the_session_recovers() -> Result<()>
     if unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    // A metrics deadline cancels only its stream. It must neither reap the
+    // suspended child nor advance the independent 30s/10s keepalive deadline.
+    assert!(provider.sample_process_metrics().await.is_err());
+    assert_eq!(
+        unsafe {
+            libc::kill(pid as libc::pid_t, /*sig*/ 0)
+        },
+        0
+    );
+    assert_eq!(recorder.invocations()?.len(), 1);
     timeout(Duration::from_secs(/*secs*/ 55), async {
         while unsafe {
             libc::kill(pid as libc::pid_t, /*sig*/ 0)
@@ -132,6 +180,18 @@ async fn hung_grpc_stdio_host_is_reaped_and_the_session_recovers() -> Result<()>
     })
     .await
     .context("unresponsive host was not killed and reaped")?;
+    assert_eq!(
+        provider
+            .sample_process_metrics()
+            .await
+            .map_err(anyhow::Error::msg)?,
+        CodeModeProcessMetricsSample::NotRunning
+    );
+    assert_eq!(
+        recorder.invocations()?.len(),
+        1,
+        "metrics must not restart a dead host"
+    );
     let reset = execute(&session, r#"store("recovery", "must not run");"#)
         .await
         .unwrap_err();

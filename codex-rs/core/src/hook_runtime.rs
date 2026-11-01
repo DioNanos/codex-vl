@@ -31,6 +31,7 @@ use codex_otel::HOOK_RUN_METRIC;
 use codex_protocol::items::FunctionCallOutputItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::AskForApproval;
@@ -61,7 +62,8 @@ use tracing::instrument;
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::event_mapping::parse_turn_item;
+use crate::event_mapping::is_contextual_user_message_content;
+use crate::event_mapping::user_input_parts;
 use crate::guardian::GuardianReviewContext;
 use crate::hook_environment_executor::with_environment_hooks;
 use crate::hook_environment_executor::with_tool_environment_hooks;
@@ -71,6 +73,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::state::TurnState;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::registry::PostToolUsePayload;
 use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::turn_metadata::ExecutionMetadata;
 
@@ -196,6 +199,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
     tool_use_id: String,
     tool_name: &HookToolName,
     tool_input: &Value,
+    tool_cwd: Option<codex_utils_path_uri::PathUri>,
     target_environments: &[&str],
 ) -> PreToolUseHookResult {
     let turn_context = &step_context.turn;
@@ -204,6 +208,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
+        tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
@@ -279,6 +284,7 @@ pub(crate) async fn run_permission_request_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(review_context.environments(), turn_context).to_path_buf(),
+        tool_cwd: payload.tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: review_context.model_info.slug.clone(),
         permission_mode: hook_permission_mode(review_context.approval_policy),
@@ -307,19 +313,13 @@ pub(crate) async fn run_permission_request_hooks(
 
 /// Runs matching `PostToolUse` hooks after a tool has produced a successful output.
 ///
-/// The `tool_name`, matcher aliases, `tool_input`, and `tool_response` values are
-/// already adapted by the tool handler into the stable hook contract. Passing
+/// The payload is already adapted by the tool handler into the stable hook contract. Passing
 /// raw internal tool data here would leak implementation details into user hook
 /// matchers and hook logs.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_post_tool_use_hooks(
     sess: &Arc<Session>,
     step_context: &StepContext,
-    tool_use_id: String,
-    tool_name: String,
-    matcher_aliases: Vec<String>,
-    tool_input: Value,
-    tool_response: Value,
+    payload: PostToolUsePayload,
     target_environments: &[&str],
 ) -> PostToolUseOutcome {
     let turn_context = &step_context.turn;
@@ -328,14 +328,15 @@ pub(crate) async fn run_post_tool_use_hooks(
         turn_id: turn_context.sub_id.clone(),
         subagent: thread_spawn_subagent_hook_context(sess, turn_context),
         cwd: tool_hook_cwd(&step_context.environments, turn_context),
+        tool_cwd: payload.tool_cwd,
         transcript_path: sess.hook_transcript_path().await,
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
-        tool_name,
-        matcher_aliases,
-        tool_use_id,
-        tool_input,
-        tool_response,
+        tool_name: payload.tool_name.name().to_string(),
+        matcher_aliases: payload.tool_name.matcher_aliases().to_vec(),
+        tool_use_id: payload.tool_use_id,
+        tool_input: payload.tool_input,
+        tool_response: payload.tool_response,
     };
     let hooks = with_tool_environment_hooks(
         sess,
@@ -617,21 +618,38 @@ pub(crate) async fn run_post_compact_hooks(
     }
 }
 
+pub(crate) fn legacy_notify_input_messages(input: &[ResponseItem]) -> Vec<String> {
+    input
+        .iter()
+        .filter_map(|item| {
+            let ResponseItem::Message { role, content, .. } = item else {
+                return None;
+            };
+            if role != "user" || is_contextual_user_message_content(content) {
+                return None;
+            }
+            Some(
+                user_input_parts(content)
+                    .filter_map(|(_, part)| match part {
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        ContentItem::InputImage { .. }
+                        | ContentItem::InputAudio { .. }
+                        | ContentItem::OutputText { .. } => None,
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn run_legacy_after_agent_hook(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
-    input: &[ResponseItem],
+    input_messages: Vec<String>,
     last_assistant_message: Option<String>,
 ) -> bool {
     let mut abort_message = None;
-    let input_messages = input
-        .iter()
-        .filter_map(|item| match parse_turn_item(item) {
-            Some(TurnItem::UserMessage(user_message)) => Some(user_message.message()),
-            _ => None,
-        })
-        .collect();
     let hooks = sess.hooks();
     for hook_outcome in hooks
         .dispatch(codex_hooks::HookPayload {
@@ -1403,7 +1421,7 @@ mod tests {
             execution_mode: HookExecutionMode::Sync,
             builtin: false,
             scope: HookScope::Turn,
-            source_path: test_path_buf("/tmp/hooks.json").abs(),
+            source_path: test_path_buf("/tmp/hooks.json").abs().into(),
             source,
             display_order: 0,
             status,

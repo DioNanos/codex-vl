@@ -442,14 +442,14 @@ impl BottomPane {
             loop_tick_running,
             voice_tone,
         );
-        if lifecycle.should_persist() {
-            if let Some(home) = home {
-                let path = home.join("vivlings").join("live_stats.json");
-                if let Err(err) = lifecycle.stats.save_to(&path) {
-                    tracing::debug!("failed to persist vivling live stats: {err}");
-                }
-                lifecycle.mark_persisted();
+        if lifecycle.should_persist()
+            && let Some(home) = home
+        {
+            let path = home.join("vivlings").join("live_stats.json");
+            if let Err(err) = lifecycle.stats.save_to(&path) {
+                tracing::debug!("failed to persist vivling live stats: {err}");
             }
+            lifecycle.mark_persisted();
         }
         Some(result)
     }
@@ -468,7 +468,7 @@ impl BottomPane {
         let pane_changed = self.loop_context_label != label;
         let composer_changed = self.composer.set_loop_context_label(label.clone());
         if pane_changed || composer_changed {
-            self.loop_context_label = label.clone();
+            self.loop_context_label = label;
             self.request_redraw();
         }
     }
@@ -499,7 +499,7 @@ impl BottomPane {
     }
 
     pub(crate) fn is_vivling_baby_or_juvenile(&self) -> bool {
-        self.vivling.state.as_ref().map_or(false, |s| {
+        self.vivling.state.as_ref().is_some_and(|s| {
             let level = s.level;
             level < 60 // Baby: <30, Juvenile: 30-59
         })

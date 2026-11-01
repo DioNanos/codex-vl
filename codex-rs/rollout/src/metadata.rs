@@ -10,6 +10,7 @@ use chrono::NaiveDateTime;
 use chrono::Timelike;
 use chrono::Utc;
 use codex_protocol::RolloutId;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionMeta;
@@ -83,6 +84,7 @@ pub fn builder_from_items(
         | RolloutItem::RealtimeItem(_)
         | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::RetainedContext(_)
+        | RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::EventMsg(_) => None,
     }) && let Some(builder) = builder_from_session_meta(session_meta, rollout_path)
@@ -101,6 +103,11 @@ pub fn builder_from_items(
         created_at,
         SessionSource::default(),
     ))
+}
+
+/// Returns the stable thread ID from a canonical filename, including a reverted rollout's name.
+pub fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
+    Some(RolloutFileName::parse(path.file_name()?.to_str()?)?.thread_id())
 }
 
 /// Returns the rollout ID encoded in a canonical rollout filename.
@@ -175,6 +182,7 @@ pub async fn extract_metadata_from_rollout(
             | RolloutItem::RealtimeItem(_)
             | RolloutItem::TokenUsageRecord(_)
             | RolloutItem::RetainedContext(_)
+            | RolloutItem::DynamicToolsUpdated { .. }
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::EventMsg(_) => None,
         }),

@@ -9,8 +9,12 @@ use super::*;
 #[test]
 fn vertex_base_url_defaults_to_global_location() {
     assert_eq!(
-        vertex_base_url(Some("example-project"), /*location*/ None)
-            .expect("project should resolve a Vertex endpoint"),
+        vertex_base_url(
+            &ModelProviderInfo::default(),
+            Some("example-project"),
+            /*environment_location*/ None
+        )
+        .expect("project should resolve a Vertex endpoint"),
         "https://aiplatform.googleapis.com/v1/projects/example-project/locations/global/publishers/openai/v1"
     );
 }
@@ -18,31 +22,111 @@ fn vertex_base_url_defaults_to_global_location() {
 #[test]
 fn vertex_base_url_uses_explicit_location() {
     assert_eq!(
-        vertex_base_url(Some("example-project"), Some("us-central1"))
-            .expect("project and location should resolve a Vertex endpoint"),
+        vertex_base_url(
+            &ModelProviderInfo::default(),
+            Some("example-project"),
+            Some("us-central1")
+        )
+        .expect("project and location should resolve a Vertex endpoint"),
         "https://aiplatform.googleapis.com/v1/projects/example-project/locations/us-central1/publishers/openai/v1"
     );
 }
 
 #[test]
 fn vertex_base_url_explains_missing_project() {
-    let error = vertex_base_url(/*project*/ None, /*location*/ None)
-        .expect_err("missing project should be rejected");
+    let error = vertex_base_url(
+        &ModelProviderInfo::default(),
+        /*environment_project*/ None,
+        /*environment_location*/ None,
+    )
+    .expect_err("missing project should be rejected");
 
     assert_eq!(
         error.to_string(),
-        "Missing environment variable: `GOOGLE_CLOUD_PROJECT`. Set GOOGLE_CLOUD_PROJECT to your Google Cloud project ID, or configure model_providers.gcp.base_url."
+        "Missing environment variable: `GOOGLE_CLOUD_PROJECT`. Set model_providers.gcp.project_id or GOOGLE_CLOUD_PROJECT to your Google Cloud project ID, or configure model_providers.gcp.base_url."
     );
 }
 
 #[test]
 fn vertex_base_url_rejects_path_components() {
-    let error = vertex_base_url(Some("example-project/other"), /*location*/ None)
-        .expect_err("project must not add endpoint path components");
+    let error = vertex_base_url(
+        &ModelProviderInfo::default(),
+        Some("example-project/other"),
+        /*environment_location*/ None,
+    )
+    .expect_err("project must not add endpoint path components");
 
     assert_eq!(
         error.to_string(),
-        "GOOGLE_CLOUD_PROJECT must contain only ASCII letters, digits, and hyphens"
+        "GOOGLE_CLOUD_PROJECT must be non-empty and contain only ASCII letters, digits, and hyphens"
+    );
+}
+
+#[test]
+fn configured_vertex_endpoint_resolves_each_field_independently() {
+    for (project_id, location, expected) in [
+        (
+            Some("configured-project"),
+            Some("us-east4"),
+            "https://aiplatform.googleapis.com/v1/projects/configured-project/locations/us-east4/publishers/openai/v1",
+        ),
+        (
+            Some("configured-project"),
+            None,
+            "https://aiplatform.googleapis.com/v1/projects/configured-project/locations/us-central1/publishers/openai/v1",
+        ),
+        (
+            None,
+            Some("us-east4"),
+            "https://aiplatform.googleapis.com/v1/projects/environment-project/locations/us-east4/publishers/openai/v1",
+        ),
+    ] {
+        let info = ModelProviderInfo {
+            project_id: project_id.map(str::to_string),
+            location: location.map(str::to_string),
+            ..ModelProviderInfo::default()
+        };
+        assert_eq!(
+            vertex_base_url(&info, Some("environment-project"), Some("us-central1"))
+                .expect("configured fields should take precedence over environment values"),
+            expected
+        );
+    }
+}
+
+#[test]
+fn empty_configured_project_does_not_fall_back_to_environment() {
+    let info = ModelProviderInfo {
+        project_id: Some(String::new()),
+        ..ModelProviderInfo::default()
+    };
+    let error = vertex_base_url(&info, Some("environment-project"), Some("us-central1"))
+        .expect_err("invalid explicit config should not fall back to environment values");
+
+    assert_eq!(
+        error.to_string(),
+        "model_providers.gcp.project_id must be non-empty and contain only ASCII letters, digits, and hyphens"
+    );
+}
+
+#[tokio::test]
+async fn configured_project_and_location_build_api_provider() {
+    let provider = GcpModelProvider::new(
+        ModelProviderInfo {
+            project_id: Some("configured-project".to_string()),
+            location: Some("us-east4".to_string()),
+            ..ModelProviderInfo::create_gcp_provider()
+        },
+        /*auth_manager*/ None,
+    );
+
+    assert_eq!(
+        provider
+            .api_provider()
+            .await
+            .expect("configured endpoint should build")
+            .base_url,
+        "https://aiplatform.googleapis.com/v1/projects/configured-project/locations/us-east4/publishers/openai/v1"
     );
 }
 
@@ -60,6 +144,8 @@ async fn configured_base_url_bypasses_project_discovery() {
             .try_into()
             .expect("current directory should be absolute"),
     });
+    provider_info.project_id = Some("configured-project".to_string());
+    provider_info.location = Some("us-east4".to_string());
     let provider = GcpModelProvider::new(provider_info, /*auth_manager*/ None);
 
     assert_eq!(
@@ -75,6 +161,76 @@ async fn configured_base_url_bypasses_project_discovery() {
             .auth_manager()
             .expect("GCP should create a command-backed auth manager")
             .has_external_auth()
+    );
+}
+
+#[tokio::test]
+async fn credential_files_scope_token_caches_and_refreshes() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let first_file = tempdir.path().join("first credentials.json");
+    let second_file = tempdir.path().join("second credentials.json");
+    std::fs::write(&first_file, "first-token").unwrap();
+    std::fs::write(&second_file, "second-token").unwrap();
+
+    #[cfg(unix)]
+    let (command, args) = (
+        "sh".to_string(),
+        vec![
+            "-c".into(),
+            "cat \"$GOOGLE_APPLICATION_CREDENTIALS\"".into(),
+        ],
+    );
+    #[cfg(windows)]
+    let (command, args) = {
+        std::fs::write(
+            tempdir.path().join("read-token.cmd"),
+            "@type \"%GOOGLE_APPLICATION_CREDENTIALS%\"\r\n",
+        )
+        .unwrap();
+        (
+            "cmd.exe".to_string(),
+            vec!["/d".into(), "/c".into(), r".\read-token.cmd".into()],
+        )
+    };
+    let mut first_info = ModelProviderInfo::create_gcp_provider();
+    first_info.auth = Some(ModelProviderAuthInfo {
+        command,
+        args,
+        timeout_ms: std::num::NonZeroU64::new(5_000).unwrap(),
+        refresh_interval_ms: 300_000,
+        cwd: tempdir.path().try_into().unwrap(),
+    });
+    first_info.credential_file = Some(first_file.clone());
+    let mut second_info = first_info.clone();
+    second_info.credential_file = Some(second_file);
+    let first = GcpModelProvider::new(first_info, /*auth_manager*/ None);
+    let second = GcpModelProvider::new(second_info, /*auth_manager*/ None);
+
+    assert_eq!(
+        (first.auth().await, second.auth().await),
+        (
+            Some(CodexAuth::from_api_key("first-token")),
+            Some(CodexAuth::from_api_key("second-token")),
+        ),
+    );
+    std::fs::write(first_file, "refreshed-token").unwrap();
+    assert_eq!(
+        first.auth().await,
+        Some(CodexAuth::from_api_key("first-token"))
+    );
+    first
+        .auth_manager()
+        .unwrap()
+        .unauthorized_recovery()
+        .next()
+        .await
+        .unwrap();
+    assert_eq!(
+        (first.auth().await, second.auth().await),
+        (
+            Some(CodexAuth::from_api_key("refreshed-token")),
+            Some(CodexAuth::from_api_key("second-token")),
+        ),
     );
 }
 

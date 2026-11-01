@@ -85,7 +85,11 @@ mod tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 6, 3));
         surface.render(Rect::new(0, 0, 6, 3), &mut buf);
-        let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert_eq!(rendered.len(), 18);
     }
 

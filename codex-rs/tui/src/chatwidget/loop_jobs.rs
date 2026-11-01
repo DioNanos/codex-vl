@@ -89,6 +89,10 @@ pub(crate) struct LoopJobRuntime {
 }
 
 impl ChatWidget {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal loop/VL signature still evolving; a parameter struct would churn callers for no behavior gain"
+    )]
     pub(crate) fn record_vivling_loop_event(
         &mut self,
         kind: VivlingLoopEventKind,
@@ -528,7 +532,7 @@ mod tests {
         // A refreshed row that is no longer pending (dispatched, expired,
         // or disarmed) ends the blocked episode: the ladder restarts at
         // the bottom for the next one.
-        let mut settled = job.clone();
+        let mut settled = job;
         settled.pending_tick = false;
         widget.replace_loop_jobs_with_owner(thread_id, vec![settled], main_owner(thread_id));
         assert_eq!(widget.loop_jobs["job-main"].blocked_retries, 0);

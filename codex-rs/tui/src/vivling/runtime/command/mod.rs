@@ -78,10 +78,10 @@ impl Vivling {
                 .update_existing(|state| state.memory_recap())
                 .map(VivlingCommandOutcome::Message),
             VivlingAction::PromoteEarly => self
-                .update_existing(|state| state.promote_to_level_10_seed())
+                .update_existing(VivlingState::promote_to_level_10_seed)
                 .map(VivlingCommandOutcome::Message),
             VivlingAction::PromoteAdult => self
-                .update_existing(|state| state.promote_to_adult_seed())
+                .update_existing(VivlingState::promote_to_adult_seed)
                 .map(VivlingCommandOutcome::Message),
             VivlingAction::Mode(mode) => self
                 .update_existing_result(|state| state.set_ai_mode(mode))

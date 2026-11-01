@@ -58,11 +58,15 @@ fn spawn_requires_level_30_and_persists_new_roster_member() {
     assert_ne!(spawned.gene_vector, VivlingGeneVector::default());
     assert_ne!(spawned.gene_vector, state.gene_vector);
     let mut inherited = [0usize; 4];
-    for index in 0..4 {
-        if (spawned.gene_vector.affinity_mod[index] - state.gene_vector.affinity_mod[index]).abs()
-            <= 0.05
-        {
-            inherited[index] = 1;
+    for (slot, (spawned_gene, parent_gene)) in inherited.iter_mut().zip(
+        spawned
+            .gene_vector
+            .affinity_mod
+            .iter()
+            .zip(state.gene_vector.affinity_mod.iter()),
+    ) {
+        if (spawned_gene - parent_gene).abs() <= 0.05 {
+            *slot = 1;
         }
     }
     assert!(
@@ -215,7 +219,7 @@ fn roster_focus_and_reload_preserve_active_member_and_alias_resolution() {
         reloaded
             .state
             .as_ref()
-            .map(|state| state.lineage_role_label()),
+            .map(VivlingState::lineage_role_label),
         Some("spawned")
     );
 }
@@ -234,7 +238,7 @@ fn remove_spawned_vivling_frees_local_spawn_capacity() {
         .expect("spawned id");
 
     let removed = match vivling
-        .command(VivlingAction::Remove(spawned_id.clone()), temp.path())
+        .command(VivlingAction::Remove(spawned_id), temp.path())
         .expect("remove spawned")
     {
         VivlingCommandOutcome::Message(message) => message,
@@ -272,7 +276,7 @@ fn remove_imported_vivling_frees_external_slot() {
     let second_state = VivlingState {
         vivling_id: "viv-import-two".to_string(),
         name: "Import Two".to_string(),
-        ..state.clone()
+        ..state
     };
     let second_manifest = VivlingPackageManifest {
         package_version: VIVPKG_VERSION,

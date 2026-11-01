@@ -33,6 +33,8 @@ pub enum Account {
         )]
         email: Option<String>,
         plan_type: PlanType,
+        /// Display name of the selected ChatGPT workspace, when available.
+        workspace_name: Option<String>,
     },
 
     #[serde(rename = "amazonBedrock", rename_all = "camelCase")]
@@ -52,7 +54,11 @@ impl From<ProviderAccount> for Account {
     fn from(account: ProviderAccount) -> Self {
         match account {
             ProviderAccount::ApiKey => Self::ApiKey {},
-            ProviderAccount::Chatgpt { email, plan_type } => Self::Chatgpt { email, plan_type },
+            ProviderAccount::Chatgpt { email, plan_type } => Self::Chatgpt {
+                email,
+                plan_type,
+                workspace_name: None,
+            },
             ProviderAccount::AmazonBedrock {
                 uses_codex_managed_credentials,
             } => Self::AmazonBedrock {
@@ -221,8 +227,26 @@ pub struct AccountSessionsLogoutParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AccountSessionsSwitchParams {
+    /// Opaque active-login identifier returned by accountSession/list.
     pub session_id: String,
+    /// Workspace to select within that login; this is not a user identifier.
     pub account_id: String,
+    /// Allow Core to start browser sign-in if this session needs SSO for the workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub allow_browser_login: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+#[ts(untagged, rename_all_fields = "camelCase", export_to = "v2/")]
+pub enum AccountSessionsSwitchResponse {
+    Switched {
+        #[serde(flatten)]
+        sessions: AccountSessionsResponse,
+    },
+    /// Open the URL and await account/login/completed for this login ID.
+    BrowserLogin { login_id: String, auth_url: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

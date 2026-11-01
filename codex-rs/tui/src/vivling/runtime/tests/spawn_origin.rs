@@ -207,7 +207,7 @@ fn primary_child_clones_primary_species_and_culture() {
     );
     assert!(!spawned.is_primary);
     assert!(!spawned.is_imported);
-    assert_eq!(spawned.brain_enabled, false);
+    assert!(!spawned.brain_enabled);
 }
 
 /// VeteranChild: clone della specie del VETERAN (non del primary), bio
@@ -240,7 +240,7 @@ fn veteran_child_inherits_veteran_species_but_primary_culture() {
         "cultural parent is ALWAYS the active primary (override on veteran)",
     );
     assert!(!spawned.is_primary);
-    assert_eq!(spawned.brain_enabled, false);
+    assert!(!spawned.brain_enabled);
 }
 
 /// ZedHatch: species e rarity dall'alternativa ZED, gene_vector FRESH
@@ -285,6 +285,6 @@ fn zed_hatch_overrides_species_and_uses_fresh_gene_vector() {
         spawned.gene_vector, expected_fresh,
         "ZED gene_vector must be freshly generated from seed_hash, not inherited from primary",
     );
-    assert_eq!(spawned.brain_enabled, false);
+    assert!(!spawned.brain_enabled);
     assert!(!spawned.is_primary);
 }

@@ -115,6 +115,10 @@ fn parse_one_shot_ms(raw: Option<&str>) -> anyhow::Result<Option<i64>> {
     }
 }
 
+/// (schedule_kind, schedule_at, one_shot_at_ms, tz) as returned by
+/// [`parse_schedule_fields`].
+type ParsedScheduleFields = (String, Option<String>, Option<i64>, Option<String>);
+
 /// schedule fields for `add` (default `interval`, validated as a
 /// triplet): returns (schedule_kind, schedule_at, one_shot_at_ms, tz).
 fn parse_schedule_fields(
@@ -122,7 +126,7 @@ fn parse_schedule_fields(
     schedule_at: Option<&str>,
     one_shot: Option<&str>,
     tz: Option<&str>,
-) -> anyhow::Result<(String, Option<String>, Option<i64>, Option<String>)> {
+) -> anyhow::Result<ParsedScheduleFields> {
     let kind = match schedule_kind.map(str::trim).filter(|v| !v.is_empty()) {
         Some(kind) => kind.to_string(),
         None => "interval".to_string(),
@@ -194,7 +198,7 @@ fn parse_schedule_fields_update(
 ) -> anyhow::Result<UpdateSchedule> {
     let touched = [schedule_kind, schedule_at, one_shot, tz]
         .iter()
-        .any(|value| value.is_some());
+        .any(Option::is_some);
     if !touched {
         return Ok(None);
     }

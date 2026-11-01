@@ -73,7 +73,7 @@ fn primary_with_distillates(home: &std::path::Path) -> Vivling {
     let mut state = vivling.state.clone().expect("active state");
     state.is_primary = true;
     state.distilled_summaries = vec![parent_summary("build"), parent_summary("review")];
-    vivling.state = Some(state.clone());
+    vivling.state = Some(state);
     vivling.save_state().expect("save primary distillates");
     vivling
 }
@@ -214,7 +214,7 @@ fn child_in_cooldown_is_skipped() {
     child.is_imported = false;
     child.instance_label = Some("cooldown".to_string());
     child.cultural_parent_vivling_id = Some(primary.vivling_id.clone());
-    child.parent_vivling_id = Some(primary.vivling_id.clone());
+    child.parent_vivling_id = Some(primary.vivling_id);
     child.work_memory.clear();
     child.distilled_summaries.clear();
     child.lineage_seen_parent_summary_keys.clear();
@@ -275,14 +275,12 @@ fn grandchild_cascade_blocked_via_distill_filter() {
 
     let distilled_before = child.distilled_summaries.len();
     child.distill_memory();
-    let new_distilled: Vec<_> = child
-        .distilled_summaries
-        .iter()
-        .skip(distilled_before)
-        .filter(|d| d.kind == LINEAGE_PARENT_SUMMARY_KIND)
-        .collect();
     assert!(
-        new_distilled.is_empty(),
+        !child
+            .distilled_summaries
+            .iter()
+            .skip(distilled_before)
+            .any(|d| d.kind == LINEAGE_PARENT_SUMMARY_KIND),
         "distill_memory must skip LINEAGE_PARENT_SUMMARY_KIND so the \
          child cannot cascade absorbed lineage to its own offspring",
     );

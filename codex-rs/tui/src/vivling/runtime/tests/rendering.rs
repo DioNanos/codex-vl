@@ -59,7 +59,7 @@ fn render_keeps_vivling_line_shape() {
     let rendered = buf
         .content
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect::<String>();
     assert!(rendered.contains("("));
     assert!(rendered.contains(")") || rendered.contains(">"));
@@ -197,7 +197,11 @@ fn line_layout_renders_within_80_and_60_columns() {
         let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
         vivling.render(area, &mut buf);
-        let rendered: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        let rendered: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(
             rendered.chars().count() <= width as usize,
             "row exceeds {width} columns: {rendered:?}"
