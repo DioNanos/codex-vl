@@ -93,6 +93,8 @@ pub enum ResponseEvent {
     ModelVerifications(Vec<ModelVerification>),
     /// Emitted when the server includes moderation metadata for first-party turn presentation.
     TurnModerationMetadata(TurnModerationMetadataEvent),
+    /// Action-bound Guardian evidence for request-scoped consumers, not model history.
+    GuardianAssessment(crate::guardian_assessment::GuardianAssessment),
     /// Emitted when `X-Reasoning-Included: true` is present on the response,
     /// meaning the server already accounted for past reasoning tokens and the
     /// client should not re-estimate them.
@@ -420,6 +422,8 @@ pub enum ResponseInterrupt {
 }
 
 pub struct ResponseStream {
+    /// Routing pin from the connection that produced these responses. Never model metadata.
+    pub routing_affinity: Option<codex_http_client::ChatGptRoutingAffinity>,
     pub rx_event: mpsc::Receiver<Result<ResponseEvent, ApiError>>,
     /// Server-assigned `x-request-id` response header, when present.
     pub upstream_request_id: Option<String>,

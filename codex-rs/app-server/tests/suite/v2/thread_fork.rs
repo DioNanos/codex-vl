@@ -37,7 +37,7 @@ use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -84,6 +84,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
@@ -250,8 +251,8 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let turn = &thread.turns[0];
     assert_eq!(turn.status, TurnStatus::Interrupted);
     assert_eq!(turn.items.len(), 1, "expected user message item");
-    match &turn.items[0] {
-        ThreadItem::UserMessage { content, .. } => {
+    match &turn.items[0].payload {
+        ThreadItemPayload::UserMessage { content, .. } => {
             assert_eq!(
                 content,
                 &vec![UserInput::Text {
@@ -442,7 +443,7 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
-    let (source_thread_id, source_turn_id) = {
+    let (source_thread_id, source_turn_id, rollout_path) = {
         let mut mcp = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .build_initialized()
@@ -530,8 +531,19 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
             );
         }
 
-        (thread.id, turn.id)
+        (
+            thread.id,
+            turn.id,
+            thread.path.expect("source rollout path"),
+        )
     };
+
+    // The first turn records its workspace permissions after the source switched to read-only.
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    let frozen_context = items.into_iter().find(|item| {
+        matches!(item, RolloutItem::TurnContext(context) if context.turn_id.as_deref() == Some(&source_turn_id))
+    }).expect("first turn context");
+    append_rollout_item_to_path(&rollout_path, &frozen_context).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1848,18 +1860,13 @@ async fn thread_fork_warns_for_paginated_full_history_hydration() -> Result<()> 
     Ok(())
 }
 
+#[test_case::test_case(MultiAgentVersion::V1, false; "ordinary v1")]
+#[test_case::test_case(MultiAgentVersion::V2, false; "ordinary v2")]
+#[test_case::test_case(MultiAgentVersion::V1, true; "attached")]
 #[tokio::test]
-async fn thread_fork_freezes_active_paginated_turn_as_interrupted() -> Result<()> {
-    assert_thread_fork_freezes_active_paginated_turn_as_interrupted(MultiAgentVersion::V1).await
-}
-
-#[tokio::test]
-async fn thread_fork_persists_developer_interruption_marker_for_multi_agent_v2() -> Result<()> {
-    assert_thread_fork_freezes_active_paginated_turn_as_interrupted(MultiAgentVersion::V2).await
-}
-
-async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
+async fn thread_fork_freezes_active_paginated_turn_as_interrupted(
     multi_agent_version: MultiAgentVersion,
+    attach_to_source: bool,
 ) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -1983,6 +1990,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
             params: ThreadForkParams {
                 thread_id: source_thread_id.clone(),
                 thread_source,
+                attach_to_source,
                 ..Default::default()
             },
         })
@@ -2096,14 +2104,33 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
             },
         })
         .await?;
+    if attach_to_source {
+        assert!(turns.is_empty());
+        for (method, field) in [
+            ("thread/revert", "beforeTurnId"),
+            ("thread/fork", "lastTurnId"),
+        ] {
+            let id = mcp
+                .send_raw_request(
+                    method,
+                    Some(json!({"threadId": forked_thread_id, (field): "active-turn"})),
+                )
+                .await?;
+            let error = mcp
+                .read_stream_until_error_message(RequestId::Integer(id))
+                .await?;
+            assert!(error.error.message.contains("turn not found: active-turn"));
+        }
+        return Ok(());
+    }
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].id, "active-turn");
     assert_eq!(turns[0].root_turn_id.as_deref(), Some("causal-root"));
     assert_eq!(turns[0].status, TurnStatus::Interrupted);
     assert_eq!(turns[0].items.len(), 1);
     assert!(matches!(
-        &turns[0].items[0],
-        ThreadItem::UserMessage { id, .. } if id == "before-fork"
+        &turns[0].items[0].payload,
+        ThreadItemPayload::UserMessage { id, .. } if id == "before-fork"
     ));
 
     let search: ThreadSearchOccurrencesResponse = mcp
@@ -2486,8 +2513,8 @@ async fn assert_thread_fork_ephemeral_remains_pathless_and_omits_listing(
         let turn = &thread.turns[0];
         assert_eq!(turn.status, TurnStatus::Completed);
         assert_eq!(turn.items.len(), 1, "expected user message item");
-        match &turn.items[0] {
-            ThreadItem::UserMessage { content, .. } => {
+        match &turn.items[0].payload {
+            ThreadItemPayload::UserMessage { content, .. } => {
                 assert_eq!(
                     content,
                     &vec![UserInput::Text {

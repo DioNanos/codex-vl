@@ -251,7 +251,9 @@ async fn daemon_connection_rejects_unprotected_socket_before_handshake() -> colo
         endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
     };
     tokio::select! {
-        result = app_server_connection::connect(&target) => assert!(result.is_err()),
+        result = app_server_connection::connect(&target, /*identity_proof*/ None) => {
+            assert!(result.is_err())
+        }
         _ = listener.accept() => panic!("unprotected listener must not receive a connection"),
     }
     Ok(())

@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 
-const MIN_BOND: u8 = 0;
 const MAX_BOND: u8 = 100;
 const DEFAULT_BOND: u8 = 20;
 const OFFSPRING_BOND: u8 = 10;
@@ -250,17 +249,17 @@ impl VivlingBond {
             return 0;
         }
 
-        if let Some(last_decay) = self.last_decay_at {
-            if (now - last_decay).num_hours() < DECAY_GRACE_HOURS {
-                return 0;
-            }
+        if let Some(last_decay) = self.last_decay_at
+            && (now - last_decay).num_hours() < DECAY_GRACE_HOURS
+        {
+            return 0;
         }
 
         let overdue_hours = elapsed_hours - DECAY_GRACE_HOURS;
         let overdue_days = (overdue_hours / 24) as u64 + 1;
         let total_decay = (overdue_days.min(u8::MAX as u64) as u8).saturating_mul(DECAY_PER_DAY);
         let before = self.value;
-        self.value = self.value.saturating_sub(total_decay).max(MIN_BOND);
+        self.value = self.value.saturating_sub(total_decay);
         self.last_decay_at = Some(now);
 
         if elapsed_hours >= STREAK_RESET_HOURS {
@@ -305,8 +304,10 @@ mod tests {
     #[test]
     fn level_boundaries() {
         let mk = |v: u8| {
-            let mut b = VivlingBond::default();
-            b.value = v;
+            let b = VivlingBond {
+                value: v,
+                ..Default::default()
+            };
             b.level()
         };
         assert_eq!(mk(0), BondLevel::Strangers);
@@ -352,8 +353,10 @@ mod tests {
 
     #[test]
     fn value_clamps_at_100() {
-        let mut bond = VivlingBond::default();
-        bond.value = 99;
+        let mut bond = VivlingBond {
+            value: 99,
+            ..Default::default()
+        };
         bond.record_interaction(VivlingInteractionKind::Assist, ts(2026, 5, 13, 10));
         assert_eq!(bond.value, 100);
         bond.record_interaction(VivlingInteractionKind::Chat, ts(2026, 5, 14, 10));
@@ -473,12 +476,14 @@ mod tests {
 
     #[test]
     fn apply_decay_clamps_at_0() {
-        let mut bond = VivlingBond::default();
-        bond.value = 5;
-        bond.last_interaction = Some(ts(2026, 5, 1, 10));
+        let mut bond = VivlingBond {
+            value: 5,
+            last_interaction: Some(ts(2026, 5, 1, 10)),
+            ..Default::default()
+        };
         // 12 days later → 11 overdue days * 3 = 33 → clamped at 0
         let delta = bond.apply_decay(ts(2026, 5, 13, 10));
-        assert_eq!(bond.value, MIN_BOND);
+        assert_eq!(bond.value, 0);
         assert_eq!(delta, 5);
     }
 
@@ -574,8 +579,10 @@ mod tests {
         // Even if value were corrupted past 100 (e.g. tampered JSON), the
         // displayed value must stay within MAX_BOND. Bypass struct invariants
         // by writing the field directly.
-        let mut bond = VivlingBond::default();
-        bond.value = 200;
+        let bond = VivlingBond {
+            value: 200,
+            ..Default::default()
+        };
         let hint = bond.prompt_hint();
         assert!(hint.contains("(100/100)"), "{hint}");
         assert!(hint.contains("Bonded"), "{hint}");
@@ -608,8 +615,10 @@ mod tests {
 
     #[test]
     fn display_label_clamps_at_max_defensively() {
-        let mut bond = VivlingBond::default();
-        bond.value = 200;
+        let bond = VivlingBond {
+            value: 200,
+            ..Default::default()
+        };
         assert_eq!(bond.display_label(), "Bonded 100/100");
     }
 
@@ -646,8 +655,10 @@ mod tests {
 
     #[test]
     fn brain_chat_succeeded_value_clamps_at_100() {
-        let mut bond = VivlingBond::default();
-        bond.value = 99;
+        let mut bond = VivlingBond {
+            value: 99,
+            ..Default::default()
+        };
         bond.record_interaction(
             VivlingInteractionKind::BrainChatSucceeded,
             ts(2026, 5, 14, 10),

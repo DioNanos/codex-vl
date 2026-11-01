@@ -69,7 +69,7 @@ pub(crate) fn render_vivling_card(state: &mut VivlingState) -> VivlingPanelData 
             state.loop_profile.noisy_churn,
             state.turns_observed
         ));
-        lines.push(format!("Last: {}", memory));
+        lines.push(format!("Last: {memory}"));
         lines
     };
 

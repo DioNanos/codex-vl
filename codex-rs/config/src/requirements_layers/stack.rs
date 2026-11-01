@@ -10,6 +10,8 @@
 //! - `rules.prefix_rules` append high-priority rules first.
 //! - `hooks` append high-priority event groups first while failing closed on
 //!   active managed-dir conflicts.
+//! - `otel` replaces exact managed values, treats exporters atomically, and
+//!   merges span attributes and fields within each tracestate member by key.
 //! - `permissions.filesystem.deny_read` is a high-priority-first union across
 //!   layers.
 //! - `auto_review.required_on_models` is a high-priority-first union across layers.
@@ -18,6 +20,7 @@ use crate::ConfigRequirementsToml;
 use crate::ConfigRequirementsWithSources;
 use crate::RequirementSource;
 use crate::Sourced;
+use crate::config_requirements::merge_otel_requirements;
 use crate::merge::merge_toml_values;
 use std::cell::OnceCell;
 use std::io;
@@ -169,6 +172,23 @@ impl RequirementsLayerStack {
             })?;
         let mut output = ConfigRequirementsWithSources::default();
         populate_merged_regular_fields_with_sources(&mut output, requirements, &layers);
+        // Merge OTEL requirements so higher-priority exact values replace
+        // lower-priority values while exporters stay atomic.
+        let mut otel = None;
+        let mut otel_sources = Vec::new();
+        for layer in &layers {
+            if let Some(incoming) = layer.domain_fields.otel.as_deref()
+                && merge_otel_requirements(&mut otel, incoming)
+            {
+                otel_sources.push(layer.source.clone());
+            }
+        }
+        output.otel = otel.map(|value| {
+            Box::new(Sourced::new(
+                value,
+                RequirementSource::composite(otel_sources.into_iter().rev()),
+            ))
+        });
         let mut rules = None;
         let mut hooks = HookMergeState::new(hook_directory_field);
         let mut hooks_output = None;
@@ -223,6 +243,7 @@ fn populate_merged_regular_fields_with_sources(
         cli_auth_credentials_store,
         chatgpt_base_url,
         sqlite_home,
+        unsafe_enforce_sqlite_journal_mode,
         log_dir,
         model_catalog_json,
         model_provider,
@@ -250,6 +271,7 @@ fn populate_merged_regular_fields_with_sources(
         mcp_servers,
         plugins,
         marketplaces,
+        otel: _,
         apps,
         rules: _,
         enforce_residency,
@@ -269,6 +291,10 @@ fn populate_merged_regular_fields_with_sources(
     set_sourced!(cli_auth_credentials_store, &["cli_auth_credentials_store"]);
     set_sourced!(chatgpt_base_url, &["chatgpt_base_url"]);
     set_sourced!(sqlite_home, &["sqlite_home"]);
+    set_sourced!(
+        unsafe_enforce_sqlite_journal_mode,
+        &["unsafe_enforce_sqlite_journal_mode"]
+    );
     set_sourced!(log_dir, &["log_dir"]);
     set_sourced!(model_catalog_json, &["model_catalog_json"]);
     set_sourced!(model_provider, &["model_provider"]);
@@ -309,7 +335,7 @@ fn populate_merged_regular_fields_with_sources(
     set_sourced!(marketplaces, &["marketplaces"]);
     set_sourced!(apps, &["apps"]);
     set_sourced!(enforce_residency, &["enforce_residency"]);
-    set_sourced!(network, &["experimental_network"]);
+    set_sourced!(network, &["network_proxy"]);
     set_sourced!(application, &["application"]);
     set_sourced!(permissions, &["permissions"]);
     set_sourced!(models, &["models"]);

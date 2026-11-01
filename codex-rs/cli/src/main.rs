@@ -10,12 +10,13 @@ use codex_arg0::Arg0DispatchPaths;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_chatgpt::apply_command::ApplyCommand;
 use codex_chatgpt::apply_command::run_apply_command;
+use codex_cli::cloud_config;
 use codex_cli::read_access_token_from_stdin;
 use codex_cli::read_api_key_from_stdin;
 use codex_cli::run_login_status;
 use codex_cli::run_login_with_access_token;
 use codex_cli::run_login_with_api_key;
-use codex_cli::run_login_with_chatgpt;
+use codex_cli::run_login_with_browser;
 use codex_cli::run_login_with_device_code;
 use codex_cli::run_logout;
 use codex_cloud_tasks::Cli as CloudTasksCli;
@@ -52,7 +53,6 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
-mod cloud_config;
 mod config_override_args;
 mod daemon_install;
 mod daemon_telemetry;
@@ -65,10 +65,6 @@ mod exec_args_tests;
 #[cfg(test)]
 #[path = "exec_server_args_tests.rs"]
 mod exec_server_args_tests;
-mod exec_server_auth;
-mod exec_server_command;
-mod exec_server_credential;
-mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
@@ -84,12 +80,12 @@ mod state_db_recovery;
 #[cfg(not(windows))]
 mod wsl_paths;
 
-use crate::exec_server_command::ExecServerCommand;
 use crate::mcp_cmd::McpCli;
 use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::queue_cmd::QueueCommand;
 use crate::remote_control_cmd::RemoteControlCommand;
+use codex_exec_server_cli::ExecServerCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -1779,7 +1775,7 @@ async fn cli_main(
                         let access_token = read_access_token_from_stdin();
                         run_login_with_access_token(login_cli.config_overrides, access_token).await;
                     } else {
-                        run_login_with_chatgpt(login_cli.config_overrides).await;
+                        run_login_with_browser(login_cli.config_overrides).await;
                     }
                 }
             }
@@ -2286,6 +2282,12 @@ async fn run_debug_prompt_input_command(
     codex_skills_extension::install(&mut extensions, |config: &Config| {
         codex_skills_extension::SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
+            catalog_deltas_enabled: config
+                .features
+                .enabled(codex_features::Feature::SkillCatalogDeltas),
+            omit_descriptions: config
+                .features
+                .enabled(codex_features::Feature::OmitSkillDescriptions),
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: config.bundled_skills_enabled(),
             cloud_skill_enabled: config.cloud_skill_enabled,
@@ -2937,11 +2939,7 @@ fn print_completion(cmd: CompletionCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exec_server_command::ExecServerSubcommand;
-    use crate::exec_server_command::is_supported_exec_server_remote_auth;
-    use crate::exec_server_command::validate_api_key_remote_host;
     use assert_matches::assert_matches;
-    use codex_login::CodexAuth;
     use codex_protocol::ThreadId;
     use codex_tui::TokenUsage;
     use pretty_assertions::assert_eq;
@@ -3079,63 +3077,6 @@ enabled = true
                         .expect("URL")
                 )
                 .is_ok()
-        );
-    }
-
-    #[test]
-    fn exec_server_remote_auth_accepts_api_key_auth() {
-        let auth = CodexAuth::from_api_key("sk-test");
-
-        assert!(is_supported_exec_server_remote_auth(&auth));
-    }
-
-    #[test]
-    fn exec_server_remote_api_key_auth_accepts_https_openai_domains() {
-        for base_url in [
-            "https://openai.com/api",
-            "https://service.openai.com/api",
-            "https://openai.org/api",
-            "https://service.openai.org/api",
-        ] {
-            assert!(validate_api_key_remote_host(base_url).is_ok());
-        }
-    }
-
-    #[test]
-    fn exec_server_remote_api_key_auth_accepts_http_loopback() {
-        for base_url in [
-            "http://localhost:8098/api",
-            "http://127.0.0.1:8098/api",
-            "http://[::1]:8098/api",
-        ] {
-            assert!(validate_api_key_remote_host(base_url).is_ok());
-        }
-    }
-
-    #[test]
-    fn exec_server_remote_api_key_auth_rejects_http_openai_domain() {
-        for base_url in [
-            "http://service.openai.com/api",
-            "http://service.openai.org/api",
-        ] {
-            let error = validate_api_key_remote_host(base_url)
-                .expect_err("reject plaintext OpenAI destination");
-
-            assert_eq!(
-                error.to_string(),
-                "remote exec-server API-key authentication is restricted to HTTPS openai.com and openai.org hosts and subdomains or loopback hosts"
-            );
-        }
-    }
-
-    #[test]
-    fn exec_server_remote_api_key_auth_rejects_suffix_spoof() {
-        let error = validate_api_key_remote_host("https://service.openai.org.evil.example/api")
-            .expect_err("reject suffix spoof");
-
-        assert_eq!(
-            error.to_string(),
-            "remote exec-server API-key authentication is restricted to HTTPS openai.com and openai.org hosts and subdomains or loopback hosts"
         );
     }
 
@@ -3676,6 +3617,23 @@ enabled = true
         let err = MultitoolCli::try_parse_from(args).expect_err("help should short-circuit");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
         err.to_string()
+    }
+
+    #[test]
+    fn queue_help_lists_supported_options() {
+        let help = help_from_args(&["codex", "queue", "--help"]);
+        let (general, local) = help
+            .split_once("Local server options (without --remote):")
+            .unwrap();
+        assert!(general.contains("--message <TEXT>"));
+        assert!(!general.contains("--model"));
+        assert!(!general.contains("-c model="));
+        let local_flags = local
+            .lines()
+            .filter(|line| line.starts_with("  -") || line.starts_with("      --"))
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        insta::assert_snapshot!(local_flags.join("\n"), @"-C, --cd <DIR>");
     }
 
     #[test]
@@ -4519,15 +4477,13 @@ enabled = true
         .expect("parse forward");
         assert!(cli.remote.remote.is_none());
         assert!(!cli.interactive.strict_config);
-        assert_matches!(cli.subcommand, Some(Subcommand::ExecServer(ExecServerCommand {
-            command: Some(ExecServerSubcommand::Forward { connect }),
-            remote: Some(remote),
-            environment_id: Some(environment_id),
-            name: Some(name),
-            strict_config: true,
-            use_agent_identity_auth: true,
-            ..
-        })) if connect == "ws://127.0.0.1:8765" && remote == "https://example.openai.com" && environment_id == "env-1" && name == "forwarded");
+        assert_matches!(
+            cli.subcommand,
+            Some(Subcommand::ExecServer(ExecServerCommand {
+                strict_config: true,
+                ..
+            }))
+        );
     }
 
     #[test]

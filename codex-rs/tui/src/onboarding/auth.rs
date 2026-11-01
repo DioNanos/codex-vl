@@ -1126,7 +1126,7 @@ mod tests {
     use codex_app_server_client::InProcessClientStartArgs;
     use codex_app_server_client::RemoteAppServerEndpoint;
     use codex_arg0::Arg0DispatchPaths;
-    use codex_cloud_config::cloud_config_bundle_loader_for_storage;
+    use codex_cloud_config::chatgpt_config_bundle_loader_for_storage;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
@@ -1234,7 +1234,7 @@ mod tests {
             cli_overrides: Vec::new(),
             loader_overrides: Default::default(),
             strict_config: false,
-            cloud_config_bundle: cloud_config_bundle_loader_for_storage(
+            cloud_config_bundle: chatgpt_config_bundle_loader_for_storage(
                 auth_config.clone(),
                 /*enable_codex_api_key_env*/ false,
             )
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[tokio::test]
     async fn bedrock_option_requires_feature_and_api_login_permission() {
-        let (mut widget, _tmp) = widget_forced_chatgpt().await;
+        let (mut widget, codex_home) = widget_forced_chatgpt().await;
         widget.auth_config.forced_login_method = None;
         assert_eq!(
             widget.displayed_sign_in_options(),
@@ -1330,7 +1330,22 @@ mod tests {
             ]
         );
 
-        widget.bedrock_setup_enabled = true;
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            "model_provider = \"openai\"\n[features]\nbedrock_setup_wizard = true\n",
+        )
+        .unwrap();
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .unwrap();
+        widget.bedrock_setup_enabled = crate::should_show_bedrock_setup_wizard(
+            widget.login_status,
+            /*requires_openai_auth*/ true,
+            &config,
+            &widget.app_server_target,
+        );
         assert_eq!(
             widget.displayed_sign_in_options(),
             vec![

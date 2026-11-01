@@ -602,11 +602,11 @@ pub(super) async fn read_legacy_brain_profile(
     let model_provider = profile_table
         .get("model_provider")
         .and_then(|p| p.as_str())
-        .map(|s| s.to_string());
+        .map(ToString::to_string);
     let model_reasoning_effort = profile_table
         .get("model_reasoning_effort")
         .and_then(|e| e.as_str())
-        .map(|s| s.to_string());
+        .map(ToString::to_string);
     Ok(LegacyBrainProfile {
         model,
         model_provider,

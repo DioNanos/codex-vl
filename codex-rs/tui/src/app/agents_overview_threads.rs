@@ -8,7 +8,6 @@ use super::agents_overview_details::preview_agent_message;
 use super::agents_overview_discovery::list_pinned_threads;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
-use crate::AppServerTarget;
 use crate::app_event::AgentsOverviewThreadRefresh;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
@@ -18,7 +17,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -256,7 +255,7 @@ impl App {
             .is_some();
         if !visible
             && (self.agents_overview.initialized
-                || matches!(self.app_server_target, AppServerTarget::Embedded))
+                || !self.app_server_target.supports_command_center())
         {
             return;
         }
@@ -400,16 +399,17 @@ impl App {
                                     .await
                                     && let Some(turn) = turns.data.first()
                                 {
-                                    if let Some(ThreadItem::UserMessage { content, .. }) =
-                                        turn.items.first()
+                                    if let Some(ThreadItemPayload::UserMessage {
+                                        content, ..
+                                    }) = turn.item_payloads().next()
                                     {
                                         response.thread.preview =
                                             ChatWidget::user_message_display_from_inputs(content)
                                                 .message;
                                     }
                                     last_message =
-                                        turn.items.iter().rev().find_map(|item| match item {
-                                            ThreadItem::AgentMessage { text, .. } => {
+                                        turn.item_payloads().rev().find_map(|item| match item {
+                                            ThreadItemPayload::AgentMessage { text, .. } => {
                                                 Some(preview_agent_message(text))
                                             }
                                             _ => None,

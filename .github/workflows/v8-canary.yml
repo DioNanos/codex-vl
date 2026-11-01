@@ -90,28 +90,24 @@ jobs:
             platform: linux_amd64
             sandbox: false
             target: x86_64-unknown-linux-gnu
-            v8_cpu: x64
             variant: release
           - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_amd64
             sandbox: true
             target: x86_64-unknown-linux-gnu
-            v8_cpu: x64
             variant: ptrcomp-sandbox
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: false
             target: aarch64-unknown-linux-gnu
-            v8_cpu: arm64
             variant: release
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: true
             target: aarch64-unknown-linux-gnu
-            v8_cpu: arm64
             variant: ptrcomp-sandbox
           # macOS
           # Disabled on this fork: these legs need paid GitHub runners and the
@@ -152,28 +148,24 @@ jobs:
             platform: linux_amd64_musl
             sandbox: false
             target: x86_64-unknown-linux-musl
-            v8_cpu: x64
             variant: release
           - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_amd64_musl
             sandbox: true
             target: x86_64-unknown-linux-musl
-            v8_cpu: x64
             variant: ptrcomp-sandbox
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: false
             target: aarch64-unknown-linux-musl
-            v8_cpu: arm64
             variant: release
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: true
             target: aarch64-unknown-linux-musl
-            v8_cpu: arm64
             variant: ptrcomp-sandbox
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -192,9 +184,10 @@ jobs:
           python-version: "3.12"
 
       - name: Set up Rust toolchain for Cargo smoke
-        uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
 
       - name: Build Bazel V8 release pair
         env:
@@ -202,7 +195,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           SANDBOX: ${{ matrix.sandbox }}
           TARGET: ${{ matrix.target }}
-          V8_CPU: ${{ matrix.v8_cpu }}
         shell: bash
         run: |
           set -euo pipefail
@@ -217,14 +209,9 @@ jobs:
           bazel_args=(
             build
             "--platforms=@llvm//platforms:${PLATFORM}"
-            --config=rusty-v8-upstream-libcxx
-            "--config=v8-target-${V8_CPU}"
             "${pair_target}"
             --build_metadata=COMMIT_SHA=$(git rev-parse HEAD)
           )
-          if [[ "${SANDBOX}" != "true" ]]; then
-            bazel_args+=(--config=v8-release-compat)
-          fi
 
           ./.github/scripts/run_bazel_with_buildbuddy.py \
             --noexperimental_remote_repo_contents_cache \
@@ -238,7 +225,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           SANDBOX: ${{ matrix.sandbox }}
           TARGET: ${{ matrix.target }}
-          V8_CPU: ${{ matrix.v8_cpu }}
         shell: bash
         run: |
           set -euo pipefail
@@ -248,15 +234,32 @@ jobs:
             --target "${TARGET}"
             --output-dir "dist/${TARGET}"
             --bazel-config "${BAZEL_CONFIG}"
-            --bazel-config "v8-target-${V8_CPU}"
           )
           if [[ "${SANDBOX}" == "true" ]]; then
             stage_args+=(--sandbox)
-          else
-            stage_args+=(--bazel-config v8-release-compat)
           fi
 
           python3 .github/scripts/rusty_v8_bazel.py stage-release-pair "${stage_args[@]}"
+
+      # Larger Linux runner images may omit the host linker used by Cargo build scripts.
+      - name: Install native Linux Cargo smoke dependencies
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(build-essential)
+          if [[ "${TARGET}" == *-musl ]]; then
+            packages+=(musl-tools)
+          fi
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+          if [[ "${TARGET}" == *-musl ]]; then
+            # Use musl only for target links; Cargo build scripts still link on the glibc host.
+            linker_var="CARGO_TARGET_${TARGET^^}_LINKER"
+            echo "${linker_var//-/_}=$(command -v musl-gcc)" >> "${GITHUB_ENV}"
+          fi
 
       - name: Smoke test staged artifact with Cargo
         env:
@@ -266,16 +269,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          host_arch="$(uname -m)"
-          case "${TARGET}:${host_arch}" in
-            x86_64-apple-darwin:x86_64|aarch64-apple-darwin:arm64|x86_64-unknown-linux-gnu:x86_64|aarch64-unknown-linux-gnu:aarch64)
-              ;;
-            *)
-              echo "Skipping non-native Cargo smoke for ${TARGET} on ${host_arch}."
-              exit 0
-              ;;
-          esac
-
           archive="$(find "dist/${TARGET}" -maxdepth 1 -type f -name 'librusty_v8_*.a.gz' -print -quit)"
           binding="$(find "dist/${TARGET}" -maxdepth 1 -type f -name 'src_binding_*.rs' -print -quit)"
           if [[ -z "${archive}" || -z "${binding}" ]]; then
@@ -283,10 +276,11 @@ jobs:
             exit 1
           fi
 
-          cargo_args=(test -p codex-v8-poc)
+          cargo_args=(test -p codex-v8-poc --target "${TARGET}")
           if [[ "${SANDBOX}" == "true" ]]; then
             cargo_args+=(--features sandbox)
           fi
+          cargo_args+=(-- --include-ignored)
 
           (
             cd codex-rs
@@ -360,9 +354,9 @@ jobs:
           architecture: x64
 
       - name: Set up Codex Rust toolchain for Cargo smoke
-        uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
 
       - name: Install rusty_v8 Rust toolchain
@@ -452,7 +446,7 @@ jobs:
             cd codex-rs
             RUSTY_V8_ARCHIVE="${GITHUB_WORKSPACE}/${archive}" \
             RUSTY_V8_SRC_BINDING_PATH="${GITHUB_WORKSPACE}/${binding}" \
-            cargo +1.99.1 test -p codex-v8-poc --target "${TARGET}" --features sandbox --no-run
+            cargo +1.95.0 test -p codex-v8-poc --target "${TARGET}" --features sandbox --no-run
           )
 
       - name: Upload staged artifacts

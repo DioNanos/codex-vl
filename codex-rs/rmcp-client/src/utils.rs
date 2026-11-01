@@ -240,11 +240,10 @@ pub(crate) fn create_env_for_mcp_server(
 /// codex-termux GitHub issue #10 fix (carried into codex-vl for parity) —
 /// detect Termux at runtime via the `TERMUX_VERSION` environment variable
 /// (set by Termux init scripts and not present on any other Linux
-/// distribution). The Termux release line is packaged as
-/// `aarch64-unknown-linux-musl`, so `cfg!(target_os = "android")` is
-/// FALSE on the affected binary and cannot be used to gate this check.
-/// Runtime detection works on every target where the binary actually
-/// executes.
+/// distribution). Release lines have shipped both `aarch64-unknown-linux-musl`
+/// and `aarch64-linux-android` packages, so a compile-time target gate
+/// (`cfg!(target_os = "android")`) covers only one of the binaries users
+/// actually run under Termux. Runtime detection works on every target.
 fn running_on_termux() -> bool {
     env::var_os("TERMUX_VERSION").is_some()
 }

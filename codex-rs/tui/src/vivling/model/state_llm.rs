@@ -23,7 +23,7 @@
 //! 5. Budget (all kinds): `daily_llm_call_count >= stage_llm_budget`
 //!    refuses the reservation.
 //! 6. On Ok, increment `daily_llm_call_count` + the per-kind counter
-//!    + record `last_llm_dispatch_at`. The caller is then expected to
+//!    and record `last_llm_dispatch_at`. The caller is then expected to
 //!    persist via `save_state` before spawning any async task so a
 //!    crash/restart cannot let the same Vivling spend past its cap.
 //! 7. On Err, increment the matching skip counter and bubble up the
