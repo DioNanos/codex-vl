@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import os from "node:os";
+import os, { constants } from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { buildChildStdio } from "./identity_fds.js";
@@ -525,8 +525,9 @@ const childResult = await new Promise((resolve) => {
 });
 
 if (childResult.type === "signal") {
-  // Re-emit the same signal so that the parent terminates with the expected
-  // semantics (this also sets the correct exit code of 128 + n).
+  // Preserve a failure exit code even if Node ignores the re-emitted signal.
+  process.exitCode = 128 + constants.signals[childResult.signal];
+  process.removeAllListeners(childResult.signal);
   process.kill(process.pid, childResult.signal);
 } else {
   process.exit(childResult.exitCode);

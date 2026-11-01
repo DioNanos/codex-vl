@@ -13,13 +13,14 @@ use codex_app_server_protocol::ImageGenerationInputImage;
 use codex_app_server_protocol::ImageGenerationItem;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::ItemCompletedNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
@@ -161,19 +162,21 @@ async fn standalone_image_generation_returns_saved_path_hint_to_model(
     )
     .await??;
 
-    let ThreadItem::ImageGeneration(ImageGenerationItem {
+    let ThreadItemPayload::ImageGeneration(ImageGenerationItem {
         status,
         revised_prompt,
         image,
         transparent_background,
         saved_path: Some(saved_path),
+        generation_id,
         ..
-    }) = completed.item
+    }) = completed.item.payload
     else {
         panic!("expected completed image generation item with saved path");
     };
     assert_eq!(status, "completed");
     assert_eq!(revised_prompt.as_deref(), Some("paint a blue whale"));
+    assert_eq!(generation_id.as_deref(), Some("gen-image-123"));
     assert_eq!(
         image,
         GeneratedImageRef::Inline {
@@ -353,13 +356,13 @@ async fn transparent_image_preserves_output_metadata_and_persisted_history(
     )
     .await??;
     let thread_id = completed.thread_id.clone();
-    let ThreadItem::ImageGeneration(ImageGenerationItem {
+    let ThreadItemPayload::ImageGeneration(ImageGenerationItem {
         status,
         image,
         transparent_background,
         input_images,
         ..
-    }) = completed.item
+    }) = completed.item.payload
     else {
         panic!("expected completed image-generation item");
     };
@@ -390,13 +393,17 @@ async fn transparent_image_preserves_output_metadata_and_persisted_history(
     let persisted_image = thread
         .turns
         .iter()
-        .flat_map(|turn| turn.items.iter())
+        .flat_map(Turn::item_payloads)
         .find_map(|item| match item {
-            ThreadItem::ImageGeneration(item) => Some(item),
+            ThreadItemPayload::ImageGeneration(item) => Some(item),
             _ => None,
         })
         .context("persisted legacy history should contain the generated image")?;
     assert_eq!(persisted_image.transparent_background, Some(true));
+    assert_eq!(
+        persisted_image.generation_id.as_deref(),
+        Some("gen-transparent")
+    );
     assert_eq!(persisted_image.input_images, expected_inputs);
 
     let resume_id = resumed
@@ -410,13 +417,17 @@ async fn transparent_image_preserves_output_metadata_and_persisted_history(
     let resumed_image = thread
         .turns
         .iter()
-        .flat_map(|turn| turn.items.iter())
+        .flat_map(Turn::item_payloads)
         .find_map(|item| match item {
-            ThreadItem::ImageGeneration(item) => Some(item),
+            ThreadItemPayload::ImageGeneration(item) => Some(item),
             _ => None,
         })
         .context("resumed legacy history should contain the generated image")?;
     assert_eq!(resumed_image.transparent_background, Some(true));
+    assert_eq!(
+        resumed_image.generation_id.as_deref(),
+        Some("gen-transparent")
+    );
     assert_eq!(resumed_image.input_images, expected_inputs);
 
     Ok(())
@@ -471,7 +482,7 @@ async fn automatic_image_background_preserves_unknown_transparency() -> Result<(
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
-    let ThreadItem::ImageGeneration(image) = completed.item else {
+    let ThreadItemPayload::ImageGeneration(image) = completed.item.payload else {
         panic!("expected completed image-generation item");
     };
     assert_eq!(image.transparent_background, None);
@@ -630,8 +641,8 @@ async fn standalone_image_generation_failure_emits_terminal_item(
     )
     .await??;
     assert_eq!(
-        completed.item,
-        ThreadItem::ImageGeneration(ImageGenerationItem {
+        completed.item.payload,
+        ThreadItemPayload::ImageGeneration(ImageGenerationItem {
             id: call_id.to_string(),
             status: "failed".to_string(),
             revised_prompt: Some("paint a blue whale".to_string()),
@@ -678,24 +689,37 @@ async fn standalone_image_generation_failure_emits_terminal_item(
     Ok(())
 }
 
+#[test_case("image_gen", "x-image-gen-primary", Some(1_786_150_800); "image_count")]
+#[test_case("imagegen_premium", "x-imagegen-premium-primary", None; "imagegen_premium")]
 #[tokio::test]
-async fn image_generation_usage_limit_preserves_correlated_failure_metadata() -> Result<()> {
+async fn image_generation_usage_limit_preserves_correlated_failure_metadata(
+    limit_id: &str,
+    window_header: &str,
+    body_reset_at: Option<i64>,
+) -> Result<()> {
     let call_id = "image-run-limited";
-    let reset_at = 1_786_150_800;
+    let window_reset_at = 1_786_154_400;
+    let expected_failure = ImageGenerationFailure::UsageLimitExceeded {
+        limit_id: limit_id.to_string(),
+        resets_at: Some(body_reset_at.unwrap_or(window_reset_at)),
+    };
     let server = responses::start_mock_server().await;
     Mock::given(method("POST"))
         .and(path("/api/codex/images/generations"))
         .respond_with(
             ResponseTemplate::new(429)
-                .insert_header("x-codex-active-limit", "image_gen")
-                .insert_header("x-image-gen-primary-used-percent", "100")
-                .insert_header("x-image-gen-primary-window-minutes", "1440")
-                .insert_header("x-image-gen-primary-reset-at", reset_at.to_string())
+                .insert_header("x-codex-active-limit", limit_id)
+                .insert_header(format!("{window_header}-used-percent"), "100")
+                .insert_header(format!("{window_header}-window-minutes"), "1440")
+                .insert_header(
+                    format!("{window_header}-reset-at"),
+                    window_reset_at.to_string(),
+                )
                 .set_body_json(json!({
                     "error": {
                         "type": "usage_limit_reached",
                         "message": "image limit reached",
-                        "resets_at": reset_at,
+                        "resets_at": body_reset_at,
                         "plan_type": "plus"
                     }
                 })),
@@ -744,17 +768,12 @@ async fn image_generation_usage_limit_preserves_correlated_failure_metadata() ->
     )
     .await??;
     let thread_id = completed.thread_id.clone();
-    let ThreadItem::ImageGeneration(image) = completed.item else {
+    let ThreadItemPayload::ImageGeneration(image) = completed.item.payload else {
         panic!("expected failed image-generation item");
     };
+    assert_eq!(image.id, call_id);
     assert_eq!(image.status, "failed");
-    assert_eq!(
-        image.failure,
-        Some(ImageGenerationFailure::UsageLimitExceeded {
-            limit_id: "image_gen".to_string(),
-            resets_at: Some(reset_at),
-        })
-    );
+    assert_eq!(image.failure.as_ref(), Some(&expected_failure));
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -772,18 +791,12 @@ async fn image_generation_usage_limit_preserves_correlated_failure_metadata() ->
     let persisted_failure = thread
         .turns
         .iter()
-        .flat_map(|turn| turn.items.iter())
+        .flat_map(Turn::item_payloads)
         .find_map(|item| match item {
-            ThreadItem::ImageGeneration(item) => item.failure.as_ref(),
+            ThreadItemPayload::ImageGeneration(item) if item.id == call_id => item.failure.as_ref(),
             _ => None,
         });
-    assert_eq!(
-        persisted_failure,
-        Some(&ImageGenerationFailure::UsageLimitExceeded {
-            limit_id: "image_gen".to_string(),
-            resets_at: Some(reset_at),
-        })
-    );
+    assert_eq!(persisted_failure, Some(&expected_failure));
 
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
@@ -796,18 +809,12 @@ async fn image_generation_usage_limit_preserves_correlated_failure_metadata() ->
     let resumed_failure = thread
         .turns
         .iter()
-        .flat_map(|turn| turn.items.iter())
+        .flat_map(Turn::item_payloads)
         .find_map(|item| match item {
-            ThreadItem::ImageGeneration(item) => item.failure.as_ref(),
+            ThreadItemPayload::ImageGeneration(item) if item.id == call_id => item.failure.as_ref(),
             _ => None,
         });
-    assert_eq!(
-        resumed_failure,
-        Some(&ImageGenerationFailure::UsageLimitExceeded {
-            limit_id: "image_gen".to_string(),
-            resets_at: Some(reset_at),
-        })
-    );
+    assert_eq!(resumed_failure, Some(&expected_failure));
 
     Ok(())
 }
@@ -951,11 +958,15 @@ async fn standalone_image_generation_is_exposed_in_code_mode_only() -> Result<()
     )
     .await??;
 
-    assert!(
-        response_mock
-            .single_request()
-            .body_contains_text("image_gen__imagegen")
-    );
+    assert!(response_mock.single_request().body_contains_text(
+        r#"declare const tools: { image_gen__imagegen(args: {
+  num_last_images_to_include?: number | null;
+  prompt: string;
+  referenced_image_paths?: Array<string> | null;
+  // Whether the output should have a transparent background. Defaults to false.
+  transparent_background?: boolean;
+}): Promise<{ image_url: string; output_hint?: string; }>; };"#
+    ));
 
     Ok(())
 }
@@ -1157,7 +1168,7 @@ async fn run_image_edit_test(
         wait_for_image_generation_completed(&mut mcp),
     )
     .await??;
-    let ThreadItem::ImageGeneration(completed_image) = completed.item else {
+    let ThreadItemPayload::ImageGeneration(completed_image) = completed.item.payload else {
         panic!("expected completed image-generation item");
     };
     timeout(
@@ -1240,7 +1251,10 @@ async fn wait_for_image_generation_completed(
 ) -> Result<ItemCompletedNotification> {
     loop {
         let completed: ItemCompletedNotification = mcp.read_notification("item/completed").await?;
-        if matches!(&completed.item, ThreadItem::ImageGeneration(_)) {
+        if matches!(
+            &completed.item.payload,
+            ThreadItemPayload::ImageGeneration(_)
+        ) {
             return Ok(completed);
         }
     }
@@ -1255,7 +1269,7 @@ async fn mount_image_response_with_background(server: &MockServer, background: &
                 .set_body_json(json!({
                     "created": 1,
                     "background": background,
-                    "data": [{"b64_json": RESULT}],
+                    "data": [{"b64_json": RESULT, "generation_id": "gen-transparent"}],
                 })),
         )
         .expect(1)
@@ -1269,7 +1283,7 @@ async fn mount_image_edit_response(server: &MockServer) {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "created": 1,
             "background": "transparent",
-            "data": [{"b64_json": RESULT}],
+            "data": [{"b64_json": RESULT, "generation_id": "gen-transparent"}],
         })))
         .expect(1)
         .mount(server)

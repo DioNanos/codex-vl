@@ -812,11 +812,11 @@ impl ListSelectionView {
                             .auto_number_shortcuts
                             .then_some(item.display_shortcut)
                             .flatten(),
-                        match_indices: None,
                         description,
                         wrap_indent,
                         is_disabled,
                         disabled_reason: item.disabled_reason.clone(),
+                        ..Default::default()
                     }
                 })
             })
@@ -1119,7 +1119,7 @@ impl ListSelectionView {
             None
         }
         .or_else(|| self.footer_note.clone());
-        let mut lines = note.map(wrap).unwrap_or_default();
+        let mut lines = note.map(&wrap).unwrap_or_default();
         if self.reserve_result_rows && show_selected_description {
             let height = self
                 .items

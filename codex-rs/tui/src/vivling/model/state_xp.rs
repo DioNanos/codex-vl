@@ -386,15 +386,11 @@ impl VivlingState {
                     _ => 0,
                 };
                 if weight == 0 {
-                    self.record_memory_only_capsule(
-                        "loop_config",
-                        summary.clone(),
-                        WorkArchetype::Operator,
-                    )
+                    self.record_memory_only_capsule("loop_config", summary, WorkArchetype::Operator)
                 } else {
                     self.record_work_capsule(
                         "loop_config",
-                        summary.clone(),
+                        summary,
                         WorkArchetype::Operator,
                         weight,
                     )
@@ -403,19 +399,14 @@ impl VivlingState {
             VivlingLoopEventKind::Runtime => match event.last_status.as_deref() {
                 Some("submitted") => {
                     self.loop_runtime_submissions = self.loop_runtime_submissions.saturating_add(1);
-                    self.record_work_capsule(
-                        "loop_runtime",
-                        summary.clone(),
-                        WorkArchetype::Operator,
-                        14,
-                    )
+                    self.record_work_capsule("loop_runtime", summary, WorkArchetype::Operator, 14)
                 }
                 Some("blocked_review") => {
                     self.loop_runtime_blocks = self.loop_runtime_blocks.saturating_add(1);
                     self.loop_blocked_review = self.loop_blocked_review.saturating_add(1);
                     self.record_memory_only_capsule(
                         "loop_blocked_review",
-                        summary.clone(),
+                        summary,
                         WorkArchetype::Operator,
                     )
                 }
@@ -424,7 +415,7 @@ impl VivlingState {
                     self.loop_blocked_side = self.loop_blocked_side.saturating_add(1);
                     self.record_memory_only_capsule(
                         "loop_blocked_side",
-                        summary.clone(),
+                        summary,
                         WorkArchetype::Operator,
                     )
                 }
@@ -433,13 +424,13 @@ impl VivlingState {
                     self.loop_blocked_busy = self.loop_blocked_busy.saturating_add(1);
                     self.record_memory_only_capsule(
                         "loop_blocked_busy",
-                        summary.clone(),
+                        summary,
                         WorkArchetype::Operator,
                     )
                 }
                 _ => self.record_memory_only_capsule(
                     "loop_runtime",
-                    summary.clone(),
+                    summary,
                     WorkArchetype::Operator,
                 ),
             },

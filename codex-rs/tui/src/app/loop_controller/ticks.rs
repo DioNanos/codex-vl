@@ -351,7 +351,7 @@ pub(super) async fn process_submission(
     let delegated_vivling_id = delegation
         .as_ref()
         .map(|delegation| delegation.vivling_id.as_str())
-        .or_else(|| thread_owner.owner_vivling_id.as_deref());
+        .or(thread_owner.owner_vivling_id.as_deref());
     let readiness = delegated_vivling_id
         .map(|vivling_id| {
             app.chat_widget

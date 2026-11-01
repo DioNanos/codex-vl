@@ -21,7 +21,7 @@ pub(crate) fn art_for(mode: CrtMode, tick: u64) -> Frame {
 }
 
 fn idle(tick: u64) -> Frame {
-    if tick % 8 == 0 {
+    if tick.is_multiple_of(8) {
         Frame::new(
             ["   .-.__.-.   ", "  (  -  -  )  ", "   `-.__.-'   "],
             ROW_SLOTS,
@@ -77,7 +77,7 @@ fn working(tick: u64) -> Frame {
 }
 
 fn alert(tick: u64) -> Frame {
-    if tick % 2 == 0 {
+    if tick.is_multiple_of(2) {
         Frame::new(
             ["   \\  !  /    ", "  (  O  O  )  ", "    /_^_\\     "],
             ALERT_ROW_SLOTS,
@@ -91,7 +91,7 @@ fn alert(tick: u64) -> Frame {
 }
 
 fn tired(tick: u64) -> Frame {
-    if tick % 3 == 0 {
+    if tick.is_multiple_of(3) {
         Frame::new(
             ["      z       ", "  (  -  -  )  ", "    /___\\     "],
             ROW_SLOTS,
@@ -105,7 +105,7 @@ fn tired(tick: u64) -> Frame {
 }
 
 fn hungry(tick: u64) -> Frame {
-    if tick % 2 == 0 {
+    if tick.is_multiple_of(2) {
         Frame::new(
             ["    .---.     ", "  (  o  o  )  ", "    \\_v_/     "],
             ROW_SLOTS,

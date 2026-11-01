@@ -333,6 +333,7 @@ async fn parent_owned_thread_blocks_settings_shortcuts() {
         event,
         AppEvent::SubmitThreadOp { .. }
             | AppEvent::UpdateModel(_)
+            | AppEvent::ApplyModelSelection { .. }
             | AppEvent::UpdateReasoningEffort(_)
             | AppEvent::UpdatePlanModeReasoningEffort(_)
     )));
@@ -396,6 +397,7 @@ async fn parent_owned_thread_preserves_queued_input_before_draining() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ Some("gpt-5")).await;
     let queued_message = QueuedUserMessage {
         user_message: UserMessage::from("keep this queued prompt"),
+        prepared_images: None,
         action: QueuedInputAction::Plain,
         delivery: MessageDelivery::Unsent,
         pending_pastes: vec![("[Image 1]".to_string(), "pasted contents".to_string())],
@@ -2439,10 +2441,13 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
     for pending_start in [false, true] {
         let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
         chat.thread_id = Some(ThreadId::new());
-        if !pending_start {
+        if pending_start {
+            chat.prepare_safety_recourse_rewrite("first message")
+                .unwrap();
+        } else {
             handle_turn_started(&mut chat, "turn-1");
+            chat.submit_user_message("first message".into());
         }
-        chat.submit_user_message("first message".into());
         let client_id = if pending_start {
             chat.input_queue
                 .pending_user_message_client_id
@@ -2456,6 +2461,8 @@ async fn reconnect_resumes_unsent_input_and_reconciles_confirmed_submissions() {
             .push_back(UserMessage::from("follow-up").into());
         chat.pause_for_disconnect();
         let mut input = chat.capture_thread_input_state();
+        let saved_source = input.as_ref().unwrap().safety_buffering_source;
+        assert_eq!(saved_source, UserMessageSource::Prompt);
         // Missing history and unrelated receipts never authorize resubmitting uncertain input.
         for ids in [
             vec![],
@@ -2566,7 +2573,7 @@ async fn accepted_user_message_records_vivling_language_sample() {
 
     let text = "ciao come stai oggi davvero".to_string();
     chat.bottom_pane
-        .set_composer_text(text.clone(), Vec::new(), Vec::new());
+        .set_composer_text(text, Vec::new(), Vec::new());
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     // Drain the accepted UserTurn op so a later test cannot mistake it
@@ -3012,6 +3019,7 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                 if scenario == "rate_limit_recovery" {
                     chat.input_queue.rate_limit_recovery_pending = true;
                     chat.on_images_prepared(id);
+                    std::fs::remove_file(&message.local_images[0].path).unwrap();
                     assert_eq!(
                         chat.input_queue
                             .queued_user_messages
@@ -3020,6 +3028,10 @@ fn image_preparation_keeps_input_responsive_and_preserves_pending_input() {
                             .collect::<Vec<_>>(),
                         vec![message, UserMessage::from("x")],
                     );
+                    chat.input_queue.rate_limit_recovery_pending = false;
+                    assert!(chat.maybe_send_next_queued_input());
+                    assert_matches!(next_submit_op(&mut ops), Op::UserTurn { items, .. }
+                        if matches!(items.first(), Some(UserInput::Image { .. })));
                 } else if scenario == "model_change" {
                     chat.handle_paste("new draft".into());
                     let mut models = chat.model_catalog.try_list_models().unwrap();

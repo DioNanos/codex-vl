@@ -603,14 +603,15 @@ mod tests {
     use chrono::Utc;
 
     fn adult_state_with_profile() -> VivlingState {
-        let mut state = VivlingState::default();
-        state.hatched = true;
-        state.name = "Nilo".to_string();
-        state.vivling_id = "viv-test".to_string();
-        state.level = 60;
-        state.brain_enabled = true;
-        state.brain_profile = Some("vivling-spark".to_string());
-        state
+        VivlingState {
+            hatched: true,
+            name: "Nilo".to_string(),
+            vivling_id: "viv-test".to_string(),
+            level: 60,
+            brain_enabled: true,
+            brain_profile: Some("vivling-spark".to_string()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -999,9 +1000,9 @@ mod tests {
         let long_step = "step ".repeat(40);
         let too_many_triggers: Vec<String> = (0..10).map(|i| format!("trig-{i}")).collect();
         let too_many_steps: Vec<String> = (0..8).map(|i| format!("step-{i}")).collect();
-        let mut combined_triggers = too_many_triggers.clone();
+        let mut combined_triggers = too_many_triggers;
         combined_triggers.push(long_trigger.clone());
-        let mut combined_steps = too_many_steps.clone();
+        let mut combined_steps = too_many_steps;
         combined_steps.push(long_step.clone());
         let skills = vec![VivlingSkill {
             name: long_name.clone(),

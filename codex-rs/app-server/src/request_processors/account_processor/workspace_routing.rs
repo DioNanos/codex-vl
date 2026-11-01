@@ -8,9 +8,11 @@ use codex_app_server_protocol::AccountRoutingOverride;
 use codex_backend_client::AccountEntry;
 use codex_config::ConfigLoadError;
 use codex_http_client::NetworkPolicyDenied;
+use codex_login::RefreshTokenError;
 use codex_login::WorkspaceRouting;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::WorkspaceRoutingResolver;
+use codex_login::auth::RefreshTokenFailedError;
 use codex_model_provider::ProviderAccount;
 use codex_model_provider::ProviderAccountError;
 use codex_model_provider::ProviderAccountState;
@@ -35,17 +37,20 @@ pub(super) type WorkspaceRoutingFetches = HashMap<WorkspaceRoutingKey, Weak<Work
 
 pub(super) struct WorkspaceRoutingFetch {
     discovery: Semaphore,
-    routing: Mutex<Option<WorkspaceRouting>>,
+    routing: Mutex<Option<CachedWorkspaceRouting>>,
 }
 
+#[derive(Clone)]
 pub(super) struct CachedWorkspaceRouting {
     key: WorkspaceRoutingKey,
     routing: WorkspaceRouting,
+    name: Option<String>,
 }
 
 pub(super) struct AccountRead {
     account_state: ProviderAccountState,
     pub(super) workspace_routing: Option<WorkspaceRouting>,
+    workspace_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -70,6 +75,8 @@ pub(super) enum WorkspaceRoutingError {
     AccountChanged,
     #[error("workspace routing discovery unauthorized (401)")]
     DiscoveryUnauthorized,
+    #[error(transparent)]
+    RefreshTokenRejected(RefreshTokenFailedError),
     #[error("workspace routing discovery failed")]
     DiscoveryFailed,
     #[error("selected workspace missing from routing discovery")]
@@ -188,6 +195,9 @@ impl WorkspaceRoutingResolver for AccountRequestProcessor {
                 .map(|account| account.workspace_routing)
                 .map_err(|error| match error {
                     AccountReadError::InvalidAccount(error) => io::Error::other(error),
+                    AccountReadError::Routing(WorkspaceRoutingError::RefreshTokenRejected(
+                        error,
+                    )) => io::Error::new(io::ErrorKind::PermissionDenied, error),
                     AccountReadError::Routing(error) => io::Error::new(
                         if error == WorkspaceRoutingError::DiscoveryUnauthorized {
                             io::ErrorKind::PermissionDenied
@@ -257,9 +267,13 @@ impl AccountRequestProcessor {
                 AccountReadError::InvalidAccount(error) => invalid_request(error.to_string()),
                 AccountReadError::Routing(error) => internal_error(error.to_string()),
             })?;
+        let mut account = read.account_state.account.map(Account::from);
+        if let Some(Account::Chatgpt { workspace_name, .. }) = &mut account {
+            *workspace_name = read.workspace_name;
+        }
         Ok(Some(
             GetAccountResponse {
-                account: read.account_state.account.map(Account::from),
+                account,
                 requires_openai_auth: read.account_state.requires_openai_auth,
                 workspace_routing: read.workspace_routing.map(|routing| {
                     codex_app_server_protocol::WorkspaceRouting {
@@ -380,7 +394,7 @@ impl AccountRequestProcessor {
                         .await
                         .as_ref()
                         .filter(|cached| cached.key == key)
-                        .map(|cached| cached.routing.clone()),
+                        .cloned(),
                 };
                 let routing = if let Some(cached) = cached {
                     cached
@@ -398,13 +412,30 @@ impl AccountRequestProcessor {
                             Ok(response) => break response,
                             Err(error) => {
                                 let unauthorized = error.is_unauthorized();
-                                if unauthorized
-                                    && recovery.has_next()
-                                    && recovery.next().await.is_ok()
-                                {
+                                if unauthorized && recovery.has_next() {
+                                    let result = recovery.next().await;
                                     let refreshed = *current_auth_changes.borrow();
                                     if refreshed.owner_generation != auth_state.owner_generation {
                                         return Err(WorkspaceRoutingError::AccountChanged.into());
+                                    }
+                                    if let Err(error) = result
+                                        && refreshed.generation == discovery_generation
+                                    {
+                                        let cached_failure = self
+                                            .auth_manager
+                                            .refresh_failure_for_auth(&discovery_auth);
+                                        if let RefreshTokenError::Permanent(failed) = error
+                                            && !self.auth_manager.has_external_auth()
+                                            && cached_failure.as_ref() == Some(&failed)
+                                        {
+                                            return Err(
+                                                WorkspaceRoutingError::RefreshTokenRejected(failed)
+                                                    .into(),
+                                            );
+                                        }
+                                        return Err(
+                                            WorkspaceRoutingError::DiscoveryUnauthorized.into()
+                                        );
                                     }
                                     discovery_generation = refreshed.generation;
                                     discovery_auth = self
@@ -426,7 +457,7 @@ impl AccountRequestProcessor {
                         .accounts
                         .into_iter()
                         .filter(|account| account.id == account_id);
-                    let entry = accounts
+                    let mut entry = accounts
                         .next()
                         .ok_or(WorkspaceRoutingError::MissingWorkspace)?;
                     if accounts.next().is_some() {
@@ -447,6 +478,7 @@ impl AccountRequestProcessor {
                     {
                         return Err(WorkspaceRoutingError::ConfigurationChanged.into());
                     }
+                    let name = entry.name.take();
                     let routing = resolve_routing(
                         entry,
                         required_chatgpt_base_url.as_deref(),
@@ -457,15 +489,17 @@ impl AccountRequestProcessor {
                     {
                         return Err(WorkspaceRoutingError::AccountChanged.into());
                     }
+                    let routing = CachedWorkspaceRouting {
+                        key: WorkspaceRoutingKey {
+                            auth_generation: discovery_generation,
+                            ..key
+                        },
+                        routing,
+                        name,
+                    };
                     // Same-owner refresh can complete a newer discovery first.
                     if current_auth_changes.borrow().generation == discovery_generation {
-                        *cached = Some(CachedWorkspaceRouting {
-                            key: WorkspaceRoutingKey {
-                                auth_generation: discovery_generation,
-                                ..key
-                            },
-                            routing: routing.clone(),
-                        });
+                        *cached = Some(routing.clone());
                     }
                     routing
                 };
@@ -485,9 +519,9 @@ impl AccountRequestProcessor {
                 let session_bootstrap_origin = Url::parse(&request.chatgpt_base_url)
                     .map_err(|_| WorkspaceRoutingError::InvalidSessionBootstrapUrl)?
                     .origin();
-                let selected_backend = workspace_routing
-                    .as_ref()
-                    .is_some_and(|routing| routing.backend_origin == origin.ascii_serialization());
+                let selected_backend = workspace_routing.as_ref().is_some_and(|routing| {
+                    routing.routing.backend_origin == origin.ascii_serialization()
+                });
                 let workspace_bound = request.previously_routed
                     || request.provider_base_url == codex_model_provider::CHATGPT_CODEX_BASE_URL
                     || origin == session_bootstrap_origin
@@ -498,9 +532,13 @@ impl AccountRequestProcessor {
                     return Err(WorkspaceRoutingError::SessionBackendChanged.into());
                 }
             }
+            let (workspace_routing, workspace_name) = workspace_routing
+                .map(|workspace| (Some(workspace.routing), workspace.name))
+                .unwrap_or_default();
             Ok(AccountRead {
                 account_state,
                 workspace_routing,
+                workspace_name,
             })
         });
         let result = tokio::select! {
