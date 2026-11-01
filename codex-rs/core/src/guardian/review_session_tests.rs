@@ -46,6 +46,21 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
     )
     .unwrap();
     params.parent_session = Arc::clone(&parent);
+    let parent_uri = "wss://review-snapshot.chatgpt.com/backend-api/codex/responses"
+        .parse()
+        .unwrap();
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::SET_COOKIE,
+        http::HeaderValue::from_static("__oailb=original-parent; Path=/; Secure; Max-Age=3600"),
+    );
+    turn.extension_data.insert(super::super::ParentResponse {
+        id: "original-response".to_owned(),
+        routing_affinity: codex_http_client::ChatGptRoutingAffinity::from_response(
+            &parent_uri,
+            &headers,
+        ),
+    });
     params.parent_context = GuardianReviewContext::from(Arc::clone(&turn));
     let evidence: ResponseItem = serde_json::from_value(serde_json::json!({
         "type": "function_call_output", "call_id": "prior-inspection", "output": EVIDENCE
@@ -73,9 +88,14 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             .node_repl_auto_review_required,
     )
     .with_node_repl_policy(&params.node_repl_policy);
+    let reviewer_session = Arc::clone(&reviewer.session);
     let manager = prewarm_test_session(&params, reviewer).await;
     // Capture the review context, then compact the parent before the reviewer builds its prompt.
     let prepared = setup::prepare_review(params).await.unwrap();
+    turn.extension_data.insert(super::super::ParentResponse {
+        id: "later-response".to_owned(),
+        routing_affinity: None,
+    });
     let checkpoint: ResponseItem = serde_json::from_value(serde_json::json!({
         "type": "compaction", "id": "cmp_new", "encrypted_content": "new-checkpoint"
     }))
@@ -99,6 +119,21 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
         .await;
     let ((outcome, _), submitted_text) = tokio::join!(manager.review(prepared), async {
         let submission = rx_sub.recv().await.unwrap();
+        let pending = reviewer_session
+            .services
+            .thread_extension_data
+            .get::<super::super::PendingReviewRouting>()
+            .unwrap();
+        let parent = pending.0.as_ref().unwrap();
+        assert_eq!(parent.id, "original-response");
+        assert_eq!(
+            parent
+                .routing_affinity
+                .as_ref()
+                .unwrap()
+                .cookie_header(&parent_uri),
+            Some(http::HeaderValue::from_static("__oailb=original-parent"))
+        );
         let id = submission.id;
         let Op::TurnInput { request, reply, .. } = submission.op else {
             panic!("expected reviewer prompt");
@@ -123,6 +158,14 @@ async fn run_review_preserves_evidence_during_parent_compaction() {
             .unwrap();
         text
     });
+    assert!(
+        reviewer_session
+            .services
+            .thread_extension_data
+            .get::<super::super::PendingReviewRouting>()
+            .is_none()
+    );
+    assert!(!submitted_text.contains("__oailb"));
     assert!(matches!(
         outcome,
         GuardianReviewSessionOutcome::Completed(Ok(_))
@@ -493,7 +536,7 @@ async fn encrypted_parent_compaction_requires_original_item_id(mode: GuardianCon
     }]);
     assert_eq!(
         policy
-            .parent_compaction(&history)
+            .parent_compaction(history.annotated_items())
             .expect("valid checkpoint"),
         Some(item)
     );
@@ -508,48 +551,12 @@ async fn encrypted_parent_compaction_requires_original_item_id(mode: GuardianCon
         .into(),
     );
     history.replace_annotated(items);
-    let result = policy.parent_compaction(&history);
+    let result = policy.parent_compaction(history.annotated_items());
     if mode == GuardianContextMode::ThreadOwned {
         assert!(result.is_err());
     } else {
         assert_eq!(result.expect("legacy omission"), None);
     }
-}
-
-#[tokio::test]
-async fn guardian_prompt_cache_key_is_scoped_to_parent_thread() {
-    let session_source =
-        SessionSource::SubAgent(SubAgentSource::Other(GUARDIAN_REVIEWER_NAME.to_string()));
-    let parent_thread_id = ThreadId::new();
-    let key = prompt_cache_key_override_for_review_session(&session_source, Some(parent_thread_id))
-        .expect("guardian prompt cache key");
-
-    assert_eq!(key, format!("guardian:{parent_thread_id}"));
-    assert!(
-        key.len() <= 64,
-        "guardian prompt cache key should fit the Responses API limit"
-    );
-    assert_eq!(
-        key,
-        prompt_cache_key_override_for_review_session(&session_source, Some(parent_thread_id))
-            .expect("same guardian prompt cache key")
-    );
-    assert_ne!(
-        key,
-        prompt_cache_key_override_for_review_session(&session_source, Some(ThreadId::new()))
-            .expect("different parent guardian prompt cache key")
-    );
-    assert_eq!(
-        None,
-        prompt_cache_key_override_for_review_session(&SessionSource::Cli, Some(parent_thread_id))
-    );
-    assert_eq!(
-        None,
-        prompt_cache_key_override_for_review_session(
-            &session_source,
-            /*parent_thread_id*/ None
-        )
-    );
 }
 
 #[tokio::test]
@@ -680,41 +687,6 @@ async fn guardian_review_session_config_resolves_policy_and_template(
             .render()
             .expect_text()
         )
-    );
-}
-
-#[test]
-fn token_usage_delta_never_reports_negative_usage() {
-    let start = TokenUsage {
-        input_tokens: 10,
-        cached_input_tokens: 8,
-        cache_write_input_tokens: 8,
-        output_tokens: 6,
-        reasoning_output_tokens: 4,
-        total_tokens: 28,
-        codex_rollout_budget_units: None,
-    };
-    let end = TokenUsage {
-        input_tokens: 15,
-        cached_input_tokens: 7,
-        cache_write_input_tokens: 7,
-        output_tokens: 10,
-        reasoning_output_tokens: 2,
-        total_tokens: 34,
-        codex_rollout_budget_units: None,
-    };
-
-    assert_eq!(
-        token_usage_delta(&start, &end),
-        TokenUsage {
-            input_tokens: 5,
-            cached_input_tokens: 0,
-            cache_write_input_tokens: 0,
-            output_tokens: 4,
-            reasoning_output_tokens: 0,
-            total_tokens: 6,
-            codex_rollout_budget_units: None,
-        }
     );
 }
 

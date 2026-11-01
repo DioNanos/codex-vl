@@ -65,7 +65,9 @@ const EXPRESSION_CRT_MAX: usize = 42;
 
 const EXPRESSION_SKIP_TRACE_INTERVAL: Duration = Duration::seconds(60);
 
-static LAST_SKIP_TRACE_AT: LazyLock<Mutex<HashMap<(String, &'static str), DateTime<Utc>>>> =
+type SkipTraceTimestamps = HashMap<(String, &'static str), DateTime<Utc>>;
+
+static LAST_SKIP_TRACE_AT: LazyLock<Mutex<SkipTraceTimestamps>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn should_emit_skip_trace(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {

@@ -38,6 +38,8 @@ mod config_requirements_exec;
 mod config_requirements_in_app_browser;
 mod config_requirements_login;
 mod config_rpc;
+#[path = "config_server_tests.rs"]
+mod config_server;
 #[cfg(unix)]
 #[path = "connection_handling_stdio_tests.rs"]
 mod connection_handling_stdio;
@@ -46,6 +48,8 @@ mod connection_handling_websocket;
 mod connection_handling_websocket_compression;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
+#[path = "critical_path_analytics_tests.rs"]
+mod critical_path_analytics;
 #[cfg(unix)]
 mod curated_mcp_sync;
 mod current_time;
@@ -72,6 +76,8 @@ mod frozen_cloud_skills;
 mod fs;
 #[path = "gateway_oauth_tests.rs"]
 mod gateway_oauth;
+#[path = "gcp_setup_tests.rs"]
+mod gcp_setup;
 mod git_attribution;
 mod guardian_v2;
 mod history_notes_extension;
@@ -83,6 +89,7 @@ mod luna_reserve;
 mod marketplace_add;
 mod marketplace_remove;
 mod marketplace_upgrade;
+mod mcp_connection_sharing;
 mod mcp_event_stream;
 mod mcp_protocol_default;
 mod mcp_resource;

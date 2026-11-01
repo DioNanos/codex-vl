@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ThreadItem;
 use pretty_assertions::assert_eq;
 
 fn paste_hidden_plan_shell_payload(chat: &mut ChatWidget) -> String {
@@ -282,15 +283,10 @@ async fn reasoning_selection_in_plan_mode_without_effort_change_does_not_open_sc
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5.5"
+            AppEvent::ApplyModelSelection { model, effort: Some(_) }
+                if model == "gpt-5.5"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected model and reasoning update event; events: {events:?}"
     );
 }
 
@@ -460,15 +456,10 @@ async fn reasoning_selection_in_plan_mode_model_switch_does_not_open_scope_promp
     assert!(
         events.iter().any(|event| matches!(
             event,
-            AppEvent::UpdateModel(model) if model == "gpt-5.6-terra"
+            AppEvent::ApplyModelSelection { model, effort: Some(_) }
+                if model == "gpt-5.6-terra"
         )),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateReasoningEffort(Some(_)))),
-        "expected reasoning update event; events: {events:?}"
+        "expected model and reasoning update event; events: {events:?}"
     );
 }
 
@@ -812,14 +803,16 @@ async fn plan_implementation_popup_skips_replayed_turn_complete() {
             id: "turn-1".to_string(),
             root_turn_id: None,
             items_view: codex_app_server_protocol::TurnItemsView::Full,
-            items: vec![AppServerThreadItem::AgentMessage {
-                id: "msg-plan".to_string(),
-                text: "Plan details".to_string(),
-                phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            }],
+            items: vec![ThreadItem::untimed(
+                AppServerThreadItemPayload::AgentMessage {
+                    id: "msg-plan".to_string(),
+                    text: "Plan details".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+            )],
             status: AppServerTurnStatus::Completed,
             error: None,
             started_at: None,
@@ -853,14 +846,16 @@ async fn plan_implementation_popup_shows_once_when_replay_precedes_live_turn_com
             id: "turn-1".to_string(),
             root_turn_id: None,
             items_view: codex_app_server_protocol::TurnItemsView::Full,
-            items: vec![AppServerThreadItem::AgentMessage {
-                id: "msg-plan-replay".to_string(),
-                text: "Plan details".to_string(),
-                phase: Some(MessagePhase::FinalAnswer),
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            }],
+            items: vec![ThreadItem::untimed(
+                AppServerThreadItemPayload::AgentMessage {
+                    id: "msg-plan-replay".to_string(),
+                    text: "Plan details".to_string(),
+                    phase: Some(MessagePhase::FinalAnswer),
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+            )],
             status: AppServerTurnStatus::Completed,
             error: None,
             started_at: None,

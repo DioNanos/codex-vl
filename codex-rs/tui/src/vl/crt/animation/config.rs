@@ -94,7 +94,7 @@ impl VivlingLayout {
         matches!(raw.trim().to_ascii_lowercase().as_str(), "full" | "line")
     }
 
-    pub(crate) fn as_config_value(&self) -> &'static str {
+    pub(crate) fn as_config_value(self) -> &'static str {
         match self {
             Self::Full => "full",
             Self::Line => "line",

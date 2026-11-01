@@ -604,6 +604,25 @@ fn undo_and_redo_restore_deleted_image_attachment() {
 }
 
 #[test]
+fn vim_replace_yank_preserves_existing_image_and_recovers_atomically() {
+    let mut composer = vim_composer("");
+    keys(&mut composer, "i");
+    composer.attach_image(PathBuf::from("killed.png"));
+    composer.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    composer.attach_image(PathBuf::from("existing.png"));
+    keys(&mut composer, "abcdefghij");
+    let before = (composer.current_text(), composer.local_image_paths());
+    escape(&mut composer);
+    keys(&mut composer, "0R");
+    composer.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+    composer.handle_key_event(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(
+        (composer.current_text(), composer.local_image_paths()),
+        before
+    );
+}
+
+#[test]
 fn find_jump_and_search_navigation_never_snapshot_the_draft() {
     let mut composer = vim_composer("alpha beta\nalpha gamma");
     for key in ['f', 'F', 'G', '/', '?', 'n', 'N'] {

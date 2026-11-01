@@ -30,6 +30,7 @@ members = [
     "code-mode-host",
     "code-mode-protocol",
     "code-mode-runtime",
+    "plugin-host",
     "codex-home",
     "cloud-config",
     "cloud-tasks",
@@ -58,6 +59,7 @@ members = [
     "file-system",
     "exec-server-protocol",
     "exec-server",
+    "exec-server-cli",
     "exec-server/tests/support",
     "execpolicy",
     "ext/agent",
@@ -130,6 +132,7 @@ members = [
     "utils/cache",
     "utils/critical-path",
     "utils/git-discovery",
+    "utils/head-tail-buffer",
     "utils/image",
     "utils/json-to-toml",
     "utils/home-dir",
@@ -170,7 +173,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.165.0"
+version = "0.166.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -211,13 +214,13 @@ codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-code-mode-runtime = { path = "code-mode-runtime" }
+codex-plugin-host = { path = "plugin-host" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
 codex-websocket-auth = { path = "websocket-auth" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
-codex-agent-extension = { path = "ext/agent" }
 codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-agent-message-board-extension = { path = "ext/agent-message-board" }
 codex-message-board = { path = "message-board" }
@@ -228,10 +231,12 @@ codex-core-api = { path = "core-api" }
 codex-core-plugin-common = { path = "core-plugin-common" }
 codex-core-plugins = { path = "core-plugins" }
 codex-diagnostics = { path = "diagnostics" }
+codex-direct-tool-timing = { path = "direct-tool-timing" }
 codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
+codex-exec-server-cli = { path = "exec-server-cli" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
@@ -285,6 +290,7 @@ codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
+codex-runtime-agent-instance = { path = "runtime-agent-instance" }
 codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
@@ -312,6 +318,7 @@ codex-utils-critical-path = { path = "utils/critical-path" }
 codex-utils-elapsed = { path = "utils/elapsed" }
 codex-utils-fuzzy-match = { path = "utils/fuzzy-match" }
 codex-utils-git-discovery = { path = "utils/git-discovery" }
+codex-utils-head-tail-buffer = { path = "utils/head-tail-buffer" }
 codex-utils-home-dir = { path = "utils/home-dir" }
 codex-utils-image = { path = "utils/image" }
 codex-utils-json-to-toml = { path = "utils/json-to-toml" }
@@ -674,6 +681,7 @@ opt-level = 0
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "ed1cdab335221515706178d68495bba2aed1924f" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
+v8 = { git = "https://github.com/seanh-oai/rusty_v8.git", rev = "350c5a859a9b3c84ab8701b3ad51e3b7699b30c0" }
 
 # Uncomment to debug local changes.
 # rmcp = { path = "../../rust-sdk/crates/rmcp" }

@@ -11,6 +11,7 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::Turn;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -105,8 +106,24 @@ async fn bedrock_setup_wizard_requires_eligible_onboarding() -> color_eyre::Resu
             true,
         ),
         (
-            "explicit provider",
+            "explicit OpenAI provider",
             "model_provider = \"openai\"\n[features]\nbedrock_setup_wizard = true\n",
+            LoginStatus::NotAuthenticated,
+            AppServerTarget::Embedded,
+            true,
+        ),
+        (
+            "custom provider",
+            r#"
+model_provider = "test-provider"
+[model_providers.test-provider]
+name = "Test provider"
+base_url = "http://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+[features]
+bedrock_setup_wizard = true
+"#,
             LoginStatus::NotAuthenticated,
             AppServerTarget::Embedded,
             false,
@@ -1495,11 +1512,11 @@ async fn resume_picker_loads_complete_paginated_and_legacy_transcripts() -> colo
                 started
                     .turns
                     .iter()
-                    .flat_map(|turn| &turn.items)
+                    .flat_map(Turn::item_payloads)
                     .any(|item| {
                         matches!(
                             item,
-                            codex_app_server_protocol::ThreadItem::UserMessage { .. }
+                            codex_app_server_protocol::ThreadItemPayload::UserMessage { .. }
                         )
                     })
             );

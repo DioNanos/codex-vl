@@ -7,7 +7,7 @@ pub(crate) struct BouncingBall {
 impl BouncingBall {
     pub(crate) fn new_with_seed(seed: u32) -> Self {
         let x = (seed % 5) as f32 + 1.0;
-        let vx = if seed % 2 == 0 { 0.8 } else { -0.6 };
+        let vx = if seed.is_multiple_of(2) { 0.8 } else { -0.6 };
         Self { x, vx, hits: 0 }
     }
 

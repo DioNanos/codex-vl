@@ -219,52 +219,40 @@ impl VivlingState {
             WorkArchetype::Builder => {
                 if juvenile {
                     format!(
-                        "As builder, I am learning from `{}`. What is the one concrete target now?",
-                        last
+                        "As builder, I am learning from `{last}`. What is the one concrete target now?"
                     )
                 } else {
                     format!(
-                        "As builder, my read from memory is `{}`. I would stay narrow and ship one real change.",
-                        last
+                        "As builder, my read from memory is `{last}`. I would stay narrow and ship one real change."
                     )
                 }
             }
             WorkArchetype::Reviewer => {
                 if juvenile {
-                    format!(
-                        "As reviewer, I learned from `{}`. What still needs proving?",
-                        last
-                    )
+                    format!("As reviewer, I learned from `{last}`. What still needs proving?")
                 } else {
                     format!(
-                        "As reviewer, my memory says `{}`. I would verify the real blocker before widening.",
-                        last
+                        "As reviewer, my memory says `{last}`. I would verify the real blocker before widening."
                     )
                 }
             }
             WorkArchetype::Researcher => {
                 if juvenile {
                     format!(
-                        "As researcher, I learned from `{}`. Which unknown matters most now?",
-                        last
+                        "As researcher, I learned from `{last}`. Which unknown matters most now?"
                     )
                 } else {
                     format!(
-                        "As researcher, my memory says `{}`. I would clarify the unknown before proposing more.",
-                        last
+                        "As researcher, my memory says `{last}`. I would clarify the unknown before proposing more."
                     )
                 }
             }
             WorkArchetype::Operator => {
                 if juvenile {
-                    format!(
-                        "As operator, I learned from `{}`. What state check comes next?",
-                        last
-                    )
+                    format!("As operator, I learned from `{last}`. What state check comes next?")
                 } else {
                     format!(
-                        "As operator, my memory says `{}`. I would check state, keep changes tight, then wait.",
-                        last
+                        "As operator, my memory says `{last}`. I would check state, keep changes tight, then wait."
                     )
                 }
             }

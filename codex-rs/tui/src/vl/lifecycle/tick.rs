@@ -60,34 +60,33 @@ impl LifecycleState {
         self.animation.advance();
 
         // Handle Eating timeout
-        if self.activity == VivlingActivity::Eating {
-            if self.last_state_change.elapsed() >= EATING_DURATION {
-                self.apply_transition(super::activity::ActivityTransition {
-                    new_activity: VivlingActivity::Idle,
-                });
-            }
+        if self.activity == VivlingActivity::Eating
+            && self.last_state_change.elapsed() >= EATING_DURATION
+        {
+            self.apply_transition(super::activity::ActivityTransition {
+                new_activity: VivlingActivity::Idle,
+            });
         }
 
         // Handle Sleeping energy gain
-        if self.activity == VivlingActivity::Sleeping {
-            if self.last_sleep_energy_tick.elapsed() >= SLEEP_ENERGY_INTERVAL {
-                self.stats.energy = self.stats.energy.saturating_add(SLEEP_ENERGY_GAIN);
-                self.stats.clamp_energy();
-                self.stats.minutes_slept = self.stats.minutes_slept.saturating_add(1);
-                self.last_sleep_energy_tick = Instant::now();
-            }
+        if self.activity == VivlingActivity::Sleeping
+            && self.last_sleep_energy_tick.elapsed() >= SLEEP_ENERGY_INTERVAL
+        {
+            self.stats.energy = self.stats.energy.saturating_add(SLEEP_ENERGY_GAIN);
+            self.stats.clamp_energy();
+            self.stats.minutes_slept = self.stats.minutes_slept.saturating_add(1);
+            self.last_sleep_energy_tick = Instant::now();
         }
 
         // Handle Playing timeout
-        if self.activity == VivlingActivity::Playing {
-            if let Some(dur) = self.playing_duration {
-                if self.last_state_change.elapsed() >= dur {
-                    self.stats.games_played = self.stats.games_played.saturating_add(1);
-                    self.apply_transition(super::activity::ActivityTransition {
-                        new_activity: VivlingActivity::Idle,
-                    });
-                }
-            }
+        if self.activity == VivlingActivity::Playing
+            && let Some(dur) = self.playing_duration
+            && self.last_state_change.elapsed() >= dur
+        {
+            self.stats.games_played = self.stats.games_played.saturating_add(1);
+            self.apply_transition(super::activity::ActivityTransition {
+                new_activity: VivlingActivity::Idle,
+            });
         }
 
         // Compute idle duration for Idle state

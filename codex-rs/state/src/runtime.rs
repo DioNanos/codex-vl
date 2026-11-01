@@ -216,7 +216,6 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
-        let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         // Fork: open_state_sqlite wraps sqlite.open_state_db with the VL migration
         // reconciliation (device-key renumber, legacy loop migration numbers), so the
         // upstream call has to stay behind it — see its tests below.
@@ -259,6 +258,7 @@ impl StateRuntime {
                 }
             }
         };
+        let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         let logs_pool = match sqlite
             .open_logs_db(&logs_migrator, telemetry_override)
             .await
@@ -520,6 +520,10 @@ pub async fn open_thread_history_db(sqlite: &SqliteConfig) -> anyhow::Result<Sql
         .await
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the fork applies SqliteRuntimeMode (Android journal mode, max connections), which the sqlite shim does not expose"
+)]
 async fn open_sqlite(
     sqlite: &SqliteConfig,
     path: &Path,
@@ -615,12 +619,12 @@ async fn reconcile_vl_legacy_state_migrations(
 }
 
 async fn reconcile_legacy_loop_tables(pool: &SqlitePool) -> anyhow::Result<()> {
-    if sqlite_object_exists(pool, "table", "thread_loop_jobs").await? {
-        if !sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await? {
-            sqlx::query("ALTER TABLE thread_loop_jobs RENAME TO vl_thread_loop_jobs")
-                .execute(pool)
-                .await?;
-        }
+    if sqlite_object_exists(pool, "table", "thread_loop_jobs").await?
+        && !sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await?
+    {
+        sqlx::query("ALTER TABLE thread_loop_jobs RENAME TO vl_thread_loop_jobs")
+            .execute(pool)
+            .await?;
     }
 
     if sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await? {
@@ -1157,6 +1161,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test seeds a legacy state migration record through a dedicated pool on a temporary database"
+    )]
     async fn open_state_sqlite_migrates_existing_vl_db_after_device_key_renumber() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
@@ -1200,6 +1208,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test seeds a legacy vl loop database through a dedicated pool on a temporary database"
+    )]
     async fn open_state_sqlite_reconciles_legacy_vl_loop_migration_numbers() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)

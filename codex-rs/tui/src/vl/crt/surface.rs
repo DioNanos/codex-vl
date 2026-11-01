@@ -139,7 +139,11 @@ mod tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
         surface.render(Rect::new(0, 0, 4, 2), &mut buf);
-        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        let text: String = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert_eq!(text, "        ");
     }
 }

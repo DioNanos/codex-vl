@@ -112,7 +112,9 @@ impl Vivling {
     pub(crate) fn status(&mut self) -> Result<String, String> {
         self.ensure_hatched()?;
         let snapshot = {
-            let state = self.state.as_mut().expect("state checked");
+            let Some(state) = self.state.as_mut() else {
+                return Err("No Vivling yet. Use /vivling hatch.".to_string());
+            };
             state.apply_decay(Utc::now());
             state.clone()
         };
@@ -129,7 +131,7 @@ impl Vivling {
             lineage_states
                 .iter()
                 .find(|entry| entry.vivling_id == snapshot.primary_vivling_id)
-                .map(|entry| entry.local_spawn_slots_unlocked())
+                .map(VivlingState::local_spawn_slots_unlocked)
                 .unwrap_or(0)
         };
         let mut status = format!(
