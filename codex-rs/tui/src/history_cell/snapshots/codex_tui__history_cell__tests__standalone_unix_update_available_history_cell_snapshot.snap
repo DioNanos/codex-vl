@@ -3,10 +3,11 @@ source: tui/src/history_cell/tests.rs
 assertion_line: 1379
 expression: rendered
 ---
-╭──────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.165.0 -> 9.9.9                │
-│ Run npm install -g @mmmbuto/codex-vl to update.      │
-│                                                      │
-│ See full release notes:                              │
-│ https://github.com/DioNanos/codex-vl/releases/latest │
-╰──────────────────────────────────────────────────────╯
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.166.0 -> 9.9.9                                                                    │
+│ Run sh -c 's=$(curl -fsSL https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh) &&     │
+│ CODEX_NON_INTERACTIVE=1 eval "$s"' to update.                                                              │
+│                                                                                                            │
+│ See full release notes:                                                                                    │
+│ https://github.com/DioNanos/codex-vl/releases/latest                                                       │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

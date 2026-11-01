@@ -13,6 +13,7 @@ use crate::model_catalog::LUNA_RESERVE_MODEL;
 use crate::status::format_credit_micros;
 use crate::status::format_estimated_usd_micros;
 use crate::status::format_tokens_compact;
+use crate::status::thread_cost_micros;
 use crate::terminal_program_status::ProgramStatus;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ConfigLayerSource;
@@ -730,6 +731,16 @@ impl ChatWidget {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
+            StatusLineItem::Profile => {
+                let layer = self.config.config_layer_stack.get_active_user_layer()?;
+                let ConfigLayerSource::User { profile, .. } = &layer.name else {
+                    return None;
+                };
+                profile.as_ref().map(|name| format!("profile: {name}"))
+            }
+            StatusLineItem::Provider => self
+                .thread_id
+                .map(|_| format!("provider: {}", self.config.model_provider_id)),
             StatusLineItem::CurrentDir => {
                 Some(format_directory_display(
                     self.status_line_cwd(),
@@ -807,30 +818,19 @@ impl ChatWidget {
             }),
             StatusLineItem::ThreadCredits => self
                 .estimated_thread_usage()
+                .filter(|_| self.plan_type != Some(PlanType::Ent26))
                 .map(|usage| usage.estimated_usage_credits_micros)
                 .map(|credits| format!("{} credits", format_credit_micros(credits))),
             StatusLineItem::EstimatedThreadCost => self
                 .estimated_thread_usage()
-                .and_then(|usage| usage.estimated_usage_usd_micros)
+                .and_then(|usage| thread_cost_micros(usage, self.plan_type))
                 .and_then(format_estimated_usd_micros),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
-            StatusLineItem::FastMode => self
-                .model_catalog
-                .try_list_models()
-                .ok()
-                .and_then(|models| {
-                    models
-                        .into_iter()
-                        .find(|preset| preset.model == self.current_model())
-                })
-                .is_none_or(|preset| preset.supports_fast_mode())
-                .then(|| {
-                    if self.current_service_tier() == Some(ServiceTier::Fast.request_value()) {
-                        "Fast on".to_string()
-                    } else {
-                        "Fast off".to_string()
-                    }
-                }),
+            StatusLineItem::FastMode => Some(
+                self.processing_tier_display_name()
+                    .unwrap_or("Standard")
+                    .to_string(),
+            ),
             StatusLineItem::Daybreak => Some(
                 if self.daybreak_enabled && !self.side_conversation_active() {
                     "Daybreak on".to_string()
@@ -897,6 +897,8 @@ impl ChatWidget {
             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
             StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
+            StatusSurfacePreviewItem::Profile => StatusLineItem::Profile,
+            StatusSurfacePreviewItem::Provider => StatusLineItem::Provider,
         };
         self.status_line_value_for_item(status_line_item)
     }
@@ -993,17 +995,29 @@ impl ChatWidget {
     fn model_with_reasoning_display_name(&self) -> String {
         let label = self.reasoning_display_name();
         let service_tier_label = self
-            .current_service_tier()
-            .and_then(|service_tier| {
-                self.current_model_service_tier_commands()
-                    .into_iter()
-                    .find(|tier| tier.id == service_tier)
-                    .map(|tier| tier.name)
-            })
-            .filter(|_| self.has_chatgpt_account)
+            .processing_tier_display_name()
             .map(|tier| format!(" {tier}"))
             .unwrap_or_default();
         format!("{} {label}{service_tier_label}", self.model_display_name())
+    }
+
+    fn processing_tier_display_name(&self) -> Option<&str> {
+        let id = self.current_service_tier()?;
+        self.model_catalog
+            .models
+            .iter()
+            .find(|preset| preset.model == self.current_model())
+            .and_then(|preset| preset.service_tiers.iter().find(|tier| tier.id == id))
+            .map(|tier| tier.name.as_str())
+            .or_else(|| {
+                (id == ServiceTier::Flex.request_value()
+                    && self
+                        .config
+                        .model_providers
+                        .get(&self.config.model_provider_id)
+                        .is_some_and(|provider| !provider.is_amazon_bedrock()))
+                .then_some("Flex")
+            })
     }
 
     /// Computes the compact runtime status label used by word-based status items.

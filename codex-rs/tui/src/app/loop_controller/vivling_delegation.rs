@@ -188,6 +188,10 @@ struct ManagementSuspensionDecision {
     event: Option<&'static str>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal loop/VL signature still evolving; a parameter struct would churn callers for no behavior gain"
+)]
 fn management_suspension_decision(
     current_strategy: codex_state::LoopDelegationStrategy,
     strategy_override: Option<codex_state::LoopDelegationStrategy>,
@@ -526,7 +530,7 @@ pub(super) async fn handle_loop_tick_finished(
                         &job,
                         descriptor.as_ref(),
                         None,
-                        manager.clone(),
+                        manager,
                         format!("malformed payload: {parse_err}"),
                         occurrence_ms,
                         super::summary::LoopTickOutcome::Failed,
@@ -600,7 +604,7 @@ pub(super) async fn handle_loop_tick_finished(
                             &job,
                             descriptor.as_ref(),
                             delegation.as_ref(),
-                            manager.clone(),
+                            manager,
                             format!("malformed action: {parse_err}"),
                             occurrence_ms,
                             super::summary::LoopTickOutcome::Failed,
@@ -888,6 +892,10 @@ pub(super) fn run_assist(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal loop/VL signature still evolving; a parameter struct would churn callers for no behavior gain"
+)]
 pub(super) fn run_loop_tick(
     app: &mut App,
     thread_id: ThreadId,
@@ -1157,7 +1165,7 @@ mod tests {
     async fn malformed_status_reaches_the_runtime_update_and_the_summary() -> anyhow::Result<()> {
         let (mut app, _state_runtime, _thread_id, _codex_home) = app_with_state().await?;
         let job = create_interval_job(
-            &_app_state(&app),
+            _app_state(&app),
             app.primary_thread_id.unwrap(),
             "malformed",
         )
@@ -1246,7 +1254,7 @@ mod tests {
     async fn finish_summary_reports_the_carried_resolution_not_the_thread_owner()
     -> anyhow::Result<()> {
         let (mut app, _state_runtime, _thread_id, _codex_home) = app_with_state().await?;
-        let job = create_interval_job(&_app_state(&app), app.primary_thread_id.unwrap(), "carried")
+        let job = create_interval_job(_app_state(&app), app.primary_thread_id.unwrap(), "carried")
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 

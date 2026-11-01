@@ -74,8 +74,7 @@ async fn expire_stale_one_shots(
             .get_thread_loop_job_by_id(job.thread_id, &job.id)
             .await
             .map_err(loop_state_error)?
-        {
-            if let Err(err) = super::notify::persist_summary_with_outcome(
+            && let Err(err) = super::notify::persist_summary_with_outcome(
                 app,
                 state_runtime,
                 &job_after,
@@ -88,13 +87,12 @@ async fn expire_stale_one_shots(
                 now,
             )
             .await
-            {
-                tracing::warn!(
-                    target: "codex_vl::loop_summary",
-                    error = %err,
-                    "expired one-shot summary persistence failed; emission suppressed"
-                );
-            }
+        {
+            tracing::warn!(
+                target: "codex_vl::loop_summary",
+                error = %err,
+                "expired one-shot summary persistence failed; emission suppressed"
+            );
         }
         changed = true;
     }

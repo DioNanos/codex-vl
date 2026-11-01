@@ -36,13 +36,13 @@ pub(super) fn rarity_badge(rarity: VivlingRarity, variant: usize) -> char {
 }
 
 pub(super) fn species_mark(id: &str, name: &str) -> String {
-    let mut id_letters = id.chars().filter(|ch| ch.is_ascii_alphabetic());
+    let mut id_letters = id.chars().filter(char::is_ascii_alphabetic);
     let first = id_letters.next().unwrap_or('x');
     let second = id_letters.next().unwrap_or(first);
     let third = name
         .chars()
         .rev()
-        .find(|ch| ch.is_ascii_alphabetic())
+        .find(char::is_ascii_alphabetic)
         .unwrap_or('x');
     format!(
         "{}{}{}",

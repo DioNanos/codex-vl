@@ -23,6 +23,7 @@ pub use capabilities::NoopExtensionEventSink;
 pub use capabilities::NoopResponseItemInjector;
 pub use capabilities::ResponseItemInjectionFuture;
 pub use capabilities::ResponseItemInjector;
+pub use capabilities::record_catalog_entries;
 pub use catalog_refresh::CatalogRefreshBackoff;
 pub use codex_context_fragments::ContextualUserFragment;
 pub use codex_mcp::McpProtocolMode;
@@ -125,6 +126,7 @@ pub use user_instructions::UserInstructionsProvider;
 pub use contributors::ToolDispatchInput;
 
 mod model_request;
+pub use model_request::GuardianAssessment;
 pub use model_request::ModelRequestContributor;
 pub use model_request::ModelRequestInput;
 pub use model_request::ModelRequestKind;

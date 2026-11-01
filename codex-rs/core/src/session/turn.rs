@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -19,6 +20,7 @@ use crate::feedback_tags;
 use crate::hook_runtime::drain_async_hook_results;
 use crate::hook_runtime::hooks_for_model_request;
 use crate::hook_runtime::inspect_pending_input;
+use crate::hook_runtime::legacy_notify_input_messages;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
 use crate::hook_runtime::run_legacy_after_agent_hook;
@@ -571,7 +573,11 @@ pub(crate) async fn run_turn(
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
                     .await
-                    .for_prompt(&step_context.settings.model_info.input_modalities)
+                    .for_prompt(
+                        &step_context.settings.model_info.input_modalities,
+                        sess.services.image_store.as_ref(),
+                    )
+                    .await
             }
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
@@ -589,7 +595,7 @@ pub(crate) async fn run_turn(
         }
         .await;
         match sampling_request_result {
-            Ok((sampling_request_output, sampling_request_input)) => {
+            Ok((sampling_request_output, notify_messages)) => {
                 guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
@@ -785,7 +791,7 @@ pub(crate) async fn run_turn(
                     if run_legacy_after_agent_hook(
                         &sess,
                         &turn_context,
-                        &sampling_request_input,
+                        notify_messages,
                         last_agent_message.clone(),
                     )
                     .await
@@ -1208,7 +1214,12 @@ async fn build_skills_and_plugins(
         &available_connectors,
         &skill_name_counts_lower,
     );
-    let plugin_items = build_plugin_injections(mentioned_plugins, mcp_tools, &available_connectors);
+    let plugin_items = build_plugin_injections(
+        mentioned_plugins,
+        mcp_tools,
+        &available_connectors,
+        &turn_context.config.features,
+    );
     let mut explicitly_enabled_connectors = collect_explicit_app_ids(user_input);
     explicitly_enabled_connectors.extend(skill_connector_ids);
     let connector_names_by_id = available_connectors
@@ -1734,7 +1745,7 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
-) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
+) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let preempt = step_context.preempt.clone().unwrap_or_default();
     let _input_watch = if let Some(preempt) = &step_context.preempt {
@@ -1767,17 +1778,22 @@ async fn run_sampling_request(
     );
     let mut retry_state = ResponsesStreamRetryState::default();
     let mut initial_input = Some(input);
-    let mut original_input = None;
+    let mut notify_messages = Vec::new();
     let mut executed_tool_calls_by_output = HashMap::new();
     loop {
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
+        let first_attempt = initial_input.is_some();
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
             sess.clone_history()
                 .await
-                .for_prompt(&step_context.settings.model_info.input_modalities)
+                .for_prompt(
+                    &step_context.settings.model_info.input_modalities,
+                    sess.services.image_store.as_ref(),
+                )
+                .await
         };
         let mut prompt_input = prompt_input;
         sess.services
@@ -1801,6 +1817,9 @@ async fn run_sampling_request(
             )
             .await?;
         }
+        if first_attempt && turn_context.config.notify.is_some() {
+            notify_messages = legacy_notify_input_messages(&prompt.input);
+        }
         let mut draining_for_mailbox = false;
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
@@ -1810,14 +1829,14 @@ async fn run_sampling_request(
             client_session,
             &responses_metadata,
             Arc::clone(&turn_diff_tracker),
-            &prompt,
+            prompt,
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
         )
         .await
         {
             Ok(output) => {
-                return Ok((output, original_input.unwrap_or(prompt.input)));
+                return Ok((output, notify_messages));
             }
             Err(err) => match err.details() {
                 CodexErrorDetails::ContextWindowExceeded => {
@@ -1834,8 +1853,6 @@ async fn run_sampling_request(
                 _ => err,
             },
         };
-
-        let original_input = original_input.get_or_insert(prompt.input);
 
         let retry = handle_response_stream_error(
             &mut retry_state,
@@ -1860,7 +1877,7 @@ async fn run_sampling_request(
                     needs_follow_up: true,
                     last_agent_message: None,
                 },
-                std::mem::take(original_input),
+                notify_messages,
             ));
         }
         retry??;
@@ -1929,6 +1946,7 @@ pub(crate) async fn built_tools(
     mcp: &Arc<codex_mcp::McpBinding>,
     step_store: &ExtensionData,
     prepared_recommendations: PreparedToolRecommendations,
+    dynamic_tools: &[codex_protocol::dynamic_tools::DynamicToolSpec],
 ) -> CodexResult<Arc<ToolRouter>> {
     let all_mcp_tools = mcp.tools();
     let connector_snapshot = mcp.config().connector_snapshot.clone();
@@ -1999,6 +2017,7 @@ pub(crate) async fn built_tools(
         apps_enabled,
         step_store,
         tool_suggest_candidates.as_ref(),
+        dynamic_tools,
     )?))
 }
 
@@ -2430,6 +2449,7 @@ async fn emit_streamed_assistant_text_delta(
 }
 
 /// Flush buffered assistant text parser state when an assistant message item ends.
+#[instrument(level = "trace", skip_all)]
 async fn flush_assistant_text_segments_for_item(
     sess: &Session,
     turn_context: &TurnContext,
@@ -2442,6 +2462,7 @@ async fn flush_assistant_text_segments_for_item(
 }
 
 /// Flush any remaining buffered assistant text parser state at response completion.
+#[instrument(level = "trace", skip_all)]
 async fn flush_assistant_text_segments_all(
     sess: &Session,
     turn_context: &TurnContext,
@@ -2671,7 +2692,7 @@ async fn try_run_sampling_request(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
-    prompt: &Prompt,
+    prompt: Prompt,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
@@ -2751,11 +2772,10 @@ async fn try_run_sampling_request(
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let mut response_completed = false;
     let mut request_token_usage = None;
-    sess.set_server_reasoning_included(step_context.settings.model_info.use_responses_lite)
-        .await;
-    let mut stream = match client_session
+    let mut includes_reasoning = step_context.settings.model_info.use_responses_lite;
+    let stream = client_session
         .stream(
-            prompt,
+            &prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
             effort,
@@ -2766,8 +2786,9 @@ async fn try_run_sampling_request(
         )
         .instrument(trace_span!("stream_request"))
         .or_cancel(&cancellation_token)
-        .await?
-    {
+        .await?;
+    drop(prompt);
+    let mut stream = match stream {
         Ok(stream) => stream,
         Err(error) => {
             if let Some(finish_post_request) = finish_post_request {
@@ -2827,14 +2848,21 @@ async fn try_run_sampling_request(
             gen_ai.usage.output_tokens = field::Empty,
             codex.usage.reasoning_output_tokens = field::Empty,
             codex.usage.total_tokens = field::Empty,
+            codex.response.receive_wait_ms = field::Empty,
         );
 
+        let receive_started = Instant::now();
         let event = stream
             .next()
             .instrument(trace_span!(parent: &handle_responses, "receiving"))
             .or_cancel(&preempt)
             .or_cancel(&cancellation_token)
             .await;
+        // Split the existing iteration span without adding another span per streamed delta.
+        handle_responses.record(
+            "codex.response.receive_wait_ms",
+            receive_started.elapsed().as_secs_f64() * 1000.0,
+        );
         // Account for an already-received terminal error even if cancellation raced it.
         // Cancellation still stops ordinary stream events before they can run tools.
         let event = match event {
@@ -2907,6 +2935,12 @@ async fn try_run_sampling_request(
         match event {
             ResponseEvent::Created { response_id } => {
                 if let Some(response_id) = response_id {
+                    turn_context
+                        .extension_data
+                        .insert(crate::guardian::ParentResponse {
+                            id: response_id.clone(),
+                            routing_affinity: stream.routing_affinity.clone(),
+                        });
                     turn_context
                         .extension_data
                         .insert(codex_api::ResponseId(response_id));
@@ -3174,6 +3208,10 @@ async fn try_run_sampling_request(
                 sess.emit_turn_moderation_metadata(&turn_context, metadata)
                     .await;
             }
+            ResponseEvent::GuardianAssessment(_) => {
+                // Request-scoped extensions may consume this evidence. It does not
+                // authorize tools here and must not enter conversation history.
+            }
             ResponseEvent::SafetyBuffering(buffering) => {
                 sess.send_event(
                     &turn_context,
@@ -3188,7 +3226,7 @@ async fn try_run_sampling_request(
                 .await;
             }
             ResponseEvent::ServerReasoningIncluded(included) => {
-                sess.set_server_reasoning_included(included).await;
+                includes_reasoning = included;
             }
             ResponseEvent::RateLimits(snapshot) => {
                 // Update internal state with latest rate limits, but defer sending until
@@ -3240,7 +3278,7 @@ async fn try_run_sampling_request(
                         &turn_context,
                         &step_context.settings,
                         token_usage.as_ref(),
-                        super::TokenUsageContext::Sampling,
+                        super::TokenUsageContext::Sampling { includes_reasoning },
                     )
                     .await;
                 should_emit_token_count = true;
@@ -3431,7 +3469,9 @@ async fn try_run_sampling_request(
     .await;
 
     if !in_flight.is_empty() {
-        let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
+        let _tool_blocking_timing_guard = turn_context
+            .turn_timing_state
+            .begin_tool_blocking(tool_runtime.batch_timing());
         let _tool_blocking_span = trace_span!(
             "codex.tool_blocking",
             codex.turn.phase = "tool_blocking",

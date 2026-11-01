@@ -10,13 +10,17 @@ use codex_exec_server::ExecutorCapabilityDiscoveryV2Cache;
 use codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot;
 use codex_exec_server::MAX_SELECTED_CAPABILITY_ROOTS;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
+use codex_exec_server::supports_capability_discovery_v2;
+use codex_guardian_reviewer::GuardianElicitationReview;
+use codex_guardian_reviewer::guardian_elicitation_review_request;
+use codex_guardian_reviewer::mcp_elicitation_decline_without_message;
+use codex_guardian_reviewer::mcp_elicitation_response_from_guardian_decision;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_otel::auth_storage::AuthStorageOriginator;
-use codex_prompts::ResolvedModelMessages;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -25,41 +29,20 @@ use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY as MCP_ELICITATION_APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL as MCP_ELICITATION_APPROVAL_KIND_MCP_TOOL_CALL;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_TOOL_SUGGESTION as MCP_ELICITATION_APPROVAL_KIND_TOOL_SUGGESTION;
-use codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY as MCP_ELICITATION_APPROVALS_REVIEWER_KEY;
-use codex_protocol::mcp_approval_meta::CONNECTOR_DESCRIPTION_KEY as MCP_ELICITATION_CONNECTOR_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::CONNECTOR_ID_KEY as MCP_ELICITATION_CONNECTOR_ID_KEY;
-use codex_protocol::mcp_approval_meta::CONNECTOR_NAME_KEY as MCP_ELICITATION_CONNECTOR_NAME_KEY;
 use codex_protocol::mcp_approval_meta::PERSIST_KEY as MCP_ELICITATION_PERSIST_KEY;
-use codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST as MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST;
-use codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY as MCP_ELICITATION_REQUEST_TYPE_KEY;
 use codex_protocol::mcp_approval_meta::SENSITIVE_ACTION_KEY as MCP_ELICITATION_SENSITIVE_ACTION_KEY;
 use codex_protocol::mcp_approval_meta::STRICT_AUTO_REVIEW_KEY as MCP_ELICITATION_STRICT_AUTO_REVIEW_KEY;
-use codex_protocol::mcp_approval_meta::TOOL_DESCRIPTION_KEY as MCP_ELICITATION_TOOL_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_NAME_KEY as MCP_ELICITATION_TOOL_NAME_KEY;
-use codex_protocol::mcp_approval_meta::TOOL_PARAMS_KEY as MCP_ELICITATION_TOOL_PARAMS_KEY;
-use codex_protocol::mcp_approval_meta::TOOL_TITLE_KEY as MCP_ELICITATION_TOOL_TITLE_KEY;
 use codex_protocol::openai_models::GuardianScope;
-use codex_protocol::openai_models::ModelInfo;
 use codex_rmcp_client::Elicitation;
 use rmcp::model::ElicitationAction;
-use rmcp::model::RequestMetaObject;
 use serde_json::Map;
 
-const MCP_ELICITATION_DECLINE_MESSAGE_KEY: &str = "message";
 const TOOL_SUGGESTION_ACTION_INSTALL: &str = "install";
 const TOOL_SUGGESTION_ACTION_KEY: &str = "suggest_type";
 const TOOL_SUGGESTION_TOOL_ID_KEY: &str = "tool_id";
 const TOOL_SUGGESTION_TOOL_TYPE_KEY: &str = "tool_type";
-
-#[derive(Debug, PartialEq)]
-enum GuardianElicitationReview {
-    NotRequested,
-    Decline(&'static str),
-    ApprovalRequest {
-        request: Box<crate::guardian::GuardianApprovalRequest>,
-        tool_call_id: Option<String>,
-    },
-}
 
 struct GuardianMcpElicitationReviewer {
     session: std::sync::Weak<Session>,
@@ -133,6 +116,7 @@ impl Session {
                 config,
                 &selected_capability_roots,
                 &environments,
+                executor_capability_discovery_v2.as_deref(),
             )
             .await;
         if inventory_changed || discovery_recovered {
@@ -177,7 +161,7 @@ impl Session {
         self.mcp_runtime_context(&environments, &host_fallback_cwd)
     }
 
-    fn mcp_runtime_context(
+    pub(super) fn mcp_runtime_context(
         &self,
         environments: &TurnEnvironmentSnapshot,
         host_fallback_cwd: &std::path::Path,
@@ -190,6 +174,7 @@ impl Session {
             self.services.turn_environments.environment_manager(),
             local_process_cwd,
         )
+        .with_connection_pool(self.services.mcp_manager.connection_pool())
         .with_selected_environments(
             environments.all_selections().into(),
             environments.ready_environment_handles(),
@@ -251,6 +236,7 @@ impl Session {
                     &desired.config,
                     &selected_capability_roots,
                     &desired.environments,
+                    executor_capability_discovery_v2.as_deref(),
                 )
                 .await;
             let mcp_projection = self
@@ -333,6 +319,7 @@ impl Session {
                 &desired.config,
                 &selected_capability_roots,
                 &desired.environments,
+                executor_capability_discovery_v2.as_deref(),
             )
             .await;
         let mcp_projection = self
@@ -485,11 +472,9 @@ impl Session {
         config: &Config,
         resolved_roots: &[ResolvedSelectedCapabilityRoot],
         environments: &TurnEnvironmentSnapshot,
+        v2_snapshots: Option<&[ExecutorCapabilityDiscoveryV2Snapshot]>,
     ) -> (Option<Arc<ExecutorCapabilityDiscoverySnapshot>>, bool) {
-        if config
-            .features
-            .enabled(Feature::ExecutorCapabilityDiscoveryV2)
-        {
+        if v2_snapshots.is_some() {
             return (None, false);
         }
         let restricted_file_system = environments.primary().map_or_else(
@@ -581,6 +566,7 @@ impl Session {
             .count();
         cache.ensure_capacity(remote_environment_count);
         let mut snapshots = Vec::new();
+        let mut skipped_incompatible_executor = false;
         for selected in environments.turn_environments() {
             if !selected.environment.is_remote() {
                 continue;
@@ -596,7 +582,8 @@ impl Session {
                     continue;
                 }
             };
-            if !info.capabilities.capability_discovery_v2 {
+            if !supports_capability_discovery_v2(&info) {
+                skipped_incompatible_executor = true;
                 continue;
             }
             let request = DiscoverV2CapabilitiesRequest {
@@ -610,6 +597,14 @@ impl Session {
                 environment_id: environment_id.clone(),
                 result,
             });
+        }
+        if snapshots.is_empty() && skipped_incompatible_executor {
+            let changed = self
+                .services
+                .thread_extension_data
+                .remove::<Vec<ExecutorCapabilityDiscoveryV2Snapshot>>()
+                .is_some();
+            return (None, changed);
         }
         let previous = self
             .services
@@ -724,6 +719,15 @@ impl Session {
             };
         }
 
+        // This callback carries a request ID, not a reliable tool invocation owner.
+        // Do not report its human wait as ordinary tool execution.
+        if turn_context
+            .config
+            .features
+            .enabled(Feature::CriticalPathTiming)
+        {
+            turn_context.turn_timing_state.invalidate_critical_path();
+        }
         let _elicitation = self.services.elicitations.register();
         let (tx_response, rx_response) = oneshot::channel();
         let prev_entry = {
@@ -874,6 +878,7 @@ impl Session {
                 &desired.config,
                 &selected_capability_roots,
                 &desired.environments,
+                executor_capability_discovery_v2.as_deref(),
             )
             .await;
         let mcp_projection = self
@@ -1204,7 +1209,7 @@ async fn review_guardian_mcp_elicitation(
     Ok(decision.map(|decision| {
         if let Some(reason) = declined_reason {
             warn!(server_name = %request.server_name,
-                request_id = %mcp_elicitation_request_id(&request.request_id), reason,
+                request_id = %request.request_id, reason,
                 "declining Guardian MCP elicitation before review");
             return mcp_elicitation_decline_without_message();
         }
@@ -1212,113 +1217,10 @@ async fn review_guardian_mcp_elicitation(
     }))
 }
 
-fn guardian_elicitation_review_request(
-    request: &ElicitationReviewRequest,
-    originating_call_id: Option<&str>,
-) -> GuardianElicitationReview {
-    let (meta, requested_schema) = match &request.elicitation {
-        Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
-            meta,
-            requested_schema,
-            ..
-        }) => (meta, Some(requested_schema)),
-        Elicitation::Mcp(rmcp::model::ElicitRequestParams::UrlElicitationParams {
-            meta, ..
-        }) => {
-            return if meta_requests_approval_request(meta) {
-                GuardianElicitationReview::Decline(
-                    "guardian MCP elicitation review only supports form elicitations",
-                )
-            } else {
-                GuardianElicitationReview::NotRequested
-            };
-        }
-        Elicitation::Mcp(_) => {
-            return GuardianElicitationReview::Decline(
-                "guardian MCP elicitation review does not support this elicitation mode",
-            );
-        }
-        Elicitation::OpenAiForm { .. }
-        | Elicitation::OpenAiElicitationForm { .. }
-        | Elicitation::UserVerification { .. } => {
-            return GuardianElicitationReview::NotRequested;
-        }
-    };
-
-    let Some(meta) = meta.as_ref().map(|meta| &meta.0.0) else {
-        return GuardianElicitationReview::NotRequested;
-    };
-    if metadata_str(meta, MCP_ELICITATION_REQUEST_TYPE_KEY)
-        != Some(MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST)
-    {
-        return GuardianElicitationReview::NotRequested;
-    }
-    if metadata_str(meta, MCP_ELICITATION_APPROVAL_KIND_KEY)
-        != Some(MCP_ELICITATION_APPROVAL_KIND_MCP_TOOL_CALL)
-    {
-        return GuardianElicitationReview::Decline(
-            "guardian MCP elicitation metadata must declare mcp_tool_call approval kind",
-        );
-    }
-    if requested_schema.is_some_and(|schema| !schema.properties.is_empty()) {
-        return GuardianElicitationReview::Decline(
-            "guardian MCP elicitation review only supports empty form schemas",
-        );
-    }
-
-    let Some(tool_name) = metadata_owned_string(meta, MCP_ELICITATION_TOOL_NAME_KEY) else {
-        return GuardianElicitationReview::Decline(
-            "guardian MCP elicitation metadata must include a non-empty tool_name",
-        );
-    };
-    let arguments = match meta.get(MCP_ELICITATION_TOOL_PARAMS_KEY) {
-        Some(value @ Value::Object(_)) => Some(value.clone()),
-        Some(_) => {
-            return GuardianElicitationReview::Decline(
-                "guardian MCP elicitation tool_params must be an object",
-            );
-        }
-        None => Some(Value::Object(Map::new())),
-    };
-
-    GuardianElicitationReview::ApprovalRequest {
-        // Synthetic display IDs must not participate in tool observation ordering.
-        tool_call_id: originating_call_id.map(str::to_owned),
-        request: Box::new(crate::guardian::GuardianApprovalRequest::McpToolCall {
-            id: originating_call_id.map(str::to_owned).unwrap_or_else(|| {
-                format!(
-                    "mcp_elicitation:{}:{}",
-                    request.server_name,
-                    mcp_elicitation_request_id(&request.request_id)
-                )
-            }),
-            server: request.server_name.clone(),
-            tool_name,
-            arguments,
-            connector_id: metadata_owned_string(meta, MCP_ELICITATION_CONNECTOR_ID_KEY),
-            connector_name: metadata_owned_string(meta, MCP_ELICITATION_CONNECTOR_NAME_KEY),
-            connector_description: metadata_owned_string(
-                meta,
-                MCP_ELICITATION_CONNECTOR_DESCRIPTION_KEY,
-            ),
-            connected_account_email: None,
-            tool_title: metadata_owned_string(meta, MCP_ELICITATION_TOOL_TITLE_KEY),
-            tool_description: metadata_owned_string(meta, MCP_ELICITATION_TOOL_DESCRIPTION_KEY),
-            annotations: None,
-        }),
-    }
-}
-
 fn elicitation_connector_id(elicitation: &Elicitation) -> Option<&str> {
     elicitation
         .meta()
         .and_then(|meta| metadata_str(meta, MCP_ELICITATION_CONNECTOR_ID_KEY))
-}
-
-fn meta_requests_approval_request(meta: &Option<RequestMetaObject>) -> bool {
-    meta.as_ref()
-        .and_then(|meta| metadata_str(&meta.0, MCP_ELICITATION_REQUEST_TYPE_KEY))
-        == Some(MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST)
 }
 
 fn metadata_str<'a>(meta: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -1356,67 +1258,6 @@ fn plugin_install_elicitation_telemetry_metadata(
         tool_type: metadata_owned_string(meta, TOOL_SUGGESTION_TOOL_TYPE_KEY)?,
         tool_id: metadata_owned_string(meta, TOOL_SUGGESTION_TOOL_ID_KEY)?,
         tool_name: metadata_owned_string(meta, MCP_ELICITATION_TOOL_NAME_KEY)?,
-    })
-}
-
-fn mcp_elicitation_request_id(id: &RequestId) -> String {
-    match id {
-        rmcp::model::NumberOrString::String(value) => value.to_string(),
-        rmcp::model::NumberOrString::Number(value) => value.to_string(),
-    }
-}
-
-fn mcp_elicitation_response_from_guardian_decision(
-    decision: ReviewDecision,
-    model_info: &ModelInfo,
-) -> ElicitationResponse {
-    match decision {
-        ReviewDecision::Approved
-        | ReviewDecision::ApprovedForSession
-        | ReviewDecision::ApprovedMcpPolicyAmendment
-        | ReviewDecision::ApprovedExecpolicyAmendment { .. }
-        | ReviewDecision::NetworkPolicyAmendment { .. } => ElicitationResponse {
-            action: ElicitationAction::Accept,
-            content: Some(serde_json::json!({})),
-            meta: Some(mcp_elicitation_auto_meta()),
-        },
-        ReviewDecision::Denied { rejection } => mcp_elicitation_decline_with_message(rejection),
-        ReviewDecision::TimedOut => mcp_elicitation_decline_with_message(
-            ResolvedModelMessages::from_model(model_info)
-                .auto_review()
-                .timeout_instructions
-                .to_string(),
-        ),
-        ReviewDecision::Abort => ElicitationResponse {
-            action: ElicitationAction::Cancel,
-            content: None,
-            meta: Some(mcp_elicitation_auto_meta()),
-        },
-    }
-}
-
-fn mcp_elicitation_decline_with_message(message: String) -> ElicitationResponse {
-    ElicitationResponse {
-        action: ElicitationAction::Decline,
-        content: None,
-        meta: Some(serde_json::json!({
-            MCP_ELICITATION_DECLINE_MESSAGE_KEY: message,
-            MCP_ELICITATION_APPROVALS_REVIEWER_KEY: ApprovalsReviewer::AutoReview,
-        })),
-    }
-}
-
-fn mcp_elicitation_decline_without_message() -> ElicitationResponse {
-    ElicitationResponse {
-        action: ElicitationAction::Decline,
-        content: None,
-        meta: Some(mcp_elicitation_auto_meta()),
-    }
-}
-
-fn mcp_elicitation_auto_meta() -> serde_json::Value {
-    serde_json::json!({
-        MCP_ELICITATION_APPROVALS_REVIEWER_KEY: ApprovalsReviewer::AutoReview,
     })
 }
 

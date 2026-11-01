@@ -20,7 +20,7 @@ impl Vivling {
         let mut roster = self.load_roster().map_err(|err| err.to_string())?;
         roster.active_vivling_id = Some(target_id.clone());
         self.save_roster(&roster).map_err(|err| err.to_string())?;
-        self.active_vivling_id = Some(target_id.clone());
+        self.active_vivling_id = Some(target_id);
         self.state = Some(state.clone());
         self.save_state().map_err(|err| err.to_string())?;
         Ok(format!(
@@ -34,7 +34,10 @@ impl Vivling {
 
     pub(crate) fn spawn_vivling(&mut self) -> Result<(String, VivlingPanelData), String> {
         self.ensure_hatched()?;
-        let primary = self.state.as_ref().expect("state checked").clone();
+        let Some(state) = self.state.as_ref() else {
+            return Err("No Vivling yet. Use /vivling hatch.".to_string());
+        };
+        let primary = state.clone();
         if !primary.is_primary {
             return Err("Only a primary Vivling can spawn a local lineage copy.".to_string());
         }
@@ -67,7 +70,7 @@ impl Vivling {
         let mut spawned = super::super::spawn_origin::build_offspring_for_origin(
             &origin,
             &primary,
-            new_id.clone(),
+            new_id,
             instance_label.clone(),
         );
 

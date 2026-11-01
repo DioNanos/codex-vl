@@ -314,7 +314,7 @@ impl ChatWidget {
             self.bottom_pane.set_vivling_activity(result.activity);
             if !result.animation_text.is_empty() {
                 self.bottom_pane
-                    .set_vivling_animation_text(result.animation_text.clone());
+                    .set_vivling_animation_text(result.animation_text);
             }
         }
     }
@@ -328,12 +328,15 @@ impl ChatWidget {
     pub(crate) fn add_vivling_message(&mut self, text: String, kind: crate::vl::VivlingLogKind) {
         use ratatui::style::Stylize;
         use ratatui::text::Line;
-        let vivling_id = self.bottom_pane.active_vivling_id().map(|s| s.to_string());
+        let vivling_id = self
+            .bottom_pane
+            .active_vivling_id()
+            .map(ToString::to_string);
         let is_life = kind == crate::vl::VivlingLogKind::Life;
         let is_chat = kind == crate::vl::VivlingLogKind::Chat;
         self.app_event_tx
             .send_vl(crate::vl::VlEvent::SidebarPushMessage {
-                kind: kind.clone(),
+                kind,
                 text: text.clone(),
                 vivling_id,
             });
@@ -400,23 +403,26 @@ impl ChatWidget {
         } else {
             "idle"
         };
-        let mut context = crate::vivling::VivlingLiveContext::default();
-        context.thread_title = self.thread_name.clone();
-        context.cwd = self
-            .config
-            .cwd
-            .to_str()
-            .map(std::string::ToString::to_string);
-        context.model = self.config.model.clone();
-        context.session_id = self.thread_id.map(|id| id.to_string());
-        context.run_state = Some(run_state.to_string());
-        context.active_agent_label = self
-            .bottom_pane
-            .active_agent_label()
-            .map(std::string::ToString::to_string);
-        if let Some(loop_context) = self.bottom_pane.loop_context_label() {
-            context.task_progress = Some(loop_context.to_string());
-        }
+        let context = crate::vivling::VivlingLiveContext {
+            thread_title: self.thread_name.clone(),
+            cwd: self
+                .config
+                .cwd
+                .to_str()
+                .map(std::string::ToString::to_string),
+            model: self.config.model.clone(),
+            session_id: self.thread_id.map(|id| id.to_string()),
+            run_state: Some(run_state.to_string()),
+            active_agent_label: self
+                .bottom_pane
+                .active_agent_label()
+                .map(std::string::ToString::to_string),
+            task_progress: self
+                .bottom_pane
+                .loop_context_label()
+                .map(std::string::ToString::to_string),
+            ..Default::default()
+        };
         self.bottom_pane.set_vivling_live_context(Some(context));
     }
 }

@@ -25,7 +25,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSource;
@@ -168,8 +168,18 @@ impl App {
     async fn handle_server_notification_event(
         &mut self,
         app_server_client: &AppServerSession,
-        notification: ServerNotification,
+        mut notification: ServerNotification,
     ) {
+        if let ServerNotification::TurnModerationMetadata(metadata) = &mut notification
+            && (!super::safety_recourse::supports_server(app_server_client)
+                || self
+                    .primary_thread_id
+                    .is_none_or(|id| id.to_string() != metadata.thread_id))
+            && let Some(metadata) = metadata.metadata.as_object_mut()
+        {
+            metadata.remove("safety_block");
+            metadata.remove("safety_recourse");
+        }
         // A picker can leave an old runtime's close notification queued while the same thread
         // is resumed. Thread IDs survive reloads, so confirm that the displayed thread is still
         // unloaded before routing a close that would exit the TUI or switch away from it.
@@ -471,10 +481,10 @@ impl App {
             ServerNotificationThreadTarget::Thread(thread_id) => {
                 if self.current_displayed_thread_id() != Some(thread_id)
                     && let ServerNotification::ItemCompleted(item) = &notification
-                    && let ThreadItem::UserMessage {
+                    && let ThreadItemPayload::UserMessage {
                         client_id: Some(client_id),
                         ..
-                    } = &item.item
+                    } = &item.item.payload
                 {
                     // Acknowledge by ID before routing can discard the receipt. ID-less receipts
                     // cannot safely distinguish identical pending submissions.
@@ -635,13 +645,12 @@ impl App {
                     &params.tool,
                 )
         ) {
-            if let ServerRequest::DynamicToolCall { request_id, params } = request {
-                if let Err(err) = self
+            if let ServerRequest::DynamicToolCall { request_id, params } = request
+                && let Err(err) = self
                     .resolve_manage_loops_app_server_request(app_server_client, request_id, params)
                     .await
-                {
-                    tracing::warn!("failed to resolve dynamic tool request in TUI: {err}");
-                }
+            {
+                tracing::warn!("failed to resolve dynamic tool request in TUI: {err}");
             }
             return;
         }

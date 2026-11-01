@@ -833,6 +833,11 @@ impl Session {
             .turn_timing_state
             .complete_profile_and_duration_ms()
             .await;
+        crate::turn_timing::record_turn_profile_trace(
+            self.thread_id,
+            &turn_context.sub_id,
+            &profile,
+        );
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {
@@ -992,10 +997,16 @@ impl Session {
             },
             _ = tokio::time::sleep(Duration::from_millis(GRACEFULL_INTERRUPTION_TIMEOUT_MS)) => {
                 warn!("task {sub_id} didn't complete gracefully after {}ms", GRACEFULL_INTERRUPTION_TIMEOUT_MS);
+                // Forced teardown can abort independently spawned tool dispatches
+                // whose guards are destroyed later. Do not publish complete totals
+                // for a dependency graph that has not settled.
+                task.turn_context.turn_timing_state.invalidate_critical_path();
             }
         }
 
         task.handle.abort();
+        // Aborting schedules destruction; join before freezing the turn's timing.
+        let _ = task.handle.await;
 
         session_task
             .abort(Arc::clone(self), Arc::clone(&task.turn_context))
@@ -1036,6 +1047,11 @@ impl Session {
             .turn_timing_state
             .complete_profile_and_duration_ms()
             .await;
+        crate::turn_timing::record_turn_profile_trace(
+            self.thread_id,
+            &task.turn_context.sub_id,
+            &profile,
+        );
         self.services
             .analytics_events_client
             .track_turn_profile(TurnProfileFact {
