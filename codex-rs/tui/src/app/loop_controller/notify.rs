@@ -80,6 +80,10 @@ pub(super) async fn persist_and_emit(
     Ok(first)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "summary serialization is fixed-format and cannot fail"
+)]
 fn notification_record(
     summary: &LoopTickSummary,
     kind: &'static str,
@@ -242,6 +246,10 @@ pub(crate) fn build_tick_summary(
 /// first persisted instance (and only then the caller emits the event).
 /// The manager comes RESOLVED from the tick path (`manager`,
 /// `manager_reason`) — the summary never re-derives ownership.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal loop/VL signature still evolving; a parameter struct would churn callers for no behavior gain"
+)]
 pub(crate) async fn persist_and_queue_tick(
     app: &mut App,
     state_runtime: &codex_state::StateRuntime,

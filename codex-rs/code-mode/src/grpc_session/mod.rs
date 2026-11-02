@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use codex_code_mode_protocol::CodeModeSessionProviderFuture;
 use codex_code_mode_protocol::CodeModeSessionResultFuture;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::grpc;
@@ -44,6 +46,7 @@ mod conversion;
 mod deadline;
 mod generation;
 mod operations;
+mod process_metrics;
 mod reconnect;
 mod state;
 mod transport;
@@ -63,9 +66,16 @@ fn inject_span_traceparent<T>(request: &mut tonic::Request<T>, span: &tracing::S
 }
 
 /// Creates code-mode sessions over an HTTP/2 gRPC connection.
+///
+/// Metrics requests do not open sessions, retry RPCs, or explicitly reset the
+/// connection. URL providers may initialize their client or establish a network
+/// connection; caller-supplied channels and transports retain their reconnect
+/// policy. Preventing child creation requires a process-owned transport.
 #[derive(Clone)]
 pub struct GrpcCodeModeSessionProvider {
     transport: Arc<SharedTransport>,
+    // Reloaded threads share this counter rather than reusing a cell namespace.
+    next_generation: Arc<AtomicU64>,
 }
 
 impl GrpcCodeModeSessionProvider {
@@ -90,9 +100,29 @@ impl GrpcCodeModeSessionProvider {
         Self::from_transport(SharedTransport::with_channel(channel))
     }
 
+    /// Uses a caller-owned transport, which can prevent observation RPCs from
+    /// starting or replacing process-owned connections.
+    pub fn with_transport<T>(transport: T) -> Self
+    where
+        T: tower::Service<
+                tonic::codegen::http::Request<tonic::body::Body>,
+                Response = tonic::codegen::http::Response<tonic::body::Body>,
+                Error = tonic::Status,
+            > + Clone
+            + Send
+            + Sync
+            + 'static,
+        T::Future: Send + 'static,
+    {
+        Self::from_transport(SharedTransport::with_transport(
+            tower::util::BoxCloneSyncService::new(transport),
+        ))
+    }
+
     fn from_transport(transport: SharedTransport) -> Self {
         Self {
             transport: Arc::new(transport),
+            next_generation: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -119,6 +149,7 @@ impl GrpcCodeModeSessionProvider {
             loop {
                 let mut request = tonic::Request::new(grpc::OpenSessionRequest {
                     cell_execution_limits,
+                    output_truncation: None,
                 });
                 inject_span_traceparent(&mut request, &open_session_span);
                 let result = async {
@@ -214,6 +245,13 @@ impl GrpcCodeModeSessionProvider {
 }
 
 impl CodeModeSessionProvider for GrpcCodeModeSessionProvider {
+    fn sample_process_metrics(
+        &self,
+    ) -> CodeModeSessionResultFuture<'_, codex_code_mode_protocol::CodeModeProcessMetricsSample>
+    {
+        Box::pin(process_metrics::sample(self))
+    }
+
     fn create_session(&self) -> CodeModeSessionProviderFuture<'_> {
         self.create_session_with_limits(CodeModeSessionCellExecutionLimits::default())
     }
@@ -269,8 +307,11 @@ impl CodeModeSession for GrpcCodeModeSession {
         Box::pin(self.inner.wait(request, preempt))
     }
 
-    fn terminate<'a>(&'a self, cell_id: CellId) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
-        Box::pin(self.inner.terminate(cell_id))
+    fn terminate<'a>(
+        &'a self,
+        request: TerminateRequest,
+    ) -> CodeModeSessionResultFuture<'a, WaitOutcome> {
+        Box::pin(self.inner.terminate(request.cell_id))
     }
 
     fn shutdown<'a>(&'a self) -> CodeModeSessionResultFuture<'a, ()> {

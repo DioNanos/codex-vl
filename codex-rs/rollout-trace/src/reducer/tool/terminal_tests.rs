@@ -1,9 +1,15 @@
+use std::sync::Arc;
+
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 
+use crate::ToolDispatchInvocation;
+use crate::ToolDispatchPayload;
+use crate::ToolDispatchRequester;
 use crate::model::ExecutionStatus;
 use crate::model::ExecutionWindow;
+use crate::model::RolloutStatus;
 use crate::model::TerminalModelObservation;
 use crate::model::TerminalObservationSource;
 use crate::model::TerminalOperation;
@@ -15,6 +21,7 @@ use crate::model::ToolCallKind;
 use crate::model::ToolCallSummary;
 use crate::payload::RawPayloadKind;
 use crate::raw_event::RawTraceEventPayload;
+use crate::reducer::test_support::ROOT_THREAD_ID;
 use crate::reducer::test_support::create_started_writer;
 use crate::reducer::test_support::generic_summary;
 use crate::reducer::test_support::message;
@@ -24,6 +31,7 @@ use crate::reducer::test_support::start_turn_for_thread;
 use crate::reducer::test_support::trace_context;
 use crate::reducer::test_support::trace_context_for_thread;
 use crate::replay_bundle;
+use crate::tool_dispatch::ToolDispatchTraceContext;
 use crate::writer::TraceWriter;
 
 #[test]
@@ -71,6 +79,7 @@ fn exec_tool_reduces_to_terminal_operation_and_session() -> anyhow::Result<()> {
     let runtime_start = writer.append_with_context(
         trace_context("turn-1"),
         RawTraceEventPayload::ToolCallRuntimeStarted {
+            kind: ToolCallKind::ExecCommand,
             tool_call_id: "tool-1".to_string(),
             runtime_payload: runtime_start_payload,
         },
@@ -234,10 +243,21 @@ fn reused_process_ids_keep_sessions_and_stdin_joins_distinct() -> anyhow::Result
         ("child", "child-turn", ToolCallKind::WriteStdin),
         ("thread-root", "turn-1", ToolCallKind::ExecCommand),
         ("thread-root", "turn-1", ToolCallKind::WriteStdin),
+        ("child", "resumed-turn", ToolCallKind::WriteStdin),
     ]
     .into_iter()
     .enumerate()
     {
+        if turn == "resumed-turn" {
+            writer.append(RawTraceEventPayload::ThreadEnded {
+                thread_id: thread.to_string(),
+                status: RolloutStatus::Completed,
+            })?;
+            writer.append(RawTraceEventPayload::ThreadResumed {
+                thread_id: thread.to_string(),
+            })?;
+            start_turn_for_thread(&writer, thread, turn)?;
+        }
         if index == 4 {
             let response = writer.write_json_payload(
                 RawPayloadKind::ToolRuntimeEvent,
@@ -260,7 +280,7 @@ fn reused_process_ids_keep_sessions_and_stdin_joins_distinct() -> anyhow::Result
                 model_visible_call_id: None,
                 code_mode_runtime_tool_id: None,
                 requester: crate::raw_event::RawToolCallRequester::Model,
-                kind,
+                kind: kind.clone(),
                 summary: generic_summary("terminal"),
                 invocation_payload: None,
             },
@@ -278,6 +298,7 @@ fn reused_process_ids_keep_sessions_and_stdin_joins_distinct() -> anyhow::Result
         let runtime_start = writer.append_with_context(
             trace_context_for_thread(thread, turn),
             RawTraceEventPayload::ToolCallRuntimeStarted {
+                kind,
                 tool_call_id,
                 runtime_payload: request,
             },
@@ -310,6 +331,7 @@ fn reused_process_ids_keep_sessions_and_stdin_joins_distinct() -> anyhow::Result
             ("thread-root", vec!["tool-0", "tool-2"]),
             ("child", vec!["tool-1", "tool-3"]),
             ("thread-root", vec!["tool-4", "tool-5"]),
+            ("child", vec!["tool-6"]),
         ],
     );
     let (runtime_start, request_id) = reused_stdin.unwrap();
@@ -488,6 +510,58 @@ fn dispatch_write_stdin_payload_reduces_to_terminal_operation() -> anyhow::Resul
         },
     );
 
+    Ok(())
+}
+
+#[test]
+fn invalid_write_stdin_arguments_remain_failed_tool_calls() -> anyhow::Result<()> {
+    for arguments in [r#"{"session_id": "#, "{}", r#"{"session_id": null}"#] {
+        let temp = TempDir::new()?;
+        let writer = Arc::new(create_started_writer(&temp)?);
+        start_turn(&writer, "turn-1")?;
+        let dispatch = ToolDispatchTraceContext::start(
+            Arc::clone(&writer),
+            ToolDispatchInvocation {
+                thread_id: ROOT_THREAD_ID.to_string(),
+                codex_turn_id: "turn-1".to_string(),
+                tool_call_id: "call-stdin".to_string(),
+                tool_name: "write_stdin".to_string(),
+                tool_namespace: None,
+                requester: ToolDispatchRequester::Model {
+                    model_visible_call_id: "call-stdin".to_string(),
+                },
+                payload: ToolDispatchPayload::Function {
+                    arguments: arguments.to_string(),
+                },
+            },
+        );
+        dispatch.record_failed("invalid arguments");
+
+        let rollout = replay_bundle(temp.path())?;
+        let call = &rollout.tool_calls["call-stdin"];
+        assert_eq!(call.execution.status, ExecutionStatus::Failed);
+        assert_eq!(call.terminal_operation_id, None);
+        assert!(rollout.terminal_operations.is_empty());
+        assert!(rollout.terminal_sessions.is_empty());
+        // The failed call still retains its original arguments and error.
+        for (id, expected) in [
+            (
+                call.raw_invocation_payload_id.as_ref().unwrap(),
+                json!({"tool_name": "write_stdin", "tool_namespace": null,
+                    "payload": {"type": "function", "arguments": arguments}}),
+            ),
+            (
+                call.raw_result_payload_id.as_ref().unwrap(),
+                json!({"type": "error", "error": "invalid arguments"}),
+            ),
+        ] {
+            let payload = std::fs::read(temp.path().join(&rollout.raw_payloads[id].path))?;
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&payload)?,
+                expected
+            );
+        }
+    }
     Ok(())
 }
 

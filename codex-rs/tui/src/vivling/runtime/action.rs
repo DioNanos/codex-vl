@@ -63,6 +63,10 @@ pub(crate) enum VivlingAction {
     Card,
     Upgrade,
     Assist(String),
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "VL design variants not wired yet")
+    )]
     Brain(bool),
     ModelShow,
     ModelList,
@@ -75,6 +79,7 @@ pub(crate) enum VivlingAction {
     Recap,
     PromoteEarly,
     PromoteAdult,
+    #[expect(dead_code, reason = "VL design variant not wired yet")]
     Mode(VivlingAiMode),
     Chat(String),
     DirectMessage(String),

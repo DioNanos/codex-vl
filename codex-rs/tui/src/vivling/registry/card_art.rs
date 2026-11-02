@@ -135,7 +135,7 @@ fn personalize_card_lines(
     let mark = species_mark(seed.id, seed.name);
     let mut lines = base_lines
         .into_iter()
-        .map(|line| line.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
     if let Some(first) = lines.first_mut() {
         let trimmed = first.trim_end();
@@ -146,7 +146,7 @@ fn personalize_card_lines(
         lines[1] = overlay_center(&lines[1], &title);
     }
     if let Some(last) = lines.last_mut() {
-        let tail = format!("{mark}{}{horn}", eye);
+        let tail = format!("{mark}{eye}{horn}");
         let trimmed = last.trim_end();
         *last = format!("{trimmed}  {tail}");
     }

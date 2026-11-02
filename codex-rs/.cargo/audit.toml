@@ -1,5 +1,8 @@
 [advisories]
 # Reviewed 2026-07-02. Keep this list in sync with ../deny.toml.
+# cargo-audit is lockfile-wide (unreferenced lock entries included) and reports
+# informational advisories, so the four entries below intentionally have no
+# counterpart in ../deny.toml: cargo-deny no longer detects them on this graph.
 ignore = [
     "RUSTSEC-2024-0384", # instant via tantivy/measure_time under msa-core; remove when the transitive dependency drops instant
     "RUSTSEC-2024-0388", # derivative 2.2.0 via starlark/starlark_syntax; upstream crate is unmaintained
@@ -7,7 +10,6 @@ ignore = [
     "RUSTSEC-2025-0057", # fxhash 0.2.1 via starlark_map/bm25; upstream crate is unmaintained
     "RUSTSEC-2024-0436", # paste 1.0.15 via starlark/v8; upstream crate is unmaintained
     "RUSTSEC-2023-0089", # atomic-polyfill via postcard/heapless/pagable; upstream crate is unmaintained
-    "RUSTSEC-2024-0320", # yaml-rust via syntect; remove when syntect drops or updates it
     "RUSTSEC-2025-0141", # bincode via syntect; remove when syntect drops or updates it
     "RUSTSEC-2026-0118", # hickory-proto via rama-dns/rama-tcp; remove when rama updates to hickory 0.26.1 or hickory-net
     "RUSTSEC-2026-0119", # hickory-proto via rama-dns/rama-tcp; remove when rama updates to hickory 0.26.1 or hickory-net
@@ -18,9 +20,12 @@ ignore = [
     "RUSTSEC-2026-0195", # quick-xml via plist/syntect and wayland-scanner; trusted inputs only; remove when rust-plist#191 and wayland-rs#938 are released
     "RUSTSEC-2026-0374", # basic-toml 0.1.10 via i18n-config/i18n-embed-fl under age 0.12.1 in codex-secrets; no patched release; remove when age's localization dependencies migrate off basic-toml
     "RUSTSEC-2026-0221", # event-listener 5.4.1 via async-lock/async-process/zbus/sqlx/webrtc; Event<()> only, no non-Send tags; remove at >=5.4.2
-    "RUSTSEC-2026-0186", # memmap2 0.9.10 via gix and tantivy; no affected range API called; remove at >=0.9.11
     "RUSTSEC-2026-0205", # scc 2.4.0 via serial_test 3.3.1 (dev-only), HashMap only; remove when serial_test selects scc >=3.8.4
-    "RUSTSEC-2026-0306", # faster-hex 0.10.0 via gix-hash/gix-packetline; checked hex_decode only; remove at >=0.10.1
     "RUSTSEC-2026-0002", # lru 0.12.5 via tantivy 0.22.1 under msa-core; IterMut never used on the private cache; remove when tantivy selects lru >=0.18.2
     "RUSTSEC-2026-0253", # lru 0.12.5 via tantivy 0.22.1 under msa-core; pop never called, usize key has no panicking Drop; remove when tantivy selects lru >=0.18.2
+    "RUSTSEC-2026-0387", # crypto-bigint 0.5.5 via elliptic-curve 0.13.8 is used by age, AWS login, user verification, and WebRTC; timing leakage can affect private-key or session-secret operations; remove when these dependency paths use crypto-bigint >=0.7.6
+    # Reviewed 2026-10-26.
+    "RUSTSEC-2026-0391", # Codex, tonic and zip use zstd 0.13.3 without reusing borrowed contexts across streams. Remove when all paths use zstd >=0.14.3.
+    "RUSTSEC-2026-0398", # zstd 0.13.3 pulls in zstd-safe 7.2.4 with the affected seekable feature disabled. Remove when all paths use zstd-safe >=8.2.0.
+    "RUSTSEC-2026-0403", # zstd 0.13.3 pulls in zstd-safe 7.2.4. Codex, tonic and zip use read decoders or initialized output buffers and discard output on error. Remove when all paths use zstd-safe >=8.2.0.
 ]

@@ -60,7 +60,7 @@ fn vl_chat_dispatch_records_bond_chat() {
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.chat_count, before_count + 1);
     assert!(
-        after.value >= before_value + 1,
+        after.value > before_value,
         "value {} should be >= {}+1",
         after.value,
         before_value
@@ -181,7 +181,7 @@ fn loop_tick_success_path_records_bond_loop_tick() {
     let after = &vivling.state.as_ref().expect("state").bond;
     assert_eq!(after.loop_ticks_count, before_count + 1);
     assert!(
-        after.value >= before_value + 1,
+        after.value > before_value,
         "value {} should be >= {}+1",
         after.value,
         before_value
@@ -402,8 +402,7 @@ fn status_includes_bond_segment() {
     let status = vivling.status().expect("status");
     assert!(
         status.contains("bond Strangers 20/100"),
-        "status should include bond segment for fresh hatch:\n{}",
-        status
+        "status should include bond segment for fresh hatch:\n{status}"
     );
 }
 
@@ -411,7 +410,7 @@ fn status_includes_bond_segment() {
 fn card_includes_bond_row() {
     let temp = TempDir::new().expect("tempdir");
     let vivling = hatched_vivling(temp.path());
-    let mut state = vivling.state.clone().expect("state");
+    let mut state = vivling.state.expect("state");
 
     let card = crate::vivling::runtime::render_vivling_card(&mut state);
     let narrow_has = card

@@ -68,6 +68,17 @@ async fn locked_empty_pid_file_is_treated_as_active_reservation() {
         PidFileState::Starting
     );
     assert!(pid_file.exists());
+
+    tokio::fs::remove_file(&pid_file)
+        .await
+        .expect("remove pid file");
+    assert_eq!(
+        backend
+            .read_pid_file_state()
+            .await
+            .expect("read missing pid"),
+        PidFileState::Starting
+    );
 }
 
 #[tokio::test]
@@ -88,6 +99,147 @@ async fn unlocked_empty_pid_file_is_treated_as_stale_reservation() {
         PidFileState::Missing
     );
     assert!(!pid_file.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_unlock_degrades_unsupported_like_acquire() {
+    use super::classify_probe_unlock;
+
+    // A successful release stays Ok.
+    classify_probe_unlock(std::io::Result::Ok(())).expect("successful unlock must stay Ok");
+
+    // Storage backends that reject `flock(2)` with ENOTSUP / EOPNOTSUPP (or
+    // map it onto `ErrorKind::Unsupported`) already made the probe's
+    // acquisition degrade to "acquired": the release must degrade the same
+    // way instead of aborting daemon startup.
+    for code in [libc::ENOTSUP, libc::EOPNOTSUPP] {
+        classify_probe_unlock(Err(std::io::Error::from_raw_os_error(code)))
+            .unwrap_or_else(|err| panic!("unsupported-class unlock ({code}) must degrade: {err}"));
+    }
+    classify_probe_unlock(Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "locks are not supported on this filesystem",
+    )))
+    .expect("ErrorKind::Unsupported unlock must degrade");
+
+    // Any other release failure is still an error.
+    let err = classify_probe_unlock(Err(std::io::Error::from_raw_os_error(libc::EBADF)))
+        .expect_err("EBADF unlock must stay an error");
+    assert!(
+        err.to_string()
+            .contains("failed to unlock pid reservation probe"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reservation_probe_releases_lock_with_duplicated_handle() {
+    #[derive(Debug, Clone, Copy)]
+    enum Probe {
+        Missing,
+        Empty,
+        ReadError,
+        Cancelled,
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(/*val*/ 1)
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        for case in [
+            Probe::Missing,
+            Probe::Empty,
+            Probe::ReadError,
+            Probe::Cancelled,
+        ] {
+            let temp_dir = TempDir::new().expect("temp dir");
+            let backend = PidBackend::new(
+                temp_dir.path().join("codex"),
+                temp_dir.path().join("app-server.pid"),
+                /*remote_control_enabled*/ false,
+            );
+            match case {
+                Probe::Missing => {}
+                Probe::Empty | Probe::Cancelled => {
+                    std::fs::write(&backend.pid_file, "").expect("empty pid file");
+                }
+                Probe::ReadError => {
+                    std::fs::create_dir(&backend.pid_file).expect("unreadable pid file");
+                }
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&backend.lock_file)
+                .expect("open pid lock file");
+            // Share the open file description as fork would, without inheriting
+            // unrelated descriptors from other tests.
+            let inherited = file.try_clone().expect("clone pid lock file");
+
+            let file = tokio::fs::File::from_std(file);
+            let mut cancellation = None;
+            let probe = match case {
+                Probe::Missing => super::probe_reservation_lock(file),
+                Probe::Empty | Probe::ReadError => {
+                    super::inspect_empty_pid_reservation_with_file(&backend.pid_file, file)
+                        .await
+                        .map(|state| state != super::EmptyPidReservation::Stale)
+                }
+                Probe::Cancelled => {
+                    // Occupy the sole blocking worker so the PID read cannot finish
+                    // before cancellation. No timing assumptions or sleeps are needed.
+                    let (started_tx, started_rx) = std::sync::mpsc::channel();
+                    let (release_tx, release_rx) = std::sync::mpsc::channel();
+                    let blocker = tokio::task::spawn_blocking(move || {
+                        started_tx.send(()).expect("worker started");
+                        release_rx.recv().expect("release worker");
+                    });
+                    started_rx.recv().expect("wait for worker");
+                    let mut inspection = Box::pin(super::inspect_empty_pid_reservation_with_file(
+                        &backend.pid_file,
+                        file,
+                    ));
+                    let pending = futures::poll!(&mut inspection).is_pending();
+                    let contender = tokio::fs::File::from_std(
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&backend.lock_file)
+                            .expect("open competing reservation"),
+                    );
+                    cancellation = Some((pending, try_lock_file(&contender)));
+                    drop(contender);
+                    drop(inspection);
+                    release_tx.send(()).expect("unblock PID read");
+                    blocker.await.expect("blocking worker");
+                    Ok(false)
+                }
+            };
+            if matches!(case, Probe::ReadError) {
+                std::fs::remove_dir(&backend.pid_file).expect("remove unreadable pid file");
+            }
+            let running = backend.is_starting_or_running().await;
+
+            drop(inherited);
+            match case {
+                Probe::ReadError => assert!(probe.is_err(), "{case:?}"),
+                Probe::Missing | Probe::Empty | Probe::Cancelled => {
+                    assert!(!probe.expect("probe reservation"), "{case:?}");
+                }
+            }
+            if let Some((pending, acquired)) = cancellation {
+                assert_eq!(
+                    (pending, acquired.expect("competing reservation")),
+                    (true, false)
+                );
+            }
+            assert!(!running.expect("read daemon status"), "{case:?}");
+        }
+    });
 }
 
 #[tokio::test]

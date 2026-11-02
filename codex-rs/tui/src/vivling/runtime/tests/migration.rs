@@ -240,7 +240,7 @@ fn captured_two_member_roster_preserves_spawned_lineage() {
             "vivling_ids": ["viv-captured-primary", "viv-captured-spawned"],
             "external_vivling_ids": []
         }),
-        &[primary.clone(), spawned.clone()],
+        &[primary, spawned],
     );
 
     let reloaded = configured_vivling(temp.path());

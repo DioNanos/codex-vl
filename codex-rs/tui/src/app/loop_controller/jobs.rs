@@ -157,20 +157,20 @@ pub(super) async fn run_command_request(
         ));
     }
 
-    if let LoopCommandSource::Managed(scope) = &source {
-        if scope.thread_id != thread_id || !managed_request_is_allowed(&request) {
-            app.record_vivling_loop_job(
-                "audit_rejected",
-                managed_request_label(&request).unwrap_or("unknown"),
-                None,
-                source.clone(),
-            );
-            return Ok(loop_action_failure(
-                "scope",
-                thread_id,
-                "Managed loop action rejected by scope or allowlist.".to_string(),
-            ));
-        }
+    if let LoopCommandSource::Managed(scope) = &source
+        && (scope.thread_id != thread_id || !managed_request_is_allowed(&request))
+    {
+        app.record_vivling_loop_job(
+            "audit_rejected",
+            managed_request_label(&request).unwrap_or("unknown"),
+            None,
+            source.clone(),
+        );
+        return Ok(loop_action_failure(
+            "scope",
+            thread_id,
+            "Managed loop action rejected by scope or allowlist.".to_string(),
+        ));
     }
 
     let state_runtime = app.loop_state_runtime().await?;
@@ -256,7 +256,7 @@ pub(super) async fn run_command_request(
             tz,
             rearm_on_boot,
         } => {
-            if let Err(err) = validate_runner_model(&app, runner_kind, runner_model.as_deref()) {
+            if let Err(err) = validate_runner_model(app, runner_kind, runner_model.as_deref()) {
                 return Ok(loop_action_failure("add", thread_id, err.to_string()));
             }
             let now = loop_now_ms();
@@ -374,7 +374,7 @@ pub(super) async fn run_command_request(
                     .and_then(|descriptor| descriptor.runner_model.clone()),
             };
             let descriptor = existing_descriptor;
-            if let Err(err) = validate_runner_model(&app, runner_kind, runner_model.as_deref()) {
+            if let Err(err) = validate_runner_model(app, runner_kind, runner_model.as_deref()) {
                 return Ok(loop_action_failure("update", thread_id, err.to_string()));
             }
             if let LoopCommandSource::Managed(_scope) = &source {
@@ -627,11 +627,17 @@ pub(super) async fn run_command_request(
                     )
                     .await
                     .map_err(loop_state_error)?;
-                let updated = state_runtime
+                let Some(updated) = state_runtime
                     .get_thread_loop_job_by_label(thread_id, &label)
                     .await
                     .map_err(loop_state_error)?
-                    .expect("loop should still exist after enable");
+                else {
+                    return Ok(loop_action_failure(
+                        "enable",
+                        thread_id,
+                        format!("Loop `{label}` not found."),
+                    ));
+                };
                 app.record_vivling_loop_job("enable", &label, Some(&updated), source);
                 loop_action_success(
                     "enable",
@@ -670,11 +676,17 @@ pub(super) async fn run_command_request(
                     )
                     .await
                     .map_err(loop_state_error)?;
-                let updated = state_runtime
+                let Some(updated) = state_runtime
                     .get_thread_loop_job_by_label(thread_id, &label)
                     .await
                     .map_err(loop_state_error)?
-                    .expect("loop should still exist after disable");
+                else {
+                    return Ok(loop_action_failure(
+                        "disable",
+                        thread_id,
+                        format!("Loop `{label}` not found."),
+                    ));
+                };
                 app.record_vivling_loop_job("disable", &label, Some(&updated), source);
                 loop_action_success(
                     "disable",
@@ -752,11 +764,17 @@ pub(super) async fn run_command_request(
                 )
                 .await
                 .map_err(loop_state_error)?;
-            let updated = state_runtime
+            let Some(updated) = state_runtime
                 .get_thread_loop_job_by_label(thread_id, &label)
                 .await
                 .map_err(loop_state_error)?
-                .expect("loop should still exist after trigger");
+            else {
+                return Ok(loop_action_failure(
+                    "trigger",
+                    thread_id,
+                    format!("Loop `{label}` not found."),
+                ));
+            };
             app.record_vivling_loop_job("trigger", &label, Some(&updated), source);
             loop_action_success(
                 "trigger",
@@ -959,7 +977,7 @@ pub(super) async fn run_command_request(
                             "label": delegation.loop_label,
                             "vivling_id": delegation.vivling_id,
                             "strategy": delegation.strategy.as_str(),
-                            "strategy_override": delegation.strategy_override.map(|value| value.as_str()),
+                            "strategy_override": delegation.strategy_override.map(codex_state::LoopDelegationStrategy::as_str),
                             "override_main": delegation.override_main,
                             "ticks_managed": delegation.ticks_managed,
                             "cooldown_until_ms": delegation.cooldown_until_ms,

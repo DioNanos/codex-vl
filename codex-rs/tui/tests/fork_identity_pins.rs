@@ -126,6 +126,150 @@ fn fork_identity_public_install_surfaces_are_fork_owned() {
     );
 }
 
+/// Assembles a needle from fragments so this file never carries the
+/// assembled internal strings as literals — the same principle as the
+/// sanitization gate (`fork-gate/tests/sanitization_gate.rs::joined`): a
+/// guardian must not ship the exact traces it forbids.
+fn joined(parts: &[&str]) -> String {
+    let mut assembled = String::new();
+    for part in parts {
+        assembled.push_str(part);
+    }
+    assembled
+}
+
+/// The forbidden needles for the public install/repack surfaces, assembled
+/// at runtime. `repack_standalone_packages.py` assembles the same values the
+/// same way for its `LEAK_NEEDLES` scan table, so no public file carries the
+/// assembled strings.
+fn leak_needles() -> Vec<String> {
+    vec![
+        joined(&["Docs", "Hub"]),
+        joined(&["Nexus", "Files"]),
+        joined(&["/home/", "dag"]),
+        joined(&["git@", "forge"]),
+        joined(&["alpaca", "libre"]),
+        joined(&["Co-", "Authored-", "By"]),
+        joined(&["Generated", " with"]),
+    ]
+}
+
+/// The needles present in `source`, in scan order.
+fn leaked_needles(source: &str) -> Vec<String> {
+    leak_needles()
+        .into_iter()
+        .filter(|needle| source.contains(needle.as_str()))
+        .collect()
+}
+
+/// Pin: installer and repack surfaces must stay leak-free. These files ship
+/// in the public tree, and the repack step's outputs (the
+/// `codex-vl-package-*` archives and the pinned `install.sh`) are attached to
+/// public GitHub releases, so internal paths, hostnames, operator markers,
+/// and AI attribution trailers must never appear in them — not even as the
+/// scan table of the gate itself: the needles are built from fragments here
+/// and in the repack script, so no public source contains the assembled
+/// values.
+#[test]
+fn fork_identity_install_and_repack_surfaces_are_leak_free() {
+    const INSTALL_SH: &str = include_str!("../../../scripts/install/install.sh");
+    const INSTALL_PS1: &str = include_str!("../../../scripts/install/install.ps1");
+    const REPACK: &str = include_str!("../../../scripts/release/repack_standalone_packages.py");
+
+    for (path, source) in [
+        ("scripts/install/install.sh", INSTALL_SH),
+        ("scripts/install/install.ps1", INSTALL_PS1),
+        ("scripts/release/repack_standalone_packages.py", REPACK),
+    ] {
+        let leaks = leaked_needles(source);
+        assert!(
+            leaks.is_empty(),
+            "{path} must not contain internal markers {leaks:?}.",
+        );
+        assert!(
+            !contains_internal_task_marker(source),
+            "{path} must not contain internal task markers (D-<digits>).",
+        );
+    }
+
+    // The repack step is the gate for the repack assets themselves: it must
+    // keep leak-scanning the text payloads it ships and keep proving the
+    // repacked members byte-identical to the frozen tarballs. Removing either
+    // hook silently would leave the release assets unscanned.
+    assert!(
+        REPACK.contains("leak_scan("),
+        "repack_standalone_packages.py must leak-scan the payloads it ships.",
+    );
+    assert!(
+        REPACK.contains("verify_roundtrip"),
+        "repack_standalone_packages.py must verify repacked members against \
+         the frozen tarballs.",
+    );
+}
+
+/// Negative proof that the needles still bite: text carrying the assembled
+/// values is detected (each needle alone and all of them together), while
+/// the bare fragments are not (no false positives on plain words).
+#[test]
+fn leak_needles_still_bite_on_assembled_values() {
+    let needles = leak_needles();
+    assert!(!needles.is_empty());
+
+    for needle in &needles {
+        let dirty = format!("leading {needle} trailing");
+        let found = leaked_needles(&dirty);
+        assert_eq!(
+            found.len(),
+            1,
+            "assembled {needle:?} must be detected in {dirty:?}.",
+        );
+        assert!(
+            found.first().is_some_and(|found| found == needle),
+            "detection of {needle:?} must report the needle itself.",
+        );
+    }
+
+    let dirty_all = needles
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert_eq!(
+        leaked_needles(&dirty_all).len(),
+        needles.len(),
+        "a text carrying every assembled needle must report all of them.",
+    );
+
+    // Bare fragments must not be flagged. Every fragment boundary that could
+    // reassemble a needle carries an explicit separator: adjacency alone is
+    // exactly how the last pair used to spell one of the assembled values,
+    // which made this fixture fail deterministically.
+    let fragments_only = "Docs Nexus home dag git forge alpaca Co- Authored- By Generated | with";
+    assert!(
+        leaked_needles(fragments_only).is_empty(),
+        "bare fragments without the assembled values must not be flagged.",
+    );
+}
+
+/// Detects internal task markers of the form `D-` followed by at least two
+/// digits without pulling in a regex dependency.
+fn contains_internal_task_marker(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut from = 0usize;
+    while let Some(found) = source[from..].find("D-") {
+        let at = from + found;
+        let digits = bytes[at + 2..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits >= 2 {
+            return true;
+        }
+        from = at + 2;
+    }
+    false
+}
+
 /// Pin: the app-server daemon resolves npm/bun managed installs to
 /// the running fork binary instead of the upstream standalone layout.
 #[test]

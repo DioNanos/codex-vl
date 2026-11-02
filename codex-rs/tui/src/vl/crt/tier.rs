@@ -19,10 +19,10 @@ impl CrtTier {
     }
 
     pub(crate) fn from_env(probe: EnvProbe) -> Self {
-        if let Some(override_value) = probe.crt_tier_override.as_deref() {
-            if let Some(tier) = parse_override(override_value) {
-                return tier;
-            }
+        if let Some(override_value) = probe.crt_tier_override.as_deref()
+            && let Some(tier) = parse_override(override_value)
+        {
+            return tier;
         }
         let term = probe.term.as_deref().unwrap_or("");
         if term.eq_ignore_ascii_case("dumb") {
@@ -36,12 +36,11 @@ impl CrtTier {
         {
             return Self::Rich;
         }
-        if let Some(colorterm) = probe.colorterm.as_deref() {
-            if colorterm.eq_ignore_ascii_case("truecolor")
-                || colorterm.eq_ignore_ascii_case("24bit")
-            {
-                return Self::Rich;
-            }
+        if let Some(colorterm) = probe.colorterm.as_deref()
+            && (colorterm.eq_ignore_ascii_case("truecolor")
+                || colorterm.eq_ignore_ascii_case("24bit"))
+        {
+            return Self::Rich;
         }
         if term.contains("256color") {
             return Self::Rich;

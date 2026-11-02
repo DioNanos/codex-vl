@@ -558,6 +558,7 @@ async fn migration_preserves_image_generation_failure_metadata() {
             failure: expected_item.failure.clone(),
             saved_path: expected_item.saved_path.clone(),
             input_images: Vec::new(),
+            generation_id: expected_item.generation_id.clone(),
         }));
     let path = write_rollout(
         home.path(),
@@ -609,7 +610,7 @@ async fn migration_preserves_image_generation_input_observations() {
             sha256: "ab".repeat(32),
         }],
         imagegen_request_id: None,
-        generation_id: None,
+        generation_id: Some("gen-image-123".to_string()),
     };
     let image_completion =
         RolloutItem::EventMsg(EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
@@ -621,6 +622,7 @@ async fn migration_preserves_image_generation_input_observations() {
             failure: expected_item.failure.clone(),
             saved_path: expected_item.saved_path.clone(),
             input_images: expected_item.input_images.clone(),
+            generation_id: expected_item.generation_id.clone(),
         }));
     let path = write_rollout(
         home.path(),
@@ -3171,6 +3173,76 @@ async fn migration_skips_empty_rollout_files() {
             .expect("read thread metadata")
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn selected_migration_prunes_unrelated_indexed_rollouts() {
+    let home = TempDir::new().expect("create Codex home");
+    let owner = ThreadId::new();
+    let original = write_rollout(home.path(), owner, SessionSource::Cli, vec![]);
+    let directory = original.parent().expect("rollout directory");
+    let legacy = directory.join("rollout-imported.jsonl");
+    let reverted = directory.join(format!(
+        "rollout-2025-01-03T12-00-00-{owner}_{}.jsonl",
+        ThreadId::new()
+    ));
+    fs::copy(&original, &legacy).expect("copy legacy rollout");
+    fs::rename(&original, &reverted).expect("rename reverted rollout");
+    let reverted = compress_rollout(&reverted);
+    let other = write_rollout(home.path(), ThreadId::new(), SessionSource::Cli, vec![]);
+    fs::copy(&other, &original).expect("put another owner's metadata under the selected filename");
+    let archived_owner = ThreadId::new();
+    let archived_reverted = directory.join(format!(
+        "rollout-2025-01-03T12-00-00-{archived_owner}_{}.jsonl",
+        ThreadId::new()
+    ));
+    let archived = write_rollout(home.path(), archived_owner, SessionSource::Cli, vec![]);
+    fs::rename(archived, &archived_reverted).expect("rename unrelated reverted rollout");
+    let archived_reverted = move_to_archived(home.path(), archived_reverted);
+    let misnamed = directory.join(format!(
+        "rollout-2025-01-03T12-00-00-{}.jsonl",
+        ThreadId::new()
+    ));
+    fs::copy(&legacy, &misnamed).expect("copy under a different canonical thread ID");
+    let config = test_config(home.path());
+    let db = codex_state::StateRuntime::init(config.sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("initialize SQLite");
+    for path in [&other, &archived_reverted, &reverted, &misnamed] {
+        let mut row = codex_rollout::builder_from_items(&[], path)
+            .expect("read indexed filename")
+            .build("test-provider");
+        if path == &misnamed {
+            row.id = ThreadId::new();
+        }
+        db.upsert_thread(&row).await.expect("index rollout");
+    }
+    db.close().await;
+    // SQLite still points to the plain file after compression.
+    compress_rollout(&archived_reverted);
+    let store = LocalThreadStore::new(config, /*state_db*/ None);
+    let mut inspected = 0;
+    let report = store
+        .migrate_rollouts_with_progress(
+            RolloutMigrationOptions {
+                thread_ids: vec![owner],
+                ..Default::default()
+            },
+            |_| inspected += 1,
+        )
+        .await
+        .expect("inspect selected rollouts");
+    let mut actual = report
+        .outcomes
+        .into_iter()
+        .map(|outcome| outcome.rollout_path)
+        .collect::<Vec<_>>();
+    let mut expected = vec![legacy, reverted, misnamed];
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
+    // The unindexed file with another owner's header also needs inspection.
+    assert_eq!(inspected, expected.len() + 1);
 }
 
 #[tokio::test]

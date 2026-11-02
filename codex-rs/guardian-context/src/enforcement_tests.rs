@@ -60,7 +60,7 @@ fn native_agent_admission_uses_current_history_and_preserves_identity() {
     // Removing the old copy through compaction or rollback permits delivery again.
     for history in [vec![ResponseItemEnvelope::new(delivered)], Vec::new()] {
         let mut pending = context.clone();
-        pending.retain_new_agent_messages(&history).unwrap();
+        pending.retain_new_native_messages(&history).unwrap();
         let mut expected = if history.is_empty() {
             vec![original.clone()]
         } else {
@@ -101,8 +101,8 @@ fn native_agent_admission_uses_current_history_and_preserves_identity() {
     ];
     let before = conflicting.clone().into_messages();
     assert_eq!(
-        conflicting.retain_new_agent_messages(&[]),
-        Err(SectionError::ConflictingAgentMessage)
+        conflicting.retain_new_native_messages(&[]),
+        Err(SectionError::ConflictingNativeMessage)
     );
     assert_eq!(conflicting.into_messages(), before);
 }
@@ -261,50 +261,75 @@ fn recovery_shortens_older_history_only_after_optional_evidence() {
 
 #[test]
 fn planned_action_budget_omits_descriptions_without_changing_arguments() {
+    let reason = format!("reason-start {} reason-end", "x".repeat(/*n*/ 10_000));
     let action = crate::PlannedAction {
-        json: r#"{"tool":"write_record","arguments":{"description":"required payload"}}"#
-            .to_owned(),
-        kind: crate::PlannedActionKind::Command,
-        reason: None,
-        tool_descriptions: Some("optional tool description ".repeat(/*n*/ 100)),
+        kind: crate::PlannedActionKind::Command {
+            json: r#"{"tool":"write_record","arguments":{"description":"required payload"}}"#
+                .to_owned(),
+        },
+        reason: Some(reason),
+        tool_descriptions: crate::GuardianToolDescriptions::new(
+            Some(&"optional tool description ".repeat(/*n*/ 100)),
+            /*connector*/ None,
+        ),
     };
-    let required = action.render(crate::ActionPresentation::SyncFull);
-    let context = crate::CollectedContext {
-        sections: vec![crate::ContextSection::PlannedAction(action)],
-    }
-    .compose(
-        crate::ContextPresentation::SyncFull {
-            session_id: "review",
-        },
-        crate::PreparedTranscript {
-            items: Vec::new(),
-            omission_note: None,
-            truncations: Vec::new(),
-        },
-    )
-    .unwrap();
-    let mut required_items = required.iter().map(|item| text(item)).collect::<Vec<_>>();
-    required_items.push(text("evidence omitted"));
-    let budget = crate::estimate_input_tokens(&user_message(required_items.clone())) + 100;
-    let selected = context
-        .enforce_budget(
-            RequestBudget {
-                max_input_tokens: budget,
-                existing_context_tokens: 0,
+    for (presentation, action_presentation) in [
+        (
+            crate::ContextPresentation::SyncFull {
+                session_id: "review",
             },
-            "evidence omitted".to_owned(),
-            HistoryTruncation::Preserve,
-        )
+            crate::ActionPresentation::SyncFull,
+        ),
+        (
+            crate::ContextPresentation::SyncDelta {
+                session_id: "review",
+            },
+            crate::ActionPresentation::SyncDelta,
+        ),
+    ] {
+        let mut bounded = action.clone();
+        bounded.reason = bounded.reason.map(|reason| {
+            codex_utils_output_truncation::truncate_text(
+                &reason,
+                codex_utils_output_truncation::TruncationPolicy::Tokens(/*tokens*/ 512),
+            )
+        });
+        let required = bounded.render(action_presentation);
+        let context = {
+            let context = crate::CollectedContext {
+                sections: vec![crate::ContextSection::PlannedAction(action.clone())],
+            };
+            let profile = &crate::ContextProfile::synchronous();
+            let transcript = profile
+                .prepare_transcript(context.transcript_entries(), /*entry_number_offset*/ 0);
+            context.compose(presentation, transcript)
+        }
         .unwrap();
-    // The sync preamble is also required and remains ahead of the action.
-    let messages = selected.into_messages();
-    let ResponseItem::Message { content, .. } = &messages[0] else {
-        panic!("expected user evidence");
-    };
-    assert_eq!(
-        &content[content.len() - required_items.len()..],
-        required_items
-    );
+        let mut required_items = required.iter().map(|item| text(item)).collect::<Vec<_>>();
+        required_items.push(text("evidence omitted"));
+        let budget = crate::estimate_input_tokens(&user_message(required_items.clone()))
+            + section_tokens(&context.sections[0])
+            + 100;
+        let selected = context
+            .enforce_budget(
+                RequestBudget {
+                    max_input_tokens: budget,
+                    existing_context_tokens: 0,
+                },
+                "evidence omitted".to_owned(),
+                HistoryTruncation::Preserve,
+            )
+            .unwrap();
+        // The sync preamble is also required and remains ahead of the action.
+        let messages = selected.into_messages();
+        let ResponseItem::Message { content, .. } = &messages[0] else {
+            panic!("expected user evidence");
+        };
+        assert_eq!(
+            &content[content.len() - required_items.len()..],
+            required_items
+        );
+    }
 }
 
 #[test]

@@ -83,6 +83,85 @@ pub(crate) fn evaluate_after_loop_event(
     ProactiveOutcome { message: None }
 }
 
+/// Evaluate proactive triggers after a turn completes.
+pub(crate) fn evaluate_after_turn(
+    state: &VivlingState,
+    _now: chrono::DateTime<chrono::Utc>,
+) -> ProactiveOutcome {
+    if state.stage() != Stage::Adult {
+        return ProactiveOutcome { message: None };
+    }
+
+    let turns = state.turns_observed;
+    let tone = state.bond.tone();
+
+    // Every ~10 turns, check in
+    if turns > 0 && turns.is_multiple_of(10) {
+        let message = match tone {
+            BondTone::Neutral => format!("{turns} turns. recap?"),
+            BondTone::Warm => format!("{turns} turns. want a recap?"),
+            BondTone::Familiar => format!("{turns} turns together — our recap?"),
+        };
+        return ProactiveOutcome {
+            message: Some(message),
+        };
+    }
+
+    if turns == 0 || !turns.is_multiple_of(6) {
+        return ProactiveOutcome { message: None };
+    }
+
+    // Pattern detection from dominant archetype
+    if turns >= 8 && state.dominant_archetype() == WorkArchetype::Builder {
+        let builder_ratio = state.work_affinities.builder as f64
+            / (state.work_affinities.builder
+                + state.work_affinities.reviewer
+                + state.work_affinities.researcher
+                + state.work_affinities.operator)
+                .max(1) as f64;
+        if builder_ratio > 0.6 {
+            return ProactiveOutcome {
+                message: Some(tone_pick(
+                    tone,
+                    "builder pattern strong. build loop?",
+                    "builder pattern strong. want a build loop?",
+                    "you're building a lot — our build loop?",
+                )),
+            };
+        }
+    }
+
+    // Release patterns in memory
+    if state
+        .distilled_summaries
+        .iter()
+        .any(|s| s.topic.contains("release"))
+    {
+        return ProactiveOutcome {
+            message: Some(tone_pick(
+                tone,
+                "release pattern. checklist loop?",
+                "release pattern seen. checklist loop?",
+                "another release pattern — our checklist loop?",
+            )),
+        };
+    }
+
+    // Verification bias high
+    if state.identity_profile.verification_bias >= 5 {
+        return ProactiveOutcome {
+            message: Some(tone_pick(
+                tone,
+                "verify before widening",
+                "verify before widening",
+                "let's verify before widening",
+            )),
+        };
+    }
+
+    ProactiveOutcome { message: None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,83 +301,4 @@ mod tests {
         state.identity_profile.verification_bias = 5;
         assert!(evaluate_after_turn(&state, now).message.is_none());
     }
-}
-
-/// Evaluate proactive triggers after a turn completes.
-pub(crate) fn evaluate_after_turn(
-    state: &VivlingState,
-    _now: chrono::DateTime<chrono::Utc>,
-) -> ProactiveOutcome {
-    if state.stage() != Stage::Adult {
-        return ProactiveOutcome { message: None };
-    }
-
-    let turns = state.turns_observed;
-    let tone = state.bond.tone();
-
-    // Every ~10 turns, check in
-    if turns > 0 && turns % 10 == 0 {
-        let message = match tone {
-            BondTone::Neutral => format!("{turns} turns. recap?"),
-            BondTone::Warm => format!("{turns} turns. want a recap?"),
-            BondTone::Familiar => format!("{turns} turns together — our recap?"),
-        };
-        return ProactiveOutcome {
-            message: Some(message),
-        };
-    }
-
-    if turns == 0 || turns % 6 != 0 {
-        return ProactiveOutcome { message: None };
-    }
-
-    // Pattern detection from dominant archetype
-    if turns >= 8 && state.dominant_archetype() == WorkArchetype::Builder {
-        let builder_ratio = state.work_affinities.builder as f64
-            / (state.work_affinities.builder
-                + state.work_affinities.reviewer
-                + state.work_affinities.researcher
-                + state.work_affinities.operator)
-                .max(1) as f64;
-        if builder_ratio > 0.6 {
-            return ProactiveOutcome {
-                message: Some(tone_pick(
-                    tone,
-                    "builder pattern strong. build loop?",
-                    "builder pattern strong. want a build loop?",
-                    "you're building a lot — our build loop?",
-                )),
-            };
-        }
-    }
-
-    // Release patterns in memory
-    if state
-        .distilled_summaries
-        .iter()
-        .any(|s| s.topic.contains("release"))
-    {
-        return ProactiveOutcome {
-            message: Some(tone_pick(
-                tone,
-                "release pattern. checklist loop?",
-                "release pattern seen. checklist loop?",
-                "another release pattern — our checklist loop?",
-            )),
-        };
-    }
-
-    // Verification bias high
-    if state.identity_profile.verification_bias >= 5 {
-        return ProactiveOutcome {
-            message: Some(tone_pick(
-                tone,
-                "verify before widening",
-                "verify before widening",
-                "let's verify before widening",
-            )),
-        };
-    }
-
-    ProactiveOutcome { message: None }
 }

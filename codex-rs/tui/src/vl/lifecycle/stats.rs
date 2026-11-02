@@ -75,9 +75,11 @@ mod tests {
         let dir = std::env::temp_dir().join("vl_stats_test_roundtrip");
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("live_stats.json");
-        let mut stats = VivlingLiveStats::default();
-        stats.naps_total = 3;
-        stats.energy = 42;
+        let stats = VivlingLiveStats {
+            naps_total: 3,
+            energy: 42,
+            ..Default::default()
+        };
         stats.save_to(&path).unwrap();
         let loaded = VivlingLiveStats::load_from(&path);
         assert_eq!(loaded.naps_total, 3);
@@ -87,8 +89,10 @@ mod tests {
 
     #[test]
     fn energy_clamp_bounds() {
-        let mut stats = VivlingLiveStats::default();
-        stats.energy = 200;
+        let mut stats = VivlingLiveStats {
+            energy: 200,
+            ..Default::default()
+        };
         stats.clamp_energy();
         assert_eq!(stats.energy, 100);
         stats.energy = 0;
