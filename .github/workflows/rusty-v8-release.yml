@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "rusty-v8-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Destination tag for the produced archives (e.g. rusty-v8-v152.2.0-vl1). Must match the resolved v8 version, optionally with a distinct -vlN suffix."
+        type: string
+        required: true
+      sandbox_only:
+        description: "Build only the ptrcomp-sandbox variants (the ones consumers download for sandboxed builds)."
+        type: boolean
+        default: false
 
 # Cargo's libgit2 transport has been flaky when fetching git dependencies with
 # nested submodules. Prefer the system git CLI for Cargo smoke tests.
@@ -16,7 +26,10 @@ concurrency:
 
 jobs:
   metadata:
-    if: ${{ github.repository == 'openai/codex' }}
+    # Tag pushes stay upstream-only; a manual dispatch is an explicit
+    # maintainer action and is allowed on any repository that carries this
+    # workflow, so forks and mirrors can produce patched archives on demand.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.repository == 'openai/codex' }}
     runs-on: ubuntu-latest
     outputs:
       release_tag: ${{ steps.release_tag.outputs.release_tag }}
@@ -44,15 +57,28 @@ jobs:
         id: release_tag
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           V8_VERSION: ${{ steps.v8_version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
 
-          expected_release_tag="rusty-v8-v${V8_VERSION}"
-          release_tag="${GITHUB_REF_NAME}"
-          if [[ "${release_tag}" != "${expected_release_tag}" ]]; then
-            echo "Tag ${release_tag} does not match expected release tag ${expected_release_tag}." >&2
+          # On a dispatch the destination tag is an input; on a tag push it is
+          # the pushed ref. A patched build must never share a tag with an
+          # already-published unpatched one, so a -vlN suffix distinct from the
+          # plain version tag is accepted in addition to the exact upstream tag.
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${INPUT_RELEASE_TAG}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+
+          version_pattern="${V8_VERSION//./\\.}"
+          if [[ "${release_tag}" =~ ^rusty-v8-v${version_pattern}(-vl[0-9]+)?$ ]]; then
+            : # the exact upstream tag, or the same tag with a distinct backport suffix
+          else
+            echo "Tag ${release_tag} does not match expected release tag rusty-v8-v${V8_VERSION} (optionally with a distinct -vlN suffix)." >&2
             exit 1
           fi
 
@@ -61,6 +87,10 @@ jobs:
   build:
     name: Build ${{ matrix.variant }} ${{ matrix.target }}
     needs: metadata
+    # Each matrix leg evaluates this independently: with sandbox_only the
+    # plain release legs are skipped and only the ptrcomp-sandbox variants --
+    # the ones consumers download for sandboxed builds -- are produced.
+    if: ${{ !inputs.sandbox_only || matrix.sandbox }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -222,6 +252,23 @@ jobs:
 
           python3 .github/scripts/rusty_v8_bazel.py stage-release-pair "${stage_args[@]}"
 
+      - name: Verify the backport marker in the staged archive
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The V8 sources for this job come through MODULE.bazel, which
+          # applies patches/v8_array_sort_elements_kind.patch. Fail-closed:
+          # an archive without the backport marker was built from unpatched
+          # sources and must not be staged under a patched release tag.
+          archive="$(find "dist/${TARGET}" -maxdepth 1 -type f -name 'librusty_v8_*.a.gz' -print -quit)"
+          if [[ -z "${archive}" ]]; then
+            echo "No staged librusty_v8 archive found for ${TARGET}." >&2
+            exit 1
+          fi
+          python3 scripts/check_v8_cve_backport.py "${archive}"
+
       # Larger Linux runner images may omit the host linker used by Cargo build scripts.
       - name: Install native Linux Cargo smoke dependencies
         if: ${{ runner.os == 'Linux' }}
@@ -280,6 +327,11 @@ jobs:
   build-windows-source:
     name: Build ptrcomp-sandbox ${{ matrix.target }} from source
     needs: metadata
+    # Skipped on sandbox_only dispatches: the MSVC legs are not among the
+    # sandbox archives consumers download, and their archives are not covered
+    # by the backport marker check (the marker relies on a gcc/clang
+    # attribute that MSVC does not have).
+    if: ${{ !inputs.sandbox_only }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

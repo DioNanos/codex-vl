@@ -3,7 +3,7 @@
   "comment": [
     "Pinned upstream voice runtime payloads consumed by stage_voice_runtime.py.",
     "Each archive is the public Codex package for the app target; it carries the",
-    "private GStreamer runtime this fork re-uses unchanged (identical native source",
+    "private GStreamer runtime this fork reuses unchanged (identical native source",
     "pins live in third_party/voice/sources.json). The helper binary is NOT taken",
     "from these archives: it is built from this repository, because the runtime",
     "handshake binds the helper to the build commit of the app that spawns it.",

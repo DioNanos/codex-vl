@@ -140,6 +140,7 @@ class SourceBuildV8SandboxGuardTest(unittest.TestCase):
             profile="release",
             entrypoint_bin=None,
             code_mode_host_bin=None,
+            exec_server_bin=None,
             bwrap_bin=None,
             codex_command_runner_bin=None,
             codex_windows_sandbox_setup_bin=None,

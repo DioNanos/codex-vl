@@ -14,6 +14,12 @@ name: rusty-v8-android-release
 # produces the artifact so that future fork merges that bump
 # v8 = "=149.x.y" can swap a Cargo.lock + manifest edit instead of waiting
 # for an upstream android prebuild.
+#
+# The build applies the Array.sort elements-kind backport
+# (patches/v8_array_sort_elements_kind.patch) fail-closed before compiling,
+# verifies the static backport marker in the produced archive, and names its
+# output after a distinct destination tag so patched and unpatched archives
+# never share one.
 
 "on":
   workflow_dispatch:
@@ -32,6 +38,10 @@ name: rusty-v8-android-release
         description: "Build with v8_enable_sandbox (code mode requires it since rust-v0.147.0)"
         type: boolean
         default: true
+      release_tag:
+        description: "Distinct destination tag for this artifact (e.g. rusty-v8-v152.2.0-vl1). Must differ from any already-published tag so patched and unpatched archives never share one."
+        type: string
+        default: "rusty-v8-v152.2.0-vl1"
 
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
@@ -221,6 +231,34 @@ jobs:
           python3 "${GITHUB_WORKSPACE}/scripts/patch_rusty_v8_android_bindgen.py" \
             "${checkout_dir}/build.rs"
           echo "checkout=${checkout_dir}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply the V8 array-sort backport (fail-closed)
+        env:
+          CHECKOUT: ${{ steps.prepare.outputs.checkout }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A patched artifact must never be confusable with a published
+          # unpatched one, so the destination tag has to be a distinct -vlN
+          # tag before anything is built.
+          case "${RELEASE_TAG}" in
+            rusty-v8-v*-vl[0-9]*) ;;
+            *)
+              echo "release_tag '${RELEASE_TAG}' is not a distinct -vlN tag; refusing to build." >&2
+              exit 1
+              ;;
+          esac
+          patch_file="${GITHUB_WORKSPACE}/patches/v8_array_sort_elements_kind.patch"
+          # The patch paths strip down to v8/src/..., so it applies from the
+          # root of the v8 submodule. All three steps must succeed: --check
+          # proves the checkout is clean and compatible, the apply adds the
+          # backport, and --reverse --check proves the tree now carries it.
+          # Any failure stops the job before the long build.
+          (cd "${CHECKOUT}/v8" \
+            && git apply --check -p3 "${patch_file}" \
+            && git apply -p3 "${patch_file}" \
+            && git apply --reverse --check -p3 "${patch_file}")
 
       - name: Check the bindgen toolchain before the long build
         env:
@@ -467,8 +505,19 @@ jobs:
             > "rusty_v8_${profile}_${TARGET}.sha256")
           cat "${stage}/rusty_v8_${profile}_${TARGET}.sha256"
 
+      - name: Verify the backport marker in the staged archive
+        env:
+          TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail-closed: an archive without the marker was built from
+          # unpatched sources and must not be uploaded under a patched tag.
+          python3 "${GITHUB_WORKSPACE}/scripts/check_v8_cve_backport.py" \
+            "dist/${TARGET}/librusty_v8_${V8_PROFILE}_${TARGET}.a.gz"
+
       - name: Upload staged artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rusty-v8-android-${{ inputs.v8_version }}-${{ env.V8_PROFILE }}-${{ inputs.target }}
+          name: ${{ inputs.release_tag }}-${{ env.V8_PROFILE }}-${{ inputs.target }}
           path: dist/${{ inputs.target }}/*
