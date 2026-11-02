@@ -4,6 +4,29 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.166.0-vl.1 - 2026-10-31 - Upstream rust-v0.166.0
+
+### Codex VL changes
+
+- Upstream `rust-v0.166.0`: keyboard-driven transcript selection with word,
+  line, and page motions plus integrated search, Markdown rendered consistently
+  in async questions, choices, answers, and transcript replies, GPT-6.1 Terra
+  in the bundled, Vertex AI, and Bedrock model catalogs, `codex queue --resume`
+  for unloaded threads, clearer safety-block explanations with selectable safer
+  follow-up prompts, and `codex doctor --network-only`. Upstream fixes:
+  acknowledged approval and permission settings preserved when resuming or
+  forking threads, local image attachments preserved when restoring killed
+  composer text, standalone release cleanup on macOS fixed, spawned descendant
+  threads restored when unarchiving their parent, app-server thread startup and
+  shutdown races fixed with prompt runtime release, TUI reconnection recovery
+  improved including offline `/quit` and `/exit`, and reasoning-token accounting
+  preserved across resume and fork. Upstream chores: Bazel switched to
+  source-built V8 with target-matched bindings, the standalone executor shipped
+  in canonical release packages, and toolchains standardized on Node 24.22.1
+  and Rust 1.95.0.
+- Cleanup: clippy findings in fork code fixed or justified and the touched
+  files reformatted with rustfmt (no behavior changes).
+
 ## 0.165.0-vl.1 - 2026-10-28 - Upstream rust-v0.165.0
 
 ### Codex VL changes

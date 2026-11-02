@@ -9,14 +9,15 @@ mod runtime;
 
 pub use actor::AgentHost;
 pub use actor::AuthenticatedActor;
-pub use auth::RuntimeAuthProvider;
 pub use bootstrap::ActorInfo;
 pub use bootstrap::AgentHostAuthorization;
 pub use bootstrap::AuthenticatedActorAuthorization;
+pub use bootstrap::PlatformResourceSelection;
 pub use bootstrap::RuntimeRegistrationMetadata;
 pub use bootstrap::RuntimeRegistrationRequest;
 pub use bootstrap::RuntimeRegistrationResponse;
 pub use bootstrap::RuntimeRole;
+pub use codex_http_client::is_openai_api_url;
 
 pub use auth::RuntimeAuth;
 pub use manager::RuntimeAuthError;

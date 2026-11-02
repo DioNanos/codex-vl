@@ -134,7 +134,7 @@ fn draw_terminal(
     if width < 6 {
         return false;
     }
-    let cursor = if (elapsed_ms / 600) % 2 == 0 {
+    let cursor = if (elapsed_ms / 600).is_multiple_of(2) {
         "_"
     } else {
         " "
@@ -160,7 +160,10 @@ mod tests {
         draw_object(&mut surface, 0, 16, object, 1000, &palette);
         let mut buf = Buffer::empty(Rect::new(0, 0, 16, 3));
         surface.render(Rect::new(0, 0, 16, 3), &mut buf);
-        buf.content.iter().map(|c| c.symbol()).collect()
+        buf.content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
     }
 
     #[test]

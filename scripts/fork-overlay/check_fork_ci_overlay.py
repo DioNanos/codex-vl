@@ -4,6 +4,11 @@
 Checks: disabled jobs (A), restore comments (B), no paid or private runner in
 the matrix or runs-on of the guarded files (C), the blocking gate (D), the
 postmerge permissions (E) and the result aggregators (F).
+
+F admits no derogation: every job in the aggregator must be `success`, or
+`skipped` only where the job is disabled on this fork. A job that fails, in any
+workflow, is red here — the dylint family this fork pins no longer carries the
+external rust-clippy breakage that the old temporary line existed for.
 """
 
 import json
@@ -90,6 +95,7 @@ SKIP_ASSERT = re.compile(
     r" \|\| '\$\{\{ needs\.(?P=job)\.result \}\}' == 'skipped' \]\]"
     r" \|\| \{ echo '(?P=job) failed'; exit 1; \}"
 )
+
 
 
 def check_aggregator_step(name, agg, step, off_jobs):

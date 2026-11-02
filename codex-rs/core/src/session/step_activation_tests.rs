@@ -36,6 +36,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::openai_models::AsyncClassifierMode;
 use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
@@ -347,6 +348,7 @@ impl GatedModelsManager {
                 inner: StaticModelsManager::new(
                     /*auth_manager*/ None,
                     ModelsResponse { models },
+                    codex_models_manager::ModelOrigin::ExplicitConfig,
                 ),
                 first_b_lookup: StdMutex::new(Some(Arc::clone(&lookup))),
             }),
@@ -356,12 +358,12 @@ impl GatedModelsManager {
 }
 
 impl ModelsManager for GatedModelsManager {
-    fn raw_model_catalog(
+    fn model_catalog_with_origins(
         &self,
         strategy: RefreshStrategy,
         factory: HttpClientFactory,
-    ) -> ModelsManagerFuture<'_, ModelsResponse> {
-        self.inner.raw_model_catalog(strategy, factory)
+    ) -> ModelsManagerFuture<'_, Vec<codex_models_manager::CatalogModel>> {
+        self.inner.model_catalog_with_origins(strategy, factory)
     }
 
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
@@ -1504,8 +1506,17 @@ async fn inactive_guardian_v2_does_not_restrict_model_defaults(
     );
 }
 
+#[test_case(None, None; "default")]
+#[test_case(Some(AsyncClassifierMode::Snapshot), None; "remove snapshot")]
+#[test_case(Some(AsyncClassifierMode::Conversation), None; "remove conversation")]
+#[test_case(None, Some(AsyncClassifierMode::Snapshot); "legacy snapshot")]
+#[test_case(None, Some(AsyncClassifierMode::Conversation); "legacy conversation")]
+#[test_case(Some(AsyncClassifierMode::Snapshot), Some(AsyncClassifierMode::Conversation); "change legacy mode")]
 #[tokio::test]
-async fn guardian_v2_empty_model_defaults_are_equivalent() {
+async fn guardian_v2_empty_or_legacy_model_defaults_are_equivalent(
+    admitted_mode: Option<AsyncClassifierMode>,
+    destination_mode: Option<AsyncClassifierMode>,
+) {
     let (_, turn) = make_session_and_context().await;
     let mut config = turn.config.as_ref().clone();
     for feature in [Feature::GuardianV2, Feature::GuardianApproval] {
@@ -1514,23 +1525,34 @@ async fn guardian_v2_empty_model_defaults_are_equivalent() {
             .set_enabled(feature, /*enabled*/ true)
             .expect("enable Guardian V2");
     }
-    let (admitted, mut destination) = safety_models();
+    let (mut admitted, mut destination) = safety_models();
+    admitted
+        .model_messages
+        .as_mut()
+        .expect("model messages")
+        .guardian_v2 = admitted_mode.map(|mode| GuardianV2ModelConfig {
+        async_classifier_mode: Some(mode),
+        ..Default::default()
+    });
     destination.context_window = Some(123_456);
-    for settings in [
+    for mut settings in [
         GuardianV2ModelConfig::default(),
         GuardianV2ModelConfig {
             transcript: Some(GuardianV2TranscriptModelConfig::default()),
             ..Default::default()
         },
     ] {
+        settings.async_classifier_mode = destination_mode;
         destination
             .model_messages
             .as_mut()
             .expect("model messages")
             .guardian_v2 = Some(settings);
-        assert_eq!(
-            check_legacy_model_safety(&admitted, &admitted, &destination, &config, &config,),
-            Ok(())
-        );
+        for current in [&admitted, &destination] {
+            assert_eq!(
+                check_legacy_model_safety(&admitted, current, &destination, &config, &config,),
+                Ok(())
+            );
+        }
     }
 }

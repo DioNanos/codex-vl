@@ -23,6 +23,7 @@ use crate::paths::file_modified_time_utc;
 use crate::sqlite::GOALS_DB_FILENAME;
 use crate::sqlite::LOGS_DB_FILENAME;
 use crate::sqlite::MEMORIES_DB_FILENAME;
+use crate::sqlite::PoolOpenSettings;
 use crate::sqlite::STATE_DB_FILENAME;
 use crate::sqlite::SqliteWriteQueryExt;
 use crate::sqlite::THREAD_HISTORY_DB_FILENAME;
@@ -32,20 +33,16 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
-use log::LevelFilter;
 use serde_json::Value;
-use sqlx::ConnectOptions;
 use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::SqliteAutoVacuum;
+#[cfg(test)]
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::sqlite::SqliteSynchronous;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -117,7 +114,6 @@ pub use threads::ThreadFilterOptions;
 // metadata, rather than the exact sum of all persisted SQLite column bytes.
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
-const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(60);
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,7 +212,6 @@ impl StateRuntime {
         let goals_path = sqlite.goals_db_path();
         let memories_path = sqlite.memories_db_path();
         let queue_path = sqlite.queue_db_path();
-        let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         // Fork: open_state_sqlite wraps sqlite.open_state_db with the VL migration
         // reconciliation (device-key renumber, legacy loop migration numbers), so the
         // upstream call has to stay behind it — see its tests below.
@@ -259,6 +254,7 @@ impl StateRuntime {
                 }
             }
         };
+        let has_memories_v2 = tokio::fs::try_exists(sqlite.memories_v2_db_path()).await?;
         let logs_pool = match sqlite
             .open_logs_db(&logs_migrator, telemetry_override)
             .await
@@ -461,16 +457,6 @@ async fn close_sqlite_pools(pools: &[&SqlitePool]) {
     }
 }
 
-fn base_sqlite_options(path: &Path, mode: SqliteRuntimeMode) -> SqliteConnectOptions {
-    SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .journal_mode(mode.journal_mode)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(SQLITE_BUSY_TIMEOUT)
-        .log_statements(LevelFilter::Off)
-}
-
 async fn open_state_sqlite(
     sqlite: &SqliteConfig,
     path: &Path,
@@ -529,21 +515,22 @@ async fn open_sqlite(
     reconcile_vl_legacy: bool,
     telemetry_override: Option<&dyn DbTelemetry>,
 ) -> anyhow::Result<SqlitePool> {
-    // codex-vl: the fork applies `SqliteRuntimeMode` (journal_mode for
-    // Android/Termux WAL-compat + max_connections) via `base_sqlite_options`,
-    // which upstream's `SqliteConfig::open_read_write_pool` does not expose.
-    // `sqlite` is accepted for signature alignment with upstream callers and
-    // kept unused on purpose so the runtime mode — required for Android and
-    // loop-migration reconciliation — remains authoritative here.
-    let _ = sqlite;
-    let options = base_sqlite_options(path, mode).auto_vacuum(SqliteAutoVacuum::Incremental);
+    // codex-vl: the state pool opens through SqliteConfig's shared path so
+    // NFS preparation, the managed journal-mode policy, and per-connection
+    // DELETE enforcement apply before the file is opened; managed NFS
+    // enforcement prevails over the requested runtime mode. The fork's
+    // `SqliteRuntimeMode` (Android WAL-compat journal mode, max connections,
+    // acquire timeout) rides on top through `PoolOpenSettings`, and the VL
+    // migration reconciliation below still runs before the migrator.
+    let settings = PoolOpenSettings {
+        max_connections: mode.max_connections,
+        acquire_timeout: SQLITE_ACQUIRE_TIMEOUT,
+        prefer_delete_journal: mode.journal_mode == SqliteJournalMode::Delete,
+    };
     let started = Instant::now();
-    let pool_result = SqlitePoolOptions::new()
-        .max_connections(mode.max_connections)
-        .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
-        .connect_with(options)
-        .await
-        .map_err(anyhow::Error::from);
+    let pool_result = sqlite
+        .open_state_pool_with_runtime_settings(path, settings, telemetry_override)
+        .await;
     crate::telemetry::record_init_result(
         telemetry_override,
         spec.kind,
@@ -615,12 +602,12 @@ async fn reconcile_vl_legacy_state_migrations(
 }
 
 async fn reconcile_legacy_loop_tables(pool: &SqlitePool) -> anyhow::Result<()> {
-    if sqlite_object_exists(pool, "table", "thread_loop_jobs").await? {
-        if !sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await? {
-            sqlx::query("ALTER TABLE thread_loop_jobs RENAME TO vl_thread_loop_jobs")
-                .execute(pool)
-                .await?;
-        }
+    if sqlite_object_exists(pool, "table", "thread_loop_jobs").await?
+        && !sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await?
+    {
+        sqlx::query("ALTER TABLE thread_loop_jobs RENAME TO vl_thread_loop_jobs")
+            .execute(pool)
+            .await?;
     }
 
     if sqlite_object_exists(pool, "table", "vl_thread_loop_jobs").await? {
@@ -898,6 +885,7 @@ mod tests {
     use super::SqliteRuntimeMode;
     use super::StateRuntime;
     use super::open_state_sqlite;
+    use super::open_state_sqlite_with_mode;
     use super::runtime_state_migrator;
     use super::sqlite_integrity_check;
     use super::state_db_path;
@@ -911,6 +899,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use sqlx::migrate::MigrateError;
+    use sqlx::sqlite::SqlitePoolOptions;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -1157,6 +1146,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test seeds a legacy state migration record through a dedicated pool on a temporary database"
+    )]
     async fn open_state_sqlite_migrates_existing_vl_db_after_device_key_renumber() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
@@ -1200,6 +1193,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test seeds a legacy vl loop database through a dedicated pool on a temporary database"
+    )]
     async fn open_state_sqlite_reconciles_legacy_vl_loop_migration_numbers() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
@@ -1308,6 +1305,144 @@ VALUES ('loop-1', 'thread-1', 'ci', 'goal', 'tick', 300, 1, 'queue_one', 1, 'age
         let mode = SqliteRuntimeMode::android_compat();
         assert_eq!(mode.journal_mode, SqliteJournalMode::Delete);
         assert_eq!(mode.max_connections, 1);
+    }
+
+    #[tokio::test]
+    async fn android_compat_converts_existing_wal_state_database() -> anyhow::Result<()> {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        // A state database as left behind before the compatibility open: WAL,
+        // with schema and data, and every pool closed beforehand.
+        let existing = SqlitePoolOptions::new()
+            .max_connections(/*max*/ 1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&state_path)
+                    .create_if_missing(/*create*/ true)
+                    .journal_mode(SqliteJournalMode::Wal),
+            )
+            .await?;
+        sqlx::query("CREATE TABLE existing (id INTEGER PRIMARY KEY)")
+            .execute(&existing)
+            .await?;
+        sqlx::query("INSERT INTO existing VALUES (42)")
+            .execute(&existing)
+            .await?;
+        existing.close().await;
+
+        let pool = open_state_sqlite_with_mode(
+            &sqlite,
+            &state_path,
+            &runtime_state_migrator(),
+            SqliteRuntimeMode::android_compat(),
+            /*telemetry_override*/ None,
+        )
+        .await?;
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await?;
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!((journal, synchronous), ("delete".to_string(), /*EXTRA*/ 3));
+        let rows: Vec<i64> = sqlx::query_scalar("SELECT id FROM existing")
+            .fetch_all(&pool)
+            .await?;
+        assert_eq!(rows, vec![42]);
+        // The Android compatibility pool stays single-connection: a second
+        // acquire waits while one connection is held, then completes after it.
+        let held = pool.acquire().await?;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(/*millis*/ 500), pool.acquire())
+                .await
+                .is_err(),
+            "the Android compatibility pool must not open a second connection"
+        );
+        drop(held);
+        let mut queued = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), pool.acquire())
+            .await
+            .expect("the waiting acquire completes once the held connection returns")?;
+        let probe: i64 = sqlx::query_scalar("SELECT 42")
+            .fetch_one(&mut *queued)
+            .await?;
+        assert_eq!(probe, 42);
+        drop(queued);
+        pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn normal_mode_keeps_existing_wal_state_database() -> anyhow::Result<()> {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let existing = SqlitePoolOptions::new()
+            .max_connections(/*max*/ 1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&state_path)
+                    .create_if_missing(/*create*/ true)
+                    .journal_mode(SqliteJournalMode::Wal),
+            )
+            .await?;
+        sqlx::query("CREATE TABLE existing (id INTEGER PRIMARY KEY)")
+            .execute(&existing)
+            .await?;
+        sqlx::query("INSERT INTO existing VALUES (7)")
+            .execute(&existing)
+            .await?;
+        existing.close().await;
+
+        // Outside Android compatibility the upstream default holds: existing
+        // databases keep their journal mode instead of being converted.
+        let pool = open_state_sqlite(&sqlite, &state_path, &runtime_state_migrator(), None).await?;
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(journal, "wal");
+        let rows: Vec<i64> = sqlx::query_scalar("SELECT id FROM existing")
+            .fetch_all(&pool)
+            .await?;
+        assert_eq!(rows, vec![7]);
+        pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn android_compat_creates_new_state_database_in_delete_mode() -> anyhow::Result<()> {
+        let codex_home = unique_temp_dir();
+        tokio::fs::create_dir_all(&codex_home)
+            .await
+            .expect("create codex home");
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = open_state_sqlite_with_mode(
+            &sqlite,
+            &state_path,
+            &runtime_state_migrator(),
+            SqliteRuntimeMode::android_compat(),
+            /*telemetry_override*/ None,
+        )
+        .await?;
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await?;
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!((journal, synchronous), ("delete".to_string(), /*EXTRA*/ 3));
+        pool.close().await;
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+        Ok(())
     }
 
     #[test]

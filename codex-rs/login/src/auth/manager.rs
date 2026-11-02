@@ -1,4 +1,7 @@
 mod workspace_routing;
+mod workspace_switching;
+pub use workspace_switching::WorkspaceLogin;
+pub use workspace_switching::WorkspaceSwitch;
 
 #[path = "account_grant.rs"]
 mod account_grant;
@@ -13,7 +16,9 @@ use http::StatusCode;
 use serde::Deserialize;
 #[cfg(test)]
 use serial_test::serial;
+use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::future::Future;
 use std::path::Path;
@@ -47,6 +52,7 @@ use super::agent_identity::record_needs_task_registration;
 use super::agent_identity::register_managed_chatgpt_agent_identity;
 use super::agent_identity::require_agent_identity_authapi_base_url;
 use super::agent_identity::verified_record_from_jwt;
+use super::api_key::is_fedramp_api_key;
 use super::change_state::AuthChangeState;
 use super::change_state::same_login;
 use super::change_state::same_owner;
@@ -84,6 +90,7 @@ use crate::token_data::parse_chatgpt_jwt_claims;
 use crate::token_data::parse_jwt_expiration;
 use codex_config::ManagedAuthPolicy;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_http_client::CHATGPT_ACCOUNT_ID_HEADER;
 use codex_http_client::HttpClient;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -600,7 +607,7 @@ impl CodexAuth {
                 tokens: Some(tokens),
                 last_refresh: Some(_),
                 ..
-            }) => Ok(tokens),
+            }) => Ok(workspace_switching::selected_workspace_tokens(tokens)),
             _ => Err(std::io::Error::other("Token data is not available.")),
         }
     }
@@ -631,7 +638,7 @@ impl CodexAuth {
         match self {
             Self::Headers(headers) => headers
                 .headers()
-                .get("chatgpt-account-id")
+                .get(CHATGPT_ACCOUNT_ID_HEADER)
                 .and_then(|value| value.to_str().ok())
                 .filter(|account_id| !account_id.is_empty() && account_id.trim() == *account_id)
                 .map(ToOwned::to_owned),
@@ -641,9 +648,10 @@ impl CodexAuth {
         }
     }
 
-    /// Returns false if Codex backend auth omits the FedRAMP claim.
+    /// Returns whether auth carries a FedRAMP routing hint from a claim or API-key prefix.
     pub fn is_fedramp_account(&self) -> bool {
         match self {
+            Self::ApiKey(auth) => is_fedramp_api_key(&auth.api_key),
             Self::Headers(_) => false,
             Self::AgentIdentity(auth) => auth.is_fedramp_account(),
             Self::PersonalAccessToken(auth) => auth.is_fedramp_account(),
@@ -733,7 +741,9 @@ impl CodexAuth {
 
     /// Returns `None` if token-backed ChatGPT auth is unavailable.
     fn get_current_token_data(&self) -> Option<TokenData> {
-        self.get_current_auth_json().and_then(|t| t.tokens)
+        self.get_current_auth_json()
+            .and_then(|t| t.tokens)
+            .map(workspace_switching::selected_workspace_tokens)
     }
 
     fn stored_managed_chatgpt_agent_identity_record(
@@ -955,13 +965,12 @@ fn persist_agent_identity_record(
     storage: &Arc<dyn AuthStorageBackend>,
     record: AgentIdentityAuthRecord,
 ) -> std::io::Result<()> {
-    let _commit = auth_storage_commit_guard()?;
+    let _commit = storage.lock_for_write()?;
     let mut guard = auth_dot_json
         .lock()
         .map_err(|_| std::io::Error::other("failed to lock auth state"))?;
     let stored = storage.load()?;
     if let Some(previous) = guard.as_ref().and_then(|auth| auth.tokens.as_ref())
-        && previous.login_owner_id.is_some()
         && !stored
             .as_ref()
             .and_then(|auth| auth.tokens.as_ref())
@@ -971,9 +980,7 @@ fn persist_agent_identity_record(
             "Account changed during agent identity registration.",
         ));
     }
-    let mut auth = stored
-        .or_else(|| guard.clone())
-        .ok_or_else(|| std::io::Error::other("auth data is not available"))?;
+    let mut auth = stored.ok_or_else(|| std::io::Error::other("auth data is not available"))?;
     auth.agent_identity = Some(AgentIdentityStorage::Record(record));
     storage.save(&auth)?;
     // Publishing credentials belongs to AuthManager. Persisting identity metadata must
@@ -1017,12 +1024,15 @@ pub fn logout(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<bool> {
-    let _commit = auth_storage_commit_guard()?;
+    if auth_credentials_store_mode == AuthCredentialsStoreMode::File && !codex_home.try_exists()? {
+        return Ok(false);
+    }
     let storage = create_auth_storage(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
+    let _commit = storage.lock_for_write()?;
     storage.delete()
 }
 
@@ -1188,12 +1198,12 @@ pub fn save_auth(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> std::io::Result<()> {
-    let _commit = auth_storage_commit_guard()?;
     let storage = create_auth_storage(
         codex_home.to_path_buf(),
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
+    let _commit = storage.lock_for_write()?;
     storage.save(auth)
 }
 
@@ -1653,7 +1663,7 @@ pub(super) fn persist_tokens(
     access_token: Option<String>,
     refresh_token: Option<String>,
 ) -> std::io::Result<AuthDotJson> {
-    let _commit = auth_storage_commit_guard()?;
+    let _commit = storage.lock_for_write()?;
     let stored = storage.load()?;
     let mut auth_dot_json = stored.ok_or(std::io::Error::other("Token data is not available."))?;
     if auth_dot_json.resolved_mode() != AuthMode::Chatgpt {
@@ -2405,6 +2415,15 @@ impl AuthManager {
     }
 
     pub fn external_bearer_only(config: ModelProviderAuthInfo) -> Arc<Self> {
+        Self::external_bearer_only_with_env(config, HashMap::new())
+    }
+
+    /// Creates a provider-scoped token cache whose command environment overrides are
+    /// retained for both initial authentication and every subsequent refresh.
+    pub fn external_bearer_only_with_env(
+        config: ModelProviderAuthInfo,
+        env: HashMap<String, OsString>,
+    ) -> Arc<Self> {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
             codex_home: PathBuf::from("non-existent"),
@@ -2426,7 +2445,7 @@ impl AuthManager {
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config)))),
+            external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config, env)))),
             workload_identity_selected: false,
             // External bearer auth refreshes by running the provider's command and never makes
             // auth-owned HTTP requests, so this route is intentionally inert.
@@ -2904,7 +2923,6 @@ impl AuthManager {
         if auth_changed_for_refresh {
             guard.permanent_refresh_failure = None;
         }
-        tracing::info!("Reloaded auth, changed: {changed}");
         guard.auth = new_auth;
         if auth_changed_for_refresh {
             self.auth_change_state_tx.send_modify(|state| {
@@ -2921,6 +2939,10 @@ impl AuthManager {
             });
             self.auth_change_tx.send_modify(|revision| *revision += 1);
         }
+        tracing::info!(
+            auth_changed_for_refresh,
+            "Reloaded auth, changed: {changed}"
+        );
         changed
     }
 

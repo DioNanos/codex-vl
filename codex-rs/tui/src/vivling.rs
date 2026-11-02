@@ -377,9 +377,11 @@ mod tests {
 
     #[test]
     fn growth_requires_active_work_days_to_unlock_level_30() {
-        let mut state = VivlingState::default();
-        state.work_xp = 10_000;
-        state.active_work_days = 29;
+        let mut state = VivlingState {
+            work_xp: 10_000,
+            active_work_days: 29,
+            ..Default::default()
+        };
         state.recompute_level();
         assert_eq!(state.level, 29);
         assert_eq!(state.stage().label(), "baby");
@@ -392,9 +394,11 @@ mod tests {
 
     #[test]
     fn growth_requires_active_work_days_to_unlock_level_60() {
-        let mut state = VivlingState::default();
-        state.work_xp = 20_000;
-        state.active_work_days = 89;
+        let mut state = VivlingState {
+            work_xp: 20_000,
+            active_work_days: 89,
+            ..Default::default()
+        };
         state.recompute_level();
         assert_eq!(state.level, 59);
         assert_eq!(state.stage().label(), "juvenile");
@@ -460,9 +464,11 @@ mod tests {
 
     #[test]
     fn work_capsules_set_pending_upgrade_notice() {
-        let mut state = VivlingState::default();
-        state.work_xp = 10_000;
-        state.active_work_days = 29;
+        let mut state = VivlingState {
+            work_xp: 10_000,
+            active_work_days: 29,
+            ..Default::default()
+        };
         state.recompute_level();
 
         state.active_work_days = 30;

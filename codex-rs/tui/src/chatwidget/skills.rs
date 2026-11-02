@@ -21,6 +21,7 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
+use codex_utils_plugins::mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 use codex_utils_plugins::mention_syntax::TOOL_MENTION_SIGIL;
 
 impl ChatWidget {
@@ -130,10 +131,16 @@ impl ChatWidget {
         if enabled_count == 0 && disabled_count == 0 {
             return;
         }
-        self.add_info_message(
-            format!("{enabled_count} skills enabled, {disabled_count} skills disabled"),
-            /*hint*/ None,
-        );
+        let enabled_suffix = if enabled_count == 1 { "" } else { "s" };
+        let disabled_suffix = if disabled_count == 1 { "" } else { "s" };
+        let summary = match (enabled_count, disabled_count) {
+            (0, _) => format!("Disabled {disabled_count} skill{disabled_suffix}"),
+            (_, 0) => format!("Enabled {enabled_count} skill{enabled_suffix}"),
+            _ => format!(
+                "Enabled {enabled_count} skill{enabled_suffix}, disabled {disabled_count} skill{disabled_suffix}"
+            ),
+        };
+        self.add_info_message(summary, /*hint*/ None);
     }
 
     pub(crate) fn set_skills_from_response(&mut self, response: &SkillsListResponse) {
@@ -200,6 +207,15 @@ pub(crate) fn collect_tool_mentions(
         }
     }
     mentions
+}
+
+/// Generated follow-ups must not activate a skill, app, or plugin through their text.
+pub(super) fn contains_tool_mention(text: &str) -> bool {
+    let mentions = extract_tool_mentions_from_text(text);
+    let plugins = extract_tool_mentions_from_text_with_sigil(text, PLUGIN_TEXT_MENTION_SIGIL);
+    !mentions.names.is_empty()
+        || !mentions.linked_paths.is_empty()
+        || !plugins.linked_paths.is_empty()
 }
 
 pub(crate) fn find_skill_mentions_with_tool_mentions(

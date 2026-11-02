@@ -286,6 +286,7 @@ impl Session {
         ));
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn consume_startup_prewarm_for_regular_turn(
         &self,
         cancellation_token: &CancellationToken,
@@ -403,7 +404,11 @@ async fn schedule_startup_prewarm_inner(
             let mut history = session
                 .clone_history()
                 .await
-                .for_prompt(&step_context.settings.model_info.input_modalities);
+                .for_prompt(
+                    &step_context.settings.model_info.input_modalities,
+                    session.services.image_store.as_ref(),
+                )
+                .await;
             session
                 .services
                 .executed_tool_calls

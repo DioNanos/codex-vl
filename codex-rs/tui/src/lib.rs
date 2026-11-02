@@ -47,7 +47,7 @@ use codex_app_server_protocol::ThreadListCwdFilter;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey as AppServerThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
-use codex_cloud_config::cloud_config_bundle_loader_for_storage;
+use codex_cloud_config::managed_config_bundle_loader_for_storage;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::ConfigLoadError;
 use codex_config::LoaderOverrides;
@@ -340,6 +340,13 @@ pub(crate) enum AppServerTarget {
 }
 
 impl AppServerTarget {
+    fn supports_command_center(&self) -> bool {
+        match self {
+            Self::Embedded => false,
+            Self::LocalDaemon { .. } | Self::Remote { .. } => true,
+        }
+    }
+
     fn preserve_selected_backend(&mut self, selection: &resume_picker::SessionSelection) {
         if matches!(
             selection,
@@ -1079,6 +1086,10 @@ fn latest_session_cwd_filter<'a>(
     }
 }
 
+#[allow(
+    clippy::print_stderr,
+    reason = "early launch fallback notice; no logging sink available yet"
+)]
 fn app_server_target_for_launch(
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
     default_daemon_socket: Option<AbsolutePathBuf>,
@@ -1095,6 +1106,8 @@ fn app_server_target_for_launch(
             ));
         }
         if default_daemon_socket.is_some() {
+            // Launch-time diagnostic: stderr is the only usable channel here,
+            // before tracing is initialized and before the TUI owns the terminal.
             eprintln!("{FLEET_EMBEDDED_FALLBACK_DIAGNOSTIC}");
             tracing::warn!("shared app-server without verified cell identity: running embedded");
             return Ok(AppServerTarget::Embedded);
@@ -1210,11 +1223,12 @@ async fn cloud_config_bundle_for_app_server_target(
     codex_home: &Path,
     embedded_network_policy: &codex_app_server_client::EmbeddedNetworkPolicy,
 ) -> std::io::Result<CloudConfigBundleLoader> {
-    cloud_config_bundle_loader_for_storage(
+    managed_config_bundle_loader_for_storage(
         embedded_network_policy
             .bind_bootstrap_auth(app_server_target.auth_config_for_cloud_loader(
                 bootstrap_auth_config(codex_home, bootstrap_config)?,
             )),
+        bootstrap_config.config_layer_stack.requirements_toml(),
         /*enable_codex_api_key_env*/ false,
     )
     .await
@@ -1530,8 +1544,9 @@ async fn run_ratatui_app(
                 // bundle and rebuild config. This avoids missing newly available cloud-managed
                 // policy due to login status detection edge cases.
                 if show_login_screen && !uses_remote_workspace && !workload_identity_selected {
-                    cloud_config_bundle = cloud_config_bundle_loader_for_storage(
+                    cloud_config_bundle = managed_config_bundle_loader_for_storage(
                         embedded_network_policy.bind_bootstrap_auth(initial_config.auth_config()),
+                        initial_config.config_layer_stack.requirements_toml(),
                         /*enable_codex_api_key_env*/ false,
                     )
                     .await?;
@@ -2013,7 +2028,7 @@ async fn run_ratatui_app(
     if (!matches!(
         session_selection,
         resume_picker::SessionSelection::AgentsOverview
-    ) || matches!(app_server_target, AppServerTarget::Embedded))
+    ) || !app_server_target.supports_command_center())
         && (!uses_remote_workspace || remote_cwd_override.is_some())
     {
         let resumed_thread = if matches!(app_server_target, AppServerTarget::LocalDaemon { .. })
@@ -2094,7 +2109,7 @@ async fn run_ratatui_app(
                 trust_decision_was_made = true;
             }
         } else if consent.should_exit {
-            if matches!(app_server_target, AppServerTarget::Embedded) {
+            if !app_server_target.supports_command_center() {
                 shutdown_startup_session(Some(app_server), &mut terminal_restore_guard).await;
                 return Ok(AppExitInfo {
                     token_usage: crate::token_usage::TokenUsage::default(),
@@ -2319,9 +2334,20 @@ async fn run_ratatui_app(
     app_result
 }
 
-fn report_restore_failure<W: std::io::Write>(
+fn report_restore_error(result: color_eyre::Result<()>) {
+    if let Err(err) = result {
+        // Best effort: a disconnected stderr (EIO) must not panic during cleanup,
+        // so route the message through the fallible writer and ignore its error.
+        let _ = report_restore_failure(&mut std::io::stderr(), &err);
+    }
+}
+
+// Writer-based reporting from the fork: the write error is returned so the
+// runtime path above can ignore it instead of panicking like `eprintln!`
+// would on a broken stderr.
+fn report_restore_failure<W: std::io::Write, E: std::fmt::Display>(
     writer: &mut W,
-    err: &std::io::Error,
+    err: &E,
 ) -> std::io::Result<()> {
     writeln!(
         writer,
@@ -2329,35 +2355,33 @@ fn report_restore_failure<W: std::io::Write>(
     )
 }
 
-fn restore() {
-    if let Err(err) = tui::restore_after_exit() {
-        let _ = report_restore_failure(&mut std::io::stderr().lock(), &err);
-    }
-}
-
 struct TerminalRestoreGuard {
     active: bool,
+    events: Option<Arc<tui::EventBroker>>,
 }
 
 impl TerminalRestoreGuard {
     fn new() -> Self {
-        Self { active: true }
+        Self {
+            active: true,
+            events: None,
+        }
     }
 
-    #[cfg_attr(debug_assertions, allow(dead_code))]
     fn restore(&mut self) -> color_eyre::Result<()> {
         if self.active {
-            crate::tui::restore_after_exit()?;
+            tui::restore_after_exit_with_events(self.events.take().as_deref())?;
             self.active = false;
         }
         Ok(())
     }
 
     fn restore_silently(&mut self) {
-        if self.active {
-            restore();
-            self.active = false;
-        }
+        let result = self.restore();
+        // Deactivate before reporting so a failing report cannot re-run the
+        // restore from Drop (a double panic during unwinding aborts).
+        self.active = false;
+        report_restore_error(result);
     }
 }
 
@@ -2572,11 +2596,6 @@ fn should_show_bedrock_setup_wizard(
         && config.features.enabled(Feature::BedrockSetupWizard)
         && config.model_provider_id == "openai"
         && config
-            .config_layer_stack
-            .effective_config()
-            .get("model_provider")
-            .is_none()
-        && config
             .auth_config()
             .is_login_method_allowed(ForcedLoginMethod::Api)
 }
@@ -2594,12 +2613,14 @@ pub(crate) use tests::test_backend;
 #[cfg(test)]
 pub(crate) use tests::test_support;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "terminal_restore_tests.rs"]
 mod terminal_restore_tests;
 
 #[cfg(test)]
 mod restore_reporting_writer_tests {
+    use super::report_restore_error;
     use super::report_restore_failure;
     use std::io;
     use std::io::Write;
@@ -2612,6 +2633,16 @@ mod restore_reporting_writer_tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn restore_report_is_best_effort_and_does_not_panic() {
+        // The production wrapper must tolerate a failing stderr (e.g. a
+        // disconnected PTY): the write error is swallowed and reporting never
+        // panics, for both the error and the success path.
+        let report: color_eyre::Report = io::Error::other("terminal disconnected").into();
+        report_restore_error(Err(report));
+        report_restore_error(Ok(()));
     }
 
     #[test]

@@ -1,4 +1,7 @@
 //! The chat composer is the bottom-pane text input state machine.
+//! Rich registers retain original payloads across draft clears and composer replacement;
+//! only the live register transfers, not undo or repeat history. Copies receive fresh IDs and labels
+//! before ordinary attachment pruning, including after each semantic repeat action.
 //!
 //! It edits [`TextArea`] and attachments, routes popup keys, makes completed slash commands atomic,
 //! and handles Enter/newlines. It shows Luna Reserve's yellow arrow and detects unbracketed paste
@@ -35,7 +38,7 @@
 //!
 //! # Key Event Routing
 //!
-//! Plain Left opens agents when the local-daemon composer is empty and available for input.
+//! Plain Left opens agents from an empty, active composer connected to a local daemon or remote App Server.
 //! Explicit editor remaps take precedence.
 //! Most key handling goes through [`ChatComposer::handle_key_event`], which dispatches to a
 //! popup-specific handler if a popup is visible and otherwise to
@@ -129,6 +132,8 @@
 //! Multiline pastes continue blockquote prefixes.
 //! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
 //! running, `Tab` submits just like Enter so input is never dropped.
+//! Submit and queue bindings act only on fresh key presses; repeated events are consumed so a held
+//! key cannot dispatch a preserved draft after another input layer closes.
 //! Vim Replace shares Insert's composer actions; only textarea editing differs.
 //! Literal completion/paste edits discard stale Replace recovery; subsequent typing records anew.
 //! Token markers added during Replace are removed when restoring overwritten characters.
@@ -147,7 +152,9 @@
 //! dispatch, they intentionally preserve the textarea kill buffer. That lets users `Ctrl+K` part
 //! of a draft, perform a composer action such as changing reasoning level, and then `Ctrl+Y` the
 //! killed text back into the now-empty draft. Replacing the chat widget carries that buffer into
-//! the fresh composer so Vim yanks survive `/new` and thread switches.
+//! the fresh composer so Vim yanks survive `/new`, `/cd`, and thread switches. Rich objects retain
+//! their original image paths, mention targets, and collapsed-paste contents. Pasted objects receive
+//! fresh identities and labels, including in Replace mode, where Backspace removes them atomically.
 //!
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
@@ -166,7 +173,7 @@
 //!
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
-//! intact until reconnection succeeds, except for the local `/warnings` command.
+//! intact until reconnection succeeds, except for `/warnings`, `/config`, `/quit`, and `/exit`.
 //! When connected but the thread is unavailable, configured
 //! submit keys may dispatch explicitly allowed recovery and local commands; other drafts stay put.
 //! Empty-prompt agents navigation remains available with its usual editor and draft guards.
@@ -276,6 +283,7 @@
 //!   [`ChatComposer::handle_paste`], which first commits buffered typing before classifying the
 //!   pasted text. This preserves the order when a paste arrives before the next burst-flush tick;
 //!   buffered keys have already been classified and go directly through `apply_paste`.
+//!   Image detection probes only regular files. Pasted device and FIFO paths stay literal.
 //! - Startup recovery previews held keys with the live Vim Replace policy without consuming them.
 //!   Buffered pastes remain literal in recovery so large-paste and image classification stays with
 //!   the live paste path.
@@ -400,6 +408,7 @@ mod slash_input;
 mod sparkle;
 mod status_surface;
 mod vim_history;
+mod vim_register;
 mod vim_search;
 mod vl_footer;
 mod warning_notice;
@@ -425,7 +434,6 @@ use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
-use crate::bottom_pane::textarea::KillBufferSnapshot;
 use crate::bottom_pane::textarea::TextArea;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
@@ -450,6 +458,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+pub(crate) use vim_register::KillBufferSnapshot;
 
 use ratatui::style::Color;
 
@@ -617,7 +626,7 @@ pub(crate) struct ChatComposer {
     pub(super) mention_usage: MentionUsage,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
-    agents_navigation_enabled: bool,
+    pub(super) command_center_enabled: bool,
     footer: FooterState,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
@@ -658,6 +667,7 @@ pub(crate) struct ChatComposer {
     side_conversation_active: bool,
     history_search: Option<HistorySearchSession>,
     vim_history: VimHistory,
+    vim_register: vim_register::VimRegister,
     submit_keys: Vec<KeyBinding>,
     queue_keys: Vec<KeyBinding>,
     toggle_shortcuts_keys: Vec<KeyBinding>,
@@ -681,6 +691,7 @@ pub(super) struct ComposerDraft {
     local_image_paths: Vec<PathBuf>,
     remote_image_urls: Vec<String>,
     mention_bindings: Vec<MentionBinding>,
+    mention_ranges: Vec<Range<usize>>,
     pending_pastes: Vec<(String, String)>,
     cursor: usize,
 }
@@ -752,7 +763,7 @@ impl ChatComposer {
             mention_usage: MentionUsage::default(),
             app_event_tx,
             history: ChatComposerHistory::new(),
-            agents_navigation_enabled: false,
+            command_center_enabled: false,
             footer: FooterState {
                 quit_shortcut_expires_at: None,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
@@ -836,6 +847,7 @@ impl ChatComposer {
             side_conversation_active: false,
             history_search: None,
             vim_history: VimHistory::default(),
+            vim_register: vim_register::VimRegister::default(),
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
             queue_keys: vec![key_hint::plain(KeyCode::Tab)],
             toggle_shortcuts_keys: vec![
@@ -1269,8 +1281,11 @@ impl ChatComposer {
             return false;
         };
 
-        // normalize_pasted_path already handles Windows → WSL path conversion,
-        // so we can directly try to read the image dimensions.
+        // Opening a serial device or FIFO can block the input loop.
+        if !path_buf.is_file() {
+            return false;
+        }
+
         match image::image_dimensions(&path_buf) {
             Ok((width, height)) => {
                 tracing::info!("OK: {pasted}");
@@ -1401,11 +1416,11 @@ impl ChatComposer {
     }
 
     pub(crate) fn take_kill_buffer_snapshot(&mut self) -> KillBufferSnapshot {
-        self.draft.textarea.take_kill_buffer_snapshot()
+        vim_register::take_snapshot(self)
     }
 
     pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
-        self.draft.textarea.restore_kill_buffer_snapshot(snapshot);
+        vim_register::restore_snapshot(self, snapshot);
     }
 
     /// Restore draft history transferred from the startup composer.
@@ -1655,12 +1670,14 @@ impl ChatComposer {
     }
 
     pub(super) fn snapshot_draft(&self) -> ComposerDraft {
+        let (mention_bindings, mention_ranges) = self.snapshot_mention_bindings_with_ranges();
         ComposerDraft {
             text: self.current_text(),
             text_elements: self.current_text_elements(),
             local_image_paths: self.attachments.local_image_paths(),
             remote_image_urls: self.attachments.remote_image_urls(),
-            mention_bindings: self.mention_bindings(),
+            mention_bindings,
+            mention_ranges,
             pending_pastes: self.draft.pending_pastes.clone(),
             cursor: self.current_cursor(),
         }
@@ -1673,6 +1690,7 @@ impl ChatComposer {
             local_image_paths,
             remote_image_urls,
             mention_bindings,
+            mention_ranges,
             pending_pastes,
             cursor,
         } = draft;
@@ -1681,8 +1699,20 @@ impl ChatComposer {
             text,
             text_elements,
             local_image_paths,
-            mention_bindings,
+            Vec::new(),
         );
+        for (binding, range) in mention_bindings.into_iter().zip(mention_ranges) {
+            if let Some(id) = self.draft.textarea.element_id_for_exact_range(range) {
+                self.draft.mention_bindings.insert(
+                    id,
+                    ComposerMentionBinding {
+                        sigil: binding.sigil,
+                        mention: binding.mention,
+                        path: binding.path,
+                    },
+                );
+            }
+        }
         self.set_pending_pastes(pending_pastes);
         self.set_current_cursor(cursor);
         self.sync_popups();
@@ -1833,6 +1863,7 @@ impl ChatComposer {
         self.attachments.local_images()
     }
 
+    #[cfg(test)]
     pub(crate) fn mention_bindings(&self) -> Vec<MentionBinding> {
         self.snapshot_mention_bindings()
     }
@@ -2923,20 +2954,32 @@ impl ChatComposer {
     }
 
     fn snapshot_mention_bindings(&self) -> Vec<MentionBinding> {
-        let mut ordered = Vec::new();
-        for (id, sigil, mention) in self.current_mention_elements() {
-            if let Some(binding) = self.draft.mention_bindings.get(&id)
-                && binding.sigil == sigil
-                && binding.mention == mention
-            {
-                ordered.push(MentionBinding {
-                    sigil: binding.sigil,
-                    mention: binding.mention.clone(),
-                    path: binding.path.clone(),
-                });
-            }
-        }
-        ordered
+        self.snapshot_mention_bindings_with_ranges().0
+    }
+
+    fn snapshot_mention_bindings_with_ranges(&self) -> (Vec<MentionBinding>, Vec<Range<usize>>) {
+        self.draft
+            .textarea
+            .text_element_snapshots()
+            .into_iter()
+            .filter_map(|element| {
+                let binding = self.draft.mention_bindings.get(&element.id)?;
+                if element.text != format!("{}{}", binding.sigil, binding.mention)
+                    || (crate::task_mentions::valid_thread_path(&binding.path).is_none()
+                        && Self::mention_token_from_insert_text(&element.text).is_none())
+                {
+                    return None;
+                }
+                Some((
+                    MentionBinding {
+                        sigil: binding.sigil,
+                        mention: binding.mention.clone(),
+                        path: binding.path.clone(),
+                    },
+                    element.range,
+                ))
+            })
+            .unzip()
     }
 
     fn bind_mentions_from_snapshot(&mut self, mention_bindings: Vec<MentionBinding>) {
@@ -3541,6 +3584,11 @@ impl ChatComposer {
         } else {
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
+        if key_event.kind == KeyEventKind::Repeat
+            && (self.queue_keys.is_pressed(key_event) || self.submit_keys.is_pressed(key_event))
+        {
+            return (InputResult::None, true);
+        }
         if self.queue_keys.is_pressed(key_event)
             && (self.is_task_running || self.queue_submissions || !self.is_bang_shell_command())
         {
@@ -3768,9 +3816,28 @@ impl ChatComposer {
         }
 
         self.begin_vim_edit(input);
-        self.draft.textarea.input(input);
+        if self.draft.textarea.is_vim_normal_mode()
+            && !self.draft.textarea.is_vim_operator_pending()
+            && self.vim_normal_keymap.repeat_last_change.is_pressed(input)
+        {
+            self.draft.textarea.set_cursor(self.draft.textarea.cursor());
+            if let Some(edits) = self.draft.textarea.begin_vim_repeat() {
+                for edit in edits {
+                    let elements = self.draft.textarea.element_payloads();
+                    if !self.draft.textarea.apply_vim_edit(&edit) {
+                        break;
+                    }
+                    vim_register::sync(self);
+                    self.sync_bash_mode_from_text();
+                    self.reconcile_deleted_elements(elements);
+                }
+                self.draft.textarea.finish_vim_repeat();
+            }
+        } else {
+            self.draft.textarea.input(input);
+            vim_register::sync(self);
+        }
         self.sync_bash_mode_from_text();
-
         if let Some(elements_before) = elements_before {
             self.reconcile_deleted_elements(elements_before);
         }
@@ -9340,7 +9407,11 @@ mod tests {
             "image_placeholder_single",
             /*enhanced_keys_supported*/ false,
             |composer| {
-                composer.attach_image(PathBuf::from("/tmp/image1.png"));
+                let (mut previous, _rx) = new_test_composer();
+                previous.attach_image(PathBuf::from("/tmp/image1.png"));
+                previous.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+                composer.restore_kill_buffer_snapshot(previous.take_kill_buffer_snapshot());
+                composer.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
             },
         );
 
@@ -9581,7 +9652,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_buffer_persists_after_submit() {
+    fn kill_buffer_preserves_image_after_submit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -9596,11 +9667,12 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
-        composer.draft.textarea.insert_str("restore me");
-        composer.draft.textarea.set_cursor(/*pos*/ 0);
+        composer.draft.textarea.insert_str("restore me ");
+        let image_path = PathBuf::from("/tmp/killed-image.png");
+        composer.attach_image(image_path.clone());
 
         let (_result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert!(composer.draft.textarea.is_empty());
 
         composer.draft.textarea.insert_str("hello");
@@ -9609,9 +9681,27 @@ mod tests {
         assert!(matches!(result, InputResult::Submitted { .. }));
         assert!(composer.draft.textarea.is_empty());
 
+        let other_image_path = PathBuf::from("/tmp/other-image.png");
+        composer.attach_image(other_image_path.clone());
+        composer.handle_paste(" ".into());
         let (_result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
-        assert_eq!(composer.draft.textarea.text(), "restore me");
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            result,
+            InputResult::Submitted {
+                text: "[Image #1] restore me [Image #2]".into(),
+                text_elements: vec![
+                    TextElement::new((0..10).into(), Some("[Image #1]".into())),
+                    TextElement::new((22..32).into(), Some("[Image #2]".into())),
+                ],
+            }
+        );
+        assert_eq!(
+            composer.take_recent_submission_images(),
+            vec![other_image_path, image_path]
+        );
     }
 
     #[test]

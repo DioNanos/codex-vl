@@ -99,7 +99,19 @@ jobs:
           node-version: 22
 
       - name: Test launcher diagnostics
-        run: node --test codex-cli/tests/*.test.mjs
+        run: |
+          # exit-status.test.mjs needs a built Codex binary; this job builds none.
+          tests=()
+          for candidate in codex-cli/tests/*.test.mjs; do
+            if [[ -e "$candidate" && "${candidate##*/}" != "exit-status.test.mjs" ]]; then
+              tests+=("$candidate")
+            fi
+          done
+          if [[ ${#tests[@]} -eq 0 ]]; then
+            echo "No launcher diagnostics tests found" >&2
+            exit 1
+          fi
+          node --test "${tests[@]}"
 
       - name: Resolve release version
         shell: bash

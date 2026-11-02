@@ -58,6 +58,24 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  installer-suite:
+    name: installer suite
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the install.sh offline regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/install/test_install_sh.py -v 2>&1 | tee installer-suite.out
+          grep -E 'Ran [0-9]+ tests' installer-suite.out
+          ! grep -q 'FAILED' installer-suite.out
+
   shear:
     name: shear and lock
     runs-on: ubuntu-24.04

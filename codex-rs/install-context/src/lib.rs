@@ -18,6 +18,11 @@ const PATH_DIRNAME: &str = "codex-path";
 const RELEASES_DIRNAME: &str = "releases";
 const RESOURCES_DIRNAME: &str = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME: &str = "standalone";
+// The fork's own standalone installer keeps a separate package root next to
+// the upstream one so both installs can coexist without touching each other.
+const STANDALONE_VL_PACKAGES_DIRNAME: &str = "standalone-vl";
+const STANDALONE_PACKAGES_DIRNAMES: [&str; 2] =
+    [STANDALONE_PACKAGES_DIRNAME, STANDALONE_VL_PACKAGES_DIRNAME];
 static INSTALL_CONTEXT: OnceLock<InstallContext> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +62,10 @@ pub enum InstallMethod {
         /// such as
         /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
         /// Package-layout installs use the package root that contains `bin/`,
-        /// `codex-resources/`, and `codex-path/`.
+        /// `codex-resources/`, and `codex-path/`. Installs produced by the
+        /// fork's own installer live under
+        /// `~/.codex/packages/standalone-vl/releases/` instead; both roots are
+        /// recognized as standalone.
         release_dir: AbsolutePathBuf,
         /// The bundled resource directory for managed dependencies.
         resources_dir: Option<AbsolutePathBuf>,
@@ -317,11 +325,11 @@ fn standalone_install_method(
     } else {
         canonical_absolute_path(exe_path)?.parent()?
     };
-    let releases_root = canonical_codex_home
-        .join("packages")
-        .join(STANDALONE_PACKAGES_DIRNAME)
-        .join(RELEASES_DIRNAME);
-    if !release_dir.starts_with(releases_root.as_path()) {
+    let packages_dir = canonical_codex_home.join("packages");
+    let inside_standalone_releases = STANDALONE_PACKAGES_DIRNAMES.iter().any(|dirname| {
+        release_dir.starts_with(packages_dir.join(dirname).join(RELEASES_DIRNAME).as_path())
+    });
+    if !inside_standalone_releases {
         return None;
     }
 

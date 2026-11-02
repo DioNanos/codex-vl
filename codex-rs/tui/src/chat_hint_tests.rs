@@ -9,6 +9,7 @@ use crossterm::event::KeyCode;
 
 fn terminal(name: TerminalName) -> TerminalInfo {
     TerminalInfo {
+        backend: None,
         name,
         term_program: None,
         version: None,
@@ -19,6 +20,7 @@ fn terminal(name: TerminalName) -> TerminalInfo {
 
 fn under_tmux() -> TerminalInfo {
     TerminalInfo {
+        backend: None,
         name: TerminalName::Unknown,
         term_program: None,
         version: None,

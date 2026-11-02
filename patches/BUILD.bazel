@@ -1,4 +1,5 @@
 exports_files([
+    "rules_cc_windows_native_llvm.patch",
     "abseil_windows_gnullvm_thread_identity.patch",
     "bzip2_windows_stack_args.patch",
     "llvm_rusty_v8_custom_libcxx.patch",
@@ -24,9 +25,8 @@ exports_files([
     "ring_windows_msvc_include_dirs.patch",
     "tikv-jemalloc-sys_make_env.patch",
     "tikv-jemalloc-sys_dependency_flags.patch",
+    "tonic-zstd-level1.patch",
     "v8_array_sort_elements_kind.patch",
-    "v8_bazel_rules.patch",
-    "v8_module_deps.patch",
     "v8_source_portability.patch",
     "webrtc-sys_hermetic_darwin_sysroot.patch",
     "windows-link.patch",
