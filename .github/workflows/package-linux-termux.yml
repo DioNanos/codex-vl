@@ -250,7 +250,7 @@ jobs:
             --build-commit "$(git rev-parse HEAD)"
           rm -rf "$tmp"
       - name: Upload Linux x64 npm package
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-vl-linux-x64-npm-${{ env.RELEASE_VERSION }}
           path: ~/.local/share/build-artifacts/codex-vl/${{ github.sha }}/linux-x64/npm/*.tgz
@@ -454,7 +454,7 @@ jobs:
           rm -rf "$tmp"
           echo "clean: no CI checkout path in $tgz"
       - name: Upload Android arm64 npm package
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-vl-android-arm64-npm-${{ env.RELEASE_VERSION }}
           path: ~/.local/share/build-artifacts/codex-vl/${{ github.sha }}/android-arm64/npm/*.tgz
