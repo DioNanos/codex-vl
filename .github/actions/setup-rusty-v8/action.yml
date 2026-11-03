@@ -16,8 +16,20 @@ runs:
         set -euo pipefail
 
         version="$(python3 "${GITHUB_WORKSPACE}/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
-        release_tag="rusty-v8-v${version}"
-        base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+        version_suffix="${version//./_}"
+        if [[ "$TARGET" == *-pc-windows-msvc ]]; then
+          # The fork publishes no Windows rebuild, so Windows keeps pulling the
+          # upstream archives of the same v8 version.
+          release_tag="rusty-v8-v${version}"
+          base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+        else
+          # Every other target links the fork's patched V8 (array-sort
+          # backport), published under the -vl1 tag and pinned by the _vl1
+          # trusted manifests checked into third_party/v8.
+          release_tag="rusty-v8-v${version}-vl1"
+          base_url="https://github.com/DioNanos/codex-vl/releases/download/${release_tag}"
+          version_suffix="${version_suffix}_vl1"
+        fi
         binding_dir="${RUNNER_TEMP}/rusty_v8"
 
         profile="ptrcomp_sandbox_release"
@@ -33,7 +45,7 @@ runs:
         archive_path="${binding_dir}/${archive_name}"
         binding_path="${binding_dir}/${binding_name}"
         checksums_path="${binding_dir}/${checksums_name}"
-        trusted_checksums="${GITHUB_WORKSPACE}/third_party/v8/rusty_v8_${version//./_}_release_manifests.sha256"
+        trusted_checksums="${GITHUB_WORKSPACE}/third_party/v8/rusty_v8_${version_suffix}_release_manifests.sha256"
 
         if command -v sha256sum >/dev/null 2>&1; then
           checksum_command=(sha256sum --check -)
@@ -60,5 +72,15 @@ runs:
 
         # Existing Windows-built release manifests use CRLF line endings.
         (cd "${binding_dir}" && tr -d '\r' < "${checksums_path}" | "${checksum_command[@]}")
+
+        # Fail-closed: outside Windows the archive must carry the Array.sort
+        # backport marker (CVE-2026-85046). Any non-zero exit -- marker absent,
+        # or the archive could not be examined -- fails this step. Windows keeps
+        # the upstream archive, which is without the marker by construction, so
+        # it must not run this check.
+        if [[ "$TARGET" != *-pc-windows-msvc ]]; then
+          python3 "${GITHUB_WORKSPACE}/scripts/check_v8_cve_backport.py" "${archive_path}"
+        fi
+
         echo "RUSTY_V8_ARCHIVE=${archive_path}" >> "${GITHUB_ENV}"
         echo "RUSTY_V8_SRC_BINDING_PATH=${binding_path}" >> "${GITHUB_ENV}"

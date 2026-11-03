@@ -419,7 +419,7 @@ function main() {
   // build stops there. The matching archive and binding come from this project's
   // own rusty-v8 release; both are pinned by checksum, and a mismatch aborts.
   const v8Version = "152.2.0";
-  const v8Base = `https://github.com/openai/codex/releases/download/rusty-v8-v${v8Version}`;
+  const v8Base = `https://github.com/DioNanos/codex-vl/releases/download/rusty-v8-v${v8Version}-vl1`;
   const v8Dir = path.join(root, ".rusty_v8");
   const v8Archive = path.join(
     v8Dir,
@@ -431,9 +431,9 @@ function main() {
   );
   const v8Checksums = {
     [path.basename(v8Archive)]:
-      "feab9ae0384bebaa99c1d000654462c9d42123d587185c7876aaeef7d76ff749",
+      "e951e5d0ec3b0f60f736f174e36582e9cb24b934dd6ed098dad576554e94d0b4",
     [path.basename(v8Binding)]:
-      "b9d5652ebca515eb2bf4c2ee4a6551b2567117b5aa720f430d2032616dd7e3b5",
+      "912f2aaa35802a9d5b8fe8f1a3da4b5df1f2e5ea2a39a0abc67bd21ce4d83083",
   };
 
   mkdirSync(v8Dir, { recursive: true });

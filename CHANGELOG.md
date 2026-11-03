@@ -4,6 +4,18 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.166.0-vl.2 - 2026-11-03 - V8 security rebuild
+
+### Codex VL changes
+
+- Security: V8 rebuilt with the backport of the fix for CVE-2026-85046 (type
+  confusion in `Array.prototype.sort`) on every published platform (Linux x64,
+  Linux arm64 musl, Android arm64, macOS arm64 via postinstall); the V8
+  archives come from the `rusty-v8-v152.2.0-vl1` release, pinned by checksum.
+- Packaging: every non-Windows consumer, CI and the source package build
+  including archive overrides, refuses a V8 archive without the backport
+  marker.
+
 ## 0.166.0-vl.1 - 2026-10-31 - Upstream rust-v0.166.0
 
 ### Codex VL changes

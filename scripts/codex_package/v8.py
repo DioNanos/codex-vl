@@ -17,6 +17,13 @@ from .targets import REPO_ROOT, TargetSpec
 
 DOWNLOAD_TIMEOUT_SECS = 120
 V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release"
+# Patched fork V8 builds carrying the array-sort backport. Non-Windows builds
+# link them from the fork's -vl1 release tag, pinned by the _vl1 trusted
+# manifests in third_party/v8. The fork publishes no Windows rebuild, so
+# Windows targets keep pulling the upstream archives of the same crate
+# version.
+FORK_V8_RELEASE_REPO = "DioNanos/codex-vl"
+FORK_V8_RELEASE_TAG_SUFFIX = "-vl1"
 
 
 @dataclass(frozen=True)
@@ -51,11 +58,12 @@ def resolve_codex_v8_cargo_env(
         # Returning {} leaves cargo inheriting os.environ, so these two paths are
         # what the build links -- this function chooses nothing but still decides
         # everything. Resolution stays pure here: the archive is judged by the
-        # build path (`cargo.py`), which calls `assert_sandbox_archive` on
-        # whatever `RUSTY_V8_ARCHIVE` this returns before running cargo. Without
-        # that judgement a release build links the plain archive: the profile is
-        # not in the path and the v8 build script accepts whatever the variable
-        # names.
+        # build path (`cargo.py`), which calls `assert_sandbox_archive` and
+        # `assert_cve_backport_archive` on whatever `RUSTY_V8_ARCHIVE` reaches
+        # the linker (this return value, or the override below) before running
+        # cargo. Without that judgement a release build links the plain
+        # archive: the profile is not in the path and the v8 build script
+        # accepts whatever the variable names.
         return {}
     if archive_override or binding_override:
         raise RuntimeError(
@@ -65,7 +73,8 @@ def resolve_codex_v8_cargo_env(
     artifacts = fetch_codex_v8_artifacts(spec, cache_root=cache_root)
     # Downloaded from the pinned URL for the sandbox profile -- the pin says
     # which bytes, not what they do. Judging happens on the build path
-    # (`cargo.py`), which validates the archive this returns.
+    # (`cargo.py`), which validates the archive this returns against both the
+    # sandbox and the CVE backport verifiers (Windows excepted from the latter).
     return {
         "RUSTY_V8_ARCHIVE": str(artifacts.archive),
         "RUSTY_V8_SRC_BINDING_PATH": str(artifacts.binding),
@@ -80,7 +89,29 @@ def assert_sandbox_archive(archive: Path) -> None:
     exit 2 means the archive could not be judged; neither is a build worth
     finishing, so both stop here rather than being told apart.
     """
-    checker = REPO_ROOT / "scripts" / "check_v8_sandbox.py"
+    _run_archive_verifier("check_v8_sandbox.py", archive, "sandbox verified")
+
+
+def assert_cve_backport_archive(archive: Path) -> None:
+    """Stop the build unless this archive carries the array-sort backport.
+
+    Delegates to scripts/check_v8_cve_backport.py, which scans the archive
+    bytes for the marker string the backport patch emits into the compiled
+    object. Exit 1 means the marker is absent (V8 built without the
+    CVE-2026-85046 fix) and exit 2 means the archive could not be examined;
+    "not verified" is never close enough to build on, so both stop here.
+
+    Windows links the upstream archive, which carries no marker by
+    construction; callers must keep the Windows exclusion rather than
+    expecting this verifier to accept those bytes.
+    """
+    _run_archive_verifier(
+        "check_v8_cve_backport.py", archive, "array-sort backport marker verified"
+    )
+
+
+def _run_archive_verifier(checker_name: str, archive: Path, ok_message: str) -> None:
+    checker = REPO_ROOT / "scripts" / checker_name
     if not checker.is_file():
         raise RuntimeError(
             f"{checker} is missing, so nothing would verify the V8 this build "
@@ -97,7 +128,28 @@ def assert_sandbox_archive(archive: Path) -> None:
             f"refusing to build against {archive}:\n"
             f"{completed.stdout}{completed.stderr}".rstrip()
         )
-    print(f"[v8] sandbox verified in {archive}")
+    print(f"[v8] {ok_message} in {archive}")
+
+
+def v8_release_base_url(spec: TargetSpec, version: str) -> str:
+    """Base URL of the release a target's prebuilt V8 pair is pinned against.
+
+    Windows MSVC has no fork rebuild and stays on the upstream release of the
+    same crate version; every other target pulls the fork's patched V8.
+    """
+    if spec.is_windows:
+        release_tag = f"rusty-v8-v{version}"
+        return f"https://github.com/openai/codex/releases/download/{release_tag}"
+    release_tag = f"rusty-v8-v{version}{FORK_V8_RELEASE_TAG_SUFFIX}"
+    return f"https://github.com/{FORK_V8_RELEASE_REPO}/releases/download/{release_tag}"
+
+
+def trusted_release_manifests_name(version: str, *, windows: bool) -> str:
+    """Name of the in-repo file trusted for a release's checksum manifests."""
+    version_stem = version.replace(".", "_")
+    if not windows:
+        version_stem += FORK_V8_RELEASE_TAG_SUFFIX.replace("-", "_")
+    return f"rusty_v8_{version_stem}_release_manifests.sha256"
 
 
 def fetch_codex_v8_artifacts(
@@ -107,9 +159,7 @@ def fetch_codex_v8_artifacts(
     cache_root: Path | None = None,
 ) -> RustyV8ArtifactPair:
     version = version or resolved_v8_crate_version()
-    release_url = (
-        f"https://github.com/openai/codex/releases/download/rusty-v8-v{version}"
-    )
+    release_url = v8_release_base_url(spec, version)
     target = spec.target
     cache_dir = (cache_root or default_cache_root()) / f"rusty-v8-{version}-{target}"
 
@@ -130,14 +180,19 @@ def fetch_codex_v8_artifacts(
     try:
         if not checksums.is_symlink():
             verify_release_checksum_manifest(
-                checksums, version=version, remove_invalid=False
+                checksums,
+                version=version,
+                windows=spec.is_windows,
+                remove_invalid=False,
             )
             cached_manifest_valid = True
     except (OSError, RuntimeError, ValueError):
         pass
     if not cached_manifest_valid:
         download_file(f"{release_url}/{checksums.name}", checksums)
-        verify_release_checksum_manifest(checksums, version=version)
+        verify_release_checksum_manifest(
+            checksums, version=version, windows=spec.is_windows
+        )
     expected_checksums = load_checksums(checksums, {archive.name, binding.name})
     for artifact in [archive, binding]:
         ensure_valid_artifact(
@@ -172,14 +227,17 @@ def default_cache_root() -> Path:
 
 
 def verify_release_checksum_manifest(
-    checksums_path: Path, *, version: str, remove_invalid: bool = True
+    checksums_path: Path,
+    *,
+    version: str,
+    windows: bool,
+    remove_invalid: bool = True,
 ) -> None:
-    version_suffix = version.replace(".", "_")
     trusted_checksums = (
         REPO_ROOT
         / "third_party"
         / "v8"
-        / f"rusty_v8_{version_suffix}_release_manifests.sha256"
+        / trusted_release_manifests_name(version, windows=windows)
     )
 
     for line in trusted_checksums.read_text(encoding="utf-8").splitlines():

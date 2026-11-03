@@ -151,7 +151,7 @@ Check the version under the local prefix.
 
 ## Release Channels
 
-The `latest` and `next` channels both point to `0.166.0-vl.1`, based on
+The `latest` and `next` channels both point to `0.166.0-vl.2`, based on
 upstream Codex `rust-v0.166.0`. The conservative `stable` tag currently points
 to `0.153.2-vl.2`.
 

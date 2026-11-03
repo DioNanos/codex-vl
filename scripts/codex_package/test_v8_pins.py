@@ -2,10 +2,10 @@
 
 `postinstall_darwin_build.js` downloads and links its own V8 on the user's
 machine, with its own copy of the checksums. Nothing connects that copy to
-`third_party/v8/rusty_v8_<version>.sha256`, which is where every other consumer
-reads the pin from, so the two can drift silently -- and the way they drift that
-matters is one of them ending up on the plain profile, which links and runs with
-the sandbox absent and says nothing about it.
+`third_party/v8/rusty_v8_<version>_vl1.sha256`, which is where every other
+consumer reads the pin from, so the two can drift silently -- and the way they
+drift that matters is one of them ending up on the plain profile, or on the
+unpatched upstream release, both of which link and run with nothing saying so.
 
 There is no semantic check on the user's Mac on purpose: the postinstall would
 have to grow a Python dependency to run one. Pinning by checksum is enough there
@@ -50,6 +50,20 @@ class DarwinPostinstallPins(unittest.TestCase):
         self.assertIsNotNone(version_match, "cannot find v8Version")
         version = version_match.group(1)
 
+        # The postinstall must download from the fork's patched -vl1 tag: the
+        # upstream release of the same version still carries the unpatched V8.
+        # Its pins are only meaningful against that tag's manifest.
+        base_match = re.search(r"const v8Base = `([^`]*)`;", source)
+        self.assertIsNotNone(base_match, "cannot find v8Base")
+        self.assertEqual(
+            base_match.group(1),
+            (
+                "https://github.com/DioNanos/codex-vl/releases/download/"
+                f"rusty-v8-v${{v8Version}}-vl1"
+            ),
+            "the macOS postinstall must download the fork's patched V8 release",
+        )
+
         block = re.search(r"const v8Checksums = \{(.*?)\};", source, re.S)
         self.assertIsNotNone(block, "cannot find the v8Checksums object")
         digests = re.findall(r'"([0-9a-f]{64})"', block.group(1))
@@ -64,7 +78,7 @@ class DarwinPostinstallPins(unittest.TestCase):
             REPO_ROOT
             / "third_party"
             / "v8"
-            / f"rusty_v8_{version.replace('.', '_')}.sha256"
+            / f"rusty_v8_{version.replace('.', '_')}_vl1.sha256"
         )
         self.assertTrue(manifest.is_file(), f"{manifest} is missing")
         pinned = {}
