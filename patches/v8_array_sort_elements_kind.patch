@@ -5,7 +5,7 @@
 # CVE advisory: https://chromereleases.googleblog.com/2026/09/stable-channel-update-for-desktop_01882797386.html
 
 diff --git a/orig/v8-15.2.124.1/src/compiler/js-call-reducer.cc b/mod/v8-15.2.124.1/src/compiler/js-call-reducer.cc
-index e8707261d3e2..0e2d9bfd0a74 100644
+index e8707261d3e2..c1c89dde5478 100644
 --- a/orig/v8-15.2.124.1/src/compiler/js-call-reducer.cc
 +++ b/mod/v8-15.2.124.1/src/compiler/js-call-reducer.cc
 @@ -4068,6 +4068,10 @@ class IteratingArrayBuiltinHelper {
@@ -33,10 +33,21 @@ index e8707261d3e2..0e2d9bfd0a74 100644
    Node* receiver_;
    Effect effect_;
    Control control_;
-@@ -4126,6 +4133,11 @@ Reduction JSCallReducer::ReduceArraySort(Node* node,
+@@ -4126,6 +4133,22 @@ Reduction JSCallReducer::ReduceArraySort(Node* node,
    IteratingArrayBuiltinHelper h(node, broker(), jsgraph(), dependencies());
    if (!h.can_reduce()) return h.inference()->NoChange();
 
++  // Static marker for the CVE-2026-85046 backport. Release packaging checks
++  // that this exact string is present in the compiled archive, so a build
++  // without this patch cannot ship under a patched release tag. The 'used'
++  // attribute keeps the constant in the object file even though no code reads
++  // it; a comment would not survive compilation.
++#if defined(__GNUC__) || defined(__clang__)
++  __attribute__((used))
++#endif
++  static const char kArraySortBackportMarker[] =
++      "codex-vl-v8-array-sort-guard-v1";
++
 +  // The union kind is only an upper bound on each receiver's own kind. Loads
 +  // through it widen and are sound; stores narrow and are not. Unlike the
 +  // iterating builtins, sort writes its snapshot back into the receiver.

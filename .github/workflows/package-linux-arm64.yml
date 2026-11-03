@@ -104,13 +104,15 @@ jobs:
           # IsSandboxEnabled() is false while everything still links and runs.
           profile="ptrcomp_sandbox_release"
           version="$(python3 .github/scripts/rusty_v8_bazel.py resolved-v8-crate-version)"
-          release_tag="rusty-v8-v${version}"
-          base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+          # Pull the fork's patched V8 (array-sort backport) from the -vl1 tag,
+          # pinned by the _vl1 asset manifest checked into third_party/v8.
+          release_tag="rusty-v8-v${version}-vl1"
+          base_url="https://github.com/DioNanos/codex-vl/releases/download/${release_tag}"
           binding_dir="${RUNNER_TEMP:-/tmp}/rusty_v8"
           archive_path="${binding_dir}/librusty_v8_${profile}_${target}.a.gz"
           binding_path="${binding_dir}/src_binding_${profile}_${target}.rs"
           checksums_path="${binding_dir}/rusty_v8_${profile}_${target}.sha256"
-          checksums_source="third_party/v8/rusty_v8_${version//./_}.sha256"
+          checksums_source="third_party/v8/rusty_v8_${version//./_}_vl1.sha256"
           mkdir -p "$binding_dir"
           curl -fsSL "${base_url}/librusty_v8_${profile}_${target}.a.gz" -o "$archive_path"
           curl -fsSL "${base_url}/src_binding_${profile}_${target}.rs" -o "$binding_path"
@@ -121,6 +123,10 @@ jobs:
             exit 1
           fi
           (cd "$binding_dir" && sha256sum -c "$checksums_path")
+          # Fail-closed: refuse to link a V8 archive without the Array.sort
+          # backport marker (CVE-2026-85046). Any non-zero exit -- marker
+          # absent, or the archive could not be examined -- fails the build.
+          python3 scripts/check_v8_cve_backport.py "$archive_path"
           export RUSTY_V8_ARCHIVE="$archive_path"
           export RUSTY_V8_SRC_BINDING_PATH="$binding_path"
           echo "release profile: opt=${CARGO_PROFILE_RELEASE_OPT_LEVEL} lto=${CARGO_PROFILE_RELEASE_LTO} codegen-units=${CARGO_PROFILE_RELEASE_CODEGEN_UNITS} panic=${CARGO_PROFILE_RELEASE_PANIC} strip=${CARGO_PROFILE_RELEASE_STRIP}"

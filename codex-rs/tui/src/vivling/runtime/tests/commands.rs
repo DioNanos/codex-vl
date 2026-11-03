@@ -225,11 +225,14 @@ fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
     assert!(message.contains("/vivling assist <task>"));
     assert!(message.contains("/vla <task>"));
     assert!(message.contains("/vivling brain <on|off>"));
+    assert!(message.contains("/vivling layout <full|line>"));
     assert!(message.contains("/vivling model"));
     assert!(message.contains("/vivling model list"));
+    assert!(message.contains("/vivling memory"));
     assert!(message.contains("/vivling recap"));
     assert!(message.contains("/vivling promote 10"));
     assert!(message.contains("/vivling promote 60"));
+    assert!(message.contains("/vivling loop-strategy <label> <observe|suggest|manage|auto>"));
     assert!(message.contains("/vivling export [path.vivegg]"));
     assert!(message.contains("/vivling import <path.vivegg>"));
     assert!(message.contains("/vivling <message>"));

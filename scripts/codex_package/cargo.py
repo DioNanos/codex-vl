@@ -8,6 +8,7 @@ from pathlib import Path
 from .targets import REPO_ROOT
 from .targets import PackageVariant
 from .targets import TargetSpec
+from .v8 import assert_cve_backport_archive
 from .v8 import assert_sandbox_archive
 from .v8 import resolve_codex_v8_cargo_env
 from .v8 import v8_from_source
@@ -79,15 +80,23 @@ def build_source_binaries(
             # the resolver picked. With paired overrides the resolver returns {}
             # on purpose and cargo inherits os.environ, so its RUSTY_V8_ARCHIVE
             # reaches the linker without ever passing through the resolver: that
-            # override is exactly what the guard exists for (the profile is not
+            # override is exactly what the guards exist for (the profile is not
             # in the path and the v8 build script accepts whatever the variable
-            # names). A source build links no prebuilt, so there is nothing to
-            # judge there.
+            # names). Both guards judge the same archive: the sandbox profile
+            # and, outside Windows, the CVE-2026-85046 backport marker -- the
+            # Windows archive is upstream and marker-less by construction, so
+            # the backport gate must never run there. A source build links no
+            # prebuilt, so there is no archive to verify; that says nothing
+            # about whether its source is patched -- it just is not judgeable
+            # here, and no substitute check is invented for it.
             archive = codex_v8_env.get("RUSTY_V8_ARCHIVE")
             if archive is None and not v8_from_source():
                 archive = os.environ.get("RUSTY_V8_ARCHIVE")
             if archive:
-                assert_sandbox_archive(Path(archive))
+                archive_path = Path(archive)
+                assert_sandbox_archive(archive_path)
+                if not spec.is_windows:
+                    assert_cve_backport_archive(archive_path)
             if codex_v8_env:
                 cargo_env = {**os.environ, **codex_v8_env}
 

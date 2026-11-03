@@ -59,9 +59,10 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
         }
 
         if create_pins:
-            pins = (
-                self.root / "third_party/v8/rusty_v8_152_2_0_release_manifests.sha256"
+            pin_name = v8.trusted_release_manifests_name(
+                self.version, windows=spec.is_windows
             )
+            pins = self.root / "third_party/v8" / pin_name
             pins.parent.mkdir(parents=True)
             digest = trusted_digest or hashlib.sha256(manifest).hexdigest()
             name = trusted_name or manifest_name
@@ -91,6 +92,37 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
             self.assertEqual(artifacts.binding.read_bytes(), b"trusted V8 binding")
             self.assertEqual(download.call_args_list[0].args[1].name, manifest_name)
             self.assertEqual(download.call_count, 3)
+
+    def test_fetches_patched_fork_release_outside_windows(self) -> None:
+        with self.release("x86_64-unknown-linux-gnu") as (spec, download, _):
+            v8.fetch_codex_v8_artifacts(
+                spec, version=self.version, cache_root=self.root / "cache"
+            )
+
+            urls = [call.args[0] for call in download.call_args_list]
+            expected_base = (
+                "https://github.com/DioNanos/codex-vl/releases/download/"
+                f"rusty-v8-v{self.version}{v8.FORK_V8_RELEASE_TAG_SUFFIX}"
+            )
+            self.assertTrue(urls)
+            for url in urls:
+                self.assertTrue(url.startswith(f"{expected_base}/"), url)
+
+    def test_fetches_upstream_release_for_windows(self) -> None:
+        with self.release("x86_64-pc-windows-msvc") as (spec, download, _):
+            v8.fetch_codex_v8_artifacts(
+                spec, version=self.version, cache_root=self.root / "cache"
+            )
+
+            urls = [call.args[0] for call in download.call_args_list]
+            expected_base = (
+                f"https://github.com/openai/codex/releases/download/"
+                f"rusty-v8-v{self.version}"
+            )
+            self.assertTrue(urls)
+            for url in urls:
+                self.assertTrue(url.startswith(f"{expected_base}/"), url)
+                self.assertNotIn(v8.FORK_V8_RELEASE_TAG_SUFFIX, url)
 
     def test_authenticates_windows_manifest_with_crlf(self) -> None:
         with self.release("x86_64-pc-windows-msvc", line_ending=b"\r\n") as (
@@ -210,9 +242,10 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
             artifacts = v8.fetch_codex_v8_artifacts(
                 spec, version=self.version, cache_root=self.root / "cache"
             )
-            pins = (
-                self.root / "third_party/v8/rusty_v8_152_2_0_release_manifests.sha256"
+            pin_name = v8.trusted_release_manifests_name(
+                self.version, windows=spec.is_windows
             )
+            pins = self.root / "third_party/v8" / pin_name
             pins.write_text(f"{'0' * 64}  {name}\n")
             download.reset_mock()
             with self.assertRaisesRegex(
@@ -306,6 +339,18 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
                     v8.resolve_codex_v8_cargo_env(spec, environ=environ), {}
                 )
                 fetch.assert_not_called()
+
+
+class TrustedReleaseManifestsNameTest(unittest.TestCase):
+    def test_fork_lineage_outside_windows_and_upstream_for_windows(self) -> None:
+        self.assertEqual(
+            v8.trusted_release_manifests_name("152.2.0", windows=False),
+            "rusty_v8_152_2_0_vl1_release_manifests.sha256",
+        )
+        self.assertEqual(
+            v8.trusted_release_manifests_name("152.2.0", windows=True),
+            "rusty_v8_152_2_0_release_manifests.sha256",
+        )
 
 
 if __name__ == "__main__":

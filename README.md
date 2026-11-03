@@ -151,7 +151,7 @@ Check the version under the local prefix.
 
 ## Release Channels
 
-The `latest` and `next` channels both point to `0.166.0-vl.1`, based on
+The `latest` and `next` channels both point to `0.166.0-vl.2`, based on
 upstream Codex `rust-v0.166.0`. The conservative `stable` tag currently points
 to `0.153.2-vl.2`.
 
@@ -235,6 +235,15 @@ Manages the active Vivling. Current features include local state, growth,
 lifecycle status, species data, and optional brain profile configuration.
 The public development journal is at
 [dev.mmmbuto.com/vivling](https://dev.mmmbuto.com/vivling/).
+
+Frequent commands: `/vivling hatch`, `/vivling status`, `/vivling roster`,
+`/vivling focus <id|name>`, `/vivling card`, `/vivling model <profile>`,
+`/vivling memory`, `/vivling crt-brain show`, `/vivling layout line` for the
+one-row CRT strip, and `/vivling loop-strategy <label> <strategy>` for
+delegated loops.
+
+The full command list, with exact syntax, prerequisites, and what each
+command persists, is in the [Vivling command reference](docs/vivling_commands.md).
 
 ### `/vl`
 

@@ -26,6 +26,8 @@ impl Vivling {
                 .to_string(),
             "/vivling crt-brain reset-budget - zero today's daily counters + retry bootstrap"
                 .to_string(),
+            "/vivling layout <full|line> - collapse the CRT strip to a single row, or restore the classic three-line strip; the choice is saved in config"
+                .to_string(),
             "/vivling language - show effective/detected language, override, mode".to_string(),
             "/vivling language <it|en|es|fr|de> - pin a language override".to_string(),
             "/vivling language auto - clear the override; fall back to detected/LANG".to_string(),
@@ -36,10 +38,14 @@ impl Vivling {
             "/vivling model <profile> - assign an existing config profile".to_string(),
             "/vivling model <model> [provider] [effort] - create or update the per-Vivling profile"
                 .to_string(),
+            "/vivling memory - technical memory digest: level, archetype, counts, top mental paths, recent capsules"
+                .to_string(),
             "/vivling recap - summarize learned memory and current focus".to_string(),
             "/vivling promote 10 - apply the early growth baseline".to_string(),
             "/vivling promote 60 - apply the adult seed baseline".to_string(),
             "/vivling mode <on|off> - toggle active help once adult".to_string(),
+            "/vivling loop-strategy <label> <observe|suggest|manage|auto> - set the delegation strategy of a delegated loop; auto clears the override"
+                .to_string(),
             "/vivling spawn - create a local lineage copy once unlocked".to_string(),
             "/vivling export [path.vivegg] - export the active Vivling from level 30".to_string(),
             "/vivling import <path.vivegg> - import a packaged Vivling".to_string(),
