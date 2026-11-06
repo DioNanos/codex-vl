@@ -218,6 +218,8 @@ where
 
 #[derive(Clone)]
 pub struct InProcessClientStartArgs {
+    /// This client collects fresh human decisions for managed command checkpoints.
+    pub required_human_approval: bool,
     /// Resolved argv0 dispatch paths used by command execution internals.
     pub arg0_paths: Arg0DispatchPaths,
     /// Shared config used to initialize app-server runtime.
@@ -271,6 +273,7 @@ impl InProcessClientStartArgs {
     /// Builds initialize params from caller-provided metadata.
     pub fn initialize_params(&self) -> InitializeParams {
         let capabilities = InitializeCapabilities {
+            required_human_approval: self.required_human_approval,
             explicit_gateway_oauth: false,
             experimental_api: self.experimental_api,
             request_attestation: false,
@@ -1144,6 +1147,7 @@ mod tests {
             .await
             .expect("state db should initialize for in-process test");
         let client = InProcessAppServerClient::start(InProcessClientStartArgs {
+            required_human_approval: false,
             arg0_paths: Arg0DispatchPaths::default(),
             config,
             cli_overrides: Vec::new(),
@@ -1368,6 +1372,7 @@ mod tests {
 
     fn test_remote_connect_args(websocket_url: String) -> RemoteAppServerConnectArgs {
         RemoteAppServerConnectArgs {
+            required_human_approval: false,
             endpoint: RemoteAppServerEndpoint::WebSocket {
                 websocket_url,
                 auth_token: None,
@@ -1732,6 +1737,7 @@ mod tests {
             websocket.close(None).await.expect("close should succeed");
         });
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            required_human_approval: false,
             endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
             client_name: "codex-app-server-client-test".to_string(),
             client_version: "0.0.0-test".to_string(),
@@ -1819,6 +1825,7 @@ mod tests {
         )
         .await;
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            required_human_approval: false,
             endpoint: RemoteAppServerEndpoint::WebSocket {
                 websocket_url,
                 auth_token: Some(auth_token),
@@ -1839,6 +1846,7 @@ mod tests {
     #[tokio::test]
     async fn remote_connect_rejects_non_loopback_ws_when_auth_configured() {
         let result = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            required_human_approval: false,
             endpoint: RemoteAppServerEndpoint::WebSocket {
                 websocket_url: "ws://example.com:4500".to_string(),
                 auth_token: Some("remote-bearer-token".to_string()),
@@ -2374,6 +2382,7 @@ mod tests {
         );
 
         let runtime_args = InProcessClientStartArgs {
+            required_human_approval: false,
             arg0_paths: Arg0DispatchPaths::default(),
             config: config.clone(),
             cli_overrides: Vec::new(),

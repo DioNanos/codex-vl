@@ -396,7 +396,7 @@ impl ComposedContext {
     }
 }
 
-fn retain_content(
+pub(crate) fn retain_content(
     section: &mut SectionOutput,
     truncations: &mut Vec<TruncationObservation>,
     mut retain: impl FnMut(usize, &mut SectionContent) -> bool,
@@ -409,21 +409,7 @@ fn retain_content(
         let keep = retain(index, &mut item.content);
         index += 1;
         if !keep {
-            let original_bytes = match &item.content {
-                SectionContent::Transcript(record) => record.rendered().text_bytes,
-                SectionContent::Other(
-                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. },
-                ) => text.len(),
-                SectionContent::Other(ContentItem::InputImage {
-                    image: ImageReference::Inline { image_url },
-                    ..
-                }) => image_url.len(),
-                SectionContent::Other(ContentItem::InputImage {
-                    image: ImageReference::File { .. },
-                    ..
-                }) => 0,
-                SectionContent::Other(ContentItem::InputAudio { audio_url }) => audio_url.len(),
-            };
+            let original_bytes = item.content.evidence_bytes();
             truncations.push(TruncationObservation {
                 component: section.id,
                 original_bytes,

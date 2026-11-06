@@ -24,6 +24,8 @@ use crate::config::ThreadStoreConfig;
 use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_requests;
+use crate::exec_policy::ExecPolicyManager;
+use crate::exec_policy::InheritedExecPolicy;
 use crate::mcp::McpManager;
 use crate::rollout::truncation;
 use crate::session::ForkPersistence;
@@ -51,8 +53,12 @@ use codex_code_mode::DisabledCodeModeSessionProvider;
 use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
+use codex_execpolicy::Policy;
+use codex_execpolicy::RequirementsExecPolicy;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
+use codex_extension_api::Instructions;
+use codex_extension_api::LoadInstructionsFuture;
 use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::SessionIsolation;
 use codex_extension_api::ThreadInstructionsProvider;
@@ -339,7 +345,42 @@ pub struct StartThreadOptions {
     pub disabled_plugin_ids: Option<Vec<String>>,
 }
 
+/// A private, non-sharing provider also detaches a resumed root from its previous live provider.
+struct InheritedThreadInstructions(Instructions);
+
+impl ThreadInstructionsProvider for InheritedThreadInstructions {
+    fn load_thread_instructions(&self) -> LoadInstructionsFuture<'_> {
+        Box::pin(async {
+            LoadedUserInstructions {
+                instructions: Some(self.0.clone()),
+                warnings: Vec::new(),
+            }
+        })
+    }
+}
+
 impl StartThreadOptions {
+    /// Use the spawning thread's applied text in place of the destination's live thread provider.
+    /// An empty text clears the thread contribution. Supply it again on cold resume.
+    pub fn set_inherited_thread_instructions(&mut self, instructions: Instructions) {
+        self.thread_extension_init
+            .insert(InheritedThreadInstructions(instructions));
+    }
+
+    /// Start from a trusted host's snapshot of a managed-only session's rules and source requirements.
+    /// The destination validates compatibility before installing a new, independent manager.
+    /// Hosts must reapply both values on cold resume.
+    pub fn set_inherited_exec_policy(
+        &mut self,
+        policy: Arc<Policy>,
+        source_requirements: Option<Arc<RequirementsExecPolicy>>,
+    ) {
+        self.thread_extension_init.insert(InheritedExecPolicy {
+            policy,
+            source_requirements,
+        });
+    }
+
     pub fn new(config: Config) -> Self {
         Self {
             mcp_binding_context: None,
@@ -550,7 +591,10 @@ pub async fn build_background_model_client(
         .await,
     );
     let models_manager = build_models_manager(config, Arc::clone(&auth_manager));
-    let model_info = models_manager
+    // codex-vl: upstream 0.167 resolves `CatalogModel`s from the manager; the
+    // background-client contract keeps handing Vivling callers the plain
+    // `ModelInfo`, matching the 0.166 signature.
+    let catalog_model = models_manager
         .get_model_info(model_name, &config.to_models_manager_config())
         .await;
     let client = ModelClient::new(
@@ -580,7 +624,7 @@ pub async fn build_background_model_client(
         Vec::<std::sync::Arc<dyn codex_extension_api::ModelRequestContributor>>::new(),
     );
 
-    (client, model_info)
+    (client, catalog_model.model.as_ref().clone())
 }
 
 pub fn thread_store_from_config(
@@ -818,16 +862,25 @@ impl ThreadManager {
         config: &Config,
         host_program: PathBuf,
     ) -> Arc<dyn CodeModeSessionProvider> {
-        if config.features.enabled(Feature::CodeModeHostGrpc) {
-            Arc::new(
+        let provider: Arc<dyn CodeModeSessionProvider> =
+            if config.features.enabled(Feature::CodeModeHostGrpc) {
+                Arc::new(
                 crate::code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
                     host_program,
                 ),
             )
+            } else {
+                Arc::new(ProcessOwnedCodeModeSessionProvider::with_host_program(
+                    host_program,
+                ))
+            };
+        if config
+            .features
+            .enabled(Feature::CodeModeHostOutputTruncation)
+        {
+            Arc::new(crate::code_mode_host::LocalServerOutputProvider { inner: provider })
         } else {
-            Arc::new(ProcessOwnedCodeModeSessionProvider::with_host_program(
-                host_program,
-            ))
+            provider
         }
     }
 
@@ -1247,27 +1300,6 @@ impl ThreadManager {
         Box::pin(self.start_thread_inner(
             options, /*forked_from_thread_id*/ None, /*startup*/ None,
         ))
-        .await
-    }
-
-    /// Creates a [prepared child](crate::PreparedThreadSpawn) using this manager's services.
-    ///
-    /// On `Ok`, the child is loaded and idle, its creation has been published, and the host
-    /// owns it. The host chooses whether to submit work and handles any later delivery failure.
-    ///
-    /// An error or a dropped future schedules asynchronous cleanup of any provisional child.
-    /// Already-durable history may remain.
-    pub async fn create_prepared_child(
-        &self,
-        prepared: crate::agent::host::PreparedThreadSpawn,
-        reservation: crate::agent::host::HostThreadSpawnReservation,
-    ) -> Result<crate::ThreadSpawnResult, crate::ThreadSpawnError> {
-        crate::agent::host::start_prepared(
-            &self.agent_control().runtime,
-            prepared,
-            reservation,
-            /*invocation*/ None,
-        )
         .await
     }
 
@@ -2214,22 +2246,14 @@ impl ThreadManagerState {
         Box::pin(self.spawn_thread(request)).await
     }
 
-    /// Starts from captured inheritance without requiring a live parent runtime.
-    pub(crate) async fn spawn_prepared_child_thread(
+    /// Starts a host-reserved child using inheritance captured from this manager's parent.
+    pub(crate) async fn spawn_host_child_thread(
         &self,
         options: StartThreadOptions,
         agent_control: AgentControlInit,
         parent_thread_id: ThreadId,
         inheritance: crate::agent::host::PreparedChildInheritance,
     ) -> CodexResult<NewThread> {
-        if let Some(environments) = &options.environments {
-            crate::environment_selection::validate_environment_ids_and_cwds(
-                &self.environment_manager,
-                environments
-                    .iter()
-                    .map(|environment| (environment.environment_id.as_str(), &environment.cwd)),
-            )?;
-        }
         options.reserved_thread_id.ok_or_else(|| {
             CodexErr::InvalidRequest("prepared child startup requires a reserved thread ID".into())
         })?;
@@ -2492,6 +2516,27 @@ impl ThreadManagerState {
                 thread.session.services.mcp_runtime.revoke_ema();
             }
         }
+        let supplied_thread_instructions =
+            thread_extension_init.remove::<InheritedThreadInstructions>();
+        let supplied_exec_policy = thread_extension_init.remove::<InheritedExecPolicy>();
+        if isolation == SessionIsolation::Isolated
+            && (supplied_exec_policy.is_some() || supplied_thread_instructions.is_some())
+        {
+            return Err(CodexErr::InvalidRequest(
+                "isolated sessions cannot install host-inherited startup settings".to_string(),
+            ));
+        }
+        let inherited_exec_policy = match (inherited_exec_policy, supplied_exec_policy) {
+            (Some(_), Some(_)) => {
+                return Err(CodexErr::InvalidRequest(
+                    "cannot combine a local and a transported execution policy".to_string(),
+                ));
+            }
+            (None, Some(snapshot)) => Some(Arc::new(
+                ExecPolicyManager::from_inherited(&snapshot, &config.config_layer_stack).await?,
+            )),
+            (local, None) => local,
+        };
         let agent_control = match (&self.agent_control_factory, agent_control) {
             (Some(factory), AgentControlInit::Local(local)) => {
                 let thread_id = match &initial_history {
@@ -2544,6 +2589,9 @@ impl ThreadManagerState {
                 .await
             }
         };
+        if let Some(fixed) = supplied_thread_instructions {
+            instructions.thread_provider = Some(fixed);
+        }
         if let Some(supplied) = supplied_user_instructions {
             instructions.user = supplied.instructions;
             instructions.user_provider = None;

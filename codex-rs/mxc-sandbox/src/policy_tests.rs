@@ -290,11 +290,14 @@ fn volume_expansion_does_not_turn_read_only_child_writable() -> Result<()> {
     let root = canonical.as_path();
     let readonly = root.join("protected");
     let writable = root.join("work");
+    let missing = root.join("new");
+    let denied = missing.join("parent").join("secret");
     std::fs::create_dir(&readonly)?;
     std::fs::create_dir(&writable)?;
     let fs = FileSystemSandboxPolicy::restricted(vec![
         entry(root, FileSystemAccessMode::Write)?,
         entry(&readonly, FileSystemAccessMode::Read)?,
+        entry(&denied, FileSystemAccessMode::Deny)?,
     ]);
     let profile =
         PermissionProfile::from_runtime_permissions(&fs, NetworkSandboxPolicy::Restricted);
@@ -305,10 +308,20 @@ fn volume_expansion_does_not_turn_read_only_child_writable() -> Result<()> {
         &[root.to_owned()],
         &[],
     )?;
-    assert_eq!(
-        request.policy.readwrite_paths,
-        vec![root.to_str().unwrap(), writable.to_str().unwrap()]
-    );
+    let mut expected_write_paths = vec![root.to_str().unwrap(), writable.to_str().unwrap()];
+    if cfg!(windows) {
+        expected_write_paths.insert(1, missing.to_str().unwrap());
+        assert!(denied.parent().unwrap().is_dir());
+        assert!(!denied.exists());
+        for directory in [&missing, &missing.join("parent")] {
+            assert_eq!(std::fs::read(directory.join(".chatgptcreated"))?, b"");
+        }
+        for directory in [root, readonly.as_path(), writable.as_path()] {
+            assert!(!directory.join(".chatgptcreated").exists());
+        }
+    }
+    assert_eq!(request.policy.readwrite_paths, expected_write_paths);
+    assert_eq!(request.policy.denied_paths, vec![denied.to_str().unwrap()]);
     assert_eq!(
         request.policy.readonly_paths,
         vec![
@@ -364,7 +377,7 @@ fn volume_expansion_skips_broken_links_and_preserves_other_grants() -> Result<()
 }
 
 #[test]
-fn full_access_enumerates_children_of_every_volume() -> Result<()> {
+fn only_write_access_expands_volume_children() -> Result<()> {
     let first = tempfile::tempdir()?;
     let second = tempfile::tempdir()?;
     let unmapped = tempfile::tempdir()?;
@@ -372,19 +385,16 @@ fn full_access_enumerates_children_of_every_volume() -> Result<()> {
     let volumes = [canonical_root(&first)?, canonical_root(&second)?];
     std::fs::create_dir(volumes[0].join("one"))?;
     std::fs::create_dir(volumes[1].join("two"))?;
-    let mut expected = [
-        volumes[0].clone(),
-        volumes[0].join("one"),
-        volumes[1].clone(),
-        volumes[1].join("two"),
-        explicit.clone(),
-    ];
-    expected.sort();
     let mut fs = FileSystemSandboxPolicy::read_only();
     // Like an unmapped UNC share, this grant is outside the supplied volumes.
     fs.entries
         .push(entry(&explicit, FileSystemAccessMode::Read)?);
     for access in [FileSystemAccessMode::Read, FileSystemAccessMode::Write] {
+        let mut expected = vec![volumes[0].clone(), volumes[1].clone(), explicit.clone()];
+        if access == FileSystemAccessMode::Write {
+            expected.extend([volumes[0].join("one"), volumes[1].join("two")]);
+        }
+        expected.sort();
         fs.entries[0].access = access;
         fs.entries[1].access = access;
         let profile =
@@ -511,7 +521,7 @@ fn deny_globs_expand_files_and_directories_before_launch() -> Result<()> {
     std::fs::write(&file, "secret")?;
     std::fs::create_dir(&directory)?;
     std::fs::write(nested.join("allowed.txt"), "allowed")?;
-    let missing = root.join("explicit.secret");
+    let missing = root.join("missing").join("parent").join("explicit.secret");
     let fs = FileSystemSandboxPolicy::restricted(vec![
         entry(&root, FileSystemAccessMode::Write)?,
         entry(&missing, FileSystemAccessMode::Deny)?,
@@ -525,12 +535,90 @@ fn deny_globs_expand_files_and_directories_before_launch() -> Result<()> {
     let profile =
         PermissionProfile::from_runtime_permissions(&fs, NetworkSandboxPolicy::Restricted);
     let request = build_request(&command(&profile, &root), &nested, Vec::new(), &[], &[])?;
+    #[cfg(windows)]
+    {
+        assert!(missing.parent().unwrap().is_dir());
+        assert!(!missing.exists());
+    }
+    assert_eq!(request.policy.readwrite_paths, vec![root.to_str().unwrap()]);
     let mut expected = [file, directory, missing];
     expected.sort();
     assert_eq!(
         request.policy.denied_paths,
         expected.map(|path| path.to_str().unwrap().to_owned())
     );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn denied_parents_are_created_before_glob_expansion() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = canonical_root(&temp)?;
+    let missing = root.join("missing");
+    for parent_deny in [
+        entry(&missing, FileSystemAccessMode::Deny)?,
+        FileSystemSandboxEntry::new(
+            FileSystemPath::GlobPattern {
+                pattern: "**/missing".to_owned(),
+            },
+            FileSystemAccessMode::Deny,
+        ),
+    ] {
+        let fs = FileSystemSandboxPolicy::restricted(vec![
+            entry(&root, FileSystemAccessMode::Write)?,
+            parent_deny,
+            entry(&missing.join("child"), FileSystemAccessMode::Deny)?,
+        ]);
+        let profile =
+            PermissionProfile::from_runtime_permissions(&fs, NetworkSandboxPolicy::Restricted);
+        let request = build_request(&command(&profile, &root), &root, Vec::new(), &[], &[])?;
+        assert!(missing.is_dir());
+        assert!(!missing.join("child").exists());
+        assert_eq!(
+            request.policy.denied_paths,
+            vec![
+                missing.to_str().unwrap(),
+                missing.join("child").to_str().unwrap()
+            ]
+        );
+        let sentinel = missing.join(".chatgptcreated");
+        assert_eq!(std::fs::read(&sentinel)?, b"");
+        std::fs::write(&sentinel, "preserve existing contents")?;
+        build_request(&command(&profile, &root), &root, Vec::new(), &[], &[])?;
+        assert_eq!(
+            std::fs::read_to_string(&sentinel)?,
+            "preserve existing contents"
+        );
+        std::fs::remove_file(sentinel)?;
+        std::fs::remove_dir(&missing)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn deny_parent_cannot_use_sentinel_name() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = canonical_root(&temp)?;
+    let missing = root.join("missing");
+    for name in [".chatgptcreated", ".CHATGPTCREATED", ".chatgptcreated. "] {
+        let denied = missing.join(name).join("secret");
+        let fs = FileSystemSandboxPolicy::restricted(vec![
+            entry(&root, FileSystemAccessMode::Write)?,
+            entry(&denied, FileSystemAccessMode::Deny)?,
+        ]);
+        let profile =
+            PermissionProfile::from_runtime_permissions(&fs, NetworkSandboxPolicy::Restricted);
+        let error = build_request(&command(&profile, &root), &root, Vec::new(), &[], &[])
+            .expect_err("sentinel directory names must be rejected before creating parents");
+        assert!(
+            error
+                .to_string()
+                .contains("reserved directory name .chatgptcreated")
+        );
+        assert!(!missing.exists());
+    }
     Ok(())
 }
 
@@ -798,13 +886,11 @@ fn narrowing_one_volume_keeps_the_other_volume_root_grant() -> Result<()> {
             .into_iter()
             .filter(|path| Path::new(path).starts_with(&volumes[1]))
             .collect();
-        assert_eq!(
-            second_grants,
-            vec![
-                volumes[1].to_str().unwrap().to_owned(),
-                volumes[1].join("child").to_str().unwrap().to_owned(),
-            ]
-        );
+        let mut expected = vec![volumes[1].to_str().unwrap().to_owned()];
+        if root_access == FileSystemAccessMode::Write {
+            expected.push(volumes[1].join("child").to_str().unwrap().to_owned());
+        }
+        assert_eq!(second_grants, expected);
     }
     Ok(())
 }

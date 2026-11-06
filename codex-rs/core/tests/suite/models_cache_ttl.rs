@@ -643,6 +643,7 @@ fn test_remote_model(slug: &str, priority: i32) -> ModelInfo {
         available_access_programs: None,
         upgrade: None,
         model_messages: Some(ModelMessages {
+            apps: None,
             content_filter_guidance: None,
             persistent_instructions: None,
             tools: None,
@@ -675,7 +676,6 @@ fn test_remote_model(slug: &str, priority: i32) -> ModelInfo {
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
-        used_fallback_model_metadata: false,
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,

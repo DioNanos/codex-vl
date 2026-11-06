@@ -1892,6 +1892,7 @@ fn terminal_name(info: &TerminalInfo) -> &'static str {
     match info.name {
         TerminalName::AppleTerminal => "Apple Terminal",
         TerminalName::Ghostty => "Ghostty",
+        TerminalName::Rex => "Rex",
         TerminalName::Iterm2 => "iTerm2",
         TerminalName::WarpTerminal => "Warp",
         TerminalName::VsCode => "VS Code",
@@ -2479,6 +2480,9 @@ fn websocket_error_detail(err: &ApiError) -> String {
         ApiError::RateLimit(_) => "handshake error: rate limit: [redacted]".to_string(),
         ApiError::InvalidRequest { .. } => {
             "handshake error: invalid request: [redacted]".to_string()
+        }
+        ApiError::InvalidAudioInput { .. } => {
+            "handshake error: invalid audio input: [redacted]".to_string()
         }
         ApiError::ModelNotFound { .. } => {
             "handshake error: model not found: [redacted]".to_string()
@@ -3301,6 +3305,7 @@ mod tests {
             ApiError::Stream(message()),
             ApiError::ResponseIncomplete(Box::new(
                 codex_protocol::error::ResponseIncompleteError {
+                    partial_output: vec![],
                     reason: message(),
                     response_id: Some(message()),
                     token_usage: None,
@@ -3316,6 +3321,7 @@ mod tests {
             },
             ApiError::RateLimit(message()),
             ApiError::InvalidRequest { message: message() },
+            ApiError::InvalidAudioInput { message: message() },
             ApiError::ModelNotFound {
                 message: message(),
                 status: Some(http::StatusCode::NOT_FOUND),
@@ -3343,6 +3349,7 @@ mod tests {
                 "handshake error: rate limit exceeded: [redacted]",
                 "handshake error: rate limit: [redacted]",
                 "handshake error: invalid request: [redacted]",
+                "handshake error: invalid audio input: [redacted]",
                 "handshake error: model not found: [redacted]",
                 "handshake error: invalid prompt: [redacted]",
                 "handshake error: cyber policy: [redacted]",

@@ -4,6 +4,7 @@ use super::*;
 use crate::Budgeted;
 use crate::composition::SectionOutput;
 use crate::composition::user_message as message;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::ImageReference;
 use pretty_assertions::assert_eq;
 
@@ -62,6 +63,16 @@ fn section_costs_keep_multimodal_payloads_separate() {
                         },
                         detail: None,
                     }),
+                    Budgeted::required(ContentItem::InputAudio {
+                        audio: AudioReference::Inline {
+                            audio_url: "data:audio/wav;base64,AAAA".to_owned(),
+                        },
+                    }),
+                    Budgeted::required(ContentItem::InputAudio {
+                        audio: AudioReference::File {
+                            file_id: "file_audio".to_owned(),
+                        },
+                    }),
                 ]),
             },
             SectionOutput {
@@ -82,7 +93,7 @@ fn section_costs_keep_multimodal_payloads_separate() {
             (
                 "transcript",
                 SectionCost {
-                    text_bytes: "évidence".len(),
+                    text_bytes: "évidence".len() + "data:audio/wav;base64,AAAA".len(),
                     image_bytes: "data:image/png;base64,AAAA".len(),
                     image_count: 2
                 }
@@ -173,5 +184,24 @@ fn section_estimate_bounds_the_delivered_message() {
                 assert!(estimate >= estimate_input_tokens(&context.into_messages()[0]));
             }
         }
+    }
+}
+
+#[test]
+fn elastic_section_config_validates_entry_limits() {
+    let cap = crate::composition::MAX_TEXT_PART_ESTIMATED_TOKENS;
+    let config = serde_json::json!({
+        "sections": {"transcript_tools": {
+            "min_total_section_tokens": cap,
+            "max_section_entry_tokens": cap,
+        }},
+    });
+    let parsed = serde_json::from_value::<ElasticBudgetConfig>(config.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), config);
+    for (minimum, entry_cap) in [(0, cap), (cap, 0), (cap - 1, cap), (cap + 1, cap + 1)] {
+        let mut invalid = config.clone();
+        invalid["sections"]["transcript_tools"]["min_total_section_tokens"] = minimum.into();
+        invalid["sections"]["transcript_tools"]["max_section_entry_tokens"] = entry_cap.into();
+        assert!(serde_json::from_value::<ElasticBudgetConfig>(invalid).is_err());
     }
 }
