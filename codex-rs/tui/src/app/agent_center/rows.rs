@@ -140,23 +140,18 @@ impl AgentsOverviewView {
             let task = &self.rows[index];
             let rect = row(viewport, offset as u16, /*height*/ 1);
             if matches!(entry, CenterRow::Group(_)) {
-                let group = if self.is_pinned(index) {
-                    "Pinned".to_owned()
-                } else {
-                    match state.grouping {
-                        AgentsOverviewGrouping::Project => {
-                            format_directory_display(
-                                &self.project_groups[index].heading,
-                                /*max_width*/ None,
-                            )
-                        }
-                        AgentsOverviewGrouping::Directory => format_directory_display(
-                            self.rows[index].thread.cwd.as_path(),
-                            /*max_width*/ None,
-                        ),
-                        AgentsOverviewGrouping::Status => task.group.label().to_owned(),
-                        AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
-                    }
+                let group = match state.grouping {
+                    AgentsOverviewGrouping::Status => task.group.label().to_owned(),
+                    _ if self.is_pinned(index) => "Pinned".to_owned(),
+                    AgentsOverviewGrouping::Project => format_directory_display(
+                        &self.project_groups[index].heading,
+                        /*max_width*/ None,
+                    ),
+                    AgentsOverviewGrouping::Directory => format_directory_display(
+                        self.rows[index].thread.cwd.as_path(),
+                        /*max_width*/ None,
+                    ),
+                    AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
                 };
                 let count = indices
                     .iter()
@@ -202,7 +197,13 @@ impl AgentsOverviewView {
                 style,
             );
             let (status, mut dot) = Self::status(task);
-            if index == self.selected {
+            let idle = matches!(
+                task.group,
+                AgentsOverviewGroup::Ready | AgentsOverviewGroup::Finished
+            );
+            if task.unread || idle {
+                dot = crate::style::task_marker(task.unread, style);
+            } else if index == self.selected {
                 dot.style = style;
             }
             line(
@@ -236,11 +237,20 @@ impl AgentsOverviewView {
             } else {
                 self.title_style(task.thread_id)
             };
-            line(
-                Line::from(display_title(&task.thread).to_owned()).style(title_style),
-                title,
-                buf,
-            );
+            let task_title = display_title(&task.thread);
+            // On narrow rows the result dot shares the only slot for the working or alert icon.
+            let task_title = if task.unread && !idle && status_area.is_empty() {
+                format!("{status}: {task_title}")
+            } else {
+                task_title.to_owned()
+            };
+            let task_title =
+                if state.grouping == AgentsOverviewGrouping::Status && self.is_pinned(index) {
+                    format!("📌 {task_title}")
+                } else {
+                    task_title
+                };
+            line(Line::from(task_title).style(title_style), title, buf);
             line(Line::from(status).style(style), status_area, buf);
             if !updated.is_empty() {
                 let age = format_relative_time(

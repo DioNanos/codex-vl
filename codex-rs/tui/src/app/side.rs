@@ -227,6 +227,15 @@ impl SideThreadState {
 }
 
 impl App {
+    pub(super) async fn running_side_thread_id(&self) -> Option<ThreadId> {
+        for thread_id in self.side_threads.keys().copied() {
+            if self.active_turn_id_for_thread(thread_id).await.is_some() {
+                return Some(thread_id);
+            }
+        }
+        None
+    }
+
     pub(super) fn sync_side_thread_ui(&mut self) {
         let clear_side_ui = |chat_widget: &mut crate::chatwidget::ChatWidget| {
             chat_widget.set_side_conversation_context_label(/*label*/ None);
@@ -776,6 +785,7 @@ impl App {
                     /*agent_role*/ None,
                     /*is_closed*/ false,
                 );
+                self.sync_agent_picker_thread(child_thread_id);
                 if let Err(err) = app_server
                     .thread_inject_items(child_thread_id, vec![Self::side_boundary_prompt_item()])
                     .await

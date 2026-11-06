@@ -30,6 +30,7 @@ OFF_JOBS = {
     "rust-ci-full.yml": [
         "argument_comment_lint_prebuilt",
         "lint_build",
+        "lint_build_musl",
         "tests_macos_aarch64",
         "tests_linux_x64_remote",
         "tests_linux_arm64",

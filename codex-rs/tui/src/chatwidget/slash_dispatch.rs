@@ -285,12 +285,7 @@ impl ChatWidget {
                             ..Default::default()
                         },
                         SelectionItem {
-                            name: if self.bottom_pane.command_center_enabled() {
-                                "Yes, delete and return to command center"
-                            } else {
-                                "Yes, delete and exit"
-                            }
-                            .to_string(),
+                            name: "Yes, delete and return to command center".to_string(),
                             description: Some("Permanently delete this session now".to_string()),
                             actions: vec![Box::new(|tx| {
                                 tx.send(AppEvent::DeleteCurrentThread);
@@ -715,7 +710,7 @@ impl ChatWidget {
                     args,
                     text_elements,
                     pending_pastes: self.bottom_pane.composer_pending_pastes(),
-                    local_images: self.bottom_pane.composer_local_images(),
+                    local_images: self.bottom_pane.composer_local_images().to_vec(),
                     remote_image_urls: self.bottom_pane.remote_image_urls(),
                     mention_bindings: Vec::new(),
                     source: SlashCommandDispatchSource::Live,
