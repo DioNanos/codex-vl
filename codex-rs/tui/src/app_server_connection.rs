@@ -30,6 +30,7 @@ pub(crate) async fn connect(
             let (socket_path, _directory) =
                 codex_uds::validate_private_socket_path(socket_path.as_path())?;
             let args = RemoteAppServerConnectArgs {
+                required_human_approval: true,
                 endpoint: RemoteAppServerEndpoint::UnixSocket {
                     socket_path: AbsolutePathBuf::from_absolute_path_checked(socket_path)?,
                 },

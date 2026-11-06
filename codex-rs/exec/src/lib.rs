@@ -735,6 +735,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .await?
     };
     let in_process_start_args = InProcessClientStartArgs {
+        required_human_approval: false,
         arg0_paths,
         config: std::sync::Arc::new(config.clone()),
         cli_overrides: run_cli_overrides,
@@ -1228,6 +1229,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         &mut request_ids,
                         &session_configured.model,
                         &session_configured.model_provider_id,
+                        config
+                            .model_providers
+                            .get(&session_configured.model_provider_id),
                         daybreak_enabled,
                     )
                     .await?

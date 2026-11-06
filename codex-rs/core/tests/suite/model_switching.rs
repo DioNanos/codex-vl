@@ -18,6 +18,7 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Settings;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::PermissionProfile;
@@ -122,7 +123,6 @@ fn test_model_info(
         visibility: ModelVisibility::List,
         supported_in_api: true,
         input_modalities,
-        used_fallback_model_metadata: false,
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,
@@ -909,7 +909,9 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
                     detail: None,
                 },
                 UserInput::Audio {
-                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                    audio: AudioReference::Inline {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                    },
                 },
                 UserInput::Text {
                     text: "first turn".to_string(),
@@ -1255,7 +1257,6 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         visibility: ModelVisibility::List,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
-        used_fallback_model_metadata: false,
         supports_search_tool: false,
         supports_experimental_context: false,
         use_responses_lite: false,

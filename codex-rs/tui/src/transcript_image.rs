@@ -1,8 +1,10 @@
-//! Bounded image previews for the owned fullscreen transcript.
+//! Bounded local image previews for the transcript and composer.
 //!
 //! Only decoded local image pixels reach the terminal encoders. Previews are never source text;
 //! their reserved rows belong to layout. The terminal retains visible placements and any local
 //! transport files until those placements change.
+
+pub(crate) mod composer;
 
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +16,7 @@ use crossterm::cursor::RestorePosition;
 use crossterm::cursor::SavePosition;
 use crossterm::queue;
 use image::DynamicImage;
+use image::ImageDecoder;
 use image::ImageFormat;
 use image::RgbaImage;
 use ratatui::layout::Rect;
@@ -28,6 +31,18 @@ pub(crate) struct ImagePlacement {
     pub(crate) area: Rect,
     pub(crate) first_row: usize,
     pub(crate) file: Option<tempfile::NamedTempFile>,
+}
+
+impl ImagePlacement {
+    /// Register the same pixels for another frame. The terminal owns the transport file.
+    pub(crate) fn registration(&self) -> Self {
+        Self {
+            image: Arc::clone(&self.image),
+            area: self.area,
+            first_row: self.first_row,
+            file: None,
+        }
+    }
 }
 
 impl PartialEq for ImagePlacement {
@@ -60,20 +75,11 @@ pub(crate) fn terminal_cell_size() -> Option<(u32, u32)> {
 }
 
 impl TranscriptImage {
-    pub(crate) fn load(path: &Path, width: u16, protocol: ImageProtocol) -> Option<Self> {
-        let columns = width.saturating_sub(2).min(48);
+    fn load_pixels(path: &Path, max_width: u32, max_height: u32) -> Option<RgbaImage> {
         let metadata = path.metadata().ok()?;
-        // Bound encoded input as well as the raster: metadata alone can dwarf a tiny image.
-        if columns == 0 || !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
+        if max_width == 0 || !metadata.is_file() || metadata.len() > 32 * 1024 * 1024 {
             return None;
         }
-        // Sixel paints physical pixels rather than sizing to a Kitty cell rectangle. Guessing
-        // the cell size could paint beyond the reserved rows and cover the composer.
-        let (cell_width, cell_height) = match protocol {
-            ImageProtocol::Sixel => terminal_cell_size()?,
-            // Kitty scales to cell coordinates itself. Use a stable, typical cell aspect ratio.
-            ImageProtocol::Kitty | ImageProtocol::KittyLocalFile => (8, 16),
-        };
         let mut reader = image::ImageReader::open(path)
             .ok()?
             .with_guessed_format()
@@ -82,22 +88,40 @@ impl TranscriptImage {
         // screenshots usable, but never allocate hundreds of MB for an optional thumbnail.
         let mut limits = image::Limits::default();
         limits.max_alloc = Some(32 * 1024 * 1024);
-        reader.limits(limits);
-        let image = reader.decode().ok()?;
+        reader.limits(limits.clone());
+        let mut decoder = reader.into_decoder().ok()?;
+        limits.reserve(decoder.total_bytes()).ok()?;
+        decoder.set_limits(limits).ok()?;
+        let orientation = decoder.orientation().ok();
+        let mut image = DynamicImage::from_decoder(decoder).ok()?;
+        if let Some(orientation) = orientation {
+            image.apply_orientation(orientation);
+        }
+        Some(
+            image
+                .thumbnail(max_width.min(image.width()), max_height.min(image.height()))
+                .to_rgba8(),
+        )
+    }
+
+    pub(crate) fn load(path: &Path, width: u16, protocol: ImageProtocol) -> Option<Self> {
+        let columns = width.saturating_sub(2).min(48);
+        // Sixel paints physical pixels. Guessing could paint outside the reserved rows.
+        let (cell_width, cell_height) = match protocol {
+            ImageProtocol::Sixel => terminal_cell_size()?,
+            ImageProtocol::Kitty | ImageProtocol::KittyLocalFile => (8, 16),
+        };
         // The sprite encoder scans each active color per Sixel band. Bound both its CPU
         // work and worst-case output even with large terminal cells or high-entropy images.
         let (max_width, max_height) = match protocol {
             ImageProtocol::Sixel => (160, 80),
             ImageProtocol::Kitty | ImageProtocol::KittyLocalFile => (384, 160),
         };
-        let pixels = image
-            .thumbnail(
-                (u32::from(columns) * cell_width)
-                    .min(image.width())
-                    .min(max_width),
-                (6 * cell_height).min(image.height()).min(max_height),
-            )
-            .to_rgba8();
+        let pixels = Self::load_pixels(
+            path,
+            (u32::from(columns) * cell_width).min(max_width),
+            (6 * cell_height).min(max_height),
+        )?;
         Some(Self {
             protocol,
             columns: pixels.width().div_ceil(cell_width) as u16,
