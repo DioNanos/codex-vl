@@ -32,6 +32,7 @@ use codex_protocol::protocol::SessionSource;
 use once_cell::sync::Lazy;
 
 use crate::ThreadManager;
+pub use crate::code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider;
 use crate::config::Config;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -241,7 +242,9 @@ pub fn get_model_offline(model: Option<&str>) -> String {
 }
 
 pub fn construct_model_info_offline(model: &str, config: &Config) -> ModelInfo {
-    construct_model_info_offline_for_tests(model, &config.to_models_manager_config())
+    Arc::unwrap_or_clone(
+        construct_model_info_offline_for_tests(model, &config.to_models_manager_config()).model,
+    )
 }
 
 #[derive(Clone, Copy)]

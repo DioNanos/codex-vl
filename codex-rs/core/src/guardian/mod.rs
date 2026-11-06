@@ -14,6 +14,8 @@ pub(crate) use input_budget::check_pending as check_pending_guardian_input;
 pub(crate) use input_budget::finalize as finalize_guardian_input;
 pub(crate) use input_budget::should_compact as should_compact_guardian_input;
 pub(crate) use permissions::for_tool as tool_permission_context;
+mod recorded_tool_call;
+pub(crate) use recorded_tool_call::review_tool_call;
 mod request_budget;
 pub(crate) use request_budget::ExhaustedReviewBudget;
 pub(crate) use request_budget::prepare_prompt as prepare_guardian_prompt;
@@ -25,16 +27,19 @@ mod routing;
 pub(crate) use routing::ParentResponse;
 pub(crate) use routing::PendingReviewRouting;
 mod runtime;
+mod score_authorization;
+pub use score_authorization::ScoreAuthorization;
+pub(crate) use score_authorization::ServingAssessment;
 #[cfg(test)]
 pub(crate) mod test_host;
 
 use codex_protocol::items::ModelInvocationContext;
+use codex_protocol::openai_models::CatalogModel;
 use std::sync::Arc;
 
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GuardianAssessmentOutcome;
@@ -87,13 +92,14 @@ pub(crate) use codex_guardian_reviewer::GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKEN
 /// MCP elicitations use their live invocation's issuing step when available, otherwise turn inputs.
 #[derive(Clone)]
 pub(crate) struct GuardianReviewContext {
+    pub(crate) serving_assessment: Option<Arc<ServingAssessment>>,
     /// The latest response ID and its connection affinity when review was requested.
     pub(crate) parent_response: Option<Arc<ParentResponse>>,
     turn: Arc<TurnContext>,
     environments: TurnEnvironmentSnapshot,
     project_instructions: Option<Arc<LoadedAgentsMd>>,
     // Model and reasoning inputs are carried for the follow-up Guardian and V2 migrations.
-    pub(crate) model_info: Arc<ModelInfo>,
+    pub(crate) model_info: Arc<CatalogModel>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) reasoning_summary: ReasoningSummary,
     pub(crate) personality: Option<Personality>,
@@ -130,6 +136,7 @@ impl GuardianReviewContext {
         environments: &TurnEnvironmentSnapshot,
     ) -> Self {
         Self {
+            serving_assessment: None,
             parent_response: turn.extension_data.get::<ParentResponse>(),
             environments: environments.clone(),
             project_instructions: None,
@@ -155,6 +162,7 @@ impl GuardianReviewContext {
 impl From<&Arc<StepContext>> for GuardianReviewContext {
     fn from(step: &Arc<StepContext>) -> Self {
         Self {
+            serving_assessment: step.serving_assessment.clone(),
             parent_response: step.turn.extension_data.get::<ParentResponse>(),
             turn: Arc::clone(&step.turn),
             environments: step.environments.clone(),
@@ -172,6 +180,7 @@ impl From<&Arc<StepContext>> for GuardianReviewContext {
 impl From<Arc<TurnContext>> for GuardianReviewContext {
     fn from(turn: Arc<TurnContext>) -> Self {
         Self {
+            serving_assessment: None,
             parent_response: turn.extension_data.get::<ParentResponse>(),
             environments: turn.initial_environments.clone(),
             project_instructions: None,

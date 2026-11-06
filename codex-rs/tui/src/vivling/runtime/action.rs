@@ -106,13 +106,20 @@ impl VivlingAction {
         if trimmed.is_empty() {
             return Ok(Self::Dashboard);
         }
-        if trimmed == "status" {
-            return Ok(Self::Status);
-        }
         let mut parts = trimmed.splitn(2, char::is_whitespace);
         let cmd = parts.next().unwrap_or_default();
         let rest = parts.next().unwrap_or_default().trim();
         match cmd {
+            // `status` is a command in any case, like `/vl status`; it takes no
+            // argument, so `/vivling status extra` is a usage error and not a
+            // message to the Vivling.
+            cmd if cmd.eq_ignore_ascii_case("status") => {
+                if rest.is_empty() {
+                    Ok(Self::Status)
+                } else {
+                    Err("Usage: /vivling status".to_string())
+                }
+            }
             "hatch" => Ok(Self::Hatch),
             "help" => Ok(Self::Help),
             "roster" | "list" => Ok(Self::Roster),
