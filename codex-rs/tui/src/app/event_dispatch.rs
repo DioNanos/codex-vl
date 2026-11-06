@@ -21,12 +21,15 @@ use crate::session_resume::cwds_differ;
 use crate::status::StatusAccountDisplay;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ThreadGoalStatus;
+use codex_app_server_protocol::ThreadStatus;
 #[cfg(target_os = "windows")]
 use codex_app_server_protocol::WindowsSandboxSetupMode;
 
 pub(super) const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(/*secs*/ 2);
 
 impl App {
+    // Keep the existing dispatcher layout until it can be formatted separately.
+    #[rustfmt::skip]
     pub(crate) async fn handle_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -221,6 +224,42 @@ impl App {
                     self.chat_widget.show_misalignment_policy_precaution();
                 }
             }
+            AppEvent::ContinueProviderChat { thread_id } => {
+                // A queued shortcut must still refer to the locked chat on screen.
+                if self.chat_widget.thread_id() == Some(thread_id)
+                    && self.chat_widget.has_provider_error()
+                    && let Some(path) = self.chat_widget.rollout_path()
+                {
+                    let name = self
+                        .chat_widget
+                        .thread_name()
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or_else(
+                            || "our previous conversation".to_string(),
+                            |name| format!("“{name}”"),
+                        );
+                    let message = format!(
+                        "Read {name} and let’s continue where we left off.\n\nSaved conversation: {}",
+                        path.display(),
+                    );
+                    self.start_fresh_session(
+                        tui,
+                        app_server,
+                        /*session_start_source*/ None,
+                        /*initial_user_message*/ None,
+                        /*new_thread_name*/ None,
+                    )
+                    .await;
+                    if self
+                        .chat_widget
+                        .thread_id()
+                        .is_some_and(|new_id| new_id != thread_id)
+                    {
+                        self.chat_widget
+                            .restore_user_message_to_composer(message.into());
+                    }
+                }
+            }
             AppEvent::StartManagedWorktree { mode, name } => {
                 if self.pending_start_managed_worktree.is_some() {
                     self.chat_widget
@@ -328,7 +367,7 @@ impl App {
                     }
                 }
             }
-            AppEvent::StartupThreadStarted { result } => {
+            AppEvent::StartupThreadStarted { result, .. } => {
                 self.handle_startup_thread_started(app_server, result)
                     .await?;
             }
@@ -445,8 +484,7 @@ impl App {
                 self.chat_widget.maybe_send_next_queued_input();
             }
             AppEvent::SelectTranscriptCopy { guard } => {
-                let size = tui.prepare_draw_size()?;
-                self.render_owned_transcript(tui, size)?;
+                self.refresh_owned_transcript(tui)?;
                 if !self.transcript_view.begin_copy_mode(&self.transcript_cells, Some(guard)) {
                     self.chat_widget.add_info_message("Nothing to copy".into(), /*hint*/ None);
                 }
@@ -536,6 +574,7 @@ impl App {
             }
             AppEvent::ResumeSessionByIdOrName(id_or_name) => {
                 match crate::lookup_session_target_with_app_server(
+                    crate::resume_picker::SessionPickerAction::Resume,
                     app_server,
                     &self.config,
                     &id_or_name,
@@ -561,6 +600,9 @@ impl App {
                     }
                     Err(err) => return Err(err),
                 }
+            }
+            AppEvent::ResumeBackendSession(_) => {
+                unreachable!("backend selection is handled by the session manager")
             }
             AppEvent::ArchiveCurrentThread => {
                 return self.archive_current_thread(tui, app_server).await;
@@ -640,7 +682,7 @@ impl App {
                             } else {
                                 None
                             };
-                            self.detach_current_thread_for_fork(app_server, forked.session.thread_id).await;
+                            self.retain_subscriptions_for_fork();
                             match self
                                 .replace_chat_widget_with_app_server_thread(
                                     tui,
@@ -997,7 +1039,37 @@ impl App {
             AppEvent::StopCommitAnimation => {
                 self.commit_animation = None;
             }
-            AppEvent::Exit(mode) => {
+            AppEvent::Exit(mode)
+                if matches!(self.app_server_target, AppServerTarget::Embedded)
+                    && (self.agents_overview.threads.iter().any(|(id, thread)| {
+                        (mode == ExitMode::Immediate
+                            || Some(*id) != self.current_displayed_thread_id()
+                            || self.chat_widget.active_view_is(AGENTS_OVERVIEW_VIEW_ID))
+                            && matches!(thread.as_ref().map(|t| &t.status), Some(ThreadStatus::Active { .. }))
+                    }) || self.running_side_thread_id().await.is_some()) =>
+            {
+                self.chat_widget.show_selection_view(SelectionViewParams {
+                    title: Some("Quit and stop running sessions?".into()),
+                    subtitle: Some("Quitting this TUI will stop its running sessions.".into()),
+                    items: vec![
+                        SelectionItem {
+                            name: "Stay in Codex".into(),
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                        SelectionItem {
+                            name: "Stop sessions and quit".into(),
+                            actions: vec![Box::new(move |tx| {
+                                tx.send(AppEvent::ConfirmedEmbeddedExit(mode))
+                            })],
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..SelectionViewParams::confirmation()
+                });
+            }
+            AppEvent::Exit(mode) | AppEvent::ConfirmedEmbeddedExit(mode) => {
                 if matches!(mode, ExitMode::ShutdownFirst | ExitMode::ShutdownAfterInterrupt) {
                     self.show_shutdown_feedback(tui)?;
                 }
@@ -2915,6 +2987,13 @@ impl App {
             }
             AppEvent::OpenAgentsOverview => self.open_agents_overview(app_server),
             AppEvent::ShowMoreAgentsOverview => self.show_more_agents_overview(app_server),
+            AppEvent::RefreshViewedThread { backend_id, thread_id, revision } => {
+                if app_server.backend_id() == backend_id {
+                    app_server.frozen_receipt.take_if(|(id, rev)| *id == thread_id && *rev == revision);
+                    self.agents_overview.refresh_thread_ids.insert(thread_id);
+                    self.refresh_changed_agents_overview_threads(app_server);
+                }
+            }
             AppEvent::NewAgentsOverviewSession { cwd } => {
                 return Box::pin(self.new_agents_overview_session(tui, app_server, cwd)).await;
             }
@@ -3096,21 +3175,6 @@ impl App {
                 self.stop_agents_overview_thread(app_server, thread_id)
                     .await;
             }
-            #[cfg(any(unix, windows))]
-            AppEvent::StartAgentsDaemon => {
-                self.start_agents_daemon();
-            }
-            #[cfg(any(unix, windows))]
-            AppEvent::AgentsDaemonStarted { result } => match result {
-                Ok(()) => self.chat_widget.add_info_message(
-                    "Background server started. Run `codex agents` in another terminal; this session remains unchanged."
-                        .to_string(),
-                    /*hint*/ None,
-                ),
-                Err(error) => self
-                    .chat_widget
-                    .add_error_message(format!("Failed to start the background server: {error}")),
-            },
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
@@ -3831,7 +3895,7 @@ impl App {
                 if !self.side_threads.is_empty()
                     && tokio::time::timeout(
                         SHUTDOWN_FIRST_EXIT_TIMEOUT,
-                        self.shutdown_side_threads(app_server),
+                        self.shutdown_side_threads(app_server, /*root*/ None),
                     )
                     .await
                     .is_err()
@@ -3871,6 +3935,32 @@ impl App {
         }
     }
 
+    async fn return_to_agents_after_removal(
+        &mut self,
+        tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        self.discard_thread_local_state(thread_id).await;
+        self.agents_overview.input_states.remove(&thread_id);
+        self.agents_overview.dispatched_requests.remove(&thread_id);
+        self.reset_for_thread_switch(tui)?;
+        self.pending_thread_switch_resets += 1;
+        self.app_event_tx
+            .send(AppEvent::ResetTranscriptForThreadSwitch);
+        self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
+            .await;
+        self.reset_thread_event_state().await;
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui,
+            self.config.clone(),
+            /*initial_user_message*/ None,
+        );
+        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        self.open_agents_overview(app_server);
+        Ok(())
+    }
+
     pub(super) async fn archive_current_thread(
         &mut self,
         tui: &mut tui::Tui,
@@ -3889,11 +3979,11 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
-        if self.app_server_target.supports_command_center() {
-            self.shutdown_side_threads(app_server).await;
-            if !self.side_threads.is_empty() {
-                return Ok(AppRunControl::Continue);
-            }
+        if !self
+            .shutdown_side_threads(app_server, Some(thread_id))
+            .await
+        {
+            return Ok(AppRunControl::Continue);
         }
 
         let result = async {
@@ -3903,32 +3993,14 @@ impl App {
         }
         .await;
         Ok(match result {
-            Ok(()) if !self.app_server_target.supports_command_center() => {
-                AppRunControl::Exit(ExitReason::Archived(thread_id))
-            }
             Ok(()) => {
                 self.track_agents_overview_notification(&ServerNotification::ThreadArchived(
                     codex_app_server_protocol::ThreadArchivedNotification {
                         thread_id: thread_id.to_string(),
                     },
                 ));
-                self.discard_thread_local_state(thread_id).await;
-                self.agents_overview.input_states.remove(&thread_id);
-                self.agents_overview.dispatched_requests.remove(&thread_id);
-                self.reset_for_thread_switch(tui)?;
-                self.pending_thread_switch_resets += 1;
-                self.app_event_tx
-                    .send(AppEvent::ResetTranscriptForThreadSwitch);
-                self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
-                    .await;
-                self.reset_thread_event_state().await;
-                let init = self.chatwidget_init_for_forked_or_resumed_thread(
-                    tui,
-                    self.config.clone(),
-                    /*initial_user_message*/ None,
-                );
-                self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-                self.open_agents_overview(app_server);
+                self.return_to_agents_after_removal(tui, app_server, thread_id)
+                    .await?;
                 AppRunControl::Continue
             }
             Err(err) => {
@@ -3957,11 +4029,11 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
-        if self.app_server_target.supports_command_center() {
-            self.shutdown_side_threads(app_server).await;
-            if !self.side_threads.is_empty() {
-                return Ok(AppRunControl::Continue);
-            }
+        if !self
+            .shutdown_side_threads(app_server, Some(thread_id))
+            .await
+        {
+            return Ok(AppRunControl::Continue);
         }
 
         let result = async {
@@ -3971,32 +4043,14 @@ impl App {
         }
         .await;
         Ok(match result {
-            Ok(()) if !self.app_server_target.supports_command_center() => {
-                AppRunControl::Exit(ExitReason::ThreadRemoved)
-            }
             Ok(()) => {
                 self.track_agents_overview_notification(&ServerNotification::ThreadDeleted(
                     codex_app_server_protocol::ThreadDeletedNotification {
                         thread_id: thread_id.to_string(),
                     },
                 ));
-                self.discard_thread_local_state(thread_id).await;
-                self.agents_overview.input_states.remove(&thread_id);
-                self.agents_overview.dispatched_requests.remove(&thread_id);
-                self.reset_for_thread_switch(tui)?;
-                self.pending_thread_switch_resets += 1;
-                self.app_event_tx
-                    .send(AppEvent::ResetTranscriptForThreadSwitch);
-                self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
-                    .await;
-                self.reset_thread_event_state().await;
-                let init = self.chatwidget_init_for_forked_or_resumed_thread(
-                    tui,
-                    self.config.clone(),
-                    /*initial_user_message*/ None,
-                );
-                self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-                self.open_agents_overview(app_server);
+                self.return_to_agents_after_removal(tui, app_server, thread_id)
+                    .await?;
                 AppRunControl::Continue
             }
             Err(err) => {

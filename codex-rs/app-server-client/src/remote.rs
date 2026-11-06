@@ -93,6 +93,8 @@ pub enum RemoteAppServerEndpoint {
 
 #[derive(Debug, Clone)]
 pub struct RemoteAppServerConnectArgs {
+    /// This client collects fresh human decisions for managed command checkpoints.
+    pub required_human_approval: bool,
     pub endpoint: RemoteAppServerEndpoint,
     pub client_name: String,
     pub client_version: String,
@@ -114,6 +116,7 @@ impl RemoteAppServerConnectArgs {
             )])
         });
         let capabilities = InitializeCapabilities {
+            required_human_approval: self.required_human_approval,
             explicit_gateway_oauth: false,
             experimental_api: self.experimental_api,
             request_attestation: false,
@@ -1350,6 +1353,7 @@ mod tests {
     #[test]
     fn verified_identity_advertises_protocol_extension() {
         let args = RemoteAppServerConnectArgs {
+            required_human_approval: false,
             endpoint: RemoteAppServerEndpoint::UnixSocket {
                 socket_path: AbsolutePathBuf::from_absolute_path(std::path::Path::new(
                     "/tmp/identity-test.sock",

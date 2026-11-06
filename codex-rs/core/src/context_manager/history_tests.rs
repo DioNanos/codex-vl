@@ -15,6 +15,7 @@ use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ConfigurationReasoning;
 use codex_protocol::models::ContentItem;
@@ -924,13 +925,19 @@ fn non_last_reasoning_tokens_return_zero_when_no_user_messages() {
 
 #[test]
 fn non_last_reasoning_tokens_ignore_entries_after_last_user() {
-    let history = create_history_with_items(vec![
+    let mut history = create_history_with_items(vec![
         reasoning_with_encrypted_content(/*len*/ 900),
         user_msg("first"),
         reasoning_with_encrypted_content(/*len*/ 1_000),
         user_msg("second"),
         reasoning_with_encrypted_content(/*len*/ 2_000),
     ]);
+    history.update_token_info(
+        &TokenUsage::default(),
+        /*model_context_window*/ None,
+        /*includes_reasoning*/ false,
+        /*input_item_count*/ 0,
+    );
     // first: (900 * 0.75 - 650) / 4 = 6.25 tokens
     // second: (1000 * 0.75 - 650) / 4 = 25 tokens
     // first + second = 62.5
@@ -944,7 +951,8 @@ fn total_token_usage_respects_saved_reasoning_accounting(
     includes_reasoning: Option<bool>,
     expected: i64,
 ) {
-    let mut history = create_history_with_items(vec![
+    let mut history = ContextManager::new();
+    history.replace(vec![
         reasoning_with_encrypted_content(/*len*/ 1_000),
         user_msg("second"),
         assistant_msg("counted reply"),
@@ -965,19 +973,28 @@ fn total_token_usage_respects_saved_reasoning_accounting(
 }
 
 #[test]
-fn items_after_last_model_generated_tokens_include_user_and_tool_output() {
-    let history = create_history_with_items(vec![
-        assistant_msg("already counted by API"),
-        user_msg("new user message"),
-        custom_tool_call_output("call-tail", "new tool output"),
-    ]);
+fn items_since_last_usage_include_user_and_tool_output() {
+    let mut history = create_history_with_items(vec![assistant_msg("already counted by API")]);
+    history.update_token_info(
+        &TokenUsage::default(),
+        /*model_context_window*/ None,
+        /*includes_reasoning*/ true,
+        /*input_item_count*/ 0,
+    );
+    history.record_items(
+        [
+            &user_msg("new user message"),
+            &custom_tool_call_output("call-tail", "new tool output"),
+        ],
+        TruncationPolicy::Tokens(10_000),
+    );
     let expected_tokens = estimate_item_token_count(&user_msg("new user message")).saturating_add(
         estimate_item_token_count(&custom_tool_call_output("call-tail", "new tool output")),
     );
 
     assert_eq!(
         history
-            .items_after_last_model_generated_item()
+            .items_since_last_usage()
             .map(estimate_item_token_count)
             .fold(0i64, i64::saturating_add),
         expected_tokens
@@ -985,15 +1002,15 @@ fn items_after_last_model_generated_tokens_include_user_and_tool_output() {
 }
 
 #[test]
-fn items_after_last_model_generated_tokens_are_zero_without_model_generated_items() {
+fn items_since_last_usage_include_initial_input() {
     let history = create_history_with_items(vec![user_msg("no model output yet")]);
 
     assert_eq!(
         history
-            .items_after_last_model_generated_item()
+            .items_since_last_usage()
             .map(estimate_item_token_count)
             .fold(0i64, i64::saturating_add),
-        0
+        estimate_item_token_count(&user_msg("no model output yet"))
     );
 }
 
@@ -1178,8 +1195,9 @@ fn legacy_inter_agent_assistant_messages_are_not_turn_boundaries() {
     assert!(!is_user_turn_boundary(&item));
 }
 
-#[test]
-fn total_token_usage_includes_all_items_after_last_model_generated_item() {
+#[test_case(false; "exclusive count")]
+#[test_case(true; "inclusive count")]
+fn total_token_usage_includes_all_items_since_last_usage(includes_reasoning: bool) {
     let mut history = create_history_with_items(vec![assistant_msg("already counted by API")]);
     history.update_token_info(
         &TokenUsage {
@@ -1187,7 +1205,8 @@ fn total_token_usage_includes_all_items_after_last_model_generated_item() {
             ..Default::default()
         },
         /*model_context_window*/ None,
-        /*includes_reasoning*/ true,
+        includes_reasoning,
+        /*input_item_count*/ 0,
     );
     let added_user = user_msg("new user message");
     let added_tool_output = custom_tool_call_output("tool-tail", "new tool output");
@@ -1200,6 +1219,54 @@ fn total_token_usage_includes_all_items_after_last_model_generated_item() {
         history.get_total_token_usage(),
         100 + estimate_item_token_count(&added_user)
             + estimate_item_token_count(&added_tool_output)
+    );
+
+    // An empty successful response still covers the input sent with that request.
+    let input_item_count = history.raw_items().len();
+    history.update_token_info(
+        &TokenUsage {
+            total_tokens: 100,
+            ..Default::default()
+        },
+        /*model_context_window*/ None,
+        includes_reasoning,
+        input_item_count,
+    );
+    assert_eq!(history.get_total_token_usage(), 100);
+
+    // A failed response can report spending without covering its retained output.
+    let partial = reasoning_with_encrypted_content(/*len*/ 2_000);
+    history.record_items([&partial], TruncationPolicy::Tokens(10_000));
+    let mut spending = history.token_info().expect("saved usage");
+    spending.total_token_usage.total_tokens += 15;
+    history.set_token_info(Some(spending));
+    history.record_items([&added_user], TruncationPolicy::Tokens(10_000));
+    let expected =
+        100 + estimate_item_token_count(&partial) + estimate_item_token_count(&added_user);
+    assert_eq!(history.get_total_token_usage(), expected);
+
+    // Local output after the final model item is not covered by server usage.
+    history.record_items(
+        [&assistant_msg("next response"), &added_tool_output],
+        TruncationPolicy::Tokens(10_000),
+    );
+    history.update_token_info(
+        &TokenUsage {
+            total_tokens: 100,
+            ..Default::default()
+        },
+        /*model_context_window*/ None,
+        includes_reasoning,
+        input_item_count,
+    );
+    let prior_reasoning = if includes_reasoning {
+        0
+    } else {
+        estimate_item_token_count(&partial)
+    };
+    assert_eq!(
+        history.get_total_token_usage(),
+        100 + prior_reasoning + estimate_item_token_count(&added_tool_output),
     );
 }
 
@@ -1315,7 +1382,9 @@ async fn for_prompt_strips_media_when_model_does_not_support_it() {
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 },
                 ContentItem::InputAudio {
-                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                    audio: AudioReference::Inline {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                    },
                 },
                 ContentItem::InputText {
                     text: "caption".to_string(),
@@ -1557,7 +1626,9 @@ async fn for_prompt_strips_media_when_model_does_not_support_it() {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputAudio {
-            audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+            audio: AudioReference::Inline {
+                audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+            },
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
@@ -3278,7 +3349,9 @@ fn audio_data_url_payload_does_not_dominate_message_estimate() {
         encrypted_content: None,
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputAudio { audio_url }],
+        content: vec![ContentItem::InputAudio {
+            audio: AudioReference::Inline { audio_url },
+        }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };
@@ -3289,6 +3362,35 @@ fn audio_data_url_payload_does_not_dominate_message_estimate() {
 
     assert_eq!(estimated, expected);
     assert!(estimated < raw_len);
+}
+
+#[test]
+fn uploaded_audio_estimate_accounts_for_each_recording_instead_of_its_id() {
+    let item = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputAudio {
+                audio: AudioReference::File {
+                    file_id: "file_a".into(),
+                },
+            },
+            ContentItem::InputAudio {
+                audio: AudioReference::File {
+                    file_id: "file_a_longer_reference".into(),
+                },
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    assert_eq!(
+        estimate_response_item_model_visible_bytes(&item),
+        approx_bytes_for_tokens(/*tokens*/ 24_000) as i64,
+    );
 }
 
 #[test]
@@ -3345,7 +3447,9 @@ fn malformed_audio_data_url_falls_back_to_whole_url_size_cost() {
         encrypted_content: None,
         id: None,
         role: "user".to_string(),
-        content: vec![ContentItem::InputAudio { audio_url }],
+        content: vec![ContentItem::InputAudio {
+            audio: AudioReference::Inline { audio_url },
+        }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     };

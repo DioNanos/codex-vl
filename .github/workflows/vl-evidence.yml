@@ -1,0 +1,438 @@
+name: vl-evidence
+
+# Fork regression evidence for a merge candidate branch: executes the
+# fork-owned suites (goal extension, goal store, loop/manage_loops, Vivling,
+# layout, VL footer, background model client, TUI startup/daemon) and the
+# restored auth-retry test, each with a non-zero asserted count, three times
+# in a clean hosted environment. Every suite runs even when an earlier suite
+# fails: failures are reported by name, nothing is skipped or filtered out
+# to make the run green. The excluded-crates job then compiles and tests the
+# four packages left out of the workspace check (code-mode host/runtime,
+# v8-poc, voice-host) using the same inputs the packaging workflows use:
+# the prebuilt V8 archive from the fork release and the Bazel-built native
+# voice SDK, both produced on public hosted runners.
+
+on:
+  push:
+    branches:
+      - "ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_MIN_STACK: "8388608"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  fork-suites:
+    name: fork suites (corsa ${{ matrix.corsa }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        corsa: ["1", "2", "3"]
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install the system libraries the build scripts look for
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: "Suite: restored auth-retry test (codex-api, expect 1 passed)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-api --lib -- endpoint::models::tests::response_body_limit_survives_auth_retry_without_limiting_other_models_requests -- --exact \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-auth-retry.out || status=1
+          grep -E 'test result: ok\. 1 passed' m5-auth-retry.out || status=1
+          grep -F 'endpoint::models::tests::response_body_limit_survives_auth_retry_without_limiting_other_models_requests ... ok' m5-auth-retry.out || status=1
+          exit "$status"
+
+      - name: "Suite: goal extension (ext/goal, 3 test targets)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-goal-extension \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-goal-extension.out || status=1
+          ok_targets="$(grep -cE 'test result: ok\. [1-9][0-9]* passed' m5-goal-extension.out || true)"
+          [ "$ok_targets" -ge 3 ] || status=1
+          grep -F 'installed_goal_tools_create_goal_and_fill_empty_preview ... ok' m5-goal-extension.out || status=1
+          grep -F 'installed_goal_tools_only_replace_complete_goal ... ok' m5-goal-extension.out || status=1
+          grep -F 'goal_accounting_uses_turn_start_baseline_for_exact_deltas ... ok' m5-goal-extension.out || status=1
+          grep -F 'disabled_checklist_preserves_goal_text_that_mentions_the_tool ... ok' m5-goal-extension.out || status=1
+          exit "$status"
+
+      - name: "Suite: goal store and loop job persistence (codex-state)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-state --lib -- thread_goal thread_loop_job \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-goal-store.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-goal-store.out || status=1
+          grep -F 'replace_update_and_get_thread_goal ... ok' m5-goal-store.out || status=1
+          grep -F 'thread_loop_job_crud_roundtrip ... ok' m5-goal-store.out || status=1
+          grep -F 'loop_tick_claim_is_atomic_and_reusable_after_finish ... ok' m5-goal-store.out || status=1
+          exit "$status"
+
+      - name: "Suite: TUI goal surface (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- goal \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-tui-goal.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-tui-goal.out || status=1
+          grep -F 'thread_goal_error_message_explains_temporary_session ... ok' m5-tui-goal.out || status=1
+          grep -F 'set_thread_goal_draft_materializes_long_objective_and_confirms_before_paste ... ok' m5-tui-goal.out || status=1
+          grep -F 'goal_status_indicator_line_formats_goal_text ... ok' m5-tui-goal.out || status=1
+          exit "$status"
+
+      - name: "Suite: manage_loops parsing and aliases (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- manage_loops \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-manage-loops.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-manage-loops.out || status=1
+          grep -F 'manage_loops_dynamic_tool_accepts_flat_and_namespaced_aliases ... ok' m5-manage-loops.out || status=1
+          grep -F 'parse_manage_loops_add_request ... ok' m5-manage-loops.out || status=1
+          exit "$status"
+
+      - name: "Suite: loop controller invariants (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- loop_controller \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-loop-controller.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-loop-controller.out || status=1
+          grep -F 'loop_state_runtime_reuses_process_state_db_handle ... ok' m5-loop-controller.out || status=1
+          grep -F 'reload_loop_jobs_state_failure_is_non_fatal ... ok' m5-loop-controller.out || status=1
+          grep -F 'resumed_job_show_is_not_rejected_by_a_stale_scope ... ok' m5-loop-controller.out || status=1
+          exit "$status"
+
+      - name: "Suite: broad loop family (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- loop \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-loop-broad.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-loop-broad.out || status=1
+          grep -F 'a_pending_tick_left_by_a_busy_tick_dispatches_on_reload_after_the_turn ... ok' m5-loop-broad.out || status=1
+          exit "$status"
+
+      - name: "Suite: manage_loops spec plan (codex-core, expect 1 passed)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-core --lib -- dynamic_tools_register_flat_and_namespaced_manage_loops_aliases -- --exact \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-core-manage-loops.out || status=1
+          grep -E 'test result: ok\. 1 passed' m5-core-manage-loops.out || status=1
+          grep -F 'dynamic_tools_register_flat_and_namespaced_manage_loops_aliases ... ok' m5-core-manage-loops.out || status=1
+          exit "$status"
+
+      - name: "Suite: Vivling runtime and delegation (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- vivling \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-vivling.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-vivling.out || status=1
+          grep -F 'vivling_layout_config_roundtrip ... ok' m5-vivling.out || status=1
+          grep -F 'only_manage_allows_automatic_actions ... ok' m5-vivling.out || status=1
+          grep -F 'finish_summary_reports_the_carried_resolution_not_the_thread_owner ... ok' m5-vivling.out || status=1
+          exit "$status"
+
+      - name: "Suite: line layout (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- line_layout \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-line-layout.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-line-layout.out || status=1
+          grep -F 'line_layout_uses_a_single_row ... ok' m5-line-layout.out || status=1
+          grep -F 'line_layout_face_cells_and_color_containment ... ok' m5-line-layout.out || status=1
+          exit "$status"
+
+      - name: "Suite: full layout threshold (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- full_layout \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-full-layout.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-full-layout.out || status=1
+          grep -F 'full_layout_threshold_at_11_and_12 ... ok' m5-full-layout.out || status=1
+          exit "$status"
+
+      - name: "Suite: CRT strip (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- strip \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-strip.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-strip.out || status=1
+          grep -F 'every_frame_is_five_columns ... ok' m5-strip.out || status=1
+          grep -F 'markers_match_canon_legend ... ok' m5-strip.out || status=1
+          exit "$status"
+
+      - name: "Suite: VL footer row (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- vl_footer \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-vl-footer.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-vl-footer.out || status=1
+          grep -F 'loop_context_renders_below_status_line_without_replacing_it ... ok' m5-vl-footer.out || status=1
+          grep -F 'constrained_footer_preserves_upstream_row_before_vl_context ... ok' m5-vl-footer.out || status=1
+          exit "$status"
+
+      - name: "Suite: broad VL family (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- vl \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-vl-broad.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-vl-broad.out || status=1
+          grep -F 'loop_context_renders_below_status_line_without_replacing_it ... ok' m5-vl-broad.out || status=1
+          exit "$status"
+
+      - name: "Suite: background model client (codex-core, expect 1 passed)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-core --lib -- background_model_client_resolves_requested_model -- --exact \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-background-model.out || status=1
+          grep -E 'test result: ok\. 1 passed' m5-background-model.out || status=1
+          grep -F 'background_model_client_resolves_requested_model ... ok' m5-background-model.out || status=1
+          exit "$status"
+
+      - name: "Suite: TUI startup paths touched by the merge (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- startup \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-startup.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-startup.out || status=1
+          grep -F 'startup_paused_goal_prompt_gate_is_only_for_quiet_resume ... ok' m5-startup.out || status=1
+          grep -F 'startup_thread_started_submits_queued_startup_input ... ok' m5-startup.out || status=1
+          exit "$status"
+
+      - name: "Suite: daemon launch and startup policy (codex-tui)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-tui --lib -- daemon \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-daemon.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-daemon.out || status=1
+          grep -F 'daemon_startup_falls_back_only_for_implicit_endpoints ... ok' m5-daemon.out || status=1
+          grep -F 'daemon_exclusion_warning_snapshot ... ok' m5-daemon.out || status=1
+          exit "$status"
+
+      - name: Suite summary
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "== every test result line, by suite =="
+          for f in m5-*.out; do
+            echo "-- $f"
+            grep -E '^test result:' "$f" || true
+          done
+          echo "== suites with failures =="
+          grep -lE 'test result: FAILED' m5-*.out || echo "none"
+
+  voice-inputs:
+    name: voice inputs (bazel native sdk)
+    runs-on: ubuntu-24.04
+    environment:
+      name: bazel
+      deployment: false
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./third_party/voice/cargo-ci/produce
+        with:
+          target: x86_64-unknown-linux-gnu
+
+  excluded-crates:
+    name: excluded crates check and test (code-mode, v8-poc, voice-host)
+    needs: voice-inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      RUST_MIN_STACK: "8388608"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/codex-rs/target
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install the system libraries the build scripts look for
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Set up native voice dependencies
+        uses: ./third_party/voice/cargo-ci/setup
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Record inputs and commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "commit: $(git rev-parse HEAD)"
+          echo "rusty_v8 archive: ${RUSTY_V8_ARCHIVE:-<unset>}"
+          sha256sum "${RUSTY_V8_ARCHIVE:?setup-rusty-v8 did not export RUSTY_V8_ARCHIVE}"
+          echo "voice runtime: ${CODEX_TEST_VOICE_RUNTIME:-<unset>}"
+          echo "pkg_config sdk: ${PKG_CONFIG_PATH_x86_64_unknown_linux-gnu:-<unset>}"
+      - name: cargo check --tests of the four excluded packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 022
+          cargo check --tests \
+            -p codex-code-mode-host \
+            -p codex-code-mode-runtime \
+            -p codex-v8-poc \
+            -p codex-voice-host
+      - name: cargo test of the four excluded packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test \
+            -p codex-code-mode-host \
+            -p codex-code-mode-runtime \
+            -p codex-v8-poc \
+            -p codex-voice-host \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-excluded-crates.out || status=1
+          ok_targets="$(grep -cE 'test result: ok\. [1-9][0-9]* passed' m5-excluded-crates.out || true)"
+          [ "$ok_targets" -ge 4 ] || status=1
+          exit "$status"
+      - name: packaged voice runtime smoke (ignored tests, needs the prepared runtime)
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test -p codex-voice-host --test packaged_runtime --run-ignored all \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m5-packaged-runtime.out || status=1
+          grep -E 'test result: ok\. [1-9][0-9]* passed' m5-packaged-runtime.out || status=1
+          exit "$status"

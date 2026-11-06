@@ -2,6 +2,7 @@
 //! Collection keeps captured sources intact. This owner applies text and image policy;
 //! delivery checks repeat against current reviewer history after compaction.
 
+mod elastic;
 pub(crate) mod repl;
 pub(crate) mod root;
 mod transcript;
@@ -30,6 +31,20 @@ pub(crate) const MAX_INSTRUCTION_TOKENS: usize = 900;
 
 const MAX_APPROVAL_REASON_TOKENS: usize = 512;
 const MAX_DESCRIPTION_TOKENS: usize = 400;
+
+/// Request selection policy; persistent capture and storage bounds are independent.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ContextBudgeting {
+    /// Preserve existing per-section request selection.
+    #[default]
+    Fixed,
+    /// Keep captured candidates complete until optional entry capping and allocation.
+    Elastic,
+}
+
+#[cfg(test)]
+#[path = "source_tests.rs"]
+mod source_tests;
 
 /// Prepares the host-selected transcript suffix and all synchronous context sections.
 /// Cursor selection remains with the host; its offset addresses the collected entries.
@@ -158,7 +173,7 @@ pub(crate) fn prepare_sync_sections(context: &mut CollectedContext) {
             if let crate::ContextSection::RootConversation { content } = section
                 && let crate::RootConversationContent::Collected(candidates) = content
             {
-                let prepared = candidates.prepare();
+                let prepared = candidates.prepare(ContextBudgeting::Fixed);
                 *content = crate::RootConversationContent::Prepared(
                     crate::authorization::root_conversation_items(prepared.messages),
                 );
@@ -177,6 +192,7 @@ pub(crate) fn prepare_sync_sections(context: &mut CollectedContext) {
                 responses,
                 omitted_responses: *omitted_responses,
                 mode: *mode,
+                budgeting: ContextBudgeting::Fixed,
             };
             let items = snapshot.render_inputs();
             evidence.content = crate::node_repl::NodeReplEvidenceContent::Prepared(items);

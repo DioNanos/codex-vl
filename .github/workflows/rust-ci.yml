@@ -153,7 +153,7 @@ jobs:
         run: python3 -m unittest discover -s tools/argument-comment-lint -p 'test_*.py'
       - name: Test argument comment lint package
         working-directory: tools/argument-comment-lint
-        run: cargo test
+        run: bash ./test-with-clippy-compat.sh
         env:
           RUST_MIN_STACK: "8388608" # 8 MiB
 
@@ -167,6 +167,9 @@ jobs:
     # publishes with cargo. Re-enable by removing this `if`.
     if: false
     name: Argument comment lint - ${{ matrix.name }}
+    # This job runs through Bazel and is advisory while the BuildBuddy key is
+    # revoked. Restore blocking behavior once it can run without BuildBuddy.
+    continue-on-error: true
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     needs: changed

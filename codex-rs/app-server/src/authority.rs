@@ -180,7 +180,7 @@ impl AuthorityVerifier for FdAuthorityVerifier {
                         .unwrap_or("malformed"),
                 )))
             } else if let Some(result) = response.get("result") {
-                map_verify_result(result, challenge, generation)
+                map_verify_result(result, challenge)
             } else {
                 Err(AuthorityRefusal::Malformed)
             }
@@ -210,7 +210,6 @@ fn canonical_reason(reason: &str) -> &'static str {
 pub(crate) fn map_verify_result(
     result: &Value,
     challenge: &IdentityChallenge,
-    generation: u64,
 ) -> Result<VerifiedIdentityClaims, AuthorityRefusal> {
     let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
     if !ok {
@@ -232,10 +231,7 @@ pub(crate) fn map_verify_result(
     // nothing is merged from the external claims of the proof. Before
     // returning, the confirmed claims are checked against the challenge this
     // daemon expected, and any divergence fails closed.
-    let mut normalized = normalized.clone();
-    if let Some(object) = normalized.as_object_mut() {
-        object.insert("generation".to_string(), Value::from(generation));
-    }
+    let normalized = normalized.clone();
     let verified: crate::identity::VerifiedIdentityClaims = serde_json::from_value(normalized)
         .map_err(|error| {
             tracing::warn!(

@@ -75,6 +75,9 @@ ALLOWED_UNGUARDED: dict[tuple[str, str, str], str] = {
     ("network-proxy/src/certs.rs", "lock", "try_lock"): (
         "managed CA artifact lifetime: fail-closed by design"
     ),
+    ("login/src/auth/storage_commit.rs", "file", "try_lock"): (
+        "auth credential commit lock: fail-closed by design"
+    ),
     # Pre-existing unguarded sites already shipped in 0.165 (platform audit
     # A.3.4 or first run of this check): not regressions of the 0.166 merge.
     # Extending the degrade pattern to them is a separate, reviewed change.

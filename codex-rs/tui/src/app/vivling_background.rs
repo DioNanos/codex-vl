@@ -585,7 +585,7 @@ pub(super) async fn read_legacy_brain_profile(
         .and_then(|p| p.as_table())
         .ok_or_else(|| {
             format!(
-                "Vivling profile `{profile_name}` not found under `[profiles.{profile_name}]` in {}. Create it with `/vivling model <profile> <model> [provider] [effort]` or list available profiles with `/vivling model list`.",
+                "Vivling profile `{profile_name}` not found under `[profiles.{profile_name}]` in {}. Assign an existing profile with `/vivling model <profile>` (see `/vivling model list`), or create the per-Vivling profile with `/vivling model <model> [provider] [effort]`.",
                 toml_path.display()
             )
         })?;
@@ -594,7 +594,7 @@ pub(super) async fn read_legacy_brain_profile(
         .and_then(|m| m.as_str())
         .ok_or_else(|| {
             format!(
-                "Vivling profile `{profile_name}` has no `model` field in {}. Update with `/vivling model <profile> <new-model> [provider] [effort]`.",
+                "Vivling profile `{profile_name}` has no `model` field in {}. Add a `model` field to it, or assign another profile with `/vivling model <profile>`.",
                 toml_path.display()
             )
         })?
@@ -762,5 +762,43 @@ mod resolve_brain_target_tests {
             model, "anthropic/claude-opus-4-7",
             "vendor-prefixed model string must propagate verbatim"
         );
+    }
+
+    #[tokio::test]
+    async fn a_missing_profile_points_to_commands_that_exist() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[profiles.other]\nmodel = \"m\"\n",
+        )
+        .expect("write config");
+        let err = read_legacy_brain_profile(dir.path(), "ghost")
+            .await
+            .expect_err("an absent profile is an error");
+        assert!(err.contains("`/vivling model <profile>`"), "{err}");
+        assert!(
+            err.contains("`/vivling model <model> [provider] [effort]`"),
+            "{err}"
+        );
+        assert!(
+            !err.contains("<profile> <model>"),
+            "the profile name is not an argument of the create form: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_profile_without_a_model_points_to_commands_that_exist() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[profiles.ghost]\nmodel_provider = \"x\"\n",
+        )
+        .expect("write config");
+        let err = read_legacy_brain_profile(dir.path(), "ghost")
+            .await
+            .expect_err("a profile with no model is an error");
+        assert!(err.contains("no `model` field"), "{err}");
+        assert!(err.contains("`/vivling model <profile>`"), "{err}");
+        assert!(!err.contains("<new-model>"), "{err}");
     }
 }

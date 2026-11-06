@@ -2864,11 +2864,22 @@
     },
     "CommandExecutionApprovalKind": {
       "description": "Distinguishes a command approval from input sent to an existing terminal.",
-      "enum": [
-        "command",
-        "writeStdin"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "command",
+            "writeStdin"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A managed checkpoint requiring a fresh human decision. Only `accept`, `decline`, and `cancel` are valid. Requires the `requiredHumanApproval` initialize capability. This prompt does not itself start a command execution item.",
+          "enum": [
+            "humanCommand"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "CommandExecutionRequestApprovalParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -3499,6 +3510,10 @@
         "requestAttestation": {
           "default": false,
           "description": "Opt into `attestation/generate` requests for upstream `x-oai-attestation`.",
+          "type": "boolean"
+        },
+        "requiredHumanApproval": {
+          "description": "Present `humanCommand` approvals to a person and return only a one-time decision. Requires `experimentalApi`. Pending requests can be replayed to compatible clients.",
           "type": "boolean"
         }
       },
@@ -4939,6 +4954,26 @@
             "params"
           ],
           "title": "Thread/name/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/section/changed"
+              ],
+              "title": "Thread/section/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadSectionChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/section/changedNotification",
           "type": "object"
         },
         {
@@ -11267,10 +11302,34 @@
             "type": "object"
           },
           {
-            "properties": {
-              "audio_url": {
-                "type": "string"
+            "anyOf": [
+              {
+                "properties": {
+                  "audio_url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "audio_url"
+                ],
+                "title": "AudioUrlContentItem",
+                "type": "object"
               },
+              {
+                "properties": {
+                  "file_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file_id"
+                ],
+                "title": "FileIdContentItem",
+                "type": "object"
+              }
+            ],
+            "description": "Inline audio data or an uploaded file loaded by the Responses API.",
+            "properties": {
               "type": {
                 "enum": [
                   "input_audio"
@@ -11280,7 +11339,6 @@
               }
             },
             "required": [
-              "audio_url",
               "type"
             ],
             "title": "InputAudioContentItem",
@@ -17074,6 +17132,12 @@
             ]
           },
           "log_guardian_assessments": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "log_sse_deltas": {
             "type": [
               "boolean",
               "null"
@@ -25579,6 +25643,28 @@
         },
         "type": "object"
       },
+      "ThreadSectionChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Broadcast after a successful move into, within, or out of a section.",
+        "properties": {
+          "sectionId": {
+            "description": "Destination section, or `null` when the thread was removed from its section.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sectionId",
+          "threadId"
+        ],
+        "title": "ThreadSectionChangedNotification",
+        "type": "object"
+      },
       "ThreadSectionCreateParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "Parameters for creating an independently persisted thread section.",
@@ -27604,6 +27690,32 @@
             "type": "object"
           },
           {
+            "anyOf": [
+              {
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "title": "UrlUserInput",
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "fileId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fileId"
+                ],
+                "title": "FileIdUserInput",
+                "type": "object"
+              }
+            ],
             "properties": {
               "type": {
                 "enum": [
@@ -27611,14 +27723,10 @@
                 ],
                 "title": "AudioUserInputType",
                 "type": "string"
-              },
-              "url": {
-                "type": "string"
               }
             },
             "required": [
-              "type",
-              "url"
+              "type"
             ],
             "title": "AudioUserInput",
             "type": "object"
