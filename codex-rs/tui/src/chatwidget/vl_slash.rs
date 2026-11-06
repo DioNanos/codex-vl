@@ -29,7 +29,7 @@ pub(super) fn dispatch_mcp_reload(cw: &mut ChatWidget) {
     cw.app_event_tx.send_vl(VlEvent::McpReload { thread_id });
 }
 
-pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop apply <id> | /loop dismiss <id> | /loop delegate <label> <main|vivling> | /loop undelegate <label> | /loop strategy <label> <observe|suggest|manage|auto> | /loop delegation [label] | /loop owner [main|vivling]";
+pub(super) const LOOP_USAGE: &str = "Usage: /loop add <label> <interval> <prompt...> | /loop ls | /loop show <label> | /loop on <label> | /loop off <label> | /loop rm <label> | /loop trigger <label> | /loop apply <id> | /loop dismiss <id> | /loop delegate <label> <main|vivling> | /loop undelegate <label> | /loop strategy <label> <observe|suggest|manage|auto> | /loop delegation [label] | /loop owner [main|vivling]";
 
 const VIVLING_ALIAS_USAGE: &str = "Usage: /vl <message>";
 const VIVLING_ASSIST_ALIAS_USAGE: &str = "Usage: /vla <task>";
@@ -53,9 +53,16 @@ pub(super) fn dispatch_loop_with_args(cw: &mut ChatWidget, trimmed: &str) {
         .send_vl(VlEvent::LoopCommand { thread_id, request });
 }
 
+/// The text after `word` when `args` starts with the whole word: `word` alone, or
+/// `word` followed by whitespace. `layoutxyz` is not the `layout` command.
+fn strip_command_word<'a>(args: &'a str, word: &str) -> Option<&'a str> {
+    let rest = args.strip_prefix(word)?;
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some(rest)
+}
+
 /// `/vivling [args]` — full Vivling action dispatch.
 pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
-    if let Some(rest) = args.trim().strip_prefix("layout") {
+    if let Some(rest) = strip_command_word(args.trim(), "layout") {
         let choice = rest.trim();
         if choice.is_empty() {
             cw.add_info_message("Usage: /vivling layout <full|line>".to_string(), None);
@@ -79,7 +86,7 @@ pub(super) fn dispatch_vivling(cw: &mut ChatWidget, args: &str) {
         cw.request_redraw();
         return;
     }
-    if let Some(rest) = args.trim().strip_prefix("loop-strategy") {
+    if let Some(rest) = strip_command_word(args.trim(), "loop-strategy") {
         let mut parts = rest.split_whitespace();
         let (Some(label), Some(strategy), None) = (parts.next(), parts.next(), parts.next()) else {
             cw.add_error_message(
@@ -242,6 +249,11 @@ fn parse_loop_command(args: &str) -> Option<LoopCommandRequest> {
         "rm" => Some(LoopCommandRequest::Remove {
             label: parts.next()?.to_string(),
         }),
+        // `/loop trigger <label>`: run the job on the next safe tick, now. It
+        // only queues a tick: the schedule, the prompt and the goal are untouched.
+        "trigger" => Some(LoopCommandRequest::Trigger {
+            label: parts.next()?.to_string(),
+        }),
         // `/loop apply <id>` / `/loop dismiss <id>` (user-confirmed).
         "apply" => Some(LoopCommandRequest::Apply {
             suggestion_id: parts.next()?.to_string(),
@@ -316,6 +328,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_command_word_is_a_whole_word_not_a_prefix() {
+        assert_eq!(strip_command_word("layout", "layout"), Some(""));
+        assert_eq!(strip_command_word("layout full", "layout"), Some(" full"));
+        assert_eq!(strip_command_word("layout\tline", "layout"), Some("\tline"));
+        assert_eq!(strip_command_word("layoutxyz", "layout"), None);
+        assert_eq!(strip_command_word("layouts full", "layout"), None);
+        assert_eq!(
+            strip_command_word("loop-strategy a b", "loop-strategy"),
+            Some(" a b")
+        );
+        assert_eq!(
+            strip_command_word("loop-strategyfoo a b", "loop-strategy"),
+            None
+        );
+        assert_eq!(strip_command_word("loop", "loop-strategy"), None);
+        assert_eq!(strip_command_word("", "layout"), None);
+    }
+
+    #[test]
     fn vla_parser_is_exactly_equivalent_to_vivling_assist() {
         assert_eq!(
             parse_vivling_assist_alias(" taskdapreparare "),
@@ -340,6 +371,27 @@ mod tests {
         // id mancante -> None (messaggio d'uso gestito dal caller)
         assert!(parse_loop_command("apply").is_none());
         assert!(parse_loop_command("dismiss").is_none());
+    }
+
+    #[test]
+    fn parse_loop_command_trigger_takes_a_label_and_nothing_else_changes() {
+        assert!(matches!(
+            parse_loop_command("trigger nightly"),
+            Some(LoopCommandRequest::Trigger { label }) if label == "nightly"
+        ));
+        assert!(matches!(
+            parse_loop_command("  trigger   nightly  "),
+            Some(LoopCommandRequest::Trigger { label }) if label == "nightly"
+        ));
+        // A label is required; the usage line handles the missing one.
+        assert!(parse_loop_command("trigger").is_none());
+        // `update` stays out of the command surface: it is reachable from the
+        // agent tool only.
+        assert!(parse_loop_command("update nightly 5m do it").is_none());
+        assert!(parse_loop_command("update nightly").is_none());
+        // The usage line names the command.
+        assert!(LOOP_USAGE.contains("/loop trigger <label>"));
+        assert!(!LOOP_USAGE.contains("/loop update"));
     }
 
     #[test]

@@ -128,6 +128,7 @@ async fn non_utf8_cwd_preserves_approval_routing(
     review_context.approval_policy = AskForApproval::OnRequest;
     review_context.approvals_reviewer = reviewer;
     let context = ApprovalContext {
+        exec_requirement: None,
         review_context,
         cancellation_token: None,
         call_id: "non-utf8-cwd".to_string(),
@@ -153,7 +154,8 @@ async fn non_utf8_cwd_preserves_approval_routing(
         tty: false,
         proposed_execpolicy_amendment: None,
     };
-    let approval = session.request_reviewer_approval(action, &context);
+    let prompt = session.request_user_approval(&action, &context);
+    let approval = session.request_reviewer_approval(&action, &context, prompt);
     tokio::pin!(approval);
     let expected = if reviewer == ApprovalsReviewer::User {
         tokio::select! {
@@ -213,6 +215,7 @@ async fn explicit_mcp_reviewer_override_takes_precedence_over_action_context() {
     review_context.approval_policy = AskForApproval::OnRequest;
     review_context.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let context = ApprovalContext {
+        exec_requirement: None,
         review_context,
         cancellation_token: None,
         call_id: "mcp-override".to_string(),
@@ -223,8 +226,9 @@ async fn explicit_mcp_reviewer_override_takes_precedence_over_action_context() {
         network_approval_context: None,
     };
 
+    let prompt = session.request_user_approval(&action, &context);
     tokio::select! {
-        resolution = session.request_reviewer_approval(action, &context) => {
+        resolution = session.request_reviewer_approval(&action, &context, prompt) => {
             panic!("expected a user approval request, got {resolution:?}");
         }
         event = events.recv() => {

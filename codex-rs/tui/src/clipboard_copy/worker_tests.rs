@@ -254,7 +254,7 @@ fn drop_waits_for_response_channel_disconnect() {
             outgoing
                 .send(Response {
                     result: Ok(CopyStatus::Confirmed),
-                    terminal_text: None,
+                    terminal_sequence: None,
                 })
                 .unwrap();
         }
@@ -522,7 +522,7 @@ fn latest_primary_is_published_before_read_but_does_not_preempt_explicit_copy() 
         outgoing
             .send(Response {
                 result: Ok(CopyStatus::Confirmed),
-                terminal_text: None,
+                terminal_sequence: None,
             })
             .unwrap();
     };
@@ -625,7 +625,7 @@ fn cancelling_owners_after_poll_drops_deferred_work_without_releasing_worker_ear
     outgoing
         .send(Response {
             result: Ok(CopyStatus::Confirmed),
-            terminal_text: None,
+            terminal_sequence: None,
         })
         .unwrap();
     worker.poll();

@@ -67,6 +67,13 @@ fn prompt_stack_back_follows_the_terminal_family() {
         label(TerminalName::Iterm2),
         key_hint::alt(KeyCode::Down).display_label()
     );
+    // Rex (new in upstream 0.167) is a modern terminal that passes Alt+Up
+    // through; upstream groups it with WezTerm/Alacritty, not with the
+    // Alt-swallowing Shift family.
+    assert_eq!(
+        label(TerminalName::Rex),
+        key_hint::alt(KeyCode::Down).display_label()
+    );
 }
 
 /// A multiplexer overrides the terminal name: tmux does not pass Alt+Up reliably.

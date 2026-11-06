@@ -240,6 +240,97 @@ fn help_lists_supported_commands_instead_of_falling_back_to_chat() {
 }
 
 #[test]
+fn status_is_a_command_in_any_case_and_takes_no_argument() {
+    assert_eq!(VivlingAction::parse("status"), Ok(VivlingAction::Status));
+    assert_eq!(
+        VivlingAction::parse("  status  "),
+        Ok(VivlingAction::Status)
+    );
+    assert_eq!(VivlingAction::parse("STATUS"), Ok(VivlingAction::Status));
+    assert_eq!(VivlingAction::parse("Status"), Ok(VivlingAction::Status));
+    // Extra words are a usage error, not a message to the Vivling.
+    assert_eq!(
+        VivlingAction::parse("status extra"),
+        Err("Usage: /vivling status".to_string())
+    );
+    assert_eq!(
+        VivlingAction::parse("STATUS now please"),
+        Err("Usage: /vivling status".to_string())
+    );
+    // A word that only starts with it is still just chat.
+    assert_eq!(
+        VivlingAction::parse("statuses of things"),
+        Ok(VivlingAction::DirectMessage(
+            "statuses of things".to_string()
+        ))
+    );
+}
+
+#[test]
+fn help_says_what_is_deprecated_what_is_local_and_what_ctrl_j_opens() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = configured_vivling(temp.path());
+    let message = match vivling
+        .command(VivlingAction::Help, temp.path())
+        .expect("help should work")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    let line = |start: &str| {
+        message
+            .lines()
+            .find(|line| line.starts_with(start))
+            .unwrap_or_else(|| panic!("no help line starts with `{start}`"))
+            .to_string()
+    };
+    assert!(line("/vivling brain <").contains("deprecated"));
+    assert!(line("/vivling mode <").contains("deprecated"));
+    assert!(line("/vivling <message>").contains("no model call"));
+    assert!(line("/vivling <message>").contains("/vl <message>"));
+    assert!(line("Ctrl+J").contains("sidebar"));
+    assert!(!message.contains("chat panel"));
+}
+
+/// Every command the help names must be one the parser knows: a word that the
+/// parser takes for a chat message is a help line with no command behind it.
+#[test]
+fn every_command_word_in_the_help_is_known_to_the_parser() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = configured_vivling(temp.path());
+    let message = match vivling
+        .command(VivlingAction::Help, temp.path())
+        .expect("help should work")
+    {
+        VivlingCommandOutcome::Message(message) => message,
+        other => panic!("unexpected outcome: {other:?}"),
+    };
+    // These two are read by the slash layer before the parser is asked.
+    const READ_BEFORE_THE_PARSER: [&str; 2] = ["layout", "loop-strategy"];
+    let mut checked = 0;
+    for line in message.lines() {
+        let Some(rest) = line.strip_prefix("/vivling ") else {
+            continue;
+        };
+        let Some(word) = rest.split_whitespace().next() else {
+            continue;
+        };
+        if word.starts_with('<') || word == "-" || READ_BEFORE_THE_PARSER.contains(&word) {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            !matches!(
+                VivlingAction::parse(word),
+                Ok(VivlingAction::DirectMessage(_))
+            ),
+            "the help lists `/vivling {word}` but the parser takes it for chat"
+        );
+    }
+    assert!(checked >= 20, "the help lists commands: checked {checked}");
+}
+
+#[test]
 fn hatch_fills_top_level_slots_before_failing() {
     let temp = TempDir::new().expect("tempdir");
     let mut vivling = configured_vivling(temp.path());

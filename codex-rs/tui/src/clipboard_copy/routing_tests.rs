@@ -172,3 +172,24 @@ fn confirmed_copy_without_new_lease_preserves_native_ownership() {
     );
     assert!(lease.is_some());
 }
+
+#[test]
+fn screen_forwards_one_complete_osc52_across_bounded_passthrough_strings() {
+    for text in ["hello", &"世界".repeat(500)] {
+        let sequence = super::osc52_sequence(text, super::Osc52Target::Screen).unwrap();
+        let chunks = sequence
+            .strip_prefix("\x1bP")
+            .unwrap()
+            .strip_suffix("\x1b\\")
+            .unwrap();
+        let mut forwarded = String::new();
+        for chunk in chunks.split("\x1b\\\x1bP") {
+            assert!(chunk.len() < 256);
+            forwarded.push_str(chunk);
+        }
+        assert_eq!(
+            forwarded,
+            super::osc52_sequence(text, super::Osc52Target::Direct).unwrap()
+        );
+    }
+}

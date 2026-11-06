@@ -294,10 +294,10 @@ pub(super) async fn page_item_rows(
 SELECT turn_id, item_id, rollout_ordinal, updated_at_ordinal, created_at_ms, started_at_ms, completed_at_ms, item_json
 FROM thread_items"#,
         );
-        if params.turn_id.is_some()
-            && params.item_ids.is_none()
-            && params.after_updated_at_ordinal.is_none()
-        {
+        if params.item_ids.is_some() {
+            // Seek each requested ID instead of scanning the turn in rollout order.
+            query.push(" INDEXED BY sqlite_autoindex_thread_items_1");
+        } else if params.turn_id.is_some() && params.after_updated_at_ordinal.is_none() {
             // A thread-wide index can scan earlier turns when a turn's final page is underfilled.
             query.push(" INDEXED BY idx_thread_items_by_turn_page");
         }
