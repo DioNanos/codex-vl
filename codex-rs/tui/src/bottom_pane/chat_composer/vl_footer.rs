@@ -118,7 +118,7 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_status_line_enabled(/*enabled*/ true);
-        composer.set_status_line(Some(Line::from("model · cwd · Context 0% used")));
+        composer.set_status_line(Some(Line::from("model · cwd · Context 0% used").into()));
         composer
     }
 
