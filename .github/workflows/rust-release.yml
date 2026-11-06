@@ -141,8 +141,12 @@ jobs:
   build:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_mode != 'promote_signed' }}
     needs: tag-check
-    name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }}
+    name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
+    # Release Cargo artifacts only while Bazel releases are disabled.
     runs-on: ${{ matrix.runs_on || matrix.runner }}
+    environment:
+      name: bazel
+      deployment: false
     # Linux releases also build the native voice runtime in this job.
     timeout-minutes: 120
     permissions:
@@ -163,6 +167,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+        bundle: [primary, app-server]
         include:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
@@ -384,7 +395,8 @@ jobs:
         shell: bash
         env:
           APP_TARGET: ${{ matrix.target }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # Use local Bazel while BuildBuddy credentials are unavailable.
+          BUILDBUDDY_API_KEY: ""
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -643,7 +655,8 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           PREFIX: ${{ matrix.prefix }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # Use local Bazel while BuildBuddy credentials are unavailable.
+          BUILDBUDDY_API_KEY: ""
         run: |
           set -euo pipefail
           # Release tags bump Cargo.toml without rewriting the workspace lockfile.
@@ -670,9 +683,9 @@ jobs:
           if-no-files-found: error
 
   sign-macos-binaries:
-    if: ${{ github.event_name != 'workflow_dispatch' }}
-    needs: build
-    name: Sign macOS binaries - ${{ matrix.target }} - ${{ matrix.bundle }}
+    needs: [build, build-macos-voice]
+    if: ${{ github.event_name != 'workflow_dispatch' && always() && needs.build.result == 'success' && needs.build-macos-voice.result == 'success' }}
+    name: Sign macOS binaries - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -685,6 +698,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary
@@ -921,7 +939,7 @@ jobs:
   package-macos:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     needs: sign-macos-binaries
-    name: Package macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }}
+    name: Package macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
     runs-on: macos-15-xlarge
     timeout-minutes: 45
     permissions:
@@ -933,6 +951,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary
@@ -1203,7 +1226,7 @@ jobs:
   sign-macos-dmg:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     needs: package-macos
-    name: Sign macOS DMG - ${{ matrix.target }}
+    name: Sign macOS DMG - ${{ matrix.target }} - ${{ matrix.build-system }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -1216,6 +1239,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
         include:
           - target: aarch64-apple-darwin
             artifact_name: aarch64-apple-darwin
@@ -1301,7 +1328,7 @@ jobs:
     needs:
       - package-macos
       - sign-macos-dmg
-    name: Verify macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }}
+    name: Verify macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
     runs-on: macos-15-xlarge
     timeout-minutes: 30
     permissions:
@@ -1313,6 +1340,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary

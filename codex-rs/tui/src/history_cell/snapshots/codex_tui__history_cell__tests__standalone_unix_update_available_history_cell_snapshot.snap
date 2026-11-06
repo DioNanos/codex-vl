@@ -3,7 +3,7 @@ source: tui/src/history_cell/tests.rs
 expression: rendered
 ---
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ✨ Update available! 0.166.0 -> 9.9.9                                                                      │
+│ ✨ Update available! 0.167.0 -> 9.9.9                                                                      │
 │ Run sh -c 's=$(curl -fsSL https://github.com/DioNanos/codex-vl/releases/latest/download/install.sh) &&     │
 │ CODEX_NON_INTERACTIVE=1 eval "$s"' to update.                                                              │
 │                                                                                                            │

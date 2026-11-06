@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use codex_api::ReqwestTransport;
 use codex_api::SearchClient;
 use codex_api::SearchCommands;
 use codex_api::SearchQuery;
@@ -19,9 +22,15 @@ use codex_extension_items::web_search::WebSearchAction;
 use codex_extension_items::web_search::WebSearchItem;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::add_originator_header;
+use codex_login::default_client::create_client_for_route_async;
 use codex_login::default_client::create_transport_for_routes_async;
+use codex_model_provider::ACCOUNT_ROUTING_HEADER;
 use codex_model_provider::SharedModelProvider;
+use codex_model_provider::WorkspaceRoutingContext;
+use codex_model_provider::prepare_provider_request;
+use codex_model_provider::provider_uses_first_party_auth_path;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WebSearchBeginEvent;
@@ -42,11 +51,13 @@ pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
 const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
 const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_bytes";
+const MAX_SEARCH_ERROR_BYTES: usize = 1024;
 
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
     pub(crate) http_client_factory: HttpClientFactory,
     pub(crate) provider: SharedModelProvider,
+    pub(crate) workspace_routing: Arc<WorkspaceRoutingContext>,
     pub(crate) settings: SearchSettings,
     pub(crate) supports_literature_search: bool,
     pub(crate) originator: Option<String>,
@@ -102,18 +113,45 @@ impl WebSearchTool {
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let commands = parse_commands(call.function_arguments()?, self.supports_literature_search)?;
         let command_action = command_action(&commands);
-        let (provider, auth) = self
-            .provider
-            .api_provider_and_auth()
-            .await
-            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let transport = create_transport_for_routes_async(
-            self.http_client_factory.clone(),
-            ClientRouteClass::Api,
-        )
+        let provider = self.provider.as_ref();
+        let first_party = provider_uses_first_party_auth_path(provider.info());
+        let client = prepare_provider_request(provider, first_party, |_| async {
+            let routing_auth = if first_party {
+                provider.auth().await
+            } else {
+                None
+            };
+            let (endpoint, api_auth) = provider.api_provider_and_auth().await?;
+            let resolved = provider
+                .route_responses_api_provider(
+                    endpoint,
+                    routing_auth.as_ref(),
+                    &self.workspace_routing,
+                )
+                .await?;
+            let endpoint = resolved.provider;
+            let transport = if resolved.redirect_policy == ClientRedirectPolicy::Reject
+                || endpoint.headers.contains_key(ACCOUNT_ROUTING_HEADER)
+            {
+                create_client_for_route_async(
+                    self.http_client_factory.clone(),
+                    endpoint.url_for_path("alpha/search"),
+                    ClientRouteClass::Api,
+                    ClientRedirectPolicy::Reject,
+                )
+                .await
+                .map(ReqwestTransport::from_http_client)
+            } else {
+                create_transport_for_routes_async(
+                    self.http_client_factory.clone(),
+                    ClientRouteClass::Api,
+                )
+                .await
+            }?;
+            Ok(SearchClient::new(transport, endpoint, api_auth))
+        })
         .await
-        .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let client = SearchClient::new(transport, provider, auth);
+        .map_err(|err| FunctionCallError::RespondToModel(search_error_message(err)))?;
         let request = SearchRequest {
             id: self.session_id.clone(),
             model: call.model.clone(),
@@ -142,12 +180,10 @@ impl WebSearchTool {
                 }),
             ))
             .await;
-        let response = client
-            .search(&request, extra_headers)
-            .await
-            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let output = response.output;
-        let results = response.results;
+        let (output, results) = match client.search(&request, extra_headers).await {
+            Ok(response) => (Ok(response.output), response.results),
+            Err(err) => (Err(search_error_message(err)), None),
+        };
         if let Some(results) = results.as_ref()
             && let Some(metrics) = codex_otel::global()
             && let Ok(payload) = serde_json::to_vec(results)
@@ -187,6 +223,16 @@ impl WebSearchTool {
 
         Ok(Box::new(SearchOutput::new(output)))
     }
+}
+
+fn search_error_message(error: impl std::fmt::Display) -> String {
+    let mut message = error.to_string();
+    if message.len() > MAX_SEARCH_ERROR_BYTES {
+        const SUFFIX: &str = "… [truncated]";
+        message.truncate(message.floor_char_boundary(MAX_SEARCH_ERROR_BYTES - SUFFIX.len()));
+        message.push_str(SUFFIX);
+    }
+    message
 }
 
 fn search_request_headers(originator: Option<&str>, turn_metadata: Option<&str>) -> HeaderMap {
@@ -289,9 +335,21 @@ mod tests {
 
     use super::command_action;
     use super::parse_commands;
+    use super::search_error_message;
     use super::search_request_headers;
     use codex_core::X_CODEX_TURN_METADATA_HEADER;
     use codex_extension_api::FunctionCallError;
+
+    #[test]
+    fn search_errors_preserve_short_messages_and_bound_utf8_output() {
+        let fits = "x".repeat(/*n*/ 1024);
+        assert_eq!(search_error_message(&fits), fits);
+
+        let oversized = "🦀".repeat(/*n*/ 512);
+        let message = search_error_message(&oversized);
+        assert!(message.len() <= 1024);
+        assert!(oversized.starts_with(message.strip_suffix("… [truncated]").unwrap()));
+    }
 
     #[test]
     fn search_request_headers_forward_thread_originator_and_turn_metadata() {

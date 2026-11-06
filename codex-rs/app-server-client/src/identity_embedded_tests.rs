@@ -146,6 +146,7 @@ async fn start_embedded_test_client(
     let config = Arc::new(build_embedded_test_config(codex_home.path()).await);
     let state_db = codex_core::init_state_db(config.as_ref()).await;
     let client = crate::InProcessAppServerClient::start(crate::InProcessClientStartArgs {
+        required_human_approval: false,
         arg0_paths: codex_arg0::Arg0DispatchPaths::default(),
         config,
         cli_overrides: Vec::new(),

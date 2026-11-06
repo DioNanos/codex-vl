@@ -53,8 +53,6 @@ pub struct VerifiedIdentityClaims {
     pub not_before: i64,
     pub expires_at: i64,
     pub nonce: String,
-    #[serde(default)]
-    pub generation: u64,
 }
 
 /// Authority refusal. The `Rejected("challenge_mismatch")` variant
@@ -381,7 +379,6 @@ mod tests {
                         not_before: normalized.not_before,
                         expires_at: normalized.expires_at,
                         nonce: normalized.nonce.clone(),
-                        generation: 0,
                     };
                     Box::pin(async move { Ok(verified) })
                 }
@@ -518,7 +515,7 @@ mod tests {
             "generation": 3,
         });
         let result = serde_json::json!({"ok": true, "v": 1, "claims": claims});
-        let verified = crate::authority::map_verify_result(&result, &challenge, 3)
+        let verified = crate::authority::map_verify_result(&result, &challenge)
             .expect("numeric verify claims devono essere mappabili");
         assert_eq!(verified.issued_at, 1_700_000_000_000);
         assert_eq!(verified.expires_at, 1_700_000_005_000);
@@ -690,25 +687,25 @@ mod tests {
         claims["notBefore"] = claims["issuedAt"].clone();
         let result = json!({"ok": false, "v": 1, "reason": "bad-proof"});
         assert!(matches!(
-            map_verify_result(&result, &challenge, 3),
+            map_verify_result(&result, &challenge),
             Err(AuthorityRefusal::Rejected("bad-proof"))
         ));
         let result = json!({"ok": false, "v": 1, "reason": "authority-unavailable"});
         assert!(matches!(
-            map_verify_result(&result, &challenge, 3),
+            map_verify_result(&result, &challenge),
             Err(AuthorityRefusal::Unreachable)
         ));
         let mut normalized = claims.clone();
         normalized["ownerInstanceId"] = json!("authority-owner");
         let result = json!({"ok": true, "v": 1, "claims": normalized});
-        let verified = map_verify_result(&result, &challenge, 3).expect("claims v1.1");
+        let verified = map_verify_result(&result, &challenge).expect("claims v1.1");
         assert_eq!(verified.owner_instance_id, "authority-owner");
         // Cross-challenge: tuple diverging from the expected challenge → refusal.
         let mut other = challenge.clone();
         other.nonce = "0".repeat(64);
         let result = json!({"ok": true, "v": 1, "claims": claims});
         assert!(matches!(
-            map_verify_result(&result, &other, 3),
+            map_verify_result(&result, &other),
             Err(AuthorityRefusal::Rejected("challenge_mismatch"))
         ));
     }

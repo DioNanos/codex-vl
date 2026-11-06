@@ -644,6 +644,40 @@ async fn enter_preserves_search_backtrack_and_modal_ownership_while_scrolled() -
     assert!(!app.handle_owned_transcript_event(&mut tui, &mut server, &enter)?);
     assert!(!app.transcript_view.is_following());
 
+    let outer = tui.terminal.size()?;
+    let area = Rect::new(
+        /*x*/ 48, /*y*/ 2, /*width*/ 26, /*height*/ 14,
+    );
+    let frames = tui.frame_requester();
+    let mut painted = Default::default();
+    tui.draw(outer.height, |frame| {
+        for cell in &mut frame.buffer.content {
+            cell.set_char('.');
+        }
+        let prepared = app.prepare_conversation(frame.area(), Some(area), &frames);
+        painted = app.paint_conversation(frame, &prepared);
+        app.paint_centered_dialog(frame);
+        assert!(frame.cursor_position.is_none());
+    })?;
+    app.finish_conversation(&mut tui, painted)?;
+    let dialog = screen(&tui);
+    let title = dialog
+        .lines()
+        .find(|line| line.contains("Enable subagents?"))
+        .expect("confirmation title");
+    assert!(title.find("Enable subagents?").unwrap() < usize::from(area.x));
+    app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(KeyCode::Esc.into()))
+        .await?;
+    assert!(!app.chat_widget.has_active_modal());
+    assert!(!app.transcript_view.is_following());
+
+    app.handle_tui_event(&mut tui, &mut server, TuiEvent::Draw)
+        .await?;
+    let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+    for pos in buffer.area.positions().filter(|pos| !area.contains(*pos)) {
+        assert_eq!(buffer[pos].symbol(), ".");
+    }
+
     tui.set_owned_screen(/*owned*/ false)?;
     server.shutdown().await?;
     Ok(())

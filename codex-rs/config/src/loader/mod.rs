@@ -21,6 +21,7 @@ use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
 use crate::CloudConfigBundleLayers;
 use crate::ConfigLayerSource;
+use crate::ConfigRequirements;
 use crate::ProfileV2Name;
 use crate::RequirementsLayerEntry;
 use crate::config_requirements::RequirementSource;
@@ -339,6 +340,7 @@ pub async fn load_config_layers_state(
         );
     }
 
+    let requirements = ConfigRequirements::try_from(config_requirements_toml.clone())?;
     let mut is_projectless = false;
     if !ignore_project_config && let Some(cwd) = cwd {
         let mut merged_so_far = TomlValue::Table(toml::map::Map::new());
@@ -403,7 +405,7 @@ pub async fn load_config_layers_state(
         };
         apply_credential_broker_requirements(
             &mut project_trust_context,
-            &config_requirements_toml,
+            &requirements,
             &trusted_broker_config,
         );
         let project_layers = load_project_layers(
@@ -496,14 +498,13 @@ pub async fn load_config_layers_state(
         return Err(err);
     }
 
-    let mut config_layer_stack = ConfigLayerStack::new(
-        layers,
-        config_requirements_toml.clone().try_into()?,
-        config_requirements_toml.into_toml(),
-    )?
-    .with_cloud_config_binding(cloud_config_binding)
-    .with_applied_config_server(applied_config_server)
-    .with_user_and_project_exec_policy_rules_ignored(ignore_user_and_project_exec_policy_rules);
+    let mut config_layer_stack =
+        ConfigLayerStack::new(layers, requirements, config_requirements_toml.into_toml())?
+            .with_cloud_config_binding(cloud_config_binding)
+            .with_applied_config_server(applied_config_server)
+            .with_user_and_project_exec_policy_rules_ignored(
+                ignore_user_and_project_exec_policy_rules,
+            );
     config_layer_stack.is_projectless = is_projectless;
     startup_warnings.extend(ignored_config_warning(
         &config_layer_stack,
@@ -662,6 +663,7 @@ fn validate_cli_overrides_strictly(
 ) -> io::Result<()> {
     let _guard = AbsolutePathBufGuard::new(base_dir);
     let ignored_path = ignored_toml_value_fields::<ConfigToml>(cli_overrides_layer.clone())
+        .unwrap_or_default()
         .into_iter()
         .chain(unknown_tui_toml_value_path(cli_overrides_layer))
         .next()
@@ -1007,7 +1009,7 @@ enum CredentialBrokerProjectState {
 
 fn apply_credential_broker_requirements(
     context: &mut ProjectTrustContext,
-    requirements: &crate::ConfigRequirementsWithSources,
+    requirements: &ConfigRequirements,
     trusted_broker_config: &TomlValue,
 ) {
     let credential_masking_enabled = requirements
@@ -1633,7 +1635,7 @@ pub fn resolve_relative_paths_in_config_toml(
     }
     // The typed round trip resolves AbsolutePathBuf fields against this layer's directory.
     let _guard = AbsolutePathBufGuard::new(base_dir);
-    let Ok(resolved) = value_from_config_toml.clone().try_into::<ConfigToml>() else {
+    let Ok(resolved) = ConfigToml::try_from(value_from_config_toml.clone()) else {
         return Ok(value_from_config_toml);
     };
     drop(_guard);

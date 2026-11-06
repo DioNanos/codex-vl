@@ -1,4 +1,6 @@
 //! Compose the owned transcript above the composer and route their selection gestures.
+//! Painting records the screen regions used by selection and pointer input.
+//! Input that depends on those regions refreshes the layout before using them.
 //! Reserve a cleared row below activity and previews, immediately above the composer.
 //! Slash suggestions overlay already-painted rows so opening or closing them leaves transcript
 //! geometry unchanged. Turn tips remain outside transcript history; their painted rows are selectable.
@@ -6,6 +8,10 @@
 
 use super::turn_tips::TipSurface;
 use super::*;
+use crate::bottom_pane::CommandPopupPlacement;
+use crate::bottom_pane::ComposerRenderOptions;
+use crate::custom_terminal::Frame;
+use crate::empty_state_animation::ComposerState;
 use crate::history_cell::HistoryRenderMode;
 use crate::keymap::KeymapContext;
 use crate::keymap::bindings_for_action;
@@ -13,8 +19,80 @@ use crate::keymap::configured_binding_for_action;
 use crate::keymap::keymap_action_ids;
 use crate::motion::MotionMode;
 use crate::pager_overlay::TranscriptHistoryState;
+use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::transcript_image::ImagePlacement;
+use crate::transcript_view::TranscriptView;
 use crate::transcript_view::ViewAction;
+use crate::turn_tip::TurnTip;
 use ratatui::widgets::Widget;
+
+/// Remember the last conversation bounds and neighboring content for input-triggered redraws.
+#[derive(Default)]
+pub(super) struct ConversationFrame {
+    inset: Option<Rect>,
+    /// A dialog can obscure neighboring content in the terminal's completed buffer.
+    behind_dialog: Option<ratatui::buffer::Buffer>,
+    caller_images: Vec<ImagePlacement>,
+}
+
+pub(super) struct PreparedConversation {
+    area: Rect,
+    transcript_width: u16,
+    composer: Option<ComposerState>,
+    composer_hint: Option<HyperlinkLine>,
+    latest_navigation: &'static str,
+    motion: MotionMode,
+    now: Instant,
+    turn_tip: Option<(TipSurface, TurnTip)>,
+}
+
+/// The composer bounds and follow-up work from a successful draw.
+/// Acknowledge a tip only if it was visible in the frame that was presented.
+#[derive(Default)]
+pub(super) struct PaintedConversation {
+    image_range: std::ops::Range<usize>,
+    bottom_area: Rect,
+    shown_tip: Option<TipSurface>,
+    needs_redraw: bool,
+    /// Delays requested by copy feedback, the empty-state animation, and the transcript.
+    delayed_frames: [Option<Duration>; 3],
+}
+
+impl PreparedConversation {
+    /// Paint the conversation foreground before a centered dialog takes over the cursor.
+    fn paint_foreground(
+        &self,
+        frame: &mut Frame<'_>,
+        chat_widget: &ChatWidget,
+        view: &TranscriptView,
+        bottom: &dyn Renderable,
+        bottom_area: Rect,
+    ) {
+        {
+            let mut selection = chat_widget.rendered_selection.borrow_mut();
+            selection.register_layout(chat_widget.take_warning_body());
+            if let Some((_, tip)) = &self.turn_tip
+                && let Some(area) = tip.rendered.get()
+            {
+                selection.register(area, /*invalidate*/ false);
+            }
+            selection.render(frame.buffer);
+        }
+        chat_widget.note_rendered_width(self.area.width);
+        if let Some(position) = bottom.cursor_pos(bottom_area)
+            && self.area.contains(position.into())
+        {
+            frame.set_cursor_style(bottom.cursor_style(bottom_area));
+            frame.set_cursor_position(position);
+        }
+        if chat_widget.no_modal_or_popup_active() {
+            frame.image_placements.extend(view.image_placements());
+            if let Some(previews) = &chat_widget.composer_images {
+                frame.image_placements.extend(previews.placements.take());
+            }
+        }
+    }
+}
 
 impl App {
     /// Copy draft selections before key shortcuts, or after mouse layout has been refreshed.
@@ -77,13 +155,10 @@ impl App {
     }
 
     fn sync_owned_transcript(&mut self, width: u16) -> bool {
+        self.transcript_view.image_protocol = self.prepare_frame_images();
         let chat_widget = &self.chat_widget;
         let transcript_width = chat_widget.history_wrap_width(width);
         let view = &mut self.transcript_view;
-        view.image_protocol = chat_widget.pet_image_support().protocol().filter(|_| {
-            !self.app_server_target.uses_remote_workspace()
-                && crate::projectless::has_only_local_environments(&self.environment_manager)
-        });
         view.mouse_scroll_speed = self.local_settings.tui.mouse_scroll_speed.unwrap_or(1.0);
         view.primary_selection = self.right_click_paste_environment.primary;
         view.copy_on_select = self
@@ -118,6 +193,49 @@ impl App {
         tui: &mut tui::Tui,
         screen_size: Size,
     ) -> Result<Rect> {
+        let frames = tui.frame_requester();
+        let prepared =
+            self.prepare_conversation(screen_size.into(), self.conversation_frame.inset, &frames);
+        // An input refresh opens a fresh terminal buffer. Carry the outer owner's
+        // completed cells through it when only the conversation is being redrawn.
+        let backdrop = self.conversation_frame.inset.map(|_| {
+            self.conversation_frame
+                .behind_dialog
+                .take()
+                .unwrap_or_else(|| tui.terminal.previous_buffer().clone())
+        });
+        let mut painted = PaintedConversation::default();
+        tui.draw(screen_size.height, |frame| {
+            if let Some(backdrop) = backdrop {
+                let viewport = frame.area();
+                frame.image_placements.extend(
+                    self.conversation_frame
+                        .caller_images
+                        .drain(..)
+                        .filter(|placement| {
+                            viewport.intersection(placement.area) == placement.area
+                        }),
+                );
+                for (pos, cell) in backdrop.area.positions().zip(backdrop.content) {
+                    if viewport.contains(pos) && !prepared.area.contains(pos) {
+                        frame.buffer[pos] = cell;
+                    }
+                }
+            }
+            painted = self.paint_conversation(frame, &prepared);
+            self.paint_centered_dialog(frame);
+        })?;
+        self.finish_conversation(tui, painted)
+    }
+
+    pub(super) fn prepare_conversation(
+        &mut self,
+        viewport: Rect,
+        conversation_inset: Option<Rect>,
+        frames: &tui::FrameRequester,
+    ) -> PreparedConversation {
+        self.conversation_frame.inset = conversation_inset;
+        let area = self.conversation_area(viewport);
         self.chat_widget.sync_warnings(&self.transcript_cells);
         let motion = MotionMode::from_animations_enabled(
             self.local_settings.tui.animations && self.local_settings.tui.effects.shimmer,
@@ -128,8 +246,11 @@ impl App {
         } else {
             "esc latest"
         };
-        self.sync_owned_transcript(screen_size.width);
-        let transcript_width = self.chat_widget.history_wrap_width(screen_size.width);
+        self.sync_owned_transcript(area.width);
+        let transcript_width = self
+            .chat_widget
+            .history_wrap_width(area.width)
+            .min(area.width);
         let composer_hint = if self
             .chat_widget
             .rendered_selection
@@ -146,256 +267,280 @@ impl App {
             self.composer_hint(transcript_width)
         };
         let now = Instant::now();
-        let turn_tip = self.turn_tip(transcript_width, now, &tui.frame_requester());
-        let working_tip = turn_tip
-            .as_ref()
-            .filter(|(surface, _)| *surface == TipSurface::Working)
-            .map(|(_, tip)| tip);
-        let completion_tip = turn_tip
-            .as_ref()
-            .filter(|(surface, _)| *surface == TipSurface::Completion)
-            .map(|(_, tip)| tip);
-        let mut composer_gap = (!self.chat_widget.has_active_view()
-            && !self.chat_widget.is_external_writer_view())
-        .then(crate::bottom_pane::ComposerGap::default);
-        let mut prompt_footer =
-            self.prompt_navigation_footer(screen_size.width.saturating_sub(/*rhs*/ 2));
-        let chat_widget = &self.chat_widget;
+        let turn_tip = self.turn_tip(transcript_width, now, frames);
         let view = &mut self.transcript_view;
-        let active_key = chat_widget.active_cell_transcript_key();
         view.sync_history_tail(&self.transcript_cells);
         view.prepare_width(transcript_width);
         if view.advance_search(&self.transcript_cells) {
-            tui.frame_requester().schedule_frame();
+            frames.schedule_frame();
         }
-        let footer_area = crate::bottom_pane::inset_footer_hint_area(Rect::new(
-            /*x*/ 0,
-            /*y*/ 0,
-            screen_size.width,
-            /*height*/ 1,
-        ));
-        let footer = view.footer_with_navigation(footer_area.width, motion, latest_navigation);
-        // Cap the whole composer (including padding and hints) at two-thirds of the screen,
-        // but allow at least 8 rows on small screens, without exceeding the screen itself.
-        let max_composer_height = ((u32::from(screen_size.height) * 2 / 3) as u16)
+        PreparedConversation {
+            area,
+            transcript_width,
+            composer,
+            composer_hint,
+            latest_navigation,
+            motion,
+            now,
+            turn_tip,
+        }
+    }
+
+    pub(super) fn paint_conversation(
+        &mut self,
+        frame: &mut Frame<'_>,
+        prepared: &PreparedConversation,
+    ) -> PaintedConversation {
+        let PreparedConversation {
+            area,
+            transcript_width,
+            composer,
+            latest_navigation,
+            motion,
+            now,
+            ..
+        } = *prepared;
+        let (working_tip, completion_tip) = match prepared.turn_tip.as_ref() {
+            Some((TipSurface::Working, tip)) => (Some(tip), None),
+            Some((TipSurface::Completion, tip)) => (None, Some(tip)),
+            None => (None, None),
+        };
+        let mut composer_gap = (!self.chat_widget.has_active_view()
+            && !self.chat_widget.is_external_writer_view())
+        .then(crate::bottom_pane::ComposerGap::default);
+        let prompt_footer = self.prompt_navigation_footer(area.width.saturating_sub(/*rhs*/ 2));
+        let chat_widget = &self.chat_widget;
+        let view = &mut self.transcript_view;
+        let active_key = chat_widget.active_cell_transcript_key();
+        let footer_width = crate::bottom_pane::inset_footer_hint_area(area).width;
+        // Measure the composer to find the space available for transcript rows.
+        // Painting those rows tells us whether newer activity is still hidden,
+        // which can change the footer hint and the composer's measured height.
+        let footer = view.footer_with_navigation(footer_width, motion, latest_navigation);
+        // Allow up to two-thirds of the pane, or eight rows on short panes when they fit.
+        let max_composer_height = ((u32::from(area.height) * 2 / 3) as u16)
             .max(8)
-            .min(screen_size.height);
-        let bottom =
-            chat_widget.bottom_pane_renderable(crate::bottom_pane::ComposerRenderOptions {
-                max_height: Some(max_composer_height),
-                footer: prompt_footer.as_ref().or(footer.as_ref()),
-                command_popup_placement: if view.has_active_interaction() {
-                    crate::bottom_pane::CommandPopupPlacement::Hidden
-                } else {
-                    crate::bottom_pane::CommandPopupPlacement::Overlay
-                },
-                composer_gap: composer_gap.as_ref(),
-                working_tip,
-                ..Default::default()
-            });
-        let dashboard_visible = chat_widget
+            .min(area.height);
+        let options = |interacting| ComposerRenderOptions {
+            max_height: Some(max_composer_height),
+            overlay_top: area.top(),
+            command_popup_placement: if interacting {
+                CommandPopupPlacement::Hidden
+            } else {
+                CommandPopupPlacement::Overlay
+            },
+            working_tip,
+            ..Default::default()
+        };
+        let bottom = chat_widget.bottom_pane_renderable(ComposerRenderOptions {
+            footer: prompt_footer.as_ref().or(footer.as_ref()),
+            composer_gap: composer_gap.as_ref(),
+            ..options(view.has_active_interaction())
+        });
+        let agents_overview_present = chat_widget
             .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
             .is_some();
-        let bottom_height = if dashboard_visible {
-            screen_size.height
-        } else {
-            bottom
-                .desired_height(screen_size.width)
-                .min(screen_size.height)
+        let measure_bottom = |bottom: &dyn Renderable| {
+            if agents_overview_present {
+                area.height
+            } else {
+                bottom.desired_height(area.width).min(area.height)
+            }
         };
+        let bottom_height = measure_bottom(&bottom);
         drop(bottom);
-        let available = screen_size.height.saturating_sub(bottom_height);
+        let rows_above_composer = area.height - bottom_height;
         let mut bottom_area = Rect::new(
-            /*x*/ 0,
-            screen_size.height.saturating_sub(bottom_height),
-            screen_size.width,
+            area.x,
+            area.bottom().saturating_sub(bottom_height),
+            area.width,
             bottom_height,
         );
-        let mut rendered_cursor = None;
-        let mut footer_height_changed = false;
-        let mut feedback_tick = None;
-        let mut blossom_tick = None;
-        let mut transcript_bottom = available.saturating_sub(u16::from(composer_gap.is_none()));
-        tui.draw(screen_size.height, |frame| {
-            chat_widget.rendered_selection.borrow_mut().areas.clear();
-            ratatui::widgets::Clear.render(
-                Rect::new(/*x*/ 0, /*y*/ 0, screen_size.width, available),
-                frame.buffer,
-            );
-            let mut completion_tip_area = view.render_with_turn_tip_space(
-                Rect::new(
-                    /*x*/ 0,
-                    /*y*/ 0,
-                    transcript_width,
-                    transcript_bottom,
-                ),
+        let mut transcript_area = Rect::new(
+            area.x,
+            area.y,
+            transcript_width,
+            rows_above_composer.saturating_sub(u16::from(composer_gap.is_none())),
+        );
+        chat_widget.rendered_selection.borrow_mut().areas.clear();
+        ratatui::widgets::Clear.render(area, frame.buffer);
+        let mut completion_tip_area = view.render_with_turn_tip_space(
+            transcript_area,
+            frame.buffer,
+            &self.transcript_cells,
+            completion_tip,
+        );
+        if let Some(gap) = composer_gap.as_mut() {
+            gap.needs_separator = rows_above_composer > 1
+                // Keep the tip under the pointer when selection hints or copy feedback appear.
+                && prepared.turn_tip.is_none()
+                && chat_widget.no_modal_or_popup_active()
+                && view.composer_gap_has_content(transcript_width, prepared.composer_hint.as_ref(), now);
+        }
+        // Refresh the hint using the rows just painted.
+        let mut footer = prompt_footer
+            .or_else(|| view.footer_with_navigation(footer_width, motion, latest_navigation));
+        if let Some(footer) = footer.as_mut().filter(|footer| footer.is_interactive)
+            && let Some(items) = self
+                .key_chord_matcher
+                .pending_hint_items(&self.keymap.chords, footer_width)
+            && let Some(progress) = footer.text.lines.last_mut()
+        {
+            *progress = crate::bottom_pane::footer_hint_items_line(&items);
+        }
+        let bottom = chat_widget.bottom_pane_renderable(ComposerRenderOptions {
+            footer: footer.as_ref(),
+            composer_gap: composer_gap.as_ref(),
+            ..options(view.has_active_interaction())
+        });
+        let updated_bottom_height = measure_bottom(&bottom);
+        let mut needs_redraw = updated_bottom_height != bottom_height;
+        if needs_redraw && composer_gap.as_ref().is_some_and(|gap| gap.needs_separator) {
+            bottom_area.height = updated_bottom_height;
+            bottom_area.y = area.bottom().saturating_sub(bottom_area.height);
+            // If the separator changes the composer height, repaint the transcript now
+            // so its follow control lines up with the gap drawn below. Other height
+            // changes request another frame after this draw.
+            ratatui::widgets::Clear.render(bottom_area, frame.buffer);
+            transcript_area.height = bottom_area.y - area.y;
+            completion_tip_area = view.render_with_turn_tip_space(
+                transcript_area,
                 frame.buffer,
                 &self.transcript_cells,
                 completion_tip,
             );
-            if let Some(gap) = composer_gap.as_mut() {
-                gap.needs_separator = available > 1
-                    // Keep the tip under the pointer when selection hints or copy feedback appear.
-                    && turn_tip.is_none()
-                    && chat_widget.no_modal_or_popup_active()
-                    && view.composer_gap_has_content(transcript_width, composer_hint.as_ref(), now);
-            }
-            // Rendering resolves whether new activity is still hidden. Paint that result in
-            // this frame so a revision change cannot flash a stale activity hint.
-            let mut footer =
-                view.footer_with_navigation(footer_area.width, motion, latest_navigation);
-            if let Some(footer) = prompt_footer
-                .as_mut()
-                .or(footer.as_mut())
-                .filter(|footer| footer.is_interactive)
-                && let Some(items) = self
-                    .key_chord_matcher
-                    .pending_hint_items(&self.keymap.chords, footer_area.width)
-                && let Some(progress) = footer.text.lines.last_mut()
-            {
-                *progress = crate::bottom_pane::footer_hint_items_line(&items);
-            }
-            let bottom =
-                chat_widget.bottom_pane_renderable(crate::bottom_pane::ComposerRenderOptions {
-                    max_height: Some(max_composer_height),
-                    footer: prompt_footer.as_ref().or(footer.as_ref()),
-                    command_popup_placement: if view.has_active_interaction() {
-                        crate::bottom_pane::CommandPopupPlacement::Hidden
-                    } else {
-                        crate::bottom_pane::CommandPopupPlacement::Overlay
-                    },
-                    composer_gap: composer_gap.as_ref(),
-                    working_tip,
-                    ..Default::default()
-                });
-            footer_height_changed = !dashboard_visible
-                && bottom
-                    .desired_height(screen_size.width)
-                    .min(screen_size.height)
-                    != bottom_height;
-            if footer_height_changed && composer_gap.as_ref().is_some_and(|gap| gap.needs_separator)
-            {
-                bottom_area.height = bottom
-                    .desired_height(screen_size.width)
-                    .min(screen_size.height);
-                bottom_area.y = screen_size.height.saturating_sub(bottom_area.height);
-                // Resolve controls with the compact viewport first, then make room for
-                // their separator. Resizing must not preserve a stale return control.
-                ratatui::widgets::Clear.render(bottom_area, frame.buffer);
-                transcript_bottom = bottom_area.y;
-                completion_tip_area = view.render_with_turn_tip_space(
-                    Rect::new(
-                        /*x*/ 0,
-                        /*y*/ 0,
-                        transcript_width,
-                        transcript_bottom,
-                    ),
-                    frame.buffer,
-                    &self.transcript_cells,
-                    completion_tip,
-                );
-                footer_height_changed = false;
-            }
-            blossom_tick = chat_widget
-                .empty_state_animation
-                .borrow_mut()
-                .render_first_screen(
-                    Rect {
-                        width: screen_size.width,
-                        ..view.remaining_area()
-                    },
-                    frame.buffer,
-                    composer,
-                    MotionMode::from_animations_enabled(self.local_settings.tui.animations),
-                );
-            bottom.render(bottom_area, frame.buffer);
-            if let (Some(tip), Some(area)) = (completion_tip, completion_tip_area) {
-                tip.render(area, frame.buffer);
-            }
-            let follow_area = if let Some(gap) = composer_gap.as_ref() {
-                Some(Rect {
-                    width: transcript_width,
-                    ..gap.area.get()
-                })
-            } else {
-                (available > 0).then(|| {
-                    Rect::new(
-                        /*x*/ 0,
-                        available - 1,
-                        transcript_width,
-                        /*height*/ 1,
-                    )
-                })
-            }
-            .filter(|_| chat_widget.no_modal_or_popup_active());
-            feedback_tick =
-                view.render_composer_gap(follow_area, composer_hint.as_ref(), frame.buffer, now);
-            chat_widget
-                .rendered_selection
-                .borrow_mut()
-                .register_layout(chat_widget.take_warning_body());
-            if let Some((_, tip)) = &turn_tip
-                && let Some(area) = tip.rendered.get()
-            {
-                chat_widget
-                    .rendered_selection
-                    .borrow_mut()
-                    .register(area, /*invalidate*/ false);
-            }
-            chat_widget
-                .rendered_selection
-                .borrow_mut()
-                .render(frame.buffer);
-            chat_widget.note_rendered_width(screen_size.width);
-            let dialog = chat_widget.centered_dialog();
-            let (foreground, foreground_area): (&dyn Renderable, Rect) =
-                if let Some(dialog) = &dialog {
-                    let area = Rect::new(
-                        /*x*/ 0,
-                        /*y*/ 0,
-                        screen_size.width,
-                        screen_size.height,
-                    );
-                    dialog.render(area, frame.buffer);
-                    (dialog, area)
-                } else {
-                    (&bottom, bottom_area)
-                };
-            rendered_cursor = foreground.cursor_pos(foreground_area);
-            if let Some(position) = rendered_cursor {
-                frame.set_cursor_style(foreground.cursor_style(foreground_area));
-                frame.set_cursor_position(position);
-            }
-            if chat_widget.no_modal_or_popup_active() {
-                frame.transcript_images = view.image_placements();
-            }
-        })?;
-        if let Some((surface, tip)) = &turn_tip
-            && tip.rendered.get().is_some()
-        {
-            self.turn_tips.acknowledge(*surface);
+            needs_redraw = false;
         }
-        if footer_height_changed {
-            tui.frame_requester().schedule_frame();
+        let blossom_tick = chat_widget
+            .empty_state_animation
+            .borrow_mut()
+            .render_first_screen(
+                area,
+                Rect {
+                    width: area.width,
+                    ..view.remaining_area()
+                },
+                frame.buffer,
+                composer,
+                MotionMode::from_animations_enabled(self.local_settings.tui.animations),
+            );
+        bottom.render(bottom_area, frame.buffer);
+        if let (Some(tip), Some(area)) = (completion_tip, completion_tip_area) {
+            tip.render(area, frame.buffer);
         }
-        if let Some(delay) = feedback_tick {
-            tui.frame_requester().schedule_frame_in(delay);
+        let follow_area = if let Some(gap) = composer_gap.as_ref() {
+            Some(Rect {
+                width: transcript_width,
+                ..gap.area.get()
+            })
+        } else {
+            (bottom_area.y > area.y).then(|| {
+                Rect::new(
+                    area.x,
+                    bottom_area.y - 1,
+                    transcript_width,
+                    /*height*/ 1,
+                )
+            })
         }
-        if let Some(delay) = blossom_tick {
-            tui.frame_requester().schedule_frame_in(delay);
-        }
+        .filter(|_| chat_widget.no_modal_or_popup_active());
+        let feedback_tick = view.render_composer_gap(
+            follow_area,
+            prepared.composer_hint.as_ref(),
+            frame.buffer,
+            now,
+        );
+        let first_image = frame.image_placements.len();
+        prepared.paint_foreground(frame, chat_widget, view, &bottom, bottom_area);
         let animating =
             view.is_following() && active_key.is_some_and(|key| key.animation_tick.is_some());
         let loading = view.is_loading_history() && motion == MotionMode::Animated;
-        if animating || loading {
-            tui.frame_requester()
-                .schedule_frame_in(Duration::from_millis(/*millis*/ 50));
+        PaintedConversation {
+            image_range: first_image..frame.image_placements.len(),
+            bottom_area,
+            shown_tip: prepared
+                .turn_tip
+                .as_ref()
+                .and_then(|(surface, tip)| tip.rendered.get().map(|_| *surface)),
+            needs_redraw,
+            delayed_frames: [
+                feedback_tick,
+                blossom_tick,
+                (animating || loading).then_some(Duration::from_millis(50)),
+            ],
         }
-        self.refresh_link_hover(tui)?;
-        Ok(bottom_area)
     }
 
-    /// Keep modal input ownership while allowing selection and copying in the visible transcript.
+    /// Acknowledge only a presented frame. Keep neighboring images for the next input refresh.
+    pub(super) fn finish_conversation(
+        &mut self,
+        tui: &mut tui::Tui,
+        painted: PaintedConversation,
+    ) -> Result<Rect> {
+        if self.conversation_frame.behind_dialog.is_none() {
+            self.conversation_frame.caller_images.clear();
+            if self.conversation_frame.inset.is_some() {
+                self.conversation_frame.caller_images.extend(
+                    tui.retained_images
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| !painted.image_range.contains(index))
+                        .map(|(_, placement)| placement.registration()),
+                );
+            }
+        }
+        if let Some(surface) = painted.shown_tip {
+            self.turn_tips.acknowledge(surface);
+        }
+        let frames = tui.frame_requester();
+        if painted.needs_redraw {
+            frames.schedule_frame();
+        }
+        for delay in painted.delayed_frames.into_iter().flatten() {
+            frames.schedule_frame_in(delay);
+        }
+        self.refresh_link_hover(tui)?;
+        Ok(painted.bottom_area)
+    }
+
+    pub(super) fn paint_centered_dialog(&mut self, frame: &mut Frame<'_>) {
+        self.conversation_frame.behind_dialog = None;
+        let Some(dialog) = self.chat_widget.centered_dialog() else {
+            return;
+        };
+        let area = frame.area();
+        if self.conversation_frame.inset.is_some() {
+            self.conversation_frame.behind_dialog = Some(frame.buffer.clone());
+            // The conversation omits its own images while a dialog is open. Keep the
+            // caller's registrations so dismissal can restore graphics behind the dialog.
+            self.conversation_frame.caller_images = std::mem::take(&mut frame.image_placements);
+            let covered = dialog.area(area);
+            frame.image_placements.extend(
+                self.conversation_frame
+                    .caller_images
+                    .iter()
+                    .filter(|placement| !covered.intersects(placement.area))
+                    .map(ImagePlacement::registration),
+            );
+        }
+        dialog.render(area, frame.buffer);
+        frame.cursor_position = dialog.cursor_pos(area).map(Into::into);
+        frame.set_cursor_style(dialog.cursor_style(area));
+    }
+
+    pub(super) fn conversation_area(&self, viewport: Rect) -> Rect {
+        self.conversation_frame
+            .inset
+            .map_or(viewport, |area| area.intersection(viewport))
+    }
+
+    pub(super) fn refresh_owned_transcript(&mut self, tui: &mut tui::Tui) -> Result<()> {
+        let size = tui.prepare_draw_size()?;
+        self.render_owned_transcript(tui, size)?;
+        Ok(())
+    }
+
+    /// Keep modal input ownership while allowing selection, copying, and disclosure in the visible transcript.
     pub(super) fn handle_owned_transcript_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -458,8 +603,7 @@ impl App {
         if let TuiEvent::Mouse(mouse) = event {
             let composer_ready = self.chat_widget.prepare_composer_mouse(*mouse);
             if mouse.kind != crossterm::event::MouseEventKind::Moved {
-                let size = tui.prepare_draw_size()?;
-                self.render_owned_transcript(tui, size)?;
+                self.refresh_owned_transcript(tui)?;
             }
             if self.chat_widget.no_modal_or_popup_active()
                 && self
@@ -529,8 +673,7 @@ impl App {
                     _ => true,
                 })
         {
-            let size = tui.prepare_draw_size()?;
-            self.render_owned_transcript(tui, size)?;
+            self.refresh_owned_transcript(tui)?;
         }
         if matches!(event, TuiEvent::Key(_))
             || matches!(event, TuiEvent::Mouse(mouse) if matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_)))
@@ -551,7 +694,7 @@ impl App {
         // Search and selection still consume Escape first to dismiss their interaction.
         if let TuiEvent::Key(key) = event
             && !self.transcript_view.has_active_interaction()
-            && self.chat_widget.is_external_writer_view()
+            && (self.chat_widget.is_external_writer_view() || self.chat_widget.has_provider_error())
             && crate::key_hint::plain(KeyCode::Esc).is_press(*key)
         {
             return Ok(false);
@@ -670,9 +813,13 @@ impl App {
             TuiEvent::Key(key) => self
                 .transcript_view
                 .handle_key(*key, &self.transcript_cells),
-            TuiEvent::Mouse(mouse) if modal_transcript_mouse => self
-                .transcript_view
-                .handle_selection_mouse(*mouse, &self.transcript_cells),
+            TuiEvent::Mouse(mouse) if modal_transcript_mouse => {
+                self.transcript_view.handle_selection_mouse(
+                    *mouse,
+                    &self.transcript_cells,
+                    self.chat_widget.current_patch_approval(),
+                )
+            }
             TuiEvent::Mouse(mouse) => self
                 .transcript_view
                 .handle_mouse(*mouse, &self.transcript_cells),

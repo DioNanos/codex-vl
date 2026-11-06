@@ -15,10 +15,12 @@ use crate::environment_selection::validate_environment_ids_and_cwds;
 use crate::exec_policy::AllowPrefixRules;
 use codex_features::Feature;
 use codex_prompts::ResolvedModelMessages;
+use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::GuardianV2TranscriptModelConfig;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnSettingsUpdate;
@@ -87,16 +89,16 @@ fn check_legacy_turn_safety(
 /// Model-owned portion of the temporary legacy-turn safety check. Ordinary
 /// model metadata may differ so diagnostics can expose unmigrated consumers.
 fn check_legacy_model_safety(
-    admitted: &ModelInfo,
-    current: &ModelInfo,
-    destination: &ModelInfo,
+    admitted: &CatalogModel,
+    current: &CatalogModel,
+    destination: &CatalogModel,
     admitted_config: &Config,
     live_config: &Config,
 ) -> Result<(), String> {
-    if admitted.used_fallback_model_metadata || current.used_fallback_model_metadata {
+    if admitted.origin == ModelOrigin::Synthetic || current.origin == ModelOrigin::Synthetic {
         return Err("the active model has only fallback metadata".to_string());
     }
-    if destination.used_fallback_model_metadata {
+    if destination.origin == ModelOrigin::Synthetic {
         return Err("the destination model has only fallback metadata".to_string());
     }
     let retained_models = [admitted, current];
@@ -197,7 +199,8 @@ fn check_legacy_model_safety(
             )
             .map_err(|error| error.to_string())?;
         }
-        let retained_model_messages = retained_models.map(ResolvedModelMessages::from_model);
+        let retained_model_messages =
+            retained_models.map(|model| ResolvedModelMessages::from_model(model));
         let retained_auto_review = retained_model_messages
             .each_ref()
             .map(ResolvedModelMessages::auto_review);

@@ -310,7 +310,7 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
         .get_model_info("gpt-5.5", &config.to_models_manager_config())
         .await;
     model.node_repl_auto_review_required = true;
-    thread_store.insert(model);
+    thread_store.insert_arc(model.model);
     registry.thread_lifecycle_contributors()[0]
         .on_thread_start(ThreadStartInput {
             config: &config,
@@ -343,6 +343,7 @@ async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Resul
         }
         registry.tool_lifecycle_contributors()[0]
             .on_tool_start(ToolStartInput {
+                serving_assessment: None,
                 permissions: Box::pin(async { Some(Default::default()) }),
                 session_store: &session_store,
                 thread_store,
@@ -622,6 +623,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
     ] {
         fixture.registry.tool_lifecycle_contributors()[0]
             .on_tool_start(ToolStartInput {
+                serving_assessment: None,
                 permissions: Box::pin(async { panic!("unexpected permission resolution") }),
                 session_store: &fixture.session_store,
                 thread_store,
@@ -721,6 +723,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
     };
     fixture.registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &fixture.session_store,
             thread_store,
@@ -798,7 +801,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
         computer_use: Some(codex_protocol::openai_models::GuardianReviewMode::Adaptive),
         ..Default::default()
     });
-    thread_store.insert(changed_model);
+    thread_store.insert_arc(changed_model.model);
     assert_eq!(
         cached_approval(
             &fixture.registry,
@@ -1046,7 +1049,7 @@ async fn sample_configured_conversation_history_with_delivery(
             .get_models_manager()
             .get_model_info("gpt-5.5", &config.to_models_manager_config())
             .await;
-        thread_store.insert(parent_model);
+        thread_store.insert_arc(parent_model.model);
     }
     assert_eq!(
         cached_approval(
@@ -1091,6 +1094,7 @@ async fn sample_configured_conversation_history_with_delivery(
 
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &session_store,
             thread_store,
@@ -1212,6 +1216,7 @@ impl GuardianFailureFixture {
         };
         self.registry.tool_lifecycle_contributors()[0]
             .on_tool_start(ToolStartInput {
+                serving_assessment: None,
                 permissions: Box::pin(async { Some(Default::default()) }),
                 session_store: &self.session_store,
                 thread_store,
@@ -1311,7 +1316,7 @@ async fn contributor_fails_closed_when_model_configuration_is_invalid() -> Resul
         .test
         .codex
         .thread_extension_data()
-        .insert(parent_model);
+        .insert_arc(parent_model.model);
 
     fixture.score_tool(ToolName::plain("read_file")).await;
     fixture.assert_fails_closed("elevated_risk").await
@@ -2467,7 +2472,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
         .get_model_info("gpt-5.5", &config.to_models_manager_config())
         .await;
     model_info.slug = "protected-model".to_owned();
-    thread_store.insert(model_info);
+    thread_store.insert_arc(model_info.model);
     // A late prewarm preview must leave the active model's review requirements intact.
     let _ = codex_core::guardian_review::prepare_review_prewarm(&test.codex).await?;
     let authorization = ScoreAuthorization::current(&test.codex, &Default::default()).await;
@@ -2508,6 +2513,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
     };
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { panic!("unexpected permission resolution") }),
             session_store: &session_store,
             thread_store,
@@ -2813,6 +2819,7 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
     };
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &session_store,
             thread_store,
@@ -3341,10 +3348,11 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
         retained_context: parent_context_for_review.then(codex_history::RetainedContext::default),
         review_context_revision,
     };
-    thread_store.insert(parent_model);
+    thread_store.insert_arc(parent_model.model);
 
     registry.tool_lifecycle_contributors()[0]
         .on_tool_start(ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &session_store,
             thread_store,
@@ -3439,6 +3447,7 @@ async fn assert_parent_compaction_reuse(parent_context_for_review: bool) -> Resu
         let call_id = format!("call-{}", index + 2);
         registry.tool_lifecycle_contributors()[0]
             .on_tool_start(ToolStartInput {
+                serving_assessment: None,
                 permissions: Box::pin(async { Some(Default::default()) }),
                 session_store: &session_store,
                 thread_store,
@@ -3545,6 +3554,7 @@ async fn cached_approval_respects_action_order_and_wrapper_lag() -> Result<()> {
             },
         };
         progress.observe(&ToolStartInput {
+            serving_assessment: None,
             permissions: Box::pin(async { Some(Default::default()) }),
             session_store: &fixture.session_store,
             thread_store: store,
@@ -3692,6 +3702,7 @@ async fn cached_approval(
         }
     };
     let input = codex_extension_api::ApprovalDecisionInput {
+        serving_assessment: None,
         permissions: Some(&Default::default()),
         approval_id: "cache-probe",
         tool_call_id: action.get("id").and_then(serde_json::Value::as_str),
@@ -3745,6 +3756,7 @@ fn seed_cached_score(
 
 fn observe_unscored_call(progress: &GuardianV2ScoreProgress, store: &ExtensionData) -> usize {
     progress.observe(&ToolStartInput {
+        serving_assessment: None,
         permissions: Box::pin(async { Some(Default::default()) }),
         session_store: store,
         thread_store: store,

@@ -584,6 +584,11 @@ fn probe_kill(pid: u32) -> KillProbe {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DetailsOutcome {
     /// The description was read.
+    ///
+    /// Production never constructs this: the details-read success path
+    /// returns without classification, and only the decision-table tests
+    /// build it (they pin `(_, Read) => Active`).
+    #[allow(dead_code)]
     Read,
     /// The description is missing (`ENOENT`).
     NotFound,

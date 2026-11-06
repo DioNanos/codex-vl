@@ -29,6 +29,7 @@ use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::GeneratedImageRef;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCErrorError;
@@ -133,7 +134,6 @@ use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 use std::fs::FileTimes;
 use std::io::Write;
 use std::path::Path;
@@ -5512,6 +5512,8 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
                 gate: None,
                 body: responses::sse(vec![
                     responses::ev_response_created("resp-2"),
+                    responses::ev_message_item_added("earlier", ""),
+                    responses::ev_assistant_message("earlier", "First progress update"),
                     responses::ev_message_item_added("progress", ""),
                     responses::ev_assistant_message("progress", "Checking"),
                     responses::ev_message_item_added("msg-2", ""),
@@ -5588,20 +5590,18 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
         primary.read_stream_until_notification_message("turn/started"),
     )
     .await??;
-    // Starting the gated reply means the prompt and the progress message have completed.
-    let mut message_starts = HashMap::new();
-    timeout(DEFAULT_READ_TIMEOUT, async {
-        loop {
-            let started: ItemStartedNotification =
-                primary.read_notification("item/started").await?;
-            assert_eq!(started.turn_id, running_turn.id);
-            if started.item.id() == "msg-2" {
-                return Ok::<(), anyhow::Error>(());
-            }
-            message_starts.insert(started.item.id().to_owned(), started.started_at_ms);
-        }
-    })
-    .await??;
+    // The final item is gated. Record exactly what subscribers saw before reconnecting.
+    let mut live_items = Vec::new();
+    for _ in 0..3 {
+        let completed: ItemCompletedNotification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            primary.read_notification("item/completed"),
+        )
+        .await??;
+        assert_eq!(completed.turn_id, running_turn.id);
+        live_items.push(completed.item);
+    }
+    let summary_items = [live_items[0].clone(), live_items[2].clone()];
 
     let resume_id = primary
         .send_thread_resume_request(ThreadResumeParams {
@@ -5673,6 +5673,10 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
         "hot paginated resume should wait for a real token usage update"
     );
 
+    let history_db = codex_state::open_thread_history_db(
+        &codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+    )
+    .await?;
     for (exclude_turns, items_view) in [
         (true, None),
         (true, Some(TurnItemsView::Full)),
@@ -5700,25 +5704,50 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
             page.data[0].items_view,
             items_view.unwrap_or(TurnItemsView::Summary)
         );
-        assert!(matches!(
-            page.data[0].items.as_slice(),
-            [codex_app_server_protocol::ThreadItem { payload: ThreadItemPayload::UserMessage { .. }, .. }, codex_app_server_protocol::ThreadItem { payload: ThreadItemPayload::AgentMessage { text, .. }, .. }] if text == "Checking"
-        ));
-        assert_eq!(
-            page.data[0]
-                .items
-                .iter()
-                .filter_map(|item| Some((item.id().to_owned(), item.started_at_ms?)))
-                .collect::<std::collections::HashMap<_, _>>(),
-            message_starts
-        );
+        let page_turn = &page.data[0];
+        let expected = if page_turn.items_view == TurnItemsView::Full {
+            live_items.as_slice()
+        } else {
+            &summary_items
+        };
+        assert_eq!(page_turn.items, expected);
+        if page_turn.items_view == TurnItemsView::Full {
+            // Simulate a prepared page that does not yet include the live turn.
+            let deleted = sqlx::query("DELETE FROM thread_turns WHERE turn_id = ?")
+                .bind(&running_turn.id)
+                .execute(&history_db)
+                .await?;
+            assert_eq!(deleted.rows_affected(), 1);
+        }
         if !exclude_turns {
             let full_turn = resumed.thread.turns.last().expect("full active turn");
             assert_eq!(full_turn.id, running_turn.id);
             assert_eq!(full_turn.items_view, TurnItemsView::Full);
-            assert!(!full_turn.items.is_empty());
+            assert_eq!(full_turn.items, live_items);
         }
     }
+
+    // An unreadable item only fails requests that need its text.
+    sqlx::query("UPDATE thread_items SET item_json = json_set(item_json, '$.text', '') WHERE turn_id = ? AND item_id = 'earlier'")
+        .bind(&running_turn.id).execute(&history_db).await?;
+    let missing_id = primary
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        primary.read_stream_until_error_message(RequestId::Integer(missing_id)),
+    )
+    .await??;
+    assert_eq!(
+        error.error.message,
+        format!(
+            "saved history is missing completed assistant items for turn {}",
+            running_turn.id
+        )
+    );
 
     let asc_resume_id = primary
         .send_thread_resume_request(ThreadResumeParams {
@@ -5727,7 +5756,7 @@ async fn thread_resume_rejoins_running_paginated_thread_with_initial_page() -> R
             initial_turns_page: Some(ThreadResumeInitialTurnsPageParams {
                 limit: Some(1),
                 sort_direction: Some(SortDirection::Asc),
-                items_view: Some(TurnItemsView::NotLoaded),
+                items_view: Some(TurnItemsView::Full),
             }),
             ..Default::default()
         })

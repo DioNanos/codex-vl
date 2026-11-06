@@ -4,6 +4,39 @@ All notable Codex VL changes are tracked here.
 
 Codex VL tracks OpenAI Codex upstream, but this changelog only covers fork-specific work.
 
+## 0.167.0-vl.1 - 2026-11-06 - Upstream rust-v0.167.0
+
+### Codex VL changes
+
+- Upstream `rust-v0.167.0`: the agent command center opens in embedded mode
+  with `codex agents --no-daemon` and marks unread results and sessions, the
+  terminal session picker switches between connected backends while keeping
+  drafts, local image attachments preview in the composer and viewed image
+  paths become clickable, Google Cloud Vertex AI setup joins onboarding under
+  "Sign in another way" behind the `gcp_setup_wizard` feature, system proxy
+  support is exposed as an experimental setting, and patch details expand
+  inline while an approval prompt is open. Upstream fixes: saved chats stay
+  visible after model provider changes with an editable continuation prompt
+  for chats that cannot resume, `Ctrl+L` clears the display while keeping
+  history reachable through `Ctrl+T`, an exposed leading bang stays a literal
+  draft, network approval prompts close when their requests end and serialize
+  per endpoint, realtime V3 conversations preserve completed speech in chat
+  history, and context compaction accounts for retained output from failed
+  responses and responses without usable usage data. Upstream chores: DotSlash
+  manifests reference the Cargo packages shipped with the release and Linux
+  musl builds use fewer allocator arenas to reduce idle memory after
+  conversations unload.
+- Vivling session commands: `/vivling status`, `/vivling layout`, and
+  `/vivling loop-strategy` parse case-insensitively with whole-word argument
+  matching, `/vivling help` now lists `layout`, `loop-strategy`, and `memory`
+  with deprecated long forms resolved by their full command spelling, the
+  model errors say what the session commands actually do, `/loop` is
+  reachable directly from the slash command, and status distinguishes
+  managed-loop readiness from loop-owner readiness. Docs: the Vivling
+  command reference (`docs/vivling_commands.md`) covers every `/vivling`
+  subcommand, the sibling `/vl`, `/vla`, and `/loop` commands, and the
+  keyboard shortcuts, linked from the README.
+
 ## 0.166.0-vl.2 - 2026-11-03 - V8 security rebuild
 
 ### Codex VL changes

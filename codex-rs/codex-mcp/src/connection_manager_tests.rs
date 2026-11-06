@@ -77,10 +77,12 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
+use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::NumberOrString;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
+use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerConfig;
 use rmcp::model::Tool;
@@ -147,6 +149,7 @@ impl McpConnectionSet {
                     identity: None,
                     client,
                     startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+                    initialized_apps: None,
                     startup_trigger: None,
                     legacy_fallback: None,
                     _diagnostics_guard: LIVE_CONNECTIONS.track(),
@@ -299,7 +302,22 @@ struct RefreshTestTransportFactory {
 
 impl ServerHandler for RefreshTestTransportFactory {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult::with_all_items(vec![
+            ResourceTemplate::new("test://{id}", "test-template"),
+        ]))
     }
 
     async fn list_tools(
@@ -603,6 +621,35 @@ pub(crate) async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> A
         startup_reconnect: None,
         cancel_token: CancellationToken::new(),
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_apps_client_publication_expires_at_the_configured_startup_timeout() {
+    let mut manager = McpConnectionSet::empty(/*prefix_mcp_tool_names*/ false);
+    let mut client = create_ready_async_managed_client(Vec::new()).await;
+    client.client = futures::future::pending().boxed().shared();
+    client.startup_complete.store(false, Ordering::Release);
+    manager.insert_test_client(CODEX_APPS_MCP_SERVER_NAME, client);
+    let view = manager.servers.get_mut(CODEX_APPS_MCP_SERVER_NAME).unwrap();
+    let connection = Arc::get_mut(&mut view.connection).unwrap();
+    let (_publisher, initialized) = watch::channel(None);
+    connection.initialized_apps = Some(initialized);
+    connection.startup_timeout = Duration::from_secs(/*secs*/ 2);
+
+    let mut borrow = Box::pin(connection.initialized_apps_client());
+    assert!(futures::poll!(&mut borrow).is_pending());
+    tokio::time::advance(Duration::from_secs(/*secs*/ 1)).await;
+    assert!(futures::poll!(&mut borrow).is_pending());
+    tokio::time::advance(Duration::from_secs(/*secs*/ 1)).await;
+    let std::task::Poll::Ready(Err(error)) = futures::poll!(&mut borrow) else {
+        panic!(
+            "expected the early borrow to expire while startup and publication were still pending"
+        );
+    };
+    assert_eq!(
+        error.to_string(),
+        "timed out waiting for the initialized Apps client"
+    );
 }
 
 #[tokio::test]
@@ -2229,6 +2276,68 @@ async fn hosted_apps_protocol_mode_is_independent_of_generic_mode() -> anyhow::R
         );
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn resource_template_listings_skip_only_hosted_apps() -> anyhow::Result<()> {
+    let name = CODEX_APPS_MCP_SERVER_NAME;
+    let codex_home = tempdir()?;
+    let cache = create_codex_apps_tools_cache_context(
+        codex_home.path().into(),
+        /*account_id*/ None,
+        /*chatgpt_user_id*/ None,
+    );
+    let mut manager = create_test_manager_with_ready_apps_client(
+        cache, "test", /*list_started*/ None, /*release_list*/ None,
+    )
+    .await?;
+    let server = reusable_server_config("http://localhost/mcp");
+    let template = ResourceTemplate::new("test://{id}", "test-template");
+    for (registration, expected) in [
+        (
+            crate::McpServerRegistration::from_hosted_apps(
+                "host",
+                /*contribution_order*/ 0,
+                server.clone(),
+            ),
+            Vec::new(),
+        ),
+        (
+            crate::McpServerRegistration::from_extension(
+                name.to_string(),
+                "extension",
+                /*contribution_order*/ 0,
+                server,
+            ),
+            vec![template],
+        ),
+    ] {
+        let mut config = crate::mcp::tests::test_mcp_config(codex_home.path().into());
+        let mut catalog = crate::ResolvedMcpCatalog::builder();
+        catalog.register(registration);
+        config.mcp_server_catalog = catalog.build();
+        let config = Arc::new(config);
+        Arc::get_mut(&mut manager).expect("unbound manager").config = Some(Arc::clone(&config));
+
+        let binding = manager
+            .capture_binding_with_metadata(
+                config,
+                /*plugins_available*/ false,
+                &[],
+                &HashSet::new(),
+            )
+            .await;
+        assert_eq!(
+            binding
+                .list_resource_templates(name, /*params*/ None)
+                .await?
+                .resource_templates,
+            expected
+        );
+        let all = binding.list_all_resource_templates(|_| true).await;
+        assert_eq!(all.get(name), (!expected.is_empty()).then_some(&expected));
+    }
     Ok(())
 }
 
@@ -5437,6 +5546,7 @@ async fn manager_with_reusable_ready_server(
                 startup_timeout: config
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
+                initialized_apps: None,
                 startup_trigger: None,
                 legacy_fallback: None,
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
@@ -5895,6 +6005,7 @@ async fn reconciliation_reuses_connection_without_relisting_regular_tools() -> a
                 startup_timeout: config
                     .startup_timeout_sec
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
+                initialized_apps: None,
                 startup_trigger: None,
                 legacy_fallback: None,
                 _diagnostics_guard: LIVE_CONNECTIONS.track(),
@@ -6732,6 +6843,7 @@ async fn reconciliation_replaces_closed_connections() -> anyhow::Result<()> {
         startup_timeout: config
             .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
+        initialized_apps: None,
         startup_trigger: None,
         legacy_fallback: None,
         _diagnostics_guard: LIVE_CONNECTIONS.track(),

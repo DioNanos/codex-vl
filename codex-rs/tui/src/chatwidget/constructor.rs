@@ -4,7 +4,9 @@ use super::*;
 
 impl ChatWidget {
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
-        Self::new_with_op_target(common, CodexOpTarget::AppEvent)
+        let mut widget = Self::new_with_op_target(common, CodexOpTarget::AppEvent);
+        widget.bottom_pane.enable_agents_navigation();
+        widget
     }
 
     pub(super) fn new_with_op_target(
@@ -182,6 +184,7 @@ impl ChatWidget {
             backend_banner_notice_model: None,
             luna_reserve_notice_account_id: None,
             warning_display_state: WarningDisplayState::default(),
+            composer_images: None,
             rendered_selection: Default::default(),
             rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             add_credits_nudge_email_in_flight: None,
@@ -247,6 +250,7 @@ impl ChatWidget {
             loop_jobs: BTreeMap::new(),
             blocks_direct_input: false,
             external_writer_view: false,
+            provider_error: None,
             fork_in_progress: false,
             misalignment_policy_violation: None,
             normal_placeholder_text: placeholder,
