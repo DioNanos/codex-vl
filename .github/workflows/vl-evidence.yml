@@ -1,0 +1,809 @@
+name: vl-evidence
+
+# Fork regression evidence: the full-suites job runs the COMPLETE,
+# unfiltered test suite (cargo test --locked --no-fail-fast, default
+# features, no test-selection filters) of every crate the fork touches
+# -- the crates in the merge diff plus the two test-support packages
+# that carry their own tests -- three times on fresh runners with no
+# cache, per the merge register's literal "full suite of every touched
+# crate three consecutive times" requirement. --no-fail-fast keeps
+# every test binary of a crate running after a red one, so later
+# binaries are never skipped. Every crate step reports its per-crate
+# "N passed / M failed" total in the log; the single crate with no
+# test targets (codex-bwrap) records a zero count and is evidenced by
+# its green compile instead. The same workflow runs unchanged on the
+# public base release to separate base/environment failures from
+# merge-introduced ones.
+
+on:
+  push:
+    branches:
+      - "ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_MIN_STACK: "8388608"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  full-suites:
+    name: full suites (corsa ${{ matrix.corsa }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        corsa: ["1", "2", "3"]
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install the system libraries the unfiltered suites use (upstream full-CI set)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
+      - name: "Full suite: codex-api (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-api \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-api.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-api.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-api.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-api: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-app-server \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-app-server.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-app-server.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-client (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-app-server-client \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-app-server-client.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-app-server-client.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-client.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-client: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-daemon (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-app-server-daemon \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-app-server-daemon.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-app-server-daemon.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-daemon.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-daemon: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-protocol (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-app-server-protocol \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-app-server-protocol.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-app-server-protocol.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-protocol.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-protocol: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-transport (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-app-server-transport \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-app-server-transport.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-app-server-transport.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-transport.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-transport: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: app_test_support (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p app_test_support \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-app_test_support.out || status=1
+          passed="$(grep -E '^test result:' m12-app_test_support.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-app_test_support.out | awk '{s+=$6} END{print s+0}')"
+          echo "app_test_support: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-arg0 (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-arg0 \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-arg0.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-arg0.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-arg0.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-arg0: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-cli (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-cli \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-cli.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-cli.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-cli.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-cli: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-cloud-tasks (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-cloud-tasks \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-cloud-tasks.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-cloud-tasks.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-cloud-tasks.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-cloud-tasks: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-code-mode (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-code-mode \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-code-mode.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-code-mode.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-code-mode.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-code-mode: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-config (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-config \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-config.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-config.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-config.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-config: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-core (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-core \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-core.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: core_test_support (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p core_test_support \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-core_test_support.out || status=1
+          passed="$(grep -E '^test result:' m12-core_test_support.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-core_test_support.out | awk '{s+=$6} END{print s+0}')"
+          echo "core_test_support: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-core-plugins (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-core-plugins \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-core-plugins.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-core-plugins.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-core-plugins.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-core-plugins: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-exec (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-exec \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-exec.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-exec.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-exec.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-exec: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-exec-server (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-exec-server \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-exec-server.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-exec-server.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-exec-server.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-exec-server: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-execpolicy (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-execpolicy \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-execpolicy.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-execpolicy.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-execpolicy.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-execpolicy: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-external-agent-migration (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-external-agent-migration \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-external-agent-migration.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-external-agent-migration.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-external-agent-migration.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-external-agent-migration: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-file-search (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-file-search \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-file-search.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-file-search.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-file-search.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-file-search: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-git-utils (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-git-utils \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-git-utils.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-git-utils.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-git-utils.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-git-utils: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-goal-extension (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-goal-extension \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-goal-extension.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-goal-extension.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-goal-extension.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-goal-extension: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-hooks (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-hooks \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-hooks.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-hooks.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-hooks.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-hooks: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-install-context (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-install-context \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-install-context.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-install-context.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-install-context.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-install-context: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-linux-sandbox (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-linux-sandbox \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-linux-sandbox.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-linux-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-linux-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-linux-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-lmstudio (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-lmstudio \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-lmstudio.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-lmstudio.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-lmstudio.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-lmstudio: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-login (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-login \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-login.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-login.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-login.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-login: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-mcp (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-mcp \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-mcp.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-mcp.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-mcp.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-mcp: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-message-history (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-message-history \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-message-history.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-message-history.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-message-history.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-message-history: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-model-provider (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-model-provider \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-model-provider.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-model-provider.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-model-provider.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-model-provider: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-model-provider-info (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-model-provider-info \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-model-provider-info.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-model-provider-info.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-model-provider-info.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-model-provider-info: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-models-manager (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-models-manager \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-models-manager.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-models-manager.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-models-manager.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-models-manager: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-mxc-sandbox (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-mxc-sandbox \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-mxc-sandbox.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-mxc-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-mxc-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-mxc-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-protocol (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-protocol \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-protocol.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-protocol.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-protocol.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-protocol: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rmcp-client (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-rmcp-client \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-rmcp-client.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-rmcp-client.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rmcp-client.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rmcp-client: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rollout (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-rollout \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-rollout.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-rollout.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rollout.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rollout: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rollout-trace (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-rollout-trace \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-rollout-trace.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-rollout-trace.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rollout-trace.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rollout-trace: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-state (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-state \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-state.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-state.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-state.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-state: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-tui (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-tui \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-tui.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-tui.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-tui.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-tui: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-uds (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-uds \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-uds.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-uds.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-uds.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-uds: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-utils-process (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-utils-process \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-utils-process.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-utils-process.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-utils-process.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-utils-process: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-vivling-core (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-vivling-core \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-vivling-core.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-vivling-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-vivling-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-vivling-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-vivling-memory-agent (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-vivling-memory-agent \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-vivling-memory-agent.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-vivling-memory-agent.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-vivling-memory-agent.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-vivling-memory-agent: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-windows-sandbox (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-windows-sandbox \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-windows-sandbox.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-windows-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-windows-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-windows-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-worktree (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-worktree \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-worktree.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-worktree.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-worktree.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-worktree: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: fork-gate (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p fork-gate \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-fork-gate.out || status=1
+          passed="$(grep -E '^test result:' m12-fork-gate.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-fork-gate.out | awk '{s+=$6} END{print s+0}')"
+          echo "fork-gate: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: msa-core (unfiltered, default features)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p msa-core \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-msa-core.out || status=1
+          passed="$(grep -E '^test result:' m12-msa-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-msa-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "msa-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-bwrap (no test targets: compile evidence)"
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          cargo test --locked --no-fail-fast -p codex-bwrap \
+            2>&1 | sed -E 's#/home/[^[:space:])]+#<path>#g' | tee m12-codex-bwrap.out || status=1
+          passed="$(grep -E '^test result:' m12-codex-bwrap.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-bwrap.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-bwrap: ${passed} passed / ${failed} failed (package ships no #[test] and no doctests: a green compile of build.rs + the libcap syscall shim is the evidence)"
+          [ "$passed" -eq 0 ] || status=1
+          exit "$status"
+
+      - name: Full-suite summary
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "== per-crate passed totals (m12 logs) =="
+          for f in m12-*.out; do
+            passed="$(grep -E '^test result:' "$f" | awk '{s+=$4} END{print s+0}')"
+            failed="$(grep -E '^test result:' "$f" | awk '{s+=$6} END{print s+0}')"
+            echo "$f: ${passed} passed / ${failed} failed"
+          done
+          echo "== crates with failures =="
+          grep -lE 'test result: FAILED' m12-*.out || echo "none"
+
