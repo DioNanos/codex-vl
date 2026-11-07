@@ -113,6 +113,7 @@ use futures::StreamExt;
 use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use http::StatusCode;
+use serde::Deserialize;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -157,6 +158,7 @@ use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::extract_response_debug_context_from_api_error;
@@ -1283,63 +1285,48 @@ impl ModelClient {
         routing: ClientRouting,
         provider: &SharedModelProvider,
     ) -> Result<CurrentClientSetup> {
-        // Capture before resolving credentials so an account switch during setup cannot label
-        // an old connection with the new owner's revision.
-        let auth_owner_generation = self.auth_owner_generation();
-        let auth_changes = provider
-            .auth_manager()
-            .map(|manager| manager.auth_change_receiver());
-        loop {
-            let revision = auth_changes.as_ref().map(|changes| *changes.borrow());
-            let auth = provider.auth().await;
-            let (api_provider, redirect_policy) = match routing {
-                ClientRouting::Workspace => {
-                    let resolved = provider
-                        .responses_api_provider(&self.state.workspace_routing)
-                        .await?;
-                    (resolved.provider, resolved.redirect_policy)
-                }
-                ClientRouting::ConfiguredProvider => (
-                    provider.api_provider().await?,
-                    ClientRedirectPolicy::Default,
-                ),
-            };
-            let resolved_auth = provider
-                .api_auth_for_scope(ProviderAuthScope {
-                    agent_identity_policy: self.agent_identity_policy,
-                    session_source: self.state.session_source.clone(),
-                    agent_identity_session_fallback: self
-                        .state
-                        .agent_identity_session_fallback
-                        .clone(),
+        let routing = &routing;
+        codex_model_provider::prepare_provider_request(
+            provider.as_ref(),
+            provider.info().auth.is_none(),
+            |state| async move {
+                let auth = provider.auth().await;
+                let (api_provider, redirect_policy) = match routing {
+                    ClientRouting::Workspace => {
+                        let resolved = provider
+                            .responses_api_provider(&self.state.workspace_routing)
+                            .await?;
+                        (resolved.provider, resolved.redirect_policy)
+                    }
+                    ClientRouting::ConfiguredProvider => (
+                        provider.api_provider().await?,
+                        ClientRedirectPolicy::Default,
+                    ),
+                };
+                let resolved_auth = provider
+                    .api_auth_for_scope(ProviderAuthScope {
+                        agent_identity_policy: self.agent_identity_policy,
+                        session_source: self.state.session_source.clone(),
+                        agent_identity_session_fallback: self
+                            .state
+                            .agent_identity_session_fallback
+                            .clone(),
+                    })
+                    .await?;
+                Ok(CurrentClientSetup {
+                    auth,
+                    auth_owner_generation: state.map(|state| state.owner_generation),
+                    auth_revision: state.map(|state| state.generation),
+                    api_provider,
+                    http_client_factory: self.http_client_factory.clone(),
+                    redirect_policy,
+                    api_auth: resolved_auth.auth,
+                    agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
+                    runtime_id: None,
                 })
-                .await?;
-            // Command-backed bearer refreshes cannot change workspace routing. Keep the captured
-            // revisions so a refresh during setup still invalidates cached WebSocket state.
-            if provider.info().auth.is_none() {
-                if self.auth_owner_generation() != auth_owner_generation {
-                    return Err(std::io::Error::other(
-                        "account changed while preparing model request",
-                    )
-                    .into());
-                }
-                // Rebuild the entire bundle after a credential-only refresh, including routing.
-                if auth_changes.as_ref().map(|changes| *changes.borrow()) != revision {
-                    continue;
-                }
-            }
-            return Ok(CurrentClientSetup {
-                auth,
-                auth_owner_generation,
-                auth_revision: revision,
-                api_provider,
-                http_client_factory: self.http_client_factory.clone(),
-                redirect_policy,
-                api_auth: resolved_auth.auth,
-                agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
-                runtime_id: None,
-            });
-        }
+            },
+        )
+        .await
     }
 
     fn responses_headers(&self, auth: Option<&CodexAuth>, model: &str) -> ApiHeaderMap {
@@ -2813,11 +2800,30 @@ where
                         feedback_tags!(last_model_request_id = upstream_request_id);
                     }
                     let mapped = provider.map_api_error(err);
+                    // Terminal response output is trace evidence. Only streamed done items
+                    // belong to the continuation cache or reach tool dispatch.
+                    let completed_item_count = items_added.len();
+                    if inference_trace_attempt.needs_output_items()
+                        && let CodexErrorDetails::ResponseIncomplete(incomplete) = mapped.details()
+                    {
+                        for raw in &incomplete.partial_output {
+                            // Other discards unknown payloads and cannot be replayed as a trace item.
+                            if let Ok(item) = ResponseItem::deserialize(raw)
+                                && !matches!(item, ResponseItem::Other)
+                                && !item.id().is_some_and(|id| {
+                                    items_added.iter().any(|seen| seen.id() == Some(id))
+                                })
+                            {
+                                items_added.push(item);
+                            }
+                        }
+                    }
                     inference_trace_attempt.record_failed(
                         &mapped,
                         upstream_request_id,
                         &items_added,
                     );
+                    items_added.truncate(completed_item_count);
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
                         logged_error = true;

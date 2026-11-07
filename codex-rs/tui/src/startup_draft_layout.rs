@@ -69,6 +69,7 @@ impl Renderable for OwnedStartupLayout<'_> {
                     .flatten();
                 self.next_frame
                     .set(self.pump.blossom.borrow_mut().render_first_screen(
+                        area,
                         Rect {
                             y: header.bottom(),
                             height: bottom.y.saturating_sub(header.bottom()),

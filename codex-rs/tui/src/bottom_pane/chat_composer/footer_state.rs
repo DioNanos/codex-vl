@@ -20,6 +20,7 @@ use super::super::footer::shows_passive_footer_line;
 use super::ActivePopup;
 use crate::bottom_pane::footer::FooterKeyHints;
 use crate::bottom_pane::footer::FooterProps;
+use crate::bottom_pane::footer_content::FooterContent;
 use crate::key_hint;
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
@@ -43,6 +44,7 @@ pub(super) struct ComposerLayout {
     pub(super) status: Rect,
     pub(super) composer: Rect,
     pub(super) remote_images: Rect,
+    pub(super) thumbnails: Rect,
     pub(super) textarea: Rect,
     pub(super) popup: Rect,
     pub(super) footer: Rect,
@@ -70,6 +72,7 @@ pub(crate) enum CommandPopupPlacement {
 pub(crate) struct ComposerRenderOptions<'a> {
     /// Fullscreen limits the composer independently of activity and modal views.
     pub(crate) max_height: Option<u16>,
+    pub(crate) image_previews: Option<&'a crate::transcript_image::composer::ComposerImages>,
     pub(crate) rendered_selection:
         Option<&'a std::cell::RefCell<crate::rendered_selection::RenderedSelection>>,
     /// Reserve a shared hint row independently of whether it currently contains a notice.
@@ -79,6 +82,8 @@ pub(crate) struct ComposerRenderOptions<'a> {
     pub(crate) textarea_right_reserve: u16,
     /// Keep configured status below the composer while hints occupy the final row.
     pub(crate) separate_status_line: bool,
+    /// Topmost frame row available for suggestions overlaying the transcript.
+    pub(crate) overlay_top: u16,
     pub(crate) command_popup_placement: CommandPopupPlacement,
     pub(crate) footer: Option<&'a TranscriptFooter>,
 }
@@ -358,8 +363,7 @@ pub(super) struct FooterState {
     pub(super) collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     pub(super) goal_status_indicator: Option<GoalStatusIndicator>,
     pub(super) ide_context_active: bool,
-    pub(super) status_line_value: Option<Line<'static>>,
-    pub(super) status_line_hyperlink_url: Option<String>,
+    pub(super) status_line_value: Option<FooterContent>,
     pub(super) status_line_enabled: bool,
     pub(super) side_conversation_context_label: Option<String>,
     pub(super) loop_context_label: Option<String>,
@@ -398,16 +402,6 @@ impl FooterState {
             .checked_add(duration)
             .unwrap_or_else(Instant::now);
         self.flash = Some(FooterFlash { line, expires_at });
-    }
-
-    #[cfg(test)]
-    pub(super) fn status_line_text(&self) -> Option<String> {
-        self.status_line_value.as_ref().map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
     }
 }
 

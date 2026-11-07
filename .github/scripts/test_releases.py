@@ -1,6 +1,7 @@
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -183,6 +184,80 @@ class NpmAlphaTagTest(unittest.TestCase):
             ):
                 with self.assertRaises(subprocess.CalledProcessError):
                     npm_alpha_tag(tarball, "0.158.0-alpha.10", "alpha")
+
+
+class DotSlashReleaseConfigTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        github_dir = Path(__file__).resolve().parent.parent
+        cls.configs = {
+            filename: json.loads((github_dir / filename).read_text())["outputs"]
+            for filename in (
+                "dotslash-config.json",
+                "dotslash-argument-comment-lint-config.json",
+                "dotslash-provisioned-config.json",
+            )
+        }
+        # Names from the published rust-v0.167.0-alpha.2 release, which has no
+        # Bazel assets: https://github.com/openai/codex/releases/tag/rust-v0.167.0-alpha.2
+        cls.assets = set(
+            (github_dir / "scripts/fixtures/codex-0.167.0-alpha.2-assets.txt")
+            .read_text()
+            .splitlines()
+        )
+
+    def missing_assets(self, assets):
+        return sorted(
+            (filename, output_name, platform)
+            for filename, outputs in self.configs.items()
+            for output_name, output in outputs.items()
+            for platform, config in output["platforms"].items()
+            if not any(re.match(config["regex"], asset) for asset in assets)
+        )
+
+    def test_cargo_release_covers_all_configured_outputs(self):
+        self.assertEqual(
+            {filename: set(outputs) for filename, outputs in self.configs.items()},
+            {
+                "dotslash-config.json": {
+                    "codex",
+                    "codex-app-server",
+                    "codex-responses-api-proxy",
+                    "bwrap",
+                    "codex-command-runner",
+                    "codex-windows-sandbox-setup",
+                    "codex-windows-sandbox-service",
+                },
+                "dotslash-argument-comment-lint-config.json": {"argument-comment-lint"},
+                "dotslash-provisioned-config.json": {"codex-provisioned"},
+            },
+        )
+        self.assertFalse(any("-bazel" in asset for asset in self.assets))
+        self.assertEqual(self.missing_assets(self.assets), [])
+
+    def test_missing_cargo_asset_is_detected(self):
+        missing_asset = "codex-package-aarch64-apple-darwin.tar.zst"
+        self.assertIn(missing_asset, self.assets)
+        self.assertEqual(
+            self.missing_assets(self.assets - {missing_asset}),
+            [("dotslash-config.json", "codex", "macos-aarch64")],
+        )
+
+    def test_missing_provisioned_cargo_asset_is_detected(self):
+        for arch in ("aarch64", "x86_64"):
+            with self.subTest(arch=arch):
+                missing_asset = f"codex-provisioned-package-{arch}-apple-darwin.tar.gz"
+                self.assertIn(missing_asset, self.assets)
+                self.assertEqual(
+                    self.missing_assets(self.assets - {missing_asset}),
+                    [
+                        (
+                            "dotslash-provisioned-config.json",
+                            "codex-provisioned",
+                            f"macos-{arch}",
+                        )
+                    ],
+                )
 
 
 class StablePublicationTests(unittest.TestCase):

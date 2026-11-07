@@ -115,6 +115,10 @@ struct AuthorityChallengeProof {
     connection_id: String,
     challenge: String,
     nonce: String,
+    /// Presence pin, not a value consumer: as a non-Option field it makes a
+    /// proof without its unique id fail deserialization and the handshake
+    /// fail closed. Nothing reads the id afterwards.
+    #[allow(dead_code)]
     jti: String,
     issued_at: i64,
     expires_at: i64,

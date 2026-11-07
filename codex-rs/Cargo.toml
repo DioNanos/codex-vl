@@ -92,6 +92,7 @@ members = [
     "memories/write",
     "mermaid",
     "message-board",
+    "message-board-mcp",
     "model-provider-info",
     "mxc-sandbox",
     "models-manager",
@@ -173,7 +174,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.166.0"
+version = "0.167.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -224,6 +225,7 @@ codex-connectors = { path = "connectors" }
 codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-agent-message-board-extension = { path = "ext/agent-message-board" }
 codex-message-board = { path = "message-board" }
+codex-message-board-mcp = { path = "message-board-mcp" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
@@ -560,6 +562,7 @@ tree-sitter-powershell = "=0.26.4"
 ts-rs = "11"
 tungstenite = { version = "0.27.0", features = ["deflate", "proxy"] }
 uds_windows = "1.1.0"
+unicode-normalization = "0.1.25"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2"
 url = "2"

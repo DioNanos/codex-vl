@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
 use crate::client::ModelClientSession;
@@ -98,6 +99,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::build_hook_prompt_message;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
@@ -180,6 +182,20 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    if input.iter().any(turn_input_has_uploaded_audio_file) {
+        let result = run_hooks_and_record_inputs(
+            &sess,
+            &turn_context,
+            &turn_context.capture_current_model_info(),
+            &input,
+            PersistContext::TurnStart,
+        )
+        .await;
+        return match result {
+            Err(err) => Err(err),
+            Ok(_) => Err(uploaded_audio_disabled_error()),
+        };
+    }
     let auto_compaction_enabled = sess
         .services
         .thread_extension_data
@@ -209,7 +225,7 @@ pub(crate) async fn run_turn(
         .await
     {
         // Compaction runs before the new input is recorded, so preserve it on every failure.
-        run_hooks_and_record_inputs(
+        let _ = run_hooks_and_record_inputs(
             &sess,
             &turn_context,
             &turn_context.capture_current_model_info(),
@@ -258,7 +274,7 @@ pub(crate) async fn run_turn(
         {
             Ok(requirements) => requirements,
             Err(err) => {
-                run_hooks_and_record_inputs(
+                let _ = run_hooks_and_record_inputs(
                     &sess,
                     &turn_context,
                     &turn_context.capture_current_model_info(),
@@ -286,7 +302,7 @@ pub(crate) async fn run_turn(
     {
         Ok(step_context) => step_context,
         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-            run_hooks_and_record_inputs(
+            let _ = run_hooks_and_record_inputs(
                 &sess,
                 &turn_context,
                 &turn_context.capture_current_model_info(),
@@ -392,7 +408,7 @@ pub(crate) async fn run_turn(
         &input,
         PersistContext::TurnStart,
     )
-    .await
+    .await?
     {
         return Ok(None);
     }
@@ -491,7 +507,7 @@ pub(crate) async fn run_turn(
             &pending_input,
             PersistContext::SteeredUserInput,
         )
-        .await
+        .await?
         {
             break;
         }
@@ -570,17 +586,10 @@ pub(crate) async fn run_turn(
                 .await;
 
             // Construct the input that we will send to the model.
-            let sampling_request_input: Vec<ResponseItem> = async {
-                sess.clone_history()
-                    .await
-                    .for_prompt(
-                        &step_context.settings.model_info.input_modalities,
-                        sess.services.image_store.as_ref(),
-                    )
-                    .await
-            }
-            .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-            .await;
+            let sampling_request_input = sess
+                .clone_history()
+                .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+                .await;
 
             run_sampling_request(
                 Arc::clone(&sess),
@@ -959,7 +968,8 @@ pub(crate) async fn run_hooks_and_record_inputs(
     model_info: &ModelInfo,
     input: &[TurnInput],
     persist_context: PersistContext,
-) -> bool {
+) -> CodexResult<bool> {
+    let rejected_uploaded_audio = input.iter().any(turn_input_has_uploaded_audio_file);
     // Cancellation can reach this path before Guardian's tools and context are
     // resolved. Only finalized evidence may enter reusable reviewer history.
     if sess
@@ -968,11 +978,31 @@ pub(crate) async fn run_hooks_and_record_inputs(
         .get::<crate::guardian::PendingReviewContext>()
         .is_some()
     {
-        return false;
+        return if rejected_uploaded_audio {
+            Err(uploaded_audio_disabled_error())
+        } else {
+            Ok(false)
+        };
     }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
+        let filtered_input;
+        let input_item = match input_item {
+            TurnInput::UserInput { content, .. } if content.iter().any(is_uploaded_audio_file) => {
+                let mut filtered = input_item.clone();
+                let TurnInput::UserInput { content, .. } = &mut filtered else {
+                    unreachable!("cloned user input must remain user input");
+                };
+                content.retain(|item| !is_uploaded_audio_file(item));
+                if content.is_empty() {
+                    continue;
+                }
+                filtered_input = filtered;
+                &filtered_input
+            }
+            _ => input_item,
+        };
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
             blocked_input = true;
@@ -1004,7 +1034,29 @@ pub(crate) async fn run_hooks_and_record_inputs(
             .await;
         }
     }
-    blocked_input && !accepted_user_input
+    if rejected_uploaded_audio {
+        return Err(uploaded_audio_disabled_error());
+    }
+    Ok(blocked_input && !accepted_user_input)
+}
+
+fn turn_input_has_uploaded_audio_file(input: &TurnInput) -> bool {
+    matches!(input, TurnInput::UserInput { content, .. } if content.iter().any(is_uploaded_audio_file))
+}
+
+fn uploaded_audio_disabled_error() -> CodexErr {
+    CodexErr::UnsupportedOperation(
+        "Uploaded audio file inputs are not enabled in this build.".to_string(),
+    )
+}
+
+fn is_uploaded_audio_file(input: &UserInput) -> bool {
+    matches!(
+        input,
+        UserInput::Audio {
+            audio: AudioReference::File { .. }
+        }
+    )
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
@@ -1471,7 +1523,7 @@ async fn maybe_run_previous_model_inline_compact(
     // Combining the previous model with the current turn's program can produce a pair
     // that the server rejects.
     previous_model_turn_context.cyber_access_program = cyber_access_program::for_provider(
-        &previous_model_turn_context.config.model_provider_id,
+        &previous_model_turn_context.config,
         previous_turn_settings.cyber_access_program,
     );
     let previous_model_turn_context = Arc::new(previous_model_turn_context);
@@ -1743,7 +1795,7 @@ async fn run_sampling_request(
     turn_store: Arc<codex_extension_api::ExtensionData>,
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
-    input: Vec<ResponseItem>,
+    input: crate::context_manager::ContextManager,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
     let turn_context = Arc::clone(&step_context.turn);
@@ -1784,18 +1836,18 @@ async fn run_sampling_request(
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
         let first_attempt = initial_input.is_some();
-        let prompt_input = if let Some(input) = initial_input.take() {
+        let history = if let Some(input) = initial_input.take() {
             input
         } else {
-            sess.clone_history()
-                .await
-                .for_prompt(
-                    &step_context.settings.model_info.input_modalities,
-                    sess.services.image_store.as_ref(),
-                )
-                .await
+            sess.clone_history().await
         };
-        let mut prompt_input = prompt_input;
+        let input_item_count = history.raw_items().len();
+        let mut prompt_input = history
+            .for_prompt(
+                &step_context.settings.model_info.input_modalities,
+                sess.services.image_store.as_ref(),
+            )
+            .await;
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
@@ -1830,6 +1882,7 @@ async fn run_sampling_request(
             &responses_metadata,
             Arc::clone(&turn_diff_tracker),
             prompt,
+            input_item_count,
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
         )
@@ -2300,6 +2353,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::ElicitationAbandoned(_)
+        | EventMsg::NetworkApprovalResolved { .. }
         | EventMsg::WebSearchBegin(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ExecCommandBegin(_)
@@ -2693,6 +2747,7 @@ async fn try_run_sampling_request(
     responses_metadata: &CodexResponsesMetadata,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: Prompt,
+    input_item_count: usize,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
@@ -2770,9 +2825,22 @@ async fn try_run_sampling_request(
         run_model_request_hooks(&sess, &step_context, &hooks, PreModelRequest).await;
     }
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
+    let mut response_id_for_assessment = None;
+    let mut pending_assessment: Option<codex_api::GuardianAssessment> = None;
     let mut response_completed = false;
     let mut request_token_usage = None;
     let mut includes_reasoning = step_context.settings.model_info.use_responses_lite;
+    // Catalog policies can enable adaptive review independently of the legacy scorer flag.
+    // Capture evidence whenever Guardian is available; the reviewer resolves the policy.
+    let assessment_authorization = if turn_context
+        .config
+        .features
+        .enabled(Feature::GuardianApproval)
+    {
+        Some(crate::guardian::ScoreAuthorization::for_session(&sess, &Default::default()).await)
+    } else {
+        None
+    };
     let stream = client_session
         .stream(
             &prompt,
@@ -2802,7 +2870,13 @@ async fn try_run_sampling_request(
             return Err(error);
         }
     };
-    if cancellation_token.is_cancelled() {
+    let can_interrupt = turn_context
+        .config
+        .features
+        .enabled(Feature::InterruptOnCancel)
+        && step_context.settings.model_info.use_responses_lite
+        && stream.interrupt.is_some();
+    if cancellation_token.is_cancelled() && !can_interrupt {
         return Err(CodexErr::TurnAborted);
     }
     let mut in_flight: FuturesOrdered<InFlightFuture<'static>> = FuturesOrdered::new();
@@ -2882,7 +2956,6 @@ async fn try_run_sampling_request(
                     continue;
                 }
                 // TODO: Reconcile any response item already being presented to the client.
-                drop(stream);
                 break Ok(SamplingRequestResult {
                     needs_follow_up: true,
                     last_agent_message,
@@ -2934,6 +3007,7 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
+                response_id_for_assessment.clone_from(&response_id);
                 if let Some(response_id) = response_id {
                     turn_context
                         .extension_data
@@ -2947,6 +3021,18 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemDone(mut item) => {
+                // Serving emits one final value immediately before this item's completion.
+                // After this handoff, the invocation/cell owns it independently of the stream.
+                let assessment = pending_assessment
+                    .take()
+                    .filter(|value| item.id().is_some_and(|id| id.as_str() == value.item_id))
+                    .zip(assessment_authorization.as_ref())
+                    .map(|(value, authorization)| {
+                        Arc::new(crate::guardian::ServingAssessment {
+                            requires_review: value.requires_review,
+                            authorization: authorization.clone(),
+                        })
+                    });
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
@@ -3006,11 +3092,15 @@ async fn try_run_sampling_request(
                     continue;
                 }
 
+                let mut tool_runtime = tool_runtime.clone();
+                if assessment.is_some() {
+                    Arc::make_mut(&mut tool_runtime.step_context).serving_assessment = assessment;
+                }
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
                     step_context: Arc::clone(&step_context),
                     turn_store: Arc::clone(&turn_store),
-                    tool_runtime: tool_runtime.clone(),
+                    tool_runtime,
                     defer_tool_dispatch: defer_tool_dispatch || *draining_for_mailbox,
                     cancellation_token: cancellation_token.child_token(),
                 };
@@ -3208,9 +3298,10 @@ async fn try_run_sampling_request(
                 sess.emit_turn_moderation_metadata(&turn_context, metadata)
                     .await;
             }
-            ResponseEvent::GuardianAssessment(_) => {
-                // Request-scoped extensions may consume this evidence. It does not
-                // authorize tools here and must not enter conversation history.
+            ResponseEvent::GuardianAssessment(assessment) => {
+                if response_id_for_assessment.as_deref() == Some(assessment.response_id.as_str()) {
+                    pending_assessment = Some(assessment);
+                }
             }
             ResponseEvent::SafetyBuffering(buffering) => {
                 sess.send_event(
@@ -3278,7 +3369,10 @@ async fn try_run_sampling_request(
                         &turn_context,
                         &step_context.settings,
                         token_usage.as_ref(),
-                        super::TokenUsageContext::Sampling { includes_reasoning },
+                        super::TokenUsageContext::Sampling {
+                            includes_reasoning,
+                            input_item_count,
+                        },
                     )
                     .await;
                 should_emit_token_count = true;
@@ -3443,6 +3537,13 @@ async fn try_run_sampling_request(
             }
         }
     };
+    if cancellation_token.is_cancelled() && !response_completed && can_interrupt {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        if let Some(interrupt) = stream.interrupt.take() {
+            let _ = interrupt.send(codex_api::ResponseInterrupt::Cancel { deadline });
+        }
+    }
+    drop(stream);
     drop(sampling_span);
     drop(sampling_timing_guard);
     if let Some(finish_post_request) = finish_post_request {
