@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -508,11 +509,6 @@ pub struct ModelInfo {
     /// Input modalities accepted by the backend for this model.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
-    /// Internal-only marker set by core when a model slug resolved to fallback metadata.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    #[schemars(skip)]
-    #[ts(skip)]
-    pub used_fallback_model_metadata: bool,
     #[serde(default)]
     pub supports_search_tool: bool,
     /// Whether experimental context management may be activated at session startup.
@@ -593,6 +589,39 @@ pub fn partition_model_infos(
     (valid, invalid)
 }
 
+/// Where model metadata was obtained during local catalog resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelOrigin {
+    Bundled,
+    Provider,
+    ExplicitConfig,
+    /// Generic metadata synthesized when no catalog entry matches the requested model.
+    Synthetic,
+}
+
+/// Model metadata and its locally determined source, retained together through resolution.
+/// Metadata is shared with runtime snapshots and extension stores; mutation uses copy-on-write.
+/// This runtime wrapper is not serialized; managers assign its source from local catalog state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogModel {
+    pub model: Arc<ModelInfo>,
+    pub origin: ModelOrigin,
+}
+
+impl std::ops::Deref for CatalogModel {
+    type Target = ModelInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.model
+    }
+}
+
+impl std::ops::DerefMut for CatalogModel {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.model)
+    }
+}
+
 impl ModelInfo {
     pub fn resolved_context_window(&self) -> Option<i64> {
         self.context_window.or(self.max_context_window)
@@ -625,6 +654,9 @@ impl ModelInfo {
 /// retained for model catalog compatibility.
 #[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelMessages {
+    /// Optional model-owned Apps wording, transported without runtime interpretation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<AppsMessages>,
     /// Developer guidance after a content-filter block. Missing, null, blank, or values over
     /// 512 UTF-8 bytes use the bundled guidance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -648,6 +680,15 @@ pub struct ModelMessages {
     /// Replacement confirmation-policy documents forwarded in actor MCP request metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation_policies: Option<ConfirmationPolicies>,
+}
+
+/// Optional Apps wording from the model catalog, preserved for future runtime consumption.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
+pub struct AppsMessages {
+    /// Missing and null deserialize as `None`; all strings preserve their exact bytes.
+    /// Rendering, size limits, and empty-string behavior are defined by consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_instructions: Option<String>,
 }
 
 /// Model-owned confirmation-policy Markdown, forwarded unchanged to actor tools.
@@ -1247,7 +1288,6 @@ mod tests {
             effective_context_window_percent: 95,
             experimental_supported_tools: vec![],
             input_modalities: default_input_modalities(),
-            used_fallback_model_metadata: false,
             supports_search_tool: false,
             supports_experimental_context: false,
             use_responses_lite: false,
@@ -1275,6 +1315,7 @@ mod tests {
     fn model_message_text_cap_accepts_none_empty_and_exact_limit() {
         assert!(validate_model_messages(&test_model(None)).is_ok());
         let empty = ModelMessages {
+            apps: None,
             persistent_instructions: Some(String::new()),
             tools: None,
             instructions_template: Some("template".to_string()),
@@ -1296,6 +1337,7 @@ mod tests {
         };
         assert!(validate_model_messages(&test_model(Some(empty))).is_ok());
         let exact = ModelMessages {
+            apps: None,
             persistent_instructions: Some("x".repeat(MODEL_MESSAGE_TEXT_MAX_BYTES)),
             tools: None,
             instructions_template: Some("template".to_string()),
@@ -1339,6 +1381,32 @@ mod tests {
         assert_eq!(error.actual_bytes, MODEL_MESSAGE_TEXT_MAX_BYTES + 1);
         assert_eq!(error.max_bytes, MODEL_MESSAGE_TEXT_MAX_BYTES);
         assert_eq!(text.len(), MODEL_MESSAGE_TEXT_MAX_BYTES + 1);
+    }
+
+    #[test]
+    fn apps_messages_preserve_nullable_and_literal_wire_values() {
+        for apps in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"usage_instructions": null}),
+            serde_json::json!({"usage_instructions": ""}),
+            serde_json::json!({"usage_instructions": " \r\n\t"}),
+            serde_json::json!({"usage_instructions": "  {{literal}}\r\n"}),
+            serde_json::json!({"usage_instructions": "é".repeat(501)}),
+        ] {
+            let messages: ModelMessages =
+                serde_json::from_value(serde_json::json!({"apps": apps})).unwrap();
+            let serialized = serde_json::to_value(messages).unwrap();
+            let mut expected = serde_json::to_value(ModelMessages::default()).unwrap();
+            if !apps.is_null() {
+                expected["apps"] = if apps["usage_instructions"].is_null() {
+                    serde_json::json!({})
+                } else {
+                    apps
+                };
+            }
+            assert_eq!(serialized, expected);
+        }
     }
 
     #[test]
@@ -1839,6 +1907,9 @@ mod tests {
     #[test]
     fn models_response_prefers_template_and_preserves_message_siblings() {
         let messages = ModelMessages {
+            apps: Some(AppsMessages {
+                usage_instructions: Some("Literal Apps {{guidance}}".to_string()),
+            }),
             content_filter_guidance: Some("Offer a permitted alternative.".to_string()),
             persistent_instructions: Some("Persistent catalog instructions".to_string()),
             tools: Some(ToolMessages {

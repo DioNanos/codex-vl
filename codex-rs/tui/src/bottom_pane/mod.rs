@@ -90,6 +90,7 @@ pub(crate) use multi_select_picker::MultiSelectPicker;
 mod question_tests;
 mod questions;
 mod request_user_input;
+pub(crate) mod status_line_content;
 mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
@@ -116,9 +117,11 @@ pub(crate) use approval_overlay::format_requested_permissions_rule;
 pub(crate) use async_questions::AsyncQuestions;
 pub(crate) use async_questions::QuestionState;
 pub(crate) use async_questions::QuestionSubmission;
+pub(crate) use footer::footer_content;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
+pub(crate) use status_line_style::STATUS_LINE_SEPARATOR;
 pub(crate) use status_line_style::status_line_from_segments;
 pub(crate) use voice_strip::VoiceStripPhase;
 pub(crate) use voice_strip::VoiceStripState;
@@ -500,13 +503,8 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_command_center_enabled(&mut self, enabled: bool) {
-        self.composer.command_center_enabled = enabled;
-        self.request_redraw();
-    }
-
-    pub(crate) fn command_center_enabled(&self) -> bool {
-        self.composer.command_center_enabled
+    pub(crate) fn enable_agents_navigation(&mut self) {
+        self.composer.command_center_enabled = true;
     }
 
     pub(crate) fn agents_navigation_key_available(&self) -> bool {
@@ -781,6 +779,13 @@ impl BottomPane {
 
     fn active_view(&self) -> Option<&dyn BottomPaneView> {
         self.view_stack.last().map(std::convert::AsRef::as_ref)
+    }
+
+    pub(crate) fn current_patch_approval(&self) -> Option<&ApplyPatchApprovalRequest> {
+        self.view_stack
+            .iter()
+            .rev()
+            .find_map(|view| view.current_patch_approval())
     }
 
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
@@ -1272,7 +1277,7 @@ impl BottomPane {
         self.composer.text_elements()
     }
 
-    pub(crate) fn composer_local_images(&self) -> Vec<LocalImageAttachment> {
+    pub(crate) fn composer_local_images(&self) -> &[LocalImageAttachment] {
         self.composer.local_images()
     }
 
@@ -1407,8 +1412,8 @@ impl BottomPane {
     }
 
     #[cfg(test)]
-    pub(crate) fn status_line_text(&self) -> Option<String> {
-        self.composer.status_line_text()
+    pub(crate) fn status_line_content(&self) -> Option<&footer_content::FooterContent> {
+        self.composer.status_line_content()
     }
 
     pub(crate) fn show_esc_backtrack_hint(&mut self) {
@@ -2592,6 +2597,7 @@ impl BottomPane {
             let composer: RenderableItem<'_> = if let Some(questions) = question_editor {
                 RenderableItem::Borrowed(questions.as_ref())
             } else if options.max_height.is_none()
+                && options.image_previews.is_none()
                 && options.textarea_right_reserve == 0
                 && options.warning_count == 0
                 && options.footer.is_none()
@@ -2620,7 +2626,7 @@ impl BottomPane {
         self.request_redraw();
     }
 
-    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
+    pub(crate) fn set_status_line(&mut self, status_line: Option<footer_content::FooterContent>) {
         if self.composer.set_status_line(status_line) {
             self.request_redraw();
         }
@@ -2628,12 +2634,6 @@ impl BottomPane {
 
     pub(crate) fn set_luna_reserve_active(&mut self, active: bool) {
         if self.composer.set_luna_reserve_active(active) {
-            self.request_redraw();
-        }
-    }
-
-    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
-        if self.composer.set_status_line_hyperlink(url) {
             self.request_redraw();
         }
     }

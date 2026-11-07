@@ -26,7 +26,6 @@ pub(super) async fn run_main_inner(
     #[cfg(windows)]
     let elevated_warning = if explicit_remote_endpoint.is_none()
         && !cli.no_daemon
-        && !cli.agents_overview
         && codex_app_server_daemon::is_elevated().map_err(std::io::Error::other)?
     {
         cli.no_daemon = true;
@@ -573,19 +572,24 @@ pub(super) async fn run_main_inner(
     } else {
         None
     };
-    let auto_start_daemon = config.features.enabled(Feature::DaemonAutoStart)
+    let auto_start_daemon = cfg!(any(unix, windows))
+        && (cli.agents_overview || config.features.enabled(Feature::DaemonAutoStart))
         && implicit_connection
-        && !cli.agents_overview
         && !cli.no_daemon
         && !app_server_target.uses_remote_workspace();
     if auto_start_daemon
         && daemon_policy.exclusion.is_none()
-        && should_show_bedrock_setup_wizard(
-            LoginStatus::NotAuthenticated,
-            config.model_provider.requires_openai_auth,
-            &config,
-            &AppServerTarget::Embedded,
-        )
+        && [Feature::BedrockSetupWizard, Feature::GcpSetupWizard]
+            .into_iter()
+            .any(|feature| {
+                should_show_provider_setup_wizard(
+                    LoginStatus::NotAuthenticated,
+                    config.model_provider.requires_openai_auth,
+                    &config,
+                    &AppServerTarget::Embedded,
+                    feature,
+                )
+            })
         && startup_draft
             .run_until(
                 config
@@ -597,8 +601,8 @@ pub(super) async fn run_main_inner(
             .flatten()
             .is_none()
     {
-        // The Bedrock wizard configures its provider through the embedded server.
-        daemon_policy.exclusion = Some("Bedrock sign-in");
+        // Provider setup wizards configure their provider through the embedded server.
+        daemon_policy.exclusion = Some("Cloud provider sign-in");
         app_server_target = AppServerTarget::Embedded;
     }
     if auto_start_daemon
@@ -608,7 +612,7 @@ pub(super) async fn run_main_inner(
     {
         daemon_policy.exclusion = Some(daemon_startup::WSL_DRVFS_EXCLUSION);
     }
-    let mut managed_daemon = cli.managed_daemon;
+    let mut managed_daemon = false;
     if auto_start_daemon && daemon_policy.exclusion.is_none() {
         managed_daemon = daemon_policy
             .finish(&mut app_server_target, auto_start_daemon, || async {
@@ -642,19 +646,14 @@ pub(super) async fn run_main_inner(
             })
             .await?;
     }
-    // The overview must inspect the shared server's agents regardless of local settings.
-    let compatibility_warning = if cli.agents_overview {
-        None
-    } else {
-        daemon_recovery::check(
-            &mut startup_draft,
-            &app_server_target,
-            &config,
-            &cli_kv_overrides,
-            managed_daemon,
-        )
-        .await?
-    };
+    let compatibility_warning = daemon_recovery::check(
+        &mut startup_draft,
+        &app_server_target,
+        &config,
+        &cli_kv_overrides,
+        managed_daemon,
+    )
+    .await?;
     if compatibility_warning.is_some() {
         app_server_target = AppServerTarget::Embedded;
         daemon_policy.exclusion = Some("daemon feature settings");
@@ -771,6 +770,7 @@ pub(super) async fn run_main_inner(
         let terminal_name = match terminal_info.name {
             TerminalName::AppleTerminal => "apple_terminal",
             TerminalName::Ghostty => "ghostty",
+            TerminalName::Rex => "rex",
             TerminalName::Iterm2 => "iterm2",
             TerminalName::WarpTerminal => "warp",
             TerminalName::VsCode => "vscode",
@@ -988,7 +988,7 @@ pub(super) async fn run_main_inner(
     }
 
     // Keep the large app future off the enclosing CLI startup stack during transitions.
-    let app_result = Box::pin(run_ratatui_app(
+    let app_result = crate::boxed_future!(run_ratatui_app(
         cli,
         arg0_paths,
         loader_overrides,

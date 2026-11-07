@@ -863,6 +863,9 @@
             "apps": {
               "type": "boolean"
             },
+            "apps_early_resource_discovery": {
+              "type": "boolean"
+            },
             "apps_mcp_path_override": {
               "anyOf": [
                 {
@@ -922,6 +925,9 @@
               "$ref": "#/definitions/FeatureToml_for_CodeModeHostConfigToml"
             },
             "code_mode_host_grpc": {
+              "type": "boolean"
+            },
+            "code_mode_host_output_truncation": {
               "type": "boolean"
             },
             "code_mode_interrupt": {
@@ -1044,6 +1050,9 @@
             "fast_mode": {
               "type": "boolean"
             },
+            "gcp_setup_wizard": {
+              "type": "boolean"
+            },
             "goals": {
               "type": "boolean"
             },
@@ -1119,10 +1128,16 @@
             "in_app_voice": {
               "type": "boolean"
             },
+            "incremental_exec_tools": {
+              "type": "boolean"
+            },
             "incremental_tools": {
               "type": "boolean"
             },
             "instant_interrupt": {
+              "type": "boolean"
+            },
+            "interrupt_on_cancel": {
               "type": "boolean"
             },
             "item_ids": {
@@ -1353,6 +1368,9 @@
             "subagent_thread_environments": {
               "type": "boolean"
             },
+            "suppress_model_change_announcements": {
+              "type": "boolean"
+            },
             "system_proxy_fallback": {
               "type": "boolean"
             },
@@ -1387,6 +1405,9 @@
               "type": "boolean"
             },
             "tui_app_server": {
+              "type": "boolean"
+            },
+            "tui_extensions_statusline": {
               "type": "boolean"
             },
             "tui_multi_backend": {
@@ -1975,6 +1996,14 @@
         },
         "client_id": {
           "type": "string"
+        },
+        "credentials_store": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/OAuthCredentialsStore"
+            }
+          ],
+          "description": "Where Codex stores this gateway's OAuth credentials. Defaults to the keyring-backed store."
         },
         "delivery": {
           "allOf": [
@@ -3027,6 +3056,10 @@
       "additionalProperties": false,
       "description": "Overrides for the optional API features supported by a custom provider.",
       "properties": {
+        "cyber_access_programs": {
+          "description": "Whether the provider accepts explicit `access_programs.cyber` selections. Defaults to enabled for the built-in OpenAI provider and disabled otherwise. This does not grant program access or change authentication.",
+          "type": "boolean"
+        },
         "external_web_access": {
           "description": "Whether hosted web search may access the live web.",
           "type": "boolean"
@@ -3708,6 +3741,24 @@
         }
       ]
     },
+    "OAuthCredentialsStore": {
+      "oneOf": [
+        {
+          "description": "Encrypt credentials using a passphrase kept in the OS keyring.",
+          "enum": [
+            "keyring"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Store credentials in plaintext in `$CODEX_HOME/secrets/gateway_oauth.json`.",
+          "enum": [
+            "file"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "OAuthCredentialsStoreMode": {
       "description": "Determine where Codex should store and read MCP credentials.",
       "oneOf": [
@@ -3774,6 +3825,10 @@
         },
         "log_guardian_assessments": {
           "description": "Opt in to logging completed Guardian assessments to an OTLP log exporter. Defaults to false. Rationales can be sensitive and are capped at 64 KiB.",
+          "type": "boolean"
+        },
+        "log_sse_deltas": {
+          "description": "Log successful SSE events whose kind ends in `.delta`. Defaults to true. Disabling this preserves errors, completion events, and metrics.",
           "type": "boolean"
         },
         "log_user_prompt": {
@@ -3981,6 +4036,13 @@
     "PluginConfig": {
       "additionalProperties": false,
       "properties": {
+        "apps": {
+          "additionalProperties": {
+            "$ref": "#/definitions/AppConfig"
+          },
+          "description": "Connector-wide app settings keyed by connector ID. Ignored when this plugin is disabled by configuration. Explicit top-level app fields win.",
+          "type": "object"
+        },
         "auto_provision": {
           "description": "Provisioning metadata. Omission does not request provisioning. Only applies with `remote_plugin_id` and Plugin Service availability to the requesting user at provisioning time. Effective enablement, trusted provisioning policy, and authentication and authorization restrictions still apply. This value is not trusted authorization and does not trigger provisioning.",
           "type": "boolean"
@@ -7517,6 +7579,9 @@
         "apps": {
           "type": "boolean"
         },
+        "apps_early_resource_discovery": {
+          "type": "boolean"
+        },
         "apps_mcp_path_override": {
           "anyOf": [
             {
@@ -7576,6 +7641,9 @@
           "$ref": "#/definitions/FeatureToml_for_CodeModeHostConfigToml"
         },
         "code_mode_host_grpc": {
+          "type": "boolean"
+        },
+        "code_mode_host_output_truncation": {
           "type": "boolean"
         },
         "code_mode_interrupt": {
@@ -7698,6 +7766,9 @@
         "fast_mode": {
           "type": "boolean"
         },
+        "gcp_setup_wizard": {
+          "type": "boolean"
+        },
         "goals": {
           "type": "boolean"
         },
@@ -7773,10 +7844,16 @@
         "in_app_voice": {
           "type": "boolean"
         },
+        "incremental_exec_tools": {
+          "type": "boolean"
+        },
         "incremental_tools": {
           "type": "boolean"
         },
         "instant_interrupt": {
+          "type": "boolean"
+        },
+        "interrupt_on_cancel": {
           "type": "boolean"
         },
         "item_ids": {
@@ -8007,6 +8084,9 @@
         "subagent_thread_environments": {
           "type": "boolean"
         },
+        "suppress_model_change_announcements": {
+          "type": "boolean"
+        },
         "system_proxy_fallback": {
           "type": "boolean"
         },
@@ -8041,6 +8121,9 @@
           "type": "boolean"
         },
         "tui_app_server": {
+          "type": "boolean"
+        },
+        "tui_extensions_statusline": {
           "type": "boolean"
         },
         "tui_multi_backend": {

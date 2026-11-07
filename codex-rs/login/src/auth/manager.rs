@@ -343,6 +343,7 @@ impl From<RefreshTokenError> for std::io::Error {
 }
 
 impl CodexAuth {
+    #[allow(clippy::too_many_arguments)]
     async fn from_auth_dot_json(
         codex_home: &Path,
         auth_dot_json: AuthDotJson,
@@ -351,6 +352,7 @@ impl CodexAuth {
         keyring_backend_kind: AuthKeyringBackendKind,
         agent_identity_authapi_base_url: Option<&str>,
         auth_route_config: &AuthRouteConfig,
+        cached_auth: Option<&CodexAuth>,
     ) -> std::io::Result<Self> {
         let auth_mode = auth_dot_json.resolved_mode();
         if auth_mode == AuthMode::ApiKey {
@@ -399,8 +401,14 @@ impl CodexAuth {
                     "personal access token auth is missing a personal access token.",
                 ));
             };
-            return Self::from_personal_access_token(personal_access_token, auth_route_config)
-                .await;
+            return Ok(Self::PersonalAccessToken(
+                PersonalAccessTokenAuth::load_with_cached(
+                    personal_access_token,
+                    auth_route_config,
+                    cached_auth,
+                )
+                .await?,
+            ));
         }
         if auth_mode == AuthMode::BedrockApiKey {
             let Some(auth) = auth_dot_json.bedrock_api_key else {
@@ -429,8 +437,21 @@ impl CodexAuth {
             .tokens
             .as_ref()
             .and_then(|tokens| tokens.oauth_provenance.as_ref());
-        let client =
-            create_default_auth_client(&refresh_token_endpoint(provenance), auth_route_config)?;
+        // Reuse only the transport, not the credential state or storage backend: the
+        // selected source can change even when its credential document is identical.
+        let cached_client = cached_auth
+            .filter(|auth| auth.get_current_auth_json().as_ref() == Some(&auth_dot_json))
+            .and_then(|auth| match auth {
+                Self::Chatgpt(auth) => Some(auth.state.client.clone()),
+                Self::ChatgptAuthTokens(auth) => Some(auth.state.client.clone()),
+                _ => None,
+            });
+        let client = match cached_client {
+            Some(client) => client,
+            None => {
+                create_default_auth_client(&refresh_token_endpoint(provenance), auth_route_config)?
+            }
+        };
         let state = ChatgptAuthState {
             auth_dot_json: Arc::new(Mutex::new(Some(auth_dot_json))),
             client,
@@ -480,6 +501,8 @@ impl CodexAuth {
             keyring_backend_kind,
             agent_identity_authapi_base_url.as_deref(),
             auth_route_config,
+            /*cached_auth*/ None,
+            /*allowed_auth_modes*/ None,
         )
         .await
     }
@@ -1276,6 +1299,15 @@ impl AuthConfig {
         &self,
         enable_codex_api_key_env: bool,
     ) -> std::io::Result<Option<CodexAuth>> {
+        self.load_auth_with_modes(enable_codex_api_key_env, /*allowed_auth_modes*/ None)
+            .await
+    }
+
+    async fn load_auth_with_modes(
+        &self,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Option<&[AuthMode]>,
+    ) -> std::io::Result<Option<CodexAuth>> {
         let allowed_login_methods = self.allowed_login_methods();
         let workspaces = self.effective_chatgpt_workspaces();
         let agent_identity_authapi_base_url =
@@ -1290,6 +1322,8 @@ impl AuthConfig {
             self.keyring_backend_kind,
             agent_identity_authapi_base_url.as_deref(),
             &self.auth_route_config,
+            /*cached_auth*/ None,
+            allowed_auth_modes,
         )
         .await?;
         Ok(auth.filter(|auth| self.allows_auth(auth)))
@@ -1389,6 +1423,8 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
         config.keyring_backend_kind,
         agent_identity_authapi_base_url,
         &config.auth_route_config,
+        /*cached_auth*/ None,
+        /*allowed_auth_modes*/ None,
     )
     .await?
     else {
@@ -1543,9 +1579,13 @@ async fn load_auth(
     keyring_backend_kind: AuthKeyringBackendKind,
     agent_identity_authapi_base_url: Option<&str>,
     auth_route_config: &AuthRouteConfig,
+    cached_auth: Option<&CodexAuth>,
+    allowed_auth_modes: Option<&[AuthMode]>,
 ) -> std::io::Result<Option<CodexAuth>> {
+    let mode_allowed = |mode| allowed_auth_modes.is_none_or(|modes| modes.contains(&mode));
     // API key via env var takes precedence over any other auth method.
     if enable_codex_api_key_env
+        && mode_allowed(AuthMode::ApiKey)
         && auth_mode_is_allowed(allowed_login_methods, AuthMode::ApiKey)
         && let Some(api_key) = read_codex_api_key_from_env()
     {
@@ -1559,9 +1599,12 @@ async fn load_auth(
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     );
-    if let Some(auth_dot_json) = ephemeral_storage.load()?
+    if let Some(auth_dot_json) = load_stored_auth(ephemeral_storage).await?
         && auth_mode_is_allowed(allowed_login_methods, auth_dot_json.resolved_mode())
     {
+        if !mode_allowed(auth_dot_json.resolved_mode()) {
+            return Ok(None);
+        }
         if let Some(agent_identity) = auth_dot_json.agent_identity.as_ref() {
             ensure_agent_identity_workspace_allowed(forced_chatgpt_workspace_id, agent_identity)?;
         }
@@ -1573,6 +1616,7 @@ async fn load_auth(
             keyring_backend_kind,
             agent_identity_authapi_base_url,
             auth_route_config,
+            cached_auth,
         )
         .await?;
         if let CodexAuth::PersonalAccessToken(auth) = &auth {
@@ -1586,11 +1630,22 @@ async fn load_auth(
     {
         return match classify_codex_access_token(&access_token) {
             CodexAccessToken::PersonalAccessToken(access_token) => {
-                let auth = PersonalAccessTokenAuth::load(access_token, auth_route_config).await?;
+                if !mode_allowed(AuthMode::PersonalAccessToken) {
+                    return Ok(None);
+                }
+                let auth = PersonalAccessTokenAuth::load_with_cached(
+                    access_token,
+                    auth_route_config,
+                    cached_auth,
+                )
+                .await?;
                 ensure_auth_workspace_allowed(forced_chatgpt_workspace_id, auth.account_id())?;
                 Ok(Some(CodexAuth::PersonalAccessToken(auth)))
             }
             CodexAccessToken::AgentIdentityJwt(jwt) => {
+                if !mode_allowed(AuthMode::AgentIdentity) {
+                    return Ok(None);
+                }
                 let record = AgentIdentityAuthRecord::from_agent_identity_jwt(jwt)?;
                 ensure_auth_workspace_allowed(forced_chatgpt_workspace_id, &record.account_id)?;
                 CodexAuth::from_agent_identity_jwt_with_authapi_base_url(
@@ -1616,11 +1671,13 @@ async fn load_auth(
         auth_credentials_store_mode,
         keyring_backend_kind,
     );
-    let auth_dot_json = match storage.load()? {
+    let auth_dot_json = match load_stored_auth(storage).await? {
         Some(auth) => auth,
         None => return Ok(None),
     };
-    if !auth_mode_is_allowed(allowed_login_methods, auth_dot_json.resolved_mode()) {
+    if !mode_allowed(auth_dot_json.resolved_mode())
+        || !auth_mode_is_allowed(allowed_login_methods, auth_dot_json.resolved_mode())
+    {
         return Ok(None);
     }
     if let Some(agent_identity) = auth_dot_json.agent_identity.as_ref() {
@@ -1635,12 +1692,23 @@ async fn load_auth(
         keyring_backend_kind,
         agent_identity_authapi_base_url,
         auth_route_config,
+        cached_auth,
     )
     .await?;
     if let CodexAuth::PersonalAccessToken(auth) = &auth {
         ensure_auth_workspace_allowed(forced_chatgpt_workspace_id, auth.account_id())?;
     }
     Ok(Some(auth))
+}
+
+// Blocking keyring access must not prevent an async caller's deadline from firing.
+async fn load_stored_auth(
+    storage: Arc<dyn AuthStorageBackend>,
+) -> std::io::Result<Option<AuthDotJson>> {
+    let originator = codex_otel::auth_storage::AuthStorageOriginator::current();
+    tokio::task::spawn_blocking(move || originator.sync_scope(|| storage.load()))
+        .await
+        .map_err(|_| std::io::Error::other("credential storage read failed"))?
 }
 
 // Ordinary auth tolerates legacy metadata loss; EMA grant checks remain strict.
@@ -1666,16 +1734,17 @@ pub(super) fn persist_tokens(
     let _commit = storage.lock_for_write()?;
     let stored = storage.load()?;
     let mut auth_dot_json = stored.ok_or(std::io::Error::other("Token data is not available."))?;
+    let original = auth_dot_json.clone();
     if auth_dot_json.resolved_mode() != AuthMode::Chatgpt {
         return Err(std::io::Error::other(
             "Account credentials changed during refresh.",
         ));
     }
-    if !auth_dot_json
-        .tokens
-        .as_ref()
-        .is_some_and(|tokens| same_login_for_persistence(expected, tokens))
-    {
+    if !auth_dot_json.tokens.as_ref().is_some_and(|tokens| {
+        same_login_for_persistence(expected, tokens)
+            && tokens.refresh_token == expected.refresh_token
+            && tokens.access_token == expected.access_token
+    }) {
         return Err(std::io::Error::other(
             "Account credentials changed during refresh.",
         ));
@@ -1696,7 +1765,7 @@ pub(super) fn persist_tokens(
         tokens.refresh_token = refresh_token;
     }
     auth_dot_json.last_refresh = Some(Utc::now());
-    storage.save(&auth_dot_json)?;
+    storage.compare_and_save(&original, &auth_dot_json)?;
     Ok(auth_dot_json)
 }
 
@@ -1715,7 +1784,7 @@ async fn request_chatgpt_token_refresh(
             url: endpoint,
             client_id,
             encoding: TokenEncoding::Json,
-            timeout: None,
+            timeout: Some(Duration::from_secs(45)),
             error_body_limit: ErrorBodyLimit::Unlimited,
         },
     );
@@ -2073,7 +2142,7 @@ impl UnauthorizedRecovery {
                 match self
                     .manager
                     .reload_if_account_id_matches(self.expected_account_id.as_deref())
-                    .await
+                    .await?
                 {
                     ReloadOutcome::ReloadedChanged => {
                         self.step = UnauthorizedRecoveryStep::RefreshToken;
@@ -2145,11 +2214,14 @@ pub struct AuthManager {
     chatgpt_base_url: Option<String>,
     agent_identity_authapi_base_url: Option<String>,
     refresh_lock: Arc<Semaphore>,
+    // Writers hold refresh_lock; cancellation retains the attempted generation.
+    unsettled_chatgpt_refresh: Mutex<Option<TokenData>>,
     agent_identity_lock: Semaphore,
     agent_identity_bootstrap_cooldown: Mutex<AgentIdentityBootstrapCooldown>,
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
     workload_identity_selected: bool,
     auth_route_config: AuthRouteConfig,
+    allowed_auth_modes: RwLock<Option<Vec<AuthMode>>>,
 }
 
 /// Configuration view required to construct a shared [`AuthManager`].
@@ -2261,13 +2333,18 @@ impl AuthManager {
                 auth_route_config,
             },
             enable_codex_api_key_env,
+            /*allowed_auth_modes*/ None,
         )
         .await
     }
 
-    async fn new_from_auth_config(auth_config: AuthConfig, enable_codex_api_key_env: bool) -> Self {
+    async fn new_from_auth_config(
+        auth_config: AuthConfig,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Option<Vec<AuthMode>>,
+    ) -> Self {
         let managed_auth = auth_config
-            .load_auth(enable_codex_api_key_env)
+            .load_auth_with_modes(enable_codex_api_key_env, allowed_auth_modes.as_deref())
             .await
             .ok()
             .flatten();
@@ -2302,11 +2379,13 @@ impl AuthManager {
             chatgpt_base_url,
             agent_identity_authapi_base_url,
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
             auth_route_config,
+            allowed_auth_modes: RwLock::new(allowed_auth_modes),
         }
     }
 
@@ -2338,10 +2417,12 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
+            allowed_auth_modes: RwLock::new(None),
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
         })
     }
@@ -2368,10 +2449,12 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
+            allowed_auth_modes: RwLock::new(None),
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
         })
     }
@@ -2406,10 +2489,12 @@ impl AuthManager {
                     .to_string(),
             ),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
             workload_identity_selected: false,
+            allowed_auth_modes: RwLock::new(None),
             auth_route_config: crate::test_support::transport_default_auth_route_config(),
         })
     }
@@ -2443,10 +2528,12 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config, env)))),
             workload_identity_selected: false,
+            allowed_auth_modes: RwLock::new(None),
             // External bearer auth refreshes by running the provider's command and never makes
             // auth-owned HTTP requests, so this route is intentionally inert.
             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
@@ -2490,6 +2577,23 @@ impl AuthManager {
                 .filter(|failure| Self::auths_equal_for_refresh(Some(auth), Some(&failure.auth)))
                 .map(|failure| failure.error.clone())
         })
+    }
+
+    /// Whether this credential's refresh exchange or persistence started but did not finish.
+    /// Cancellation retains the record so callers can withhold an uncertain generation.
+    /// Waiting for the refresh guard or reloading storage does not mark a credential.
+    pub fn is_chatgpt_refresh_unsettled(&self, auth: &CodexAuth) -> std::io::Result<bool> {
+        let unsettled = self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))?;
+        // Match the stored generation; get_token_data() rewrites workspace claims.
+        Ok(unsettled.as_ref().is_some_and(|tokens| {
+            auth.get_current_auth_json()
+                .and_then(|auth| auth.tokens)
+                .as_ref()
+                == Some(tokens)
+        }))
     }
 
     /// Current cached auth (clone). May be `None` if not logged in or load failed.
@@ -2719,7 +2823,7 @@ impl AuthManager {
         tracing::info!("Reloading auth");
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
-            let new_auth = self.load_auth().await;
+            let new_auth = self.load_auth(/*cached_auth*/ None).await.ok().flatten();
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
                 return publication.changed;
             }
@@ -2729,21 +2833,53 @@ impl AuthManager {
         }
     }
 
+    /// Pins the stored credential kind before any subsequent load or hydration.
+    /// This prevents a running client from silently acquiring a different kind of secret.
+    pub fn restrict_auth_modes(&self, mut modes: Vec<AuthMode>) -> std::io::Result<()> {
+        let mut allowed = self
+            .allowed_auth_modes
+            .write()
+            .map_err(|_| std::io::Error::other("credential policy is unavailable"))?;
+        if let Some(previous) = allowed.as_ref() {
+            modes.retain(|mode| previous.contains(mode));
+        }
+        *allowed = Some(modes);
+        Ok(())
+    }
+
+    /// Reloads stored credentials without hiding storage or hydration failures.
+    /// Failed loads retain the last known owner so a temporary outage does not
+    /// invalidate application network policy as if the user had logged out.
+    /// Callers must serialize reload and refresh and reject cached headers on error.
+    pub async fn reload_with_cached_auth(&self) -> std::io::Result<bool> {
+        loop {
+            let generation = self.auth_change_state_tx.borrow().generation;
+            let cached = self.auth_cached();
+            let new_auth = self.try_load_managed_auth(cached.as_ref()).await?;
+            if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
+                return Ok(publication.changed);
+            }
+            if self.inner.is_poisoned() {
+                return Err(std::io::Error::other("credential cache is unavailable"));
+            }
+        }
+    }
+
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
-    ) -> ReloadOutcome {
+    ) -> std::io::Result<ReloadOutcome> {
         let expected_account_id = match expected_account_id {
             Some(account_id) => account_id,
             None => {
                 tracing::info!("Skipping auth reload because no account id is available.");
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
         };
 
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
-            let new_auth = self.load_auth().await;
+            let new_auth = self.load_auth(/*cached_auth*/ None).await?;
             let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
 
             if new_account_id.as_deref() != Some(expected_account_id) {
@@ -2751,19 +2887,19 @@ impl AuthManager {
                 tracing::info!(
                     "Skipping auth reload due to account id mismatch (expected: {expected_account_id}, found: {found_account_id})"
                 );
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
 
             tracing::info!("Reloading auth for account {expected_account_id}");
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
-                return if publication.changed_for_refresh {
+                return Ok(if publication.changed_for_refresh {
                     ReloadOutcome::ReloadedChanged
                 } else {
                     ReloadOutcome::ReloadedNoChange
-                };
+                });
             }
             if self.inner.is_poisoned() {
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
         }
     }
@@ -2822,16 +2958,19 @@ impl AuthManager {
         }
     }
 
-    async fn load_auth(&self) -> Option<CodexAuth> {
+    async fn load_auth(
+        &self,
+        cached_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<Option<CodexAuth>> {
         if let Some(external_auth) = self.external_auth_provider() {
             let cached_auth = self.auth_cached();
             if cached_auth
                 .as_ref()
                 .is_some_and(|auth| self.refresh_failure_for_auth(auth).is_some())
             {
-                return cached_auth;
+                return Ok(cached_auth);
             }
-            return match self.resolve_external_auth(external_auth.as_ref()).await {
+            let auth = match self.resolve_external_auth(external_auth.as_ref()).await {
                 Ok(auth) => Some(auth),
                 Err(err) => {
                     tracing::error!("Failed to resolve external auth: {err}");
@@ -2847,11 +2986,24 @@ impl AuthManager {
                     }
                 }
             };
+            return Ok(auth);
         }
 
+        self.try_load_managed_auth(cached_auth).await
+    }
+
+    async fn try_load_managed_auth(
+        &self,
+        cached_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<Option<CodexAuth>> {
+        let allowed_auth_modes = self
+            .allowed_auth_modes
+            .read()
+            .map_err(|_| std::io::Error::other("credential policy is unavailable"))?
+            .clone();
         let allowed_login_methods = self.allowed_login_methods();
         let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
-        load_auth(
+        let auth = load_auth(
             &self.codex_home,
             self.enable_codex_api_key_env,
             self.auth_credentials_store_mode,
@@ -2861,18 +3013,18 @@ impl AuthManager {
             self.keyring_backend_kind,
             self.agent_identity_authapi_base_url.as_deref(),
             &self.auth_route_config,
+            cached_auth,
+            allowed_auth_modes.as_deref(),
         )
-        .await
-        .ok()
-        .flatten()
-        .filter(|auth| {
+        .await?;
+        Ok(auth.filter(|auth| {
             validate_auth_restrictions(
                 Some(&allowed_login_methods),
                 effective_chatgpt_workspaces.as_deref(),
                 auth,
             )
             .is_ok()
-        })
+        }))
     }
 
     fn set_cached_auth(&self, new_auth: Option<CodexAuth>) -> bool {
@@ -3084,8 +3236,51 @@ impl AuthManager {
         auth_config: AuthConfig,
         enable_codex_api_key_env: bool,
     ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        Self::shared_from_auth_config_with_modes(
+            auth_config,
+            enable_codex_api_key_env,
+            /*allowed_auth_modes*/ None,
+        )
+        .await
+    }
+
+    /// Restricts credential modes before loading or hydrating the initial credential.
+    pub async fn shared_from_config_with_auth_modes(
+        config: &impl AuthManagerConfig,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Vec<AuthMode>,
+    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        Self::shared_from_auth_config_with_auth_modes(
+            auth_config_from(config),
+            enable_codex_api_key_env,
+            allowed_auth_modes,
+        )
+        .await
+    }
+
+    /// Restricts credential modes during bootstrap, before loading runtime configuration.
+    pub async fn shared_from_auth_config_with_auth_modes(
+        auth_config: AuthConfig,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Vec<AuthMode>,
+    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        Self::shared_from_auth_config_with_modes(
+            auth_config,
+            enable_codex_api_key_env,
+            Some(allowed_auth_modes),
+        )
+        .await
+    }
+
+    async fn shared_from_auth_config_with_modes(
+        auth_config: AuthConfig,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Option<Vec<AuthMode>>,
+    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
         let external_auth = WorkloadIdentityExternalAuth::from_process_config(&auth_config)?;
-        let mut manager = Self::new_from_auth_config(auth_config, enable_codex_api_key_env).await;
+        let mut manager =
+            Self::new_from_auth_config(auth_config, enable_codex_api_key_env, allowed_auth_modes)
+                .await;
         manager.workload_identity_selected = external_auth.is_some();
         let manager = Arc::new(manager);
         if let Some(external_auth) = external_auth {
@@ -3177,7 +3372,7 @@ impl AuthManager {
 
         match self
             .reload_if_account_id_matches(expected_account_id.as_deref())
-            .await
+            .await?
         {
             ReloadOutcome::ReloadedChanged => {
                 tracing::info!("Skipping token refresh because auth changed after guarded reload.");
@@ -3426,30 +3621,64 @@ impl AuthManager {
             .as_ref()
             .map(|provenance| provenance.client_id.clone())
             .unwrap_or_else(oauth_client_id);
-        let refresh_response = request_chatgpt_token_refresh(
-            tokens.refresh_token.clone(),
-            &endpoint,
-            &client_id,
-            auth.client(),
-            reason,
-        )
-        .await?;
+        let previous_unsettled = self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))?
+            .replace(tokens.clone());
+        let result: Result<(), RefreshTokenError> = async {
+            let refresh_response = request_chatgpt_token_refresh(
+                tokens.refresh_token.clone(),
+                &endpoint,
+                &client_id,
+                auth.client(),
+                reason,
+            )
+            .await?;
 
-        // An explicit override may send refresh to another authority. Retain provenance
-        // only when the endpoint used by this request matches the recorded issuer.
-        let provenance = tokens.oauth_provenance.clone().filter(|provenance| {
-            endpoint == format!("{}/oauth/token", provenance.issuer.trim_end_matches('/'))
-        });
+            // An explicit override may send refresh to another authority. Retain provenance
+            // only when the endpoint used by this request matches the recorded issuer.
+            let provenance = tokens.oauth_provenance.clone().filter(|provenance| {
+                endpoint == format!("{}/oauth/token", provenance.issuer.trim_end_matches('/'))
+            });
 
-        persist_tokens(
-            auth.storage(),
-            &tokens,
-            provenance,
-            refresh_response.id_token,
-            refresh_response.access_token,
-            refresh_response.refresh_token,
-        )
-        .map_err(RefreshTokenError::from)?;
+            let storage = Arc::clone(auth.storage());
+            let originator = codex_otel::auth_storage::AuthStorageOriginator::current();
+            tokio::task::spawn_blocking(move || {
+                originator.sync_scope(|| {
+                    persist_tokens(
+                        &storage,
+                        &tokens,
+                        provenance,
+                        refresh_response.id_token,
+                        refresh_response.access_token,
+                        refresh_response.refresh_token,
+                    )
+                })
+            })
+            .await
+            .map_err(|_| {
+                RefreshTokenError::Transient(std::io::Error::other(
+                    "credential persistence task failed",
+                ))
+            })?
+            .map_err(RefreshTokenError::from)?;
+            Ok(())
+        }
+        .await;
+        // Dropping this future while exchange or persistence is pending leaves
+        // the attempted generation recorded. A known failure cannot settle an
+        // earlier cancelled attempt; successful persistence can.
+        *self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))? =
+            if result.is_ok() {
+                None
+            } else {
+                previous_unsettled
+            };
+        result?;
         self.reload().await;
 
         Ok(())
