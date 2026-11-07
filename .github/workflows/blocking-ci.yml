@@ -50,6 +50,8 @@ jobs:
     # Without `always()`, GitHub skips this job after a failed dependency and a
     # required check can appear successful instead of reporting the failure.
     if: ${{ always() }}
+    # Bazel is advisory while the BuildBuddy key is revoked. Restore its dependency
+    # once the suite can run without BuildBuddy.
     needs:
       # `bazel` is disabled on this fork. Bazel is upstream's build system
       # and uses a remote cache with credentials this fork does not have.
