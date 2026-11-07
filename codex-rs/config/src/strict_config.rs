@@ -3,6 +3,7 @@
 use crate::CONFIG_TOML_FILE;
 use crate::ConfigLayerStack;
 use crate::ConfigRequirementsToml;
+use crate::NetworkRequirementsToml;
 use crate::RequirementsLayerEntry;
 use crate::config_toml::ConfigToml;
 use crate::diagnostics::ConfigDiagnosticSource;
@@ -74,18 +75,8 @@ fn config_error_from_ignored_toml_value_fields_for_source<T: DeserializeOwned + 
     } else {
         Vec::new()
     };
-    let mut ignored_paths = Vec::new();
-    let mut ignored_callback = |ignored_path: serde_ignored::Path<'_>| {
-        let path_segments = ignored_path_segments(&ignored_path);
-        if !path_segments.is_empty() {
-            ignored_paths.push(path_segments);
-        }
-    };
-    let deserializer = serde_ignored::Deserializer::new(value, &mut ignored_callback);
-    let result: Result<T, _> = serde_path_to_error::deserialize(deserializer);
-
-    match result {
-        Ok(_) => unknown_field_error_from_paths(source, contents, ignored_paths)
+    match ignored_toml_value_fields::<T>(value) {
+        Ok(ignored_paths) => unknown_field_error_from_paths(source, contents, ignored_paths)
             .or_else(|| unknown_field_error_from_paths(source, contents, unknown_tui_paths))
             .or_else(|| unknown_field_error_from_paths(source, contents, unknown_feature_paths)),
         Err(err) => {
@@ -127,19 +118,19 @@ pub(crate) fn unknown_tui_toml_value_path(value: &TomlValue) -> Vec<Vec<String>>
         .collect()
 }
 
-pub(crate) fn ignored_toml_value_fields<T: DeserializeOwned>(value: TomlValue) -> Vec<Vec<String>> {
+pub(crate) fn ignored_toml_value_fields<T: DeserializeOwned>(
+    value: TomlValue,
+) -> Result<Vec<Vec<String>>, serde_path_to_error::Error<toml::de::Error>> {
     let mut ignored_paths = Vec::new();
-    let result: Result<T, _> = serde_ignored::deserialize(value, |ignored_path| {
-        let path_segments = ignored_path_segments(&ignored_path);
-        if !path_segments.is_empty() {
-            ignored_paths.push(path_segments);
+    let mut record_path = |path: serde_ignored::Path<'_>| {
+        let segments = ignored_path_segments(&path);
+        if !segments.is_empty() {
+            ignored_paths.push(segments);
         }
-    });
-    if result.is_err() {
-        return Vec::new();
-    }
-
-    ignored_paths
+    };
+    let deserializer = serde_ignored::Deserializer::new(value, &mut record_path);
+    serde_path_to_error::deserialize::<_, T>(deserializer)?;
+    Ok(ignored_paths)
 }
 
 pub(crate) fn unknown_feature_toml_value_field(value: &TomlValue) -> Option<String> {
@@ -245,6 +236,7 @@ pub(crate) fn ignored_config_warning(
     let effective = config.effective_config();
     let unknown_features = unknown_feature_toml_value_path(&effective);
     for path in ignored_toml_value_fields::<ConfigToml>(effective)
+        .unwrap_or_default()
         .into_iter()
         .chain(unknown_features)
     {
@@ -277,11 +269,30 @@ pub(crate) fn ignored_config_warning(
             .as_ref()
             .map(|base_dir| AbsolutePathBufGuard::new(base_dir.as_path()));
         strip_cloud_auth_requirements(&source, &mut value);
+        // The flattened permissions deserializer consumes unknown network keys.
+        // Inspect that table separately to retain the usual typo diagnostics.
+        let permissions_network = value
+            .get("permissions")
+            .and_then(|permissions| permissions.get("network"))
+            .cloned();
         fields.extend(
             ignored_toml_value_fields::<ConfigRequirementsToml>(value)
+                .unwrap_or_default()
                 .into_iter()
                 .map(|path| (format!("requirements ({source})"), path)),
         );
+        if let Some(network) = permissions_network {
+            fields.extend(
+                ignored_toml_value_fields::<NetworkRequirementsToml>(network)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|path| {
+                        let mut full_path = vec!["permissions".to_string(), "network".to_string()];
+                        full_path.extend(path);
+                        (format!("requirements ({source})"), full_path)
+                    }),
+            );
+        }
     }
 
     if fields.is_empty() {
@@ -305,7 +316,7 @@ pub(crate) fn ignored_config_warning(
                 " Remove windows.sandbox_private_desktop; legacy Windows sandboxes always use a private desktop."
             }
             ["network_proxy"] => {
-                " Use [permissions.<name>.network] for network settings, or [network_proxy] in requirements.toml for enforced network policy."
+                " Use [features.network_proxy] or [permissions.<name>.network] for settings in config.toml, or [network_proxy], [permissions.network], or [experimental_network] for enforced policy in requirements.toml."
             }
             ["allowed_permissions"] => {
                 " Use [allowed_permission_profiles] and default_permissions; the old allowlist is ignored even when both forms are present."

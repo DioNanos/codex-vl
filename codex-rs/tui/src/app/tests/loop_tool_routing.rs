@@ -4,9 +4,9 @@
 //! Mutation-sensitive: the fork branch in
 //! `App::handle_server_request_event` must stay BEFORE the upstream
 //! `DynamicToolCall` handling, whose embedded gate rejects every call
-//! with "TUI dynamic tools require an active external task". These
-//! tests fail if the branch order is restored to the post-merge state
-//! or if the fork routing is dropped.
+//! with "TUI dynamic tools require an active task in the TUI
+//! namespace". These tests fail if the branch order is restored to the
+//! post-merge state or if the fork routing is dropped.
 
 use super::*;
 
@@ -152,8 +152,8 @@ async fn upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_
                 && failure_text(&response).contains("approval-gated MCP server")
     );
 
-    // Generic non-manage_loops tool: the embedded "active external task"
-    // rejection must stay intact.
+    // Generic non-manage_loops tool: the embedded "active task in the
+    // TUI namespace" rejection must stay intact.
     app.handle_server_request_event(
         &app_server,
         non_manage_loops_request(
@@ -168,7 +168,7 @@ async fn upstream_gate_still_rejects_non_manage_loops_dynamic_tools_in_embedded_
         events.try_recv(),
         Ok(AppEvent::DynamicToolCallCompleted { response, .. })
             if !response.success
-                && failure_text(&response).contains("require an active external task")
+                && failure_text(&response).contains("require an active task in the TUI namespace")
     );
     Ok(())
 }

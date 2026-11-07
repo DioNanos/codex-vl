@@ -49,9 +49,9 @@ Where state lives, all under your Codex home (`~/.codex` by default):
   `layout` (see section 10) and the brain `[profiles.vivling-<id>]` tables.
 
 Parsing notes that apply everywhere: the first word after `/vivling` is
-matched exactly and case-sensitively (`Status` is not `status`). Anything the
-parser does not recognize is treated as a message to the Vivling, not as an
-error.
+matched exactly and case-sensitively, except `status`, which is matched in any
+case (`Status`, `STATUS`). Anything else the parser does not recognize is
+treated as a message to the Vivling, not as an error.
 
 ## 3. Commands at a glance
 
@@ -124,11 +124,13 @@ Press **Ctrl+J** to open the Vivling sidebar and watch it live.
 ```
 
 Prints the active Vivling's summary, local spawn slots used/unlocked,
-top-level slots used/3, and whether it is ready to own loops. `status` must
-be the whole argument: `/vivling status extra` or `/vivling STATUS` is not
-recognized as status — it falls through and is delivered as a message to the
-Vivling instead (see section 7). The command applies time decay and rewrites
-the state file, so it is not purely read-only.
+top-level slots used/3, whether it is ready to own loops, and a separate
+`managed loops:` verdict for the `manage` strategy (`ready`, `needs brain
+profile`, or not available until the loop owner is ready). `status` is
+matched in any case (`/vivling STATUS` works, like `/vl status`) and takes no
+argument: `/vivling status extra` answers `Usage: /vivling status` instead of
+being delivered to the Vivling as a message. The command applies time decay and
+rewrites the state file, so it is not purely read-only.
 
 ```text
 /vivling roster
@@ -403,10 +405,11 @@ unparsable config), the layout still applies **for the current session** and
 the error is reported. No hatched Vivling is required. Values are matched
 case-insensitively; anything else is rejected.
 
-Two facts worth knowing: `layout` is handled before the command parser and
-matches by prefix, so a message that merely starts with the word `layout`
-never reaches the Vivling; and the value must be exactly `full` or `line`
-after trimming (`layoutxyz` is an error, not a message).
+Two facts worth knowing: `layout` is handled before the command parser and is
+matched as a whole word, so a message that starts with the word `layout`
+never reaches the Vivling, while one that merely begins with those letters
+(`layoutxyz`) is an ordinary message; and the value must be exactly `full` or
+`line` after trimming.
 
 The CRT visual effects are configured (not commanded) under `[vivling.crt]`
 in `~/.codex/config.toml`: `scanlines`, `phosphor_glow`, `flicker`,
@@ -498,9 +501,12 @@ prompt text.
 /loop on <label>
 /loop off <label>
 /loop rm <label>
+/loop trigger <label>
 ```
 
-List, detail, re-enable, suspend or remove a job.
+List, detail, re-enable, suspend or remove a job. `trigger` queues the job to
+run on the next safe tick, now: it does not change the schedule, the prompt or
+the goal, and it is refused for a disabled job.
 
 ```text
 /loop delegate <label> <main|vivling>
@@ -610,7 +616,8 @@ Complete alias map:
 
 Parser notes, collected:
 
-- The first word is matched case-sensitively and exactly. Sub-keyword
+- The first word is matched case-sensitively and exactly (`status` is the
+  one exception: any case). Sub-keyword
   matching is a mix and not exhaustive per command: `model list`, the whole
   `language` sub-action group (`show`, `status`, `auto`, `clear`, `reset`,
   `default`, `mode` and its values), the `crt-brain` sub-actions, the
@@ -618,11 +625,13 @@ Parser notes, collected:
   `/loop delegate` and the `auto` value of `/loop strategy` are
   case-insensitive; `brain on|off` and the other `/loop strategy` values
   are case-sensitive.
-- `/vivling status` must be the exact, whole argument; anything else
-  containing extra words becomes a direct message to the Vivling.
-- `layout` and `loop-strategy` are intercepted before the parser by prefix,
-  so no message can ever start with those words. `loop-strategy` takes
-  exactly two arguments.
+- `/vivling status` is matched in any case and takes no argument; extra
+  words give a usage error. A message that begins with the word `status`
+  therefore needs another opening.
+- `layout` and `loop-strategy` are intercepted before the parser as whole
+  words, so no message can start with those words alone, but `layoutxyz` or
+  `loop-strategyfoo` are ordinary messages. `loop-strategy` takes exactly two
+  arguments.
 - Unrecognized text is always a **local** message (section 7), never a model
   call: if a command silently answers with a canned line, check the
   spelling.
@@ -630,5 +639,6 @@ Parser notes, collected:
   create a profile you need at least model plus provider or effort.
 - `/loop add` accepts `s`, `m` and `h` intervals between 30 seconds and
   24 hours; other units (including bare numbers or days) are rejected with
-  the usage line. The `update` and `trigger` loop actions exist in the
-  runtime but are not reachable from the `/loop` command surface today.
+  the usage line. The `update` loop action exists in the runtime and in the
+  agent's `manage_loops` tool but is not reachable from the `/loop` command
+  surface; `trigger` is (`/loop trigger <label>`).

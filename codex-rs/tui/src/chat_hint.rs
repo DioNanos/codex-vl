@@ -52,6 +52,7 @@ pub(crate) fn family_for_terminal(terminal_info: TerminalInfo) -> (KeyBinding, K
         | TerminalName::GnomeTerminal
         | TerminalName::Vte
         | TerminalName::WindowsTerminal
+        | TerminalName::Rex
         | TerminalName::Dumb
         | TerminalName::Unknown => (key_hint::alt(KeyCode::Up), key_hint::alt(KeyCode::Down)),
     }

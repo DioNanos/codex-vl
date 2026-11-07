@@ -12,6 +12,7 @@ use super::started_thread_from_resume_response;
 use super::thread_resume_params_from_config;
 use super::thread_session_state_from_thread_response;
 use crate::legacy_core::config::Config;
+use codex_app_server_client::AppServerClient;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
@@ -58,7 +59,7 @@ impl AppServerSession {
             tracing::warn!("Failed to page read-only thread history; trying summary pages");
             let request_id = self.next_request_id();
             let page: ThreadTurnsListResponse = self
-                .client
+                .request_handle
                 .request_typed(ClientRequest::ThreadTurnsList {
                     request_id,
                     params: ThreadTurnsListParams {
@@ -97,6 +98,7 @@ impl AppServerSession {
         )
         .await
         .map_err(color_eyre::eyre::Report::msg)?;
+        self.freeze_viewed_receipt(thread_id);
         Ok((
             AppServerStartedThread {
                 session,
@@ -109,8 +111,8 @@ impl AppServerSession {
     }
 
     pub(crate) fn with_local_codex_home(mut self, codex_home: &AbsolutePathBuf) -> Self {
-        self.task_tool_capabilities_dir = (!self.uses_embedded_app_server())
-            .then(|| codex_home.join("tui-thread-reference-capabilities"));
+        self.task_tool_capabilities_dir =
+            Some(codex_home.join("tui-thread-reference-capabilities"));
         self
     }
 
@@ -184,42 +186,55 @@ impl AppServerSession {
             self.thread_tool_transport()
                 .configure_mcp(&mut params.config);
         }
-        let mut rollout_maintenance_guard = None;
-        params.exclude_turns = if self.history_support == ThreadHistorySupport::Paginated {
-            let known_legacy_history = self
+        let paginated = self.history_support == ThreadHistorySupport::Paginated;
+        let cached_legacy = paginated
+            && self
                 .history_pagination
                 .get(&thread_id)
-                .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy)
-                && (!self.uses_embedded_app_server()
-                    || ({
-                        // The guard prevents migration through the full resume,
-                        // regardless of the server's migration feature settings.
-                        rollout_maintenance_guard =
-                            codex_rollout::try_acquire_rollout_maintenance_lock(
-                                config.codex_home.as_path(),
-                            )
-                            .ok()
-                            .flatten();
-                        rollout_maintenance_guard.is_some()
-                    } && self
-                        .thread_read(thread_id, /*include_turns*/ false)
-                        .await
-                        .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
-            !known_legacy_history
+                .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy);
+        // Hold the maintenance lock through a full legacy resume to prevent migration.
+        let mut rollout_maintenance_guard = if cached_legacy && self.uses_embedded_app_server() {
+            codex_rollout::try_acquire_rollout_maintenance_lock(config.codex_home.as_path())
+                .ok()
+                .flatten()
         } else {
-            false
+            None
         };
+        // Capture the receipt before the resume-time history boundary. Later results are delivered live.
+        self.unread_revisions.remove(&thread_id);
+        let metadata = Box::pin(self.thread_read(thread_id, /*include_turns*/ false))
+            .await
+            .ok();
+        let known_legacy = cached_legacy
+            && (!self.uses_embedded_app_server()
+                || (rollout_maintenance_guard.is_some()
+                    && metadata
+                        .is_some_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
+        params.exclude_turns = paginated && !known_legacy;
         if params.exclude_turns {
             rollout_maintenance_guard = None;
         }
         let request_id = self.next_request_id();
-        if self.client.has_verified_identity() {
-            self.client.reauthorize_identity().await.map_err(|err| {
-                color_eyre::eyre::eyre!("identity reauthorization required before resume: {err}")
-            })?;
+        // codex-vl identity: re-bind a verified remote identity before resuming.
+        // `connection_owner` is None only for picker views, which borrow a
+        // request handle for listing and never resume; the resume itself always
+        // runs on the owning session (session picker selection resumes through
+        // the owner, never through the picker view). Embedded and cloud owners
+        // hold no remote identity by contract (their reauthorize is a no-op), so
+        // the guard narrows to the remote arm exactly like the pre-0.167 client
+        // check. A remote without a verified proof stays out: its
+        // reauthorization would fail closed with no proof to present.
+        if let Some(AppServerClient::Remote(client)) = &self.connection_owner {
+            if client.has_verified_identity() {
+                client.reauthorize_identity().await.map_err(|err| {
+                    color_eyre::eyre::eyre!(
+                        "identity reauthorization required before resume: {err}"
+                    )
+                })?;
+            }
         }
         let resume_response = self
-            .client
+            .request_handle
             .request_typed(ClientRequest::ThreadResume {
                 request_id,
                 params: params.clone(),
@@ -234,7 +249,7 @@ impl AppServerSession {
                 self.history_support = ThreadHistorySupport::LegacyOnly;
                 params.exclude_turns = false;
                 let request_id = self.next_request_id();
-                self.client
+                self.request_handle
                     .request_typed(ClientRequest::ThreadResume { request_id, params })
                     .await
                     .map_err(|err| {
