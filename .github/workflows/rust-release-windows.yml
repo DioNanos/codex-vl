@@ -9,8 +9,7 @@ env:
 jobs:
   build-windows-binaries:
     name: Build Windows binaries - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    # Parallel Bazel artifacts are advisory while Cargo remains the release path.
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    # Release Cargo artifacts only while Bazel releases are disabled.
     runs-on: ${{ matrix.runs_on }}
     environment:
       name: bazel
@@ -30,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc
@@ -253,7 +252,8 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           VOICE_ARCH: ${{ matrix.arch }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # Use local Bazel while BuildBuddy credentials are unavailable.
+          BUILDBUDDY_API_KEY: ""
         run: |
           (cd codex-rs && cargo update --workspace)
           python .github/scripts/watch_voice_bazel.py "$(cygpath -w "$BASH")" ./.github/scripts/run-bazel-ci.sh \
@@ -309,7 +309,6 @@ jobs:
     needs:
       - build-windows-binaries
     name: Build Windows symbols - ${{ matrix.target }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -323,7 +322,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - aarch64-pc-windows-msvc
           - x86_64-pc-windows-msvc
@@ -370,7 +369,6 @@ jobs:
       - build-windows-binaries
       - build-windows-voice
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
     runs-on: ${{ matrix.runs_on }}
     environment:
       name: azure-artifact-signing
@@ -388,7 +386,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc

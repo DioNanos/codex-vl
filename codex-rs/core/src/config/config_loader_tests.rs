@@ -2004,7 +2004,11 @@ async fn network_requirements_start_proxy_for_legacy_and_permission_configs() ->
         "default_permissions = 'dev'\n[permissions.dev]\nextends = ':workspace'\n[permissions.dev.network]\nenabled = true\n",
         "default_permissions = 'network'\n[permissions.network]\nextends = ':workspace'\n[permissions.network.network]\nenabled = true\n",
     ] {
-        for table in ["network_proxy", "experimental_network"] {
+        for table in [
+            "network_proxy",
+            "experimental_network",
+            "permissions.network",
+        ] {
             let requirements_toml = format!(
                 "[{table}]\nenabled = true\n[{table}.domains]\n'api.example.com' = 'allow'\n"
             );
@@ -4680,6 +4684,7 @@ prefix_rules = [
             parsed,
             RequirementsExecPolicyToml {
                 prefix_rules: vec![RequirementsExecPolicyPrefixRuleToml {
+                    canonical_matching: false,
                     pattern: vec![RequirementsExecPolicyPatternTokenToml {
                         token: Some("rm".to_string()),
                         any_of: None,
@@ -4709,6 +4714,7 @@ prefix_rules = [
             RequirementsExecPolicyToml {
                 prefix_rules: vec![
                     RequirementsExecPolicyPrefixRuleToml {
+                        canonical_matching: false,
                         pattern: vec![RequirementsExecPolicyPatternTokenToml {
                             token: Some("rm".to_string()),
                             any_of: None,
@@ -4717,6 +4723,7 @@ prefix_rules = [
                         justification: None,
                     },
                     RequirementsExecPolicyPrefixRuleToml {
+                        canonical_matching: false,
                         pattern: vec![
                             RequirementsExecPolicyPatternTokenToml {
                                 token: Some("git".to_string()),

@@ -244,6 +244,9 @@ impl App {
                 cells.push(Arc::new(completion));
             }
         }
+        for cell in cells.iter_mut().filter_map(Arc::get_mut) {
+            self.link_viewed_image(cell);
+        }
         cells
     }
 
@@ -292,7 +295,7 @@ impl App {
                     .complete_select_beginning(&self.transcript_cells);
             } else {
                 self.transcript_view
-                    .jump_to_entry(&self.transcript_cells, /*index*/ 0);
+                    .jump_to_beginning(&self.transcript_cells);
             }
         }
         if self.scrollback_has_older_history

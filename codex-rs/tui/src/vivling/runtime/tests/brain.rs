@@ -924,6 +924,52 @@ fn prepare_chat_with_malformed_skills_sidecar_does_not_fail() {
 }
 
 #[test]
+fn status_and_help_say_whether_managed_loops_are_ready() {
+    let temp = TempDir::new().expect("tempdir");
+    let mut vivling = hatched_vivling(temp.path());
+
+    // Not an owner yet (a hatchling): the managed strategy is not available.
+    let status = vivling.status().expect("status");
+    assert!(status.contains("loop owner not ready"), "{status}");
+    assert!(
+        status.contains("managed loops: not available until the loop owner is ready"),
+        "{status}"
+    );
+    assert!(
+        vivling
+            .help_message()
+            .contains("managed loops: not available until the loop owner is ready")
+    );
+
+    // An owner without a pinned profile: ready to own, not to manage.
+    let _ = vivling
+        .command(VivlingAction::PromoteAdult, temp.path())
+        .expect("promote adult");
+    let _ = vivling
+        .set_brain_enabled_with_guidance(true)
+        .expect("enable brain without profile");
+    let status = vivling.status().expect("status");
+    assert!(status.contains("loop owner ready"), "{status}");
+    assert!(
+        status.contains("managed loops: needs brain profile"),
+        "{status}"
+    );
+    assert!(
+        vivling
+            .help_message()
+            .contains("managed loops: needs brain profile")
+    );
+
+    // With a profile, the strategy gate has what it asks for.
+    let _ = vivling
+        .assign_brain_profile("vivling-spark".to_string())
+        .expect("assign profile");
+    let status = vivling.status().expect("status");
+    assert!(status.contains("managed loops: ready"), "{status}");
+    assert!(vivling.help_message().contains("managed loops: ready"));
+}
+
+#[test]
 fn status_loop_owner_ready_with_brain_enabled_and_no_profile() {
     // V2 §8.1 (P0.2): the status surface must report loop-owner
     // readiness based on adult + brain_enabled only, mirroring

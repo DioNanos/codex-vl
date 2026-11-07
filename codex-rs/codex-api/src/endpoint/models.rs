@@ -313,7 +313,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_body_limit_survives_auth_retry_without_limiting_other_models_requests() {}
+    async fn response_body_limit_survives_auth_retry_without_limiting_other_models_requests() {
+        let transport = CapturingTransport::default();
+        let auth = Arc::new(RetryAuth::default());
+        let mut provider = provider("https://example.com/api/codex");
+        provider.retry.max_attempts = 2;
+        let request_url = ModelsClient::<CapturingTransport>::request_url(&provider, "0.99.0");
+        let client = ModelsClient::new(transport.clone(), provider, auth.clone());
+
+        client
+            .list_models(
+                request_url.clone(),
+                HeaderMap::new(),
+                /*response_body_limit_bytes*/ Some(64),
+            )
+            .await
+            .expect("limited request should succeed after auth retry");
+        {
+            let request = transport.last_request.lock().unwrap();
+            let request = request.as_ref().unwrap();
+            assert_eq!(request.response_body_limit_bytes, Some(64));
+            assert_eq!(request.url, request_url);
+            assert_eq!(request.headers[http::header::AUTHORIZATION], "Bearer test");
+        }
+
+        let (models, _) = client
+            .list_models(
+                request_url,
+                HeaderMap::new(),
+                /*response_body_limit_bytes*/ None,
+            )
+            .await
+            .expect("ordinary request on the same client should remain unbounded");
+        assert!(models.is_empty());
+        assert_eq!(
+            transport
+                .last_request
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .response_body_limit_bytes,
+            None
+        );
+        assert_eq!(
+            *auth.request_limits.lock().unwrap(),
+            vec![Some(64), Some(64), None]
+        );
+    }
 
     #[tokio::test]
     async fn appends_client_version_query() {
