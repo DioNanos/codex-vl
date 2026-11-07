@@ -2177,12 +2177,17 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
 
 #[tokio::test]
 async fn token_usage_update_refreshes_status_line_with_runtime_context_window() {
+    use crate::bottom_pane::StatusLineItem;
+    use crate::bottom_pane::footer_content::FooterContent;
+
     let mut app = make_test_app().await;
     app.chat_widget.setup_status_line(
-        vec![crate::bottom_pane::StatusLineItem::ContextWindowSize],
+        vec![
+            StatusLineItem::ContextWindowSize,
+            StatusLineItem::UsedTokens,
+        ],
         /*use_theme_colors*/ true,
     );
-
     assert_eq!(
         app.chat_widget.config_panel_tui.status_line,
         app.chat_widget.local_settings.tui.status_line
@@ -2190,14 +2195,31 @@ async fn token_usage_update_refreshes_status_line_with_runtime_context_window() 
     assert!(app.chat_widget.config_panel_tui.status_line_use_colors);
     assert_eq!(app.chat_widget.status_line_text(), None);
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
-        token_usage_notification(ThreadId::new(), "turn-1", Some(950_000)),
-    )));
-
-    assert_eq!(
-        app.chat_widget.status_line_text(),
-        Some("950K window".into())
-    );
+    let thread_id = ThreadId::new();
+    for (extensions, window, expected) in [
+        (false, 950_000, "950K window · 8 used"),
+        (true, 800_000, "800K window · 8 used"),
+        (false, 900_000, "900K window · 8 used"),
+    ] {
+        let before = render_bottom_popup(&app.chat_widget, /*width*/ 60);
+        app.chat_widget
+            .set_feature_enabled(Feature::TuiExtensionsStatusLine, extensions);
+        app.refresh_status_line();
+        assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 60), before);
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+            token_usage_notification(thread_id, "turn-1", Some(window)),
+        )));
+        assert!(matches!(
+            (extensions, app.chat_widget.status_line_content()),
+            (false, Some(FooterContent::HyperlinkLine(_)))
+                | (true, Some(FooterContent::Extension { .. }))
+        ));
+        let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 60);
+        assert!(
+            rendered.lines().any(|row| row.trim() == expected),
+            "{rendered}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2575,6 +2597,18 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
     .expect("embedded app server");
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
+    let main = ThreadId::from_u128(/*value*/ 1);
+    let waiting = ThreadId::from_u128(/*value*/ 2);
+    app.enqueue_primary_thread_session(
+        test_thread_session(main, test_path_buf("/tmp/project")),
+        Vec::new(),
+    )
+    .await?;
+    app.enqueue_thread_request(
+        waiting,
+        exec_approval_request(waiting, "turn", "call", /*approval_id*/ None),
+    )
+    .await?;
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.agent_navigation
@@ -2586,9 +2620,56 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
+    // The second request arrives while the picker is open.
+    let request =
+        exec_approval_request(thread_id, "turn", "worker-call", /*approval_id*/ None);
+    app.thread_event_channels[&thread_id]
+        .store
+        .lock()
+        .await
+        .push_request(request);
+    app.refresh_pending_thread_approvals().await;
+    assert_eq!(
+        app.chat_widget.pending_thread_approvals(),
+        &["Agent (000000000002)", "/root/worker"]
+    );
+
+    // The first request gains its path without another approval event.
+    app.cache_collab_receiver_threads_for_notification(&ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            main.to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::SubAgentActivity {
+                id: "activity".to_string(),
+                kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+                agent_thread_id: waiting.to_string(),
+                agent_path: "/root/review".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+            /*started_at_ms*/ 0,
+        ),
+    ));
+    assert_eq!(
+        app.chat_widget.pending_thread_approvals(),
+        &["/root/review", "/root/worker"]
+    );
+
     assert_app_snapshot!(
         "path_backed_agent_picker",
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_completed_notification(thread_id, "turn", TurnStatus::Completed),
+    )
+    .await?;
+    assert_eq!(
+        app.chat_widget
+            .selected_index_for_present_view(agent_picker::AGENT_PICKER_VIEW_ID),
+        Some(2)
     );
     while app_event_rx.try_recv().is_ok() {}
     app.chat_widget
@@ -6332,7 +6413,7 @@ async fn clear_ui_after_long_transcript_snapshots_fresh_header_only() {
 }
 
 #[tokio::test]
-async fn ctrl_l_clears_owned_history_and_preserves_the_draft() -> Result<()> {
+async fn ctrl_l_preserves_the_transcript_and_draft_after_clearing_the_screen() -> Result<()> {
     let (mut app, _codex_home, thread_id) =
         pagination_completion_tests::completed_history_app(&["Oldest", "Newest"]).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -6362,8 +6443,11 @@ async fn ctrl_l_clears_owned_history_and_preserves_the_draft() -> Result<()> {
         .await?;
     app.chat_widget.set_model("gpt-test");
     app.chat_widget.insert_str("draft survives");
-    app.transcript_cells = vec![Arc::new(history_cell::PlainHistoryCell::new(
-        (0..50).map(|_| "old transcript row".into()).collect(),
+    app.transcript_cells = vec![Arc::new(history_cell::new_user_prompt(
+        "Earlier exchange".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
     ))];
     tui.set_owned_screen(/*owned*/ true)?;
     let size = ratatui::layout::Size::new(/*width*/ 80, /*height*/ 12);
@@ -6375,22 +6459,76 @@ async fn ctrl_l_clears_owned_history_and_preserves_the_draft() -> Result<()> {
     )
     .await?;
     app.render_owned_transcript(&mut tui, size)?;
-    app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
-        .await?;
+    app.handle_older_history_page(
+        &mut tui,
+        &mut app_server,
+        thread_id,
+        &cursor,
+        Ok(page.clone()),
+    )
+    .await?;
     assert!(app_server.has_older_history(thread_id));
     app.request_owned_history(&mut tui, &mut app_server);
     assert!(!app_server.is_older_history_page_pending(thread_id, &cursor));
-    assert_eq!(app.transcript_cells.len(), 1);
-    assert!(
-        app.transcript_cells[0]
-            .as_any()
-            .is::<history_cell::SessionHeaderHistoryCell>()
+    app.insert_history_cell(
+        &mut tui,
+        Box::new(history_cell::PlainHistoryCell::new(vec![
+            "New exchange".into(),
+        ])),
     );
-    let header = lines_to_single_string(&app.transcript_cells[0].display_lines(/*width*/ 80));
-    assert!(header.contains("OpenAI Codex"));
-    let raw_header = lines_to_single_string(&app.transcript_cells[0].raw_lines());
-    assert!(raw_header.contains("gpt-test"));
-    assert!(!header.contains("old transcript row"));
+    let size = Size::new(/*width*/ 64, /*height*/ 16);
+    tui.screen_size_for_event(&TuiEvent::Resize(size))?;
+    app.render_owned_transcript(&mut tui, size)?;
+    let compact = transcript_composer::buffer_text(
+        crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal),
+    );
+    assert!(compact.contains("OpenAI Codex"));
+    assert!(compact.contains("New exchange"));
+    assert!(!compact.contains("Earlier exchange"));
+    let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+    app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(ctrl_t))
+        .await?;
+    let area = Rect::new(/*x*/ 0, /*y*/ 0, size.width, size.height);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    app.transcript_view
+        .render(area, &mut buffer, &app.transcript_cells);
+    assert_app_snapshot!(
+        "ctrl_l_detailed_transcript",
+        transcript_composer::buffer_text(&buffer).trim()
+    );
+
+    let home = KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL);
+    app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(home))
+        .await?;
+    assert_eq!(
+        app.transcript_view.history,
+        crate::pager_overlay::TranscriptHistoryState::LoadingBeginning
+    );
+    assert!(app_server.is_older_history_page_pending(thread_id, &cursor));
+    app.handle_tui_event(&mut tui, &mut app_server, TuiEvent::Key(ctrl_t))
+        .await?;
+    app.handle_older_history_page(&mut tui, &mut app_server, thread_id, &cursor, Ok(page))
+        .await?;
+    for event in [TuiEvent::Draw, TuiEvent::Key(home)] {
+        app.handle_tui_event(&mut tui, &mut app_server, event)
+            .await?;
+        app.render_owned_transcript(&mut tui, size)?;
+        let compact = transcript_composer::buffer_text(
+            crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal),
+        );
+        assert!(!compact.contains("Earlier exchange"));
+    }
+    // Native scrollback replay uses a separate renderer when the terminal changes width.
+    app.local_settings.tui.terminal_resize_reflow_max_rows = None;
+    let replay = app
+        .render_transcript_lines_for_reflow(size.width)
+        .lines
+        .iter()
+        .map(rendered_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replay.contains("New exchange"));
+    assert!(!replay.contains("Earlier exchange"));
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
         "draft survives"
@@ -6619,6 +6757,7 @@ async fn make_test_app() -> Box<App> {
         native_history: Default::default(),
         turn_tips: Default::default(),
         transcript_view: Default::default(),
+        conversation_frame: Default::default(),
         last_rendered_history_tail: None,
         last_thread_usage_status_cell: None,
         pending_thread_usage_history_refresh: false,
@@ -6747,6 +6886,7 @@ pub(super) async fn make_test_app_with_channels() -> (
             native_history: Default::default(),
             turn_tips: Default::default(),
             transcript_view: Default::default(),
+            conversation_frame: Default::default(),
             last_rendered_history_tail: None,
             last_thread_usage_status_cell: None,
             pending_thread_usage_history_refresh: false,

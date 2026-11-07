@@ -8,6 +8,11 @@ use anyhow::Result;
 use identity_fixture::IdentityFixture;
 use serde_json::json;
 
+/// How long a required probe MCP server may take to answer `initialize`. It is a
+/// ceiling, not a wait: `thread/start` returns as soon as the handshake is done.
+/// Two seconds were not enough for a cold `node` start on a loaded shared runner.
+const MCP_PROBE_STARTUP_TIMEOUT_SEC: u64 = 30;
+
 #[tokio::test]
 async fn protected_endpoint_rejects_legacy_dispatch_without_effects() -> Result<()> {
     let fixture = IdentityFixture::start_protected().await?;
@@ -92,12 +97,11 @@ require('readline').createInterface({input:process.stdin}).on('line',line=>{
         "ephemeral": true,
         "config": {"mcp_servers": {"audit_probe": {
             "command":"node", "args":["-e", script],
-            "startup_timeout_sec": 2, "required": true,
+            "startup_timeout_sec": MCP_PROBE_STARTUP_TIMEOUT_SEC, "required": true,
             "env":{"AUDIT_CAPTURE":capture_path.to_string_lossy(),
                 "NEXUSCREW_MCP_SESSION":"dummy-session", "TMUX":"dummy-tmux", "TMUX_PANE":"dummy-pane"}
         }}}
     }))).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     fixture.stop().await?;
     assert!(
         response.get("error").is_none(),
@@ -159,14 +163,13 @@ require('readline').createInterface({input:process.stdin}).on('line',line=>{
                 "ephemeral": true,
                 "config": {"mcp_servers": {"audit_probe": {
                     "command":"node", "args":["-e", script],
-                    "startup_timeout_sec": 2, "required": true,
+                    "startup_timeout_sec": MCP_PROBE_STARTUP_TIMEOUT_SEC, "required": true,
                     "env":{"AUDIT_CAPTURE":capture_path.to_string_lossy(),
                         "NEXUSCREW_VERIFIED_CELL_ID":"configured-value"}
                 }}}
             })),
         )
         .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     fixture.stop().await?;
     assert!(
         response.get("error").is_none(),

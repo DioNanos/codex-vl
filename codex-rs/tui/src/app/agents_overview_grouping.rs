@@ -91,7 +91,12 @@ impl AgentsOverviewView {
                     std::cmp::Reverse(self.rows[*index].thread.updated_at),
                 )
             }),
-            AgentsOverviewGrouping::Status => {}
+            AgentsOverviewGrouping::Status => {
+                pinned.extend(visible);
+                // Stable grouping preserves pin order, then the supplied newest-first order.
+                pinned.sort_by_key(|index| self.rows[*index].group);
+                return pinned;
+            }
             AgentsOverviewGrouping::Model => visible.sort_by_key(|index| {
                 (
                     model_name(&self.rows[*index].thread),
@@ -109,17 +114,17 @@ impl AgentsOverviewView {
         left: usize,
         right: usize,
     ) -> bool {
-        if self.is_pinned(left) || self.is_pinned(right) {
-            return self.is_pinned(left) && self.is_pinned(right);
-        }
         match grouping {
+            AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
+            _ if self.is_pinned(left) || self.is_pinned(right) => {
+                self.is_pinned(left) && self.is_pinned(right)
+            }
             AgentsOverviewGrouping::Project => {
                 self.project_groups[left].key == self.project_groups[right].key
             }
             AgentsOverviewGrouping::Directory => {
                 self.directory_group_keys[left] == self.directory_group_keys[right]
             }
-            AgentsOverviewGrouping::Status => self.rows[left].group == self.rows[right].group,
             AgentsOverviewGrouping::Model => {
                 model_name(&self.rows[left].thread) == model_name(&self.rows[right].thread)
             }
