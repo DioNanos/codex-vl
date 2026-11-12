@@ -9,9 +9,7 @@
 
 use codex_utils_cargo_bin::cargo_bin;
 use std::path::Path;
-use std::process::Child;
 use std::process::Command;
-use std::process::ExitStatus;
 use std::time::Duration;
 use std::time::Instant;
 use tempfile::TempDir;
@@ -33,18 +31,6 @@ fn daemon(home: &Path, socket: &Path) -> Command {
         .env_remove("TMUX_PANE")
         .env_remove("NEXUSCREW_MCP_SESSION");
     command
-}
-
-/// Wait for the process to exit, without hanging the suite if it does not.
-fn wait_for_exit(child: &mut Child) -> Option<ExitStatus> {
-    let deadline = Instant::now() + STARTUP_BUDGET;
-    loop {
-        match child.try_wait().expect("poll child") {
-            Some(status) => return Some(status),
-            None if Instant::now() >= deadline => return None,
-            None => std::thread::sleep(Duration::from_millis(50)),
-        }
-    }
 }
 
 fn stderr_of(output: &std::process::Output) -> String {

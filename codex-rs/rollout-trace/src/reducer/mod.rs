@@ -12,6 +12,7 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use anyhow::ensure;
+use serde::de::IgnoredAny;
 use serde_json::Value;
 
 use crate::bundle::MANIFEST_FILE_NAME;
@@ -49,6 +50,8 @@ use self::tool::PendingAgentInteractionEdge;
 use self::tool::ToolCallStarted;
 
 /// Replays a local trace bundle into a reduced rollout graph.
+/// A valid prefix has `recording_complete = false`; malformed events or missing
+/// or invalid referenced payloads return an error.
 pub fn replay_bundle(bundle_dir: impl AsRef<Path>) -> Result<RolloutTrace> {
     let bundle_dir = bundle_dir.as_ref();
     let manifest: TraceBundleManifest =
@@ -85,20 +88,57 @@ pub fn replay_bundle(bundle_dir: impl AsRef<Path>) -> Result<RolloutTrace> {
     let event_log_path = bundle_dir.join(RAW_EVENT_LOG_FILE_NAME);
     let event_log = File::open(&event_log_path)
         .with_context(|| format!("open trace event log {}", event_log_path.display()))?;
-    for (line_index, line) in BufReader::new(event_log).lines().enumerate() {
-        let line = line.with_context(|| format!("read trace event line {}", line_index + 1))?;
+    let mut event_log = BufReader::new(event_log);
+    let mut event_count = 0;
+    let mut line = String::new();
+    for line_number in 1.. {
+        line.clear();
+        if event_log
+            .read_line(&mut line)
+            .with_context(|| format!("read trace event line {line_number}"))?
+            == 0
+        {
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
+        ensure!(
+            !reducer.rollout.recording_complete,
+            "trace event after recording completed"
+        );
         let event: RawTraceEvent = serde_json::from_str(&line)
-            .with_context(|| format!("parse trace event line {}", line_index + 1))?;
+            .with_context(|| format!("parse trace event line {line_number}"))?;
         ensure!(
             event.schema_version == RAW_TRACE_EVENT_SCHEMA_VERSION,
-            "unsupported trace event schema {} at line {}",
+            "unsupported trace event schema {} at line {line_number}",
             event.schema_version,
-            line_index + 1
         );
+        event_count += 1;
+        ensure!(
+            event.seq == event_count,
+            "missing or reordered trace event {event_count}"
+        );
+        ensure!(
+            event.rollout_id == reducer.rollout.rollout_id,
+            "trace event belongs to another rollout"
+        );
+        // A short write or copy can leave the entire marker except its final newline.
+        // Only the writer's complete record establishes clean closure.
+        if matches!(event.payload, RawTraceEventPayload::RecordingCompleted)
+            && !line.ends_with('\n')
+        {
+            break;
+        }
         reducer.apply_event(event)?;
+    }
+    for payload in reducer.rollout.raw_payloads.values() {
+        // IgnoredAny checks JSON structure but skips UTF-8 validation inside strings.
+        // Read one body as text so opaque payloads get both checks without a JSON tree.
+        let body = std::fs::read_to_string(reducer.bundle_dir.join(&payload.path))
+            .with_context(|| format!("read payload {}", payload.raw_payload_id))?;
+        serde_json::from_str::<IgnoredAny>(&body)
+            .with_context(|| format!("invalid payload {}", payload.raw_payload_id))?;
     }
     // Spawn edges prefer the child task message as their target, but a child can
     // fail before that message is ever reduced. Only after replaying the whole
@@ -210,6 +250,9 @@ impl TraceReducer {
         }
 
         match event.payload {
+            RawTraceEventPayload::RecordingCompleted => {
+                self.rollout.recording_complete = true;
+            }
             RawTraceEventPayload::RolloutStarted {
                 trace_id,
                 root_thread_id,

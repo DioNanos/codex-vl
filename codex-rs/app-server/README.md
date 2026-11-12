@@ -1,3 +1,20 @@
+# Managed human command checkpoints (experimental)
+
+A matching managed `requirements.toml` prefix rule with `decision = "prompt-user"`
+requires a fresh human decision, including when the thread uses automatic review.
+Prefix matching, exact-path precedence, and executable mappings stay unchanged. Clients
+supporting this workflow must initialize with `experimentalApi: true` and
+`requiredHumanApproval: true`.
+
+The server sends `item/commandExecution/requestApproval` with `kind: "humanCommand"`,
+a unique `approvalId`, and the command to display. Only `accept`, `decline`, and
+`cancel` are valid responses. Session and persistent approvals cannot satisfy the
+checkpoint. Only capable clients receive or answer these requests. Pending prompts
+use the normal approval replay flow when a capable client reconnects. With no capable
+connection when approval is requested, the command is rejected. The prompt itself
+does not start an execution item; normal command execution events report execution
+after approval.
+
 # Thread memory summary (experimental)
 
 `thread/memory/read` takes `{threadId}` for a loaded thread and returns
@@ -26,6 +43,13 @@ Listing also returns `-32603` if the store repeats a cursor while filling a page
 These errors are not evidence that history is exhausted; callers can retry.
 A successful response with `nextCursor: null` still indicates exhaustion.
 Default scan-and-repair requests retain their filesystem fallback.
+
+# Thread section moves
+
+After a successful `thread/section/move`, the app-server broadcasts
+`thread/section/changed` to its connected clients. The notification carries
+`threadId` and the destination `sectionId`, which is null for a removal.
+Moves within a section also emit this event so clients can refresh its order.
 
 # Shutdown admission errors
 
@@ -322,19 +346,33 @@ fallback for unrecognized structured error variants.
 
 ## Managed network requirements
 
-Use `[network_proxy]` in `requirements.toml` for shared managed network constraints.
-`[experimental_network]` remains a compatibility alias. A single requirements layer cannot
-contain both names; across layers, they merge with normal precedence. The
-`configRequirements/read.network` response exposes the resulting constraints.
+In `requirements.toml`, put shared network constraints directly in `[permissions.network]`,
+alongside `[permissions.filesystem]`:
+
+```toml
+[permissions.network]
+enabled = true
+```
+
+`[network_proxy]` and its compatibility alias `[experimental_network]` still work.
+Do not mix either with `[permissions.network]`, even across requirements layers. A single
+layer cannot use both top-level names; across layers the top-level names merge with normal
+precedence. `configRequirements/read` returns the result in `requirements.network`.
 
 In `config.toml`, `[features.network_proxy]` configures the proxy, while
 `[permissions.<profile>.network]` configures a profile's network settings. Managed requirements
 remain separate and override conflicting profile settings. They can start the proxy without
 enabling the feature; feature settings apply only when the feature is enabled.
 
+In `requirements.toml`, `network` is reserved, like `filesystem`. Rename any managed profile
+named `network` and update its references before upgrading. An empty `[permissions.network]`
+is rejected because it is indistinguishable from an old empty profile. Omit the table when
+there are no shared network settings. A profile named `network` is still allowed in `config.toml`.
+
 Policy publishers must continue using `[experimental_network]` until every client and policy
-validation layer supports `[network_proxy]`. Older clients or intermediaries may ignore or strip
-the new spelling, or skip host-local validation. This reader change does not migrate or
+validation layer supports the chosen new spelling. Older clients or intermediaries may ignore or
+strip constraints in `[network_proxy]` or `[permissions.network]`; intermediaries may also skip
+host-local validation. This reader change does not migrate or
 version-gate published policy bundles.
 
 # Amazon Bedrock authentication

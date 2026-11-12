@@ -445,9 +445,15 @@ async fn repo_ancestry_without_project_marker_does_not_walk_parents() {
     fs::create_dir_all(outer.join(".agents/skills")).expect("create outer skills");
     fs::create_dir_all(cwd.join(".agents/skills")).expect("create cwd skills");
 
+    // Sandbox runners can put a .git marker above the temporary directory.
+    // Probe for an absent fixture marker while retaining the real ancestor search.
+    let config_stack = stack(vec![ConfigLayerEntry::new(
+        ConfigLayerSource::SessionFlags,
+        toml::toml! { project_root_markers = [".missing-skill-test-project"] }.into(),
+    )]);
     let roots = repo_agents_skill_roots(
         Some(Arc::clone(&LOCAL_FS)),
-        &stack(Vec::new()),
+        &config_stack,
         &cwd,
         /*empty_remote_roots*/ None,
     )

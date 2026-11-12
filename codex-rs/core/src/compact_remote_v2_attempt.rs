@@ -2,6 +2,7 @@
 
 use crate::context::UserGoalUpdate;
 use codex_protocol::ResponseItemId;
+use codex_protocol::openai_models::CatalogModel;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -28,7 +29,6 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
 use tokio_util::sync::CancellationToken;
@@ -53,7 +53,7 @@ pub(super) enum RemoteCompactV2AttemptInput<'a> {
 
 pub(crate) struct BackgroundCompactionCandidate {
     pub(crate) prefix: CompactionPrefix,
-    pub(super) model_info: Arc<ModelInfo>,
+    pub(super) model_info: Arc<CatalogModel>,
     pub(super) cutoff_world_state: Arc<WorldState>,
     pub(super) attempt: RemoteCompactV2Attempt,
 }
@@ -118,9 +118,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 );
             }
             if estimated_deleted_tokens > 0 {
-                let max_local_deleted_tokens = sess
-                    .estimated_tokens_after_last_model_generated_item()
-                    .await;
+                let max_local_deleted_tokens = sess.estimated_tokens_since_last_usage().await;
                 analytics_details.active_context_tokens_before = analytics_details
                     .active_context_tokens_before
                     .map(|active_context_tokens_before| {

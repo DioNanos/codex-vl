@@ -1,0 +1,910 @@
+name: vl-evidence
+
+# Fork regression evidence: the full-suites job runs the COMPLETE,
+# unfiltered test suite (cargo test --locked --no-fail-fast, default
+# features, no test-selection filters) of every crate the fork touches
+# -- the crates in the merge diff plus the two test-support packages
+# that carry their own tests -- three times on fresh runners with no
+# cache, per the merge register's literal "full suite of every touched
+# crate three consecutive times" requirement. --no-fail-fast keeps every
+# test binary of a crate running after a red one, so later binaries are
+# never skipped. The 48 crate steps are split across shards so no job
+# can approach the runner wall clock, and every crate command runs under
+# its own bounded timeout: a crate that stops returning is recorded as a
+# bounded timeout with the partial evidence it produced, and the other
+# crates of its shard still run. Every crate step reports its per-crate
+# "N passed / M failed" total in the log; the single crate with no test
+# targets (codex-bwrap) records a zero count and is evidenced by its
+# green compile instead. The same workflow runs unchanged on the public
+# base release to separate base/environment failures from merge ones.
+
+on:
+  push:
+    branches:
+      - "ci/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_MIN_STACK: "8388608"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  full-suites:
+    name: full suites (corsa ${{ matrix.corsa }} / shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        corsa: ["1", "2", "3"]
+        shard: ["core", "s1", "s2", "s3", "s4"]
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free disk space on hosted runner
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+          df -h /
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install the system libraries the unfiltered suites use (upstream full-CI set)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libasound2-dev bubblewrap
+      - name: "Full suite: codex-api (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 1380 cargo test --locked --no-fail-fast -p codex-api > m12-codex-api.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-api.raw \
+            | tee m12-codex-api.out; rm -f m12-codex-api.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-api: TIMEOUT after 1380s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-api.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-api.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-api: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 2880 cargo test --locked --no-fail-fast -p codex-app-server > m12-codex-app-server.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-app-server.raw \
+            | tee m12-codex-app-server.out; rm -f m12-codex-app-server.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-app-server: TIMEOUT after 2880s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-app-server.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-client (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-app-server-client > m12-codex-app-server-client.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-app-server-client.raw \
+            | tee m12-codex-app-server-client.out; rm -f m12-codex-app-server-client.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-app-server-client: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-app-server-client.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-client.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-client: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-daemon (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-app-server-daemon > m12-codex-app-server-daemon.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-app-server-daemon.raw \
+            | tee m12-codex-app-server-daemon.out; rm -f m12-codex-app-server-daemon.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-app-server-daemon: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-app-server-daemon.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-daemon.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-daemon: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-protocol (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-app-server-protocol > m12-codex-app-server-protocol.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-app-server-protocol.raw \
+            | tee m12-codex-app-server-protocol.out; rm -f m12-codex-app-server-protocol.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-app-server-protocol: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-app-server-protocol.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-protocol.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-protocol: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-app-server-transport (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-app-server-transport > m12-codex-app-server-transport.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-app-server-transport.raw \
+            | tee m12-codex-app-server-transport.out; rm -f m12-codex-app-server-transport.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-app-server-transport: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-app-server-transport.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-app-server-transport.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-app-server-transport: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: app_test_support (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p app_test_support > m12-app_test_support.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-app_test_support.raw \
+            | tee m12-app_test_support.out; rm -f m12-app_test_support.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "app_test_support: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-app_test_support.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-app_test_support.out | awk '{s+=$6} END{print s+0}')"
+          echo "app_test_support: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-arg0 (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-arg0 > m12-codex-arg0.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-arg0.raw \
+            | tee m12-codex-arg0.out; rm -f m12-codex-arg0.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-arg0: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-arg0.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-arg0.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-arg0: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-cli (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 1440 cargo test --locked --no-fail-fast -p codex-cli > m12-codex-cli.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-cli.raw \
+            | tee m12-codex-cli.out; rm -f m12-codex-cli.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-cli: TIMEOUT after 1440s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-cli.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-cli.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-cli: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-cloud-tasks (unfiltered, default features)"
+        if: always() && matrix.shard == 's1'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 780 cargo test --locked --no-fail-fast -p codex-cloud-tasks > m12-codex-cloud-tasks.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-cloud-tasks.raw \
+            | tee m12-codex-cloud-tasks.out; rm -f m12-codex-cloud-tasks.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-cloud-tasks: TIMEOUT after 780s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-cloud-tasks.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-cloud-tasks.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-cloud-tasks: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-code-mode (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-code-mode > m12-codex-code-mode.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-code-mode.raw \
+            | tee m12-codex-code-mode.out; rm -f m12-codex-code-mode.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-code-mode: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-code-mode.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-code-mode.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-code-mode: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-config (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-config > m12-codex-config.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-config.raw \
+            | tee m12-codex-config.out; rm -f m12-codex-config.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-config: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-config.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-config.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-config: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-core (unfiltered, default features)"
+        if: always() && matrix.shard == 'core'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 10800 cargo test --locked --no-fail-fast -p codex-core > m12-codex-core.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-core.raw \
+            | tee m12-codex-core.out; rm -f m12-codex-core.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-core: TIMEOUT after 10800s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: core_test_support (unfiltered, default features)"
+        if: always() && matrix.shard == 'core'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 2160 cargo test --locked --no-fail-fast -p core_test_support > m12-core_test_support.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-core_test_support.raw \
+            | tee m12-core_test_support.out; rm -f m12-core_test_support.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "core_test_support: TIMEOUT after 2160s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-core_test_support.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-core_test_support.out | awk '{s+=$6} END{print s+0}')"
+          echo "core_test_support: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-core-plugins (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-core-plugins > m12-codex-core-plugins.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-core-plugins.raw \
+            | tee m12-codex-core-plugins.out; rm -f m12-codex-core-plugins.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-core-plugins: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-core-plugins.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-core-plugins.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-core-plugins: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-exec (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 1080 cargo test --locked --no-fail-fast -p codex-exec > m12-codex-exec.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-exec.raw \
+            | tee m12-codex-exec.out; rm -f m12-codex-exec.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-exec: TIMEOUT after 1080s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-exec.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-exec.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-exec: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-exec-server (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 840 cargo test --locked --no-fail-fast -p codex-exec-server > m12-codex-exec-server.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-exec-server.raw \
+            | tee m12-codex-exec-server.out; rm -f m12-codex-exec-server.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-exec-server: TIMEOUT after 840s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-exec-server.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-exec-server.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-exec-server: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-execpolicy (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-execpolicy > m12-codex-execpolicy.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-execpolicy.raw \
+            | tee m12-codex-execpolicy.out; rm -f m12-codex-execpolicy.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-execpolicy: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-execpolicy.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-execpolicy.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-execpolicy: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-external-agent-migration (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-external-agent-migration > m12-codex-external-agent-migration.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-external-agent-migration.raw \
+            | tee m12-codex-external-agent-migration.out; rm -f m12-codex-external-agent-migration.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-external-agent-migration: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-external-agent-migration.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-external-agent-migration.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-external-agent-migration: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-file-search (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-file-search > m12-codex-file-search.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-file-search.raw \
+            | tee m12-codex-file-search.out; rm -f m12-codex-file-search.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-file-search: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-file-search.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-file-search.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-file-search: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-git-utils (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-git-utils > m12-codex-git-utils.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-git-utils.raw \
+            | tee m12-codex-git-utils.out; rm -f m12-codex-git-utils.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-git-utils: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-git-utils.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-git-utils.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-git-utils: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-goal-extension (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-goal-extension > m12-codex-goal-extension.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-goal-extension.raw \
+            | tee m12-codex-goal-extension.out; rm -f m12-codex-goal-extension.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-goal-extension: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-goal-extension.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-goal-extension.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-goal-extension: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-hooks (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-hooks > m12-codex-hooks.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-hooks.raw \
+            | tee m12-codex-hooks.out; rm -f m12-codex-hooks.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-hooks: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-hooks.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-hooks.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-hooks: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-install-context (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-install-context > m12-codex-install-context.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-install-context.raw \
+            | tee m12-codex-install-context.out; rm -f m12-codex-install-context.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-install-context: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-install-context.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-install-context.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-install-context: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-linux-sandbox (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-linux-sandbox > m12-codex-linux-sandbox.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-linux-sandbox.raw \
+            | tee m12-codex-linux-sandbox.out; rm -f m12-codex-linux-sandbox.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-linux-sandbox: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-linux-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-linux-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-linux-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-lmstudio (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-lmstudio > m12-codex-lmstudio.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-lmstudio.raw \
+            | tee m12-codex-lmstudio.out; rm -f m12-codex-lmstudio.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-lmstudio: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-lmstudio.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-lmstudio.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-lmstudio: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-login (unfiltered, default features)"
+        if: always() && matrix.shard == 's2'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 960 cargo test --locked --no-fail-fast -p codex-login > m12-codex-login.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-login.raw \
+            | tee m12-codex-login.out; rm -f m12-codex-login.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-login: TIMEOUT after 960s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-login.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-login.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-login: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-mcp (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-mcp > m12-codex-mcp.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-mcp.raw \
+            | tee m12-codex-mcp.out; rm -f m12-codex-mcp.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-mcp: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-mcp.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-mcp.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-mcp: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-message-history (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-message-history > m12-codex-message-history.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-message-history.raw \
+            | tee m12-codex-message-history.out; rm -f m12-codex-message-history.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-message-history: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-message-history.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-message-history.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-message-history: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-model-provider (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-model-provider > m12-codex-model-provider.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-model-provider.raw \
+            | tee m12-codex-model-provider.out; rm -f m12-codex-model-provider.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-model-provider: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-model-provider.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-model-provider.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-model-provider: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-model-provider-info (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-model-provider-info > m12-codex-model-provider-info.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-model-provider-info.raw \
+            | tee m12-codex-model-provider-info.out; rm -f m12-codex-model-provider-info.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-model-provider-info: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-model-provider-info.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-model-provider-info.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-model-provider-info: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-models-manager (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-models-manager > m12-codex-models-manager.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-models-manager.raw \
+            | tee m12-codex-models-manager.out; rm -f m12-codex-models-manager.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-models-manager: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-models-manager.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-models-manager.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-models-manager: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-mxc-sandbox (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-mxc-sandbox > m12-codex-mxc-sandbox.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-mxc-sandbox.raw \
+            | tee m12-codex-mxc-sandbox.out; rm -f m12-codex-mxc-sandbox.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-mxc-sandbox: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-mxc-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-mxc-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-mxc-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-protocol (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-protocol > m12-codex-protocol.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-protocol.raw \
+            | tee m12-codex-protocol.out; rm -f m12-codex-protocol.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-protocol: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-protocol.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-protocol.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-protocol: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rmcp-client (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 900 cargo test --locked --no-fail-fast -p codex-rmcp-client > m12-codex-rmcp-client.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-rmcp-client.raw \
+            | tee m12-codex-rmcp-client.out; rm -f m12-codex-rmcp-client.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-rmcp-client: TIMEOUT after 900s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-rmcp-client.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rmcp-client.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rmcp-client: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rollout (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-rollout > m12-codex-rollout.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-rollout.raw \
+            | tee m12-codex-rollout.out; rm -f m12-codex-rollout.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-rollout: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-rollout.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rollout.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rollout: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-rollout-trace (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-rollout-trace > m12-codex-rollout-trace.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-rollout-trace.raw \
+            | tee m12-codex-rollout-trace.out; rm -f m12-codex-rollout-trace.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-rollout-trace: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-rollout-trace.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-rollout-trace.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-rollout-trace: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-state (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-state > m12-codex-state.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-state.raw \
+            | tee m12-codex-state.out; rm -f m12-codex-state.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-state: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-state.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-state.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-state: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-tui (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 2520 cargo test --locked --no-fail-fast -p codex-tui > m12-codex-tui.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-tui.raw \
+            | tee m12-codex-tui.out; rm -f m12-codex-tui.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-tui: TIMEOUT after 2520s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-tui.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-tui.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-tui: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-uds (unfiltered, default features)"
+        if: always() && matrix.shard == 's3'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-uds > m12-codex-uds.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-uds.raw \
+            | tee m12-codex-uds.out; rm -f m12-codex-uds.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-uds: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-uds.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-uds.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-uds: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-utils-process (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-utils-process > m12-codex-utils-process.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-utils-process.raw \
+            | tee m12-codex-utils-process.out; rm -f m12-codex-utils-process.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-utils-process: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-utils-process.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-utils-process.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-utils-process: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-vivling-core (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-vivling-core > m12-codex-vivling-core.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-vivling-core.raw \
+            | tee m12-codex-vivling-core.out; rm -f m12-codex-vivling-core.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-vivling-core: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-vivling-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-vivling-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-vivling-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-vivling-memory-agent (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-vivling-memory-agent > m12-codex-vivling-memory-agent.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-vivling-memory-agent.raw \
+            | tee m12-codex-vivling-memory-agent.out; rm -f m12-codex-vivling-memory-agent.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-vivling-memory-agent: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-vivling-memory-agent.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-vivling-memory-agent.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-vivling-memory-agent: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-windows-sandbox (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-windows-sandbox > m12-codex-windows-sandbox.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-windows-sandbox.raw \
+            | tee m12-codex-windows-sandbox.out; rm -f m12-codex-windows-sandbox.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-windows-sandbox: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-windows-sandbox.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-windows-sandbox.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-windows-sandbox: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-worktree (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-worktree > m12-codex-worktree.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-worktree.raw \
+            | tee m12-codex-worktree.out; rm -f m12-codex-worktree.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-worktree: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-worktree.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-worktree.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-worktree: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: fork-gate (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p fork-gate > m12-fork-gate.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-fork-gate.raw \
+            | tee m12-fork-gate.out; rm -f m12-fork-gate.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "fork-gate: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-fork-gate.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-fork-gate.out | awk '{s+=$6} END{print s+0}')"
+          echo "fork-gate: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: msa-core (unfiltered, default features)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p msa-core > m12-msa-core.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-msa-core.raw \
+            | tee m12-msa-core.out; rm -f m12-msa-core.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "msa-core: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-msa-core.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-msa-core.out | awk '{s+=$6} END{print s+0}')"
+          echo "msa-core: ${passed} passed / ${failed} failed"
+          [ "$passed" -ge 1 ] || status=1
+          exit "$status"
+
+      - name: "Full suite: codex-bwrap (no test targets: compile evidence)"
+        if: always() && matrix.shard == 's4'
+        shell: bash
+        run: |
+          set -uo pipefail
+          umask 022
+          status=0
+          timeout -k 30 600 cargo test --locked --no-fail-fast -p codex-bwrap > m12-codex-bwrap.raw 2>&1
+          rc=$?; sed -E 's#/home/[^[:space:])]+#<path>#g' m12-codex-bwrap.raw \
+            | tee m12-codex-bwrap.out; rm -f m12-codex-bwrap.raw
+          [ "$rc" -eq 0 ] || status=1; if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "codex-bwrap: TIMEOUT after 600s (bounded evidence above, suite incomplete)"; fi
+          passed="$(grep -E '^test result:' m12-codex-bwrap.out | awk '{s+=$4} END{print s+0}')"
+          failed="$(grep -E '^test result:' m12-codex-bwrap.out | awk '{s+=$6} END{print s+0}')"
+          echo "codex-bwrap: ${passed} passed / ${failed} failed (package ships no #[test] and no doctests: a green compile of build.rs + the libcap syscall shim is the evidence)"
+          [ "$passed" -eq 0 ] || status=1
+          exit "$status"
+
+      - name: Full-suite summary
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "== per-crate passed totals (m12 logs) =="
+          for f in m12-*.out; do
+            passed="$(grep -E '^test result:' "$f" | awk '{s+=$4} END{print s+0}')"
+            failed="$(grep -E '^test result:' "$f" | awk '{s+=$6} END{print s+0}')"
+            echo "$f: ${passed} passed / ${failed} failed"
+          done
+          echo "== crates with failures =="
+          grep -lE 'test result: FAILED' m12-*.out || echo "none"
+
+

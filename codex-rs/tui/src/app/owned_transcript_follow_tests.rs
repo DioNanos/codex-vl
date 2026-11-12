@@ -62,6 +62,35 @@ async fn follow_control_click_preserves_draft_caret_and_composer_geometry() -> R
         tui.screen_size_for_event(&TuiEvent::Resize(size))?;
         app.render_owned_transcript(&mut tui, size)?;
         assert_eq!(tui.terminal.last_known_cursor_pos, cursor);
+        let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+        let scrolled = super::tests::buffer_text(buffer);
+        let first_row = scrolled.lines().next().expect("visible transcript row");
+        assert!(first_row.contains("transcript row"));
+        let area = Rect::new(
+            /*x*/ 4, /*y*/ 1, /*width*/ 30, /*height*/ 10,
+        );
+        let frames = tui.frame_requester();
+        let mut painted = Default::default();
+        tui.draw(size.height, |frame| {
+            let prepared = app.prepare_conversation(frame.area(), Some(area), &frames);
+            painted = app.paint_conversation(frame, &prepared);
+        })?;
+        app.finish_conversation(&mut tui, painted)?;
+        let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+        let resized = super::tests::buffer_text(buffer);
+        assert_eq!(
+            resized.lines().nth(usize::from(area.y)).map(str::trim),
+            Some(first_row.trim())
+        );
+        assert!(resized.contains("draft stays here"));
+        tui.screen_size_for_event(&TuiEvent::Resize(size))?;
+        let mut painted = Default::default();
+        tui.draw(size.height, |frame| {
+            let prepared =
+                app.prepare_conversation(frame.area(), /*conversation_inset*/ None, &frames);
+            painted = app.paint_conversation(frame, &prepared);
+        })?;
+        app.finish_conversation(&mut tui, painted)?;
         for height in [24, 9, 8, 12] {
             let resized = Size::new(width, height);
             tui.screen_size_for_event(&TuiEvent::Resize(resized))?;
